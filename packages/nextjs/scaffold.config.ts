@@ -10,17 +10,17 @@ export type ScaffoldConfig = {
   burnerWalletMode: "localNetworksOnly" | "allNetworks" | "disabled";
 };
 
-const BG_MAINNET_RPC = "https://mainnet.rpc.buidlguidl.com";
+const ALCHEMY_MAINNET_RPC = `https://eth-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
 // AddressQRCodeModal, etc.) — bypassing wagmi's transport rpcOverrides. Patch the
-// chain definition itself so every path resolves to the BuidlGuidl RPC.
+// chain definition itself so every path resolves to Alchemy.
 export const mainnet = {
   ...mainnetBase,
   rpcUrls: {
-    default: { http: [BG_MAINNET_RPC] },
-    public: { http: [BG_MAINNET_RPC] },
+    default: { http: [ALCHEMY_MAINNET_RPC] },
+    public: { http: [ALCHEMY_MAINNET_RPC] },
   },
 } as const satisfies Chain;
 
@@ -32,15 +32,14 @@ const scaffoldConfig = {
   // it has no effect if you only target the local network (default is 4000)
   pollingInterval: 30000,
 
-  // Optional Alchemy API key. Empty by default — mainnet traffic is served by the
-  // BuidlGuidl RPC override below, so misconfiguration fails loudly instead of
-  // silently falling back to a shared demo key.
+  // Alchemy API key — required for mainnet. If unset, the patched mainnet URL
+  // ends with `/v2/` and fails loudly rather than silently falling back.
   alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || "",
 
   // If you want to use a different RPC for a specific network, you can add it here.
   // The key is the chain ID, and the value is the HTTP RPC URL
   rpcOverrides: {
-    [mainnet.id]: BG_MAINNET_RPC,
+    [mainnet.id]: ALCHEMY_MAINNET_RPC,
   },
 
   // This is ours WalletConnect's default project ID.
