@@ -2,194 +2,299 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Mesh WebRTC: every peer connects to every other peer.
-// Cheap and correct up to ~3-4 peers; past that, swap for an SFU.
-//
-// Signaling protocol matches packages/signaling/server.js.
-// Inner payload `kind` is ours: "offer" | "answer" | "ice".
+const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://localhost:8080/signal";
 
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-];
+type CursorData = {
+  x: number;
+  y: number;
+};
 
-export type RemoteStream = { peerId: string; stream: MediaStream };
+export type PeerMeshState = {
+  remoteStreams: Map<string, MediaStream>;
+  peerConnections: Map<string, RTCPeerConnection>;
+  cursors: Record<string, CursorData>;
+  connected: boolean;
+};
 
-type Opts = { url: string; myId: string; enabled?: boolean };
+type PeerInfo = {
+  id: string;
+  role: "host" | "guest";
+  address: string | null;
+  handle: string | null;
+};
 
-type SignalPayload =
-  | { kind: "offer"; sdp: RTCSessionDescriptionInit }
-  | { kind: "answer"; sdp: RTCSessionDescriptionInit }
-  | { kind: "ice"; candidate: RTCIceCandidateInit };
+const ICE_CONFIG: RTCConfiguration = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+};
 
-export function usePeerMesh({ url, myId, enabled = true }: Opts) {
-  const [remotes, setRemotes] = useState<RemoteStream[]>([]);
+export function usePeerMesh(
+  enabled: boolean,
+  _selfHint: { role: "host" | "guest"; address: string | null; handle: string | null } | null,
+): PeerMeshState {
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [peerConnections, setPeerConnections] = useState<Map<string, RTCPeerConnection>>(new Map());
+  const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const pcsRef = useRef(new Map<string, RTCPeerConnection>());
-  const localStreamsRef = useRef<Set<MediaStream>>(new Set());
 
-  const sendSignal = useCallback((to: string, payload: SignalPayload) => {
+  const wsRef = useRef<WebSocket | null>(null);
+  const myIdRef = useRef<string | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const cursorsRef = useRef<Record<string, CursorData>>({});
+
+  // Keep refs in sync with state
+  const [, _forceUpdate] = useState(0);
+  void _selfHint;
+  void _forceUpdate;
+  const syncRefs = useCallback((pcs: Map<string, RTCPeerConnection>, cs: Record<string, CursorData>) => {
+    peerConnectionsRef.current = pcs;
+    cursorsRef.current = cs;
+  }, []);
+
+  const send = useCallback((msg: object) => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "signal", to, payload }));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
     }
   }, []);
 
-  // initiator=true → we drive renegotiation. Avoids glare on simultaneous offers.
-  const getOrCreatePC = useCallback(
-    (peerId: string, initiator: boolean) => {
-      const existing = pcsRef.current.get(peerId);
-      if (existing) return existing;
+  const closePeerConnection = useCallback(
+    (peerId: string) => {
+      setPeerConnections(prev => {
+        const pc = prev.get(peerId);
+        if (pc) {
+          pc.ontrack = null;
+          pc.onicecandidate = null;
+          pc.onconnectionstatechange = null;
+          pc.close();
+        }
+        peerConnectionsRef.current.delete(peerId);
+        const next = new Map(prev);
+        next.delete(peerId);
+        const newCursors = { ...cursorsRef.current };
+        delete newCursors[peerId];
+        setCursors(newCursors);
+        syncRefs(next, newCursors);
+        return next;
+      });
+      setRemoteStreams(prev => {
+        const next = new Map(prev);
+        next.delete(peerId);
+        return next;
+      });
+    },
+    [syncRefs],
+  );
 
-      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-      pcsRef.current.set(peerId, pc);
+  const createPeerConnection = useCallback(
+    (peerId: string): RTCPeerConnection => {
+      const pc = new RTCPeerConnection(ICE_CONFIG);
 
-      for (const stream of localStreamsRef.current) {
-        for (const track of stream.getTracks()) pc.addTrack(track, stream);
-      }
-
-      pc.onicecandidate = e => {
-        if (e.candidate) sendSignal(peerId, { kind: "ice", candidate: e.candidate.toJSON() });
+      pc.ontrack = event => {
+        const stream = event.streams[0] ?? new MediaStream([event.track]);
+        setRemoteStreams(prev => {
+          const next = new Map(prev);
+          next.set(peerId, stream);
+          return next;
+        });
       };
 
-      pc.ontrack = e => {
-        const [stream] = e.streams;
-        if (!stream) return;
-        setRemotes(prev => (prev.some(r => r.stream.id === stream.id) ? prev : [...prev, { peerId, stream }]));
-        stream.onremovetrack = () => {
-          if (stream.getTracks().length === 0) {
-            setRemotes(prev => prev.filter(r => r.stream.id !== stream.id));
-          }
-        };
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          send({ type: "ice", to: peerId, payload: event.candidate.toJSON() });
+        }
       };
 
-      pc.onnegotiationneeded = async () => {
-        if (!initiator) return;
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          if (pc.localDescription) sendSignal(peerId, { kind: "offer", sdp: pc.localDescription.toJSON() });
-        } catch (err) {
-          console.error("[mesh] negotiation failed", err);
+      pc.onconnectionstatechange = () => {
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "disconnected" ||
+          pc.connectionState === "closed"
+        ) {
+          closePeerConnection(peerId);
         }
       };
 
       return pc;
     },
-    [sendSignal],
+    [send, closePeerConnection],
   );
 
-  const closePC = useCallback((peerId: string) => {
-    const pc = pcsRef.current.get(peerId);
-    if (!pc) return;
-    pc.close();
-    pcsRef.current.delete(peerId);
-    setRemotes(prev => prev.filter(r => r.peerId !== peerId));
-  }, []);
+  const handleOffer = useCallback(
+    async (from: string, payload: RTCSessionDescriptionInit) => {
+      const myId = myIdRef.current;
+      if (!myId) return;
 
-  const addLocalStream = useCallback((stream: MediaStream) => {
-    if (localStreamsRef.current.has(stream)) return;
-    localStreamsRef.current.add(stream);
-    for (const pc of pcsRef.current.values()) {
-      for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      const pc = createPeerConnection(from);
+      setPeerConnections(prev => {
+        const next = new Map(prev);
+        next.set(from, pc);
+        peerConnectionsRef.current = next;
+        syncRefs(next, cursorsRef.current);
+        return next;
+      });
+
+      await pc.setRemoteDescription(new RTCSessionDescription(payload));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      send({ type: "answer", to: from, payload: pc.localDescription!.toJSON() });
+    },
+    [createPeerConnection, send, syncRefs],
+  );
+
+  const handleAnswer = useCallback(async (from: string, payload: RTCSessionDescriptionInit) => {
+    const pc = peerConnectionsRef.current.get(from);
+    if (pc) {
+      await pc.setRemoteDescription(new RTCSessionDescription(payload));
     }
   }, []);
 
-  const removeLocalStream = useCallback((stream: MediaStream) => {
-    if (!localStreamsRef.current.delete(stream)) return;
-    const tracks = new Set(stream.getTracks());
-    for (const pc of pcsRef.current.values()) {
-      for (const sender of pc.getSenders()) {
-        if (sender.track && tracks.has(sender.track)) pc.removeTrack(sender);
+  const handleIce = useCallback(async (from: string, payload: RTCIceCandidateInit) => {
+    const pc = peerConnectionsRef.current.get(from);
+    if (pc) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(payload));
+      } catch {
+        /* ignore stale candidates */
       }
     }
   }, []);
 
   useEffect(() => {
-    if (!enabled || !myId) return;
+    if (!enabled) return;
     let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const connect = () => {
       if (cancelled) return;
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(RELAY_WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "hello", id: myId }));
+        if (cancelled) return;
         setConnected(true);
+        ws.send(JSON.stringify({ type: "hello" }));
       };
 
-      ws.onmessage = async ev => {
-        let msg: { type: string; [k: string]: unknown };
+      ws.onmessage = ev => {
+        if (cancelled) return;
+        let msg: Record<string, unknown>;
         try {
           msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
         } catch {
           return;
         }
 
-        if (msg.type === "peers" && Array.isArray(msg.peers)) {
-          for (const peerId of msg.peers as string[]) {
-            const pc = getOrCreatePC(peerId, true);
-            try {
-              const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
-              await pc.setLocalDescription(offer);
-              if (pc.localDescription) sendSignal(peerId, { kind: "offer", sdp: pc.localDescription.toJSON() });
-            } catch (err) {
-              console.error("[mesh] initial offer failed", err);
+        if (msg.type === "hello") {
+          const meId = msg.id as string;
+          const peers = msg.peers as PeerInfo[];
+          myIdRef.current = meId;
+
+          // Close all existing peer connections on reconnect
+          peerConnectionsRef.current.forEach(pc => pc.close());
+          peerConnectionsRef.current = new Map();
+          setPeerConnections(new Map());
+          setRemoteStreams(new Map());
+          syncRefs(new Map(), cursorsRef.current);
+
+          // Initiate connections: if peerId < myId, we create offer
+          for (const peer of peers) {
+            if (peer.id < meId) {
+              const pc = createPeerConnection(peer.id);
+              peerConnectionsRef.current.set(peer.id, pc);
+              setPeerConnections(prev => {
+                const next = new Map(prev);
+                next.set(peer.id, pc);
+                return next;
+              });
+              pc.createOffer()
+                .then(offer => pc.setLocalDescription(offer))
+                .then(() => {
+                  send({ type: "offer", to: peer.id, payload: pc.localDescription!.toJSON() });
+                });
             }
           }
           return;
         }
 
-        if (msg.type === "peer_leave" && typeof msg.id === "string") {
-          closePC(msg.id);
+        if (msg.type === "peer_leave") {
+          const peer = msg.peer as PeerInfo;
+          closePeerConnection(peer.id);
           return;
         }
 
-        if (msg.type === "signal" && typeof msg.from === "string") {
-          const from = msg.from;
-          const payload = msg.payload as SignalPayload;
-          const pc = getOrCreatePC(from, false);
-          try {
-            if (payload.kind === "offer") {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              if (pc.localDescription) sendSignal(from, { kind: "answer", sdp: pc.localDescription.toJSON() });
-            } else if (payload.kind === "answer") {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-            } else if (payload.kind === "ice") {
-              await pc.addIceCandidate(payload.candidate);
-            }
-          } catch (err) {
-            console.error("[mesh] signal handling failed", err);
+        // Relay-wrapped signaling messages
+        if (msg.type === "signal") {
+          const kind = msg.kind as string;
+          const from = msg.from as string;
+          const payload = msg.payload as RTCSessionDescriptionInit | RTCIceCandidateInit;
+          if (kind === "offer") {
+            handleOffer(from, payload as RTCSessionDescriptionInit);
+          } else if (kind === "answer") {
+            handleAnswer(from, payload as RTCSessionDescriptionInit);
+          } else if (kind === "ice") {
+            handleIce(from, payload as RTCIceCandidateInit);
           }
+          return;
+        }
+
+        // Cursor broadcast from relay
+        if (msg.type === "cursor") {
+          const from = msg.from as string;
+          const x = msg.x as number;
+          const y = msg.y as number;
+          setCursors(prev => {
+            const next = { ...prev, [from]: { x, y } };
+            cursorsRef.current = next;
+            syncRefs(peerConnectionsRef.current, next);
+            return next;
+          });
+          return;
         }
       };
 
       ws.onclose = () => {
-        setConnected(false);
         if (cancelled) return;
-        reconnectTimer = setTimeout(connect, 2000);
+        setConnected(false);
+        myIdRef.current = null;
+        peerConnectionsRef.current.forEach(pc => pc.close());
+        peerConnectionsRef.current = new Map();
+        setPeerConnections(new Map());
+        setRemoteStreams(new Map());
+        syncRefs(new Map(), cursorsRef.current);
+
+        if (!cancelled) {
+          setTimeout(connect, 2000);
+        }
       };
 
-      ws.onerror = () => ws.close();
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      };
     };
 
     connect();
 
     return () => {
       cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
-      for (const pc of pcsRef.current.values()) pc.close();
-      pcsRef.current.clear();
-      setRemotes([]);
-      setConnected(false);
+      wsRef.current = null;
+      peerConnectionsRef.current.forEach(pc => pc.close());
+      peerConnectionsRef.current = new Map();
     };
-  }, [url, myId, enabled, getOrCreatePC, closePC, sendSignal]);
+  }, [enabled, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, send, syncRefs]);
 
-  return { remotes, connected, addLocalStream, removeLocalStream };
+  // Broadcast our own cursor position
+  useEffect(() => {
+    if (!connected) return;
+    const handler = (e: MouseEvent) => {
+      send({ type: "cursor", x: e.clientX, y: e.clientY });
+    };
+    window.addEventListener("mousemove", handler);
+    return () => window.removeEventListener("mousemove", handler);
+  }, [connected, send]);
+
+  return { remoteStreams, peerConnections, cursors, connected };
 }

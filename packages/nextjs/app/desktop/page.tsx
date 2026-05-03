@@ -6,6 +6,8 @@ import type { NextPage } from "next";
 import { LocalStreamHandle, MyCameraControls, StreamView } from "~~/components/desktop/MyCamera";
 import { WhosHere } from "~~/components/desktop/WhosHere";
 import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
+import Cursor from "~~/components/ui/Cursor";
+import { usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
 import { useSignalSocket } from "~~/hooks/useSignalSocket";
 
@@ -30,6 +32,7 @@ const Desktop: NextPage = () => {
   }, [session]);
 
   const presence = useSignalSocket(session.authenticated, selfHint);
+  const peerMesh = usePeerMesh(session.authenticated, selfHint);
 
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
   const [topZ, setTopZ] = useState(10);
@@ -49,6 +52,50 @@ const Desktop: NextPage = () => {
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
     : "guest";
+
+  // Build a label for a remote peer
+  const peerLabel = useCallback(
+    (peerId: string): string => {
+      const peer = presence.peers.find(p => p.id === peerId);
+      if (!peer) return peerId;
+      if (peer.handle) return peer.handle;
+      if (peer.address) return shortAddress(peer.address);
+      return peerId.slice(0, 8);
+    },
+    [presence.peers],
+  );
+
+  // Collect remote stream windows (added on right side, below whos-here)
+  const remoteStreamWindows: WinDef[] = useMemo(() => {
+    const windows: WinDef[] = [];
+    let i = 0;
+    peerMesh.remoteStreams.forEach((stream, peerId) => {
+      const label = peerLabel(peerId);
+      windows.push({
+        id: `remote-${peerId}`,
+        title: `REMOTE — ${label}`,
+        x: 80 + i * 30,
+        y: 300 + i * 30,
+        width: 360,
+        height: 260,
+        zIndex: 4 + i,
+        bodyStyle: { padding: 0, overflow: "hidden" },
+        body: (
+          <video
+            autoPlay
+            muted
+            playsInline
+            ref={el => {
+              if (el) el.srcObject = stream;
+            }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
+          />
+        ),
+      });
+      i++;
+    });
+    return windows;
+  }, [peerMesh.remoteStreams, peerLabel]);
 
   const baseWindows: WinDef[] = useMemo(() => {
     const list: WinDef[] = [];
@@ -87,6 +134,10 @@ const Desktop: NextPage = () => {
         body: <StreamView stream={s.stream} muted onStop={() => stopStream(s.id)} />,
       });
     });
+    // Add remote peer video windows
+    for (const w of remoteStreamWindows) {
+      list.push(w);
+    }
     return list;
   }, [
     session.authenticated,
@@ -97,6 +148,7 @@ const Desktop: NextPage = () => {
     streams,
     addStream,
     stopStream,
+    remoteStreamWindows,
   ]);
 
   const [zMap, setZMap] = useState<Record<string, number>>({});
@@ -116,6 +168,17 @@ const Desktop: NextPage = () => {
   const windows = baseWindows
     .filter(w => !closed[w.id])
     .map(w => (zMap[w.id] !== undefined ? { ...w, zIndex: zMap[w.id] } : w));
+
+  // Remote cursors (exclude self)
+  const remoteCursors = useMemo(() => {
+    const result: Array<{ peerId: string; x: number; y: number; label: string }> = [];
+    Object.entries(peerMesh.cursors).forEach(([peerId, pos]) => {
+      if (peerId !== presence.myId) {
+        result.push({ peerId, ...pos, label: peerLabel(peerId) });
+      }
+    });
+    return result;
+  }, [peerMesh.cursors, presence.myId, peerLabel]);
 
   return (
     <>
@@ -164,6 +227,11 @@ const Desktop: NextPage = () => {
           >
             {w.body}
           </Window>
+        ))}
+
+        {/* Remote peer cursors */}
+        {remoteCursors.map(({ peerId, x, y, label }) => (
+          <Cursor key={peerId} x={x} y={y} label={label} />
         ))}
       </div>
     </>
