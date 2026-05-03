@@ -18,6 +18,16 @@ type Peer = {
   role: string;
   address: string | null;
   handle: string | null;
+  connectedAt?: number;
+};
+
+const formatConnectedAt = (ts?: number) => {
+  if (!ts) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
 };
 
 const randomToken = () => {
@@ -146,6 +156,25 @@ const AdminPage: NextPage = () => {
       setStatus(data.isAdmin ? "Signed in as host." : "Signed in (not on the admin allowlist).");
     } catch (err) {
       setStatus(`Auth error: ${(err as Error).message}`);
+    }
+  };
+
+  const kickPeer = async (id: string) => {
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/kick`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setStatus(`kick failed: ${data.error ?? res.statusText}`);
+        return;
+      }
+      setPeers(prev => prev.filter(p => p.id !== id));
+    } catch (err) {
+      setStatus(`kick failed: ${(err as Error).message}`);
     }
   };
 
@@ -279,17 +308,44 @@ const AdminPage: NextPage = () => {
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
           Connected guests
         </h2>
+        <p style={{ marginTop: 4, color: "var(--slop-text-muted)", fontSize: 12 }}>refreshes every 3s</p>
         {peers.length === 0 ? (
           <p style={{ color: "var(--slop-text-muted)", marginTop: 8 }}>No peers connected to the relay.</p>
         ) : (
-          <ul style={{ margin: "8px 0 0 0", paddingLeft: 18 }}>
-            {peers.map(p => (
-              <li key={p.id} style={{ fontFamily: "var(--slop-font-body)" }}>
-                <code>{p.id.slice(0, 8)}</code> — {p.role}
-                {p.address ? ` — ${p.address}` : p.handle ? ` — ${p.handle}` : ""}
-              </li>
-            ))}
-          </ul>
+          <table style={{ width: "100%", marginTop: 8, fontFamily: "var(--slop-font-body)", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--slop-text-muted)" }}>
+                <th style={{ padding: "4px 8px" }}>Peer</th>
+                <th style={{ padding: "4px 8px" }}>Identity</th>
+                <th style={{ padding: "4px 8px" }}>Connected</th>
+                <th style={{ padding: "4px 8px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {peers.map(p => (
+                <tr key={p.id}>
+                  <td style={{ padding: "4px 8px" }}>
+                    <code>{p.id.slice(0, 8)}</code> · {p.role}
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    {p.address ? (
+                      <code>{p.address}</code>
+                    ) : p.handle ? (
+                      p.handle
+                    ) : (
+                      <span style={{ color: "var(--slop-text-muted)" }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding: "4px 8px", color: "var(--slop-text-muted)" }}>
+                    {formatConnectedAt(p.connectedAt)}
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    <Button onClick={() => kickPeer(p.id)}>kick</Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Bevel>
     </>

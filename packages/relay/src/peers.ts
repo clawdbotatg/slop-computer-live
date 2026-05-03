@@ -5,9 +5,10 @@ export type PeerInfo = {
   role: "host" | "guest";
   address: string | null;
   handle: string | null;
+  connectedAt: number;
 };
 
-type Peer = PeerInfo & { ws: WebSocket };
+type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };
 
 const peers = new Map<string, Peer>();
 
@@ -24,7 +25,11 @@ export function getPeer(id: string): Peer | undefined {
 }
 
 export function listPeers(): PeerInfo[] {
-  return [...peers.values()].map(({ ws: _ws, ...info }) => info);
+  return [...peers.values()].map(({ ws: _ws, sessionToken: _t, ...info }) => info);
+}
+
+export function findPeersBySessionToken(token: string): Peer[] {
+  return [...peers.values()].filter(p => p.sessionToken === token);
 }
 
 export function send(ws: WebSocket, msg: unknown): void {
@@ -42,5 +47,18 @@ export function sendTo(targetId: string, msg: unknown): boolean {
   const peer = peers.get(targetId);
   if (!peer) return false;
   send(peer.ws, msg);
+  return true;
+}
+
+export function kickById(id: string): boolean {
+  const peer = peers.get(id);
+  if (!peer) return false;
+  try {
+    send(peer.ws, { type: "kicked" });
+    peer.ws.close(4403, "kicked");
+  } catch {
+    /* ignore */
+  }
+  peers.delete(id);
   return true;
 }

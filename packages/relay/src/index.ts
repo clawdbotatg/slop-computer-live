@@ -4,7 +4,7 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
-import { addPeer, broadcast, listPeers, removePeer, send, sendTo } from "./peers.js";
+import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 
@@ -100,7 +100,15 @@ app.get("/auth/me", async req => {
     role: session.role,
     address: session.address,
     handle: session.handle,
+    isAdmin: session.role === "host" && !!session.address && isAdminAddress(session.address),
   };
+});
+
+app.get("/peers", async (req, reply) => {
+  const token = req.cookies[SESSION_COOKIE];
+  const session = getSession(token);
+  if (!session) return reply.code(401).send({ error: "Unauthenticated" });
+  return { peers: listPeers() };
 });
 
 // --- Admin host-only --------------------------------------------------------
@@ -142,6 +150,19 @@ app.get("/admin/peers", async (req, reply) => {
   return { peers: listPeers() };
 });
 
+type KickBody = { id?: unknown };
+
+app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const body = (req.body ?? {}) as KickBody;
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) return reply.code(400).send({ error: "Missing id" });
+  const ok = kickById(id);
+  if (!ok) return reply.code(404).send({ error: "Peer not found" });
+  return { ok: true };
+});
+
 // --- WS /signal -------------------------------------------------------------
 // Message types relayed between peers:
 //   { type: "offer"  | "answer" | "ice", to: <peerId>, payload }
@@ -171,9 +192,10 @@ app.register(async function signalRoutes(fastify) {
       role: session.role,
       address: session.address,
       handle: session.handle,
+      connectedAt: Date.now(),
     };
 
-    addPeer({ ...info, ws: socket });
+    addPeer({ ...info, ws: socket, sessionToken: session.token });
     send(socket, { type: "hello", id: peerId, peers: listPeers().filter(p => p.id !== peerId) });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -185,6 +207,11 @@ app.register(async function signalRoutes(fastify) {
         return send(socket, { type: "error", error: "invalid_json" });
       }
       switch (msg?.type) {
+        case "hello":
+          return;
+        case "ping":
+          send(socket, { type: "pong" });
+          return;
         case "offer":
         case "answer":
         case "ice": {

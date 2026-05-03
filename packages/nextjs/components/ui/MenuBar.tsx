@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { LivePulse } from "./LivePulse";
+import { sessionLabel, useSession } from "~~/hooks/useSession";
 
 interface MenuBarProps {
   brand?: string;
@@ -21,6 +23,7 @@ export const MenuBar = ({
   className = "",
 }: MenuBarProps) => {
   const [now, setNow] = useState<Date | null>(null);
+  const { session, signOut } = useSession();
 
   useEffect(() => {
     setNow(new Date());
@@ -29,6 +32,41 @@ export const MenuBar = ({
   }, []);
 
   const clock = now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+
+  const authNode = session.authenticated ? (
+    <span
+      className="slop-menubar__item"
+      style={{
+        color: session.isAdmin ? "var(--slop-magenta, #ff3ec9)" : undefined,
+        fontWeight: session.isAdmin ? 600 : undefined,
+      }}
+    >
+      {sessionLabel(session)}
+      <button
+        type="button"
+        onClick={() => {
+          void signOut();
+        }}
+        style={{
+          marginLeft: 8,
+          background: "transparent",
+          border: 0,
+          color: "var(--slop-text-muted)",
+          cursor: "pointer",
+          fontSize: "inherit",
+          fontFamily: "inherit",
+          padding: 0,
+          textDecoration: "underline",
+        }}
+      >
+        sign out
+      </button>
+    </span>
+  ) : (
+    <Link href="/join" className="slop-menubar__item" style={{ textDecoration: "none", color: "inherit" }}>
+      {sessionLabel(session)}
+    </Link>
+  );
 
   return (
     <div className={`slop-menubar ${className}`.trim()}>
@@ -40,9 +78,10 @@ export const MenuBar = ({
       ))}
       <span className="flex-1" />
       {right ?? (
-        <span className="slop-menubar__status">
+        <span className="slop-menubar__status" style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <LivePulse live={isLive} />
           <span>{isLive ? "On Air" : "Offline"}</span>
+          {authNode}
           <span style={{ color: "var(--slop-text-muted)" }} suppressHydrationWarning>
             {clock}
           </span>
