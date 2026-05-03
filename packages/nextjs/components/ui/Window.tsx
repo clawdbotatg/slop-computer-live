@@ -48,7 +48,48 @@ export const Window = ({
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  if (!mounted) return null;
+
+  const body = (
+    <>
+      <TitleBar title={title} active={active} onClose={onClose} onMinimize={onMinimize} onZoom={onZoom} />
+      <div
+        className={bodyClassName}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          background: "var(--slop-panel)",
+          color: "var(--slop-text)",
+          padding: 8,
+          overflow: "auto",
+          ...bodyStyle,
+        }}
+      >
+        {children}
+      </div>
+    </>
+  );
+
+  if (!mounted) {
+    return (
+      <div
+        className="slop-window"
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          width,
+          height,
+          zIndex,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {body}
+      </div>
+    );
+  }
+
   return (
     <Rnd
       default={{ x, y, width, height }}
@@ -85,21 +126,7 @@ export const Window = ({
         },
       }}
     >
-      <TitleBar title={title} active={active} onClose={onClose} onMinimize={onMinimize} onZoom={onZoom} />
-      <div
-        className={bodyClassName}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          background: "var(--slop-panel)",
-          color: "var(--slop-text)",
-          padding: 8,
-          overflow: "auto",
-          ...bodyStyle,
-        }}
-      >
-        {children}
-      </div>
+      {body}
     </Rnd>
   );
 };
