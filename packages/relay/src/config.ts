@@ -20,7 +20,7 @@ const corsOrigins = env("CORS_ORIGINS", "http://localhost:3000,http://localhost:
   .filter(Boolean);
 
 export const config = {
-  port: Number(env("PORT", "8080")),
+  port: Number(env("PORT", "8081")),
   host: env("HOST", "0.0.0.0"),
   corsOrigins,
   adminAddresses: adminAddrs,
