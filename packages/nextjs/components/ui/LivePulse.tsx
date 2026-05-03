@@ -1,21 +1,33 @@
-type LivePulseProps = {
-  live: boolean;
-  size?: number;
-};
+import React from "react";
 
-export const LivePulse = ({ live, size = 8 }: LivePulseProps) => (
-  <span
-    aria-label={live ? "live" : "offline"}
-    style={{
-      display: "inline-block",
-      width: size,
-      height: size,
-      background: live ? "var(--slop-live)" : "var(--slop-text-muted)",
-      borderRadius: 0,
-      animation: live ? "slop-live-pulse 1s ease-in-out infinite" : undefined,
-      verticalAlign: "middle",
-    }}
-  />
-);
+interface LivePulseProps {
+  live?: boolean;
+  size?: number;
+  label?: string;
+  className?: string;
+}
+
+export const LivePulse = ({ live = true, size, label, className = "" }: LivePulseProps) => {
+  const dotStyle: React.CSSProperties | undefined = size ? { width: size, height: size } : undefined;
+  return (
+    <span className={`inline-flex items-center gap-2 ${className}`.trim()}>
+      <span className={`slop-pulse${live ? "" : " slop-pulse--off"}`} style={dotStyle} aria-hidden />
+      {label && (
+        <span
+          className="slop-mono"
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--slop-live)",
+          }}
+        >
+          {label}
+        </span>
+      )}
+    </span>
+  );
+};
 
 export default LivePulse;

@@ -1,90 +1,55 @@
-"use client";
+import React from "react";
 
-import type { CSSProperties, ReactNode } from "react";
-
-type TitleBarProps = {
-  title: string;
+interface TitleBarProps {
+  title: React.ReactNode;
   active?: boolean;
+  right?: React.ReactNode;
+  showDots?: boolean;
   onClose?: () => void;
   onMinimize?: () => void;
   onZoom?: () => void;
   className?: string;
-  right?: ReactNode;
+}
+
+const Dot = ({ onClick, label }: { onClick?: () => void; label?: string }) => {
+  if (!onClick) return <span className="slop-titlebar__dot" aria-hidden />;
+  return (
+    <span
+      className="slop-titlebar__dot"
+      role="button"
+      aria-label={label}
+      style={{ cursor: "pointer" }}
+      onClick={e => {
+        e.stopPropagation();
+        onClick();
+      }}
+    />
+  );
 };
 
-const dotBase: CSSProperties = {
-  width: 12,
-  height: 12,
-  display: "inline-block",
-  marginRight: 4,
-  cursor: "pointer",
-  borderRadius: 0,
-  border: "1px solid var(--slop-bevel-dark)",
-};
-
-const Dot = ({
-  color,
-  glyph,
-  onClick,
+export const TitleBar = ({
   title,
-}: {
-  color: string;
-  glyph?: string;
-  onClick?: () => void;
-  title: string;
-}) => (
-  <span
-    onClick={e => {
-      e.stopPropagation();
-      onClick?.();
-    }}
-    style={{ ...dotBase, background: color }}
-    title={title}
-  >
-    {glyph && (
-      <span
-        style={{
-          fontFamily: "var(--slop-font-display)",
-          fontSize: 10,
-          lineHeight: "10px",
-          color: "var(--slop-bevel-dark)",
-          display: "block",
-          textAlign: "center",
-        }}
-      >
-        {glyph}
-      </span>
-    )}
-  </span>
-);
-
-export const TitleBar = ({ title, active = true, onClose, onMinimize, onZoom, className, right }: TitleBarProps) => (
-  <div
-    className={`slop-title-bar ${className ?? ""}`}
-    style={{
-      background: active ? "var(--slop-titlebar-active)" : "var(--slop-titlebar)",
-      color: "var(--slop-text)",
-      fontFamily: "var(--slop-font-display)",
-      fontSize: 12,
-      letterSpacing: "0.04em",
-      textTransform: "uppercase",
-      height: 22,
-      display: "flex",
-      alignItems: "center",
-      padding: "0 6px",
-      borderBottom: "1px solid var(--slop-bevel-dark)",
-      userSelect: "none",
-      cursor: "move",
-    }}
-  >
-    <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-      <Dot color="#ff5e57" glyph="✕" onClick={onClose} title="Close" />
-      <Dot color="#ffbd2e" glyph="—" onClick={onMinimize} title="Minimize" />
-      <Dot color="#28c840" glyph="◇" onClick={onZoom} title="Zoom" />
+  active = false,
+  right,
+  showDots = true,
+  onClose,
+  onMinimize,
+  onZoom,
+  className = "",
+}: TitleBarProps) => {
+  return (
+    <div className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
+      {showDots && (
+        <div className="slop-titlebar__dots">
+          <Dot onClick={onClose} label="close" />
+          <Dot onClick={onMinimize} label="minimize" />
+          <Dot onClick={onZoom} label="zoom" />
+        </div>
+      )}
+      <div className="flex-1 truncate">{title}</div>
+      {right && <div className="flex items-center gap-2">{right}</div>}
     </div>
-    <div style={{ flex: 1, textAlign: "center", paddingRight: 50 }}>{title}</div>
-    {right}
-  </div>
-);
+  );
+};
 
 export default TitleBar;

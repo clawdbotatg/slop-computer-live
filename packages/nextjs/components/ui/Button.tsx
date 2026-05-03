@@ -1,56 +1,62 @@
-"use client";
-
-import type { ButtonHTMLAttributes, CSSProperties } from "react";
-import { useState } from "react";
-import { bevelStyle } from "./Bevel";
+import React from "react";
 
 type Variant = "default" | "primary";
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type CommonProps = {
   variant?: Variant;
+  className?: string;
+  children: React.ReactNode;
+  style?: React.CSSProperties;
 };
 
-export const Button = ({
-  variant = "default",
-  style,
-  children,
-  onMouseDown,
-  onMouseUp,
-  onMouseLeave,
-  ...rest
-}: ButtonProps) => {
-  const [pressed, setPressed] = useState(false);
+type ButtonAsButton = CommonProps & {
+  as?: "button";
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "className" | "children" | "style">;
 
-  const base: CSSProperties = {
-    ...bevelStyle(pressed ? "inset" : "outset"),
-    background: "var(--slop-panel-light)",
-    color: variant === "primary" ? "var(--slop-accent)" : "var(--slop-text)",
-    fontFamily: "var(--slop-font-display)",
-    fontSize: 13,
-    padding: "4px 14px",
-    borderRadius: 0,
-    cursor: rest.disabled ? "not-allowed" : "pointer",
-    opacity: rest.disabled ? 0.5 : 1,
-    userSelect: "none",
-    transform: pressed ? "translate(1px, 1px)" : "none",
-  };
+type ButtonAsAnchor = CommonProps & {
+  as: "a";
+  href: string;
+} & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "className" | "children" | "style" | "href">;
 
+export type ButtonProps = ButtonAsButton | ButtonAsAnchor;
+
+const buttonClass = (variant: Variant, className?: string) =>
+  `slop-button${variant === "primary" ? " slop-button--primary" : ""}${className ? ` ${className}` : ""}`;
+
+export const Button = (props: ButtonProps) => {
+  const variant = props.variant ?? "default";
+  const cls = buttonClass(variant, props.className);
+
+  if (props.as === "a") {
+    const { children, href, target, rel, onClick, id, role, style, "aria-label": ariaLabel } = props;
+    return (
+      <a
+        className={cls}
+        href={href}
+        target={target}
+        rel={rel}
+        onClick={onClick}
+        id={id}
+        role={role}
+        style={style}
+        aria-label={ariaLabel}
+      >
+        {children}
+      </a>
+    );
+  }
+
+  const { children, type, onClick, disabled, id, name, style, "aria-label": ariaLabel } = props;
   return (
     <button
-      {...rest}
-      style={{ ...base, ...style }}
-      onMouseDown={e => {
-        setPressed(true);
-        onMouseDown?.(e);
-      }}
-      onMouseUp={e => {
-        setPressed(false);
-        onMouseUp?.(e);
-      }}
-      onMouseLeave={e => {
-        setPressed(false);
-        onMouseLeave?.(e);
-      }}
+      className={cls}
+      type={type ?? "button"}
+      onClick={onClick}
+      disabled={disabled}
+      id={id}
+      name={name}
+      style={style}
+      aria-label={ariaLabel}
     >
       {children}
     </button>

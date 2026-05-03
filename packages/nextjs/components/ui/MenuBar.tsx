@@ -1,64 +1,51 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { LivePulse } from "./LivePulse";
 
-const MENUS = ["Slop", "File", "Live", "Wallet"] as const;
-
-type MenuBarProps = {
+interface MenuBarProps {
+  brand?: string;
+  items?: string[];
   isLive?: boolean;
-  right?: ReactNode;
-};
+  right?: React.ReactNode;
+  className?: string;
+}
 
-export const MenuBar = ({ isLive = false, right }: MenuBarProps) => {
-  const [now, setNow] = useState(() => new Date());
+const DEFAULT_ITEMS = ["File", "Live", "Wallet"];
+
+export const MenuBar = ({
+  brand = "Slop",
+  items = DEFAULT_ITEMS,
+  isLive = false,
+  right,
+  className = "",
+}: MenuBarProps) => {
+  const [now, setNow] = useState<Date | null>(null);
+
   useEffect(() => {
+    setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const clock = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const clock = now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 22,
-        background: "var(--slop-panel-light)",
-        borderTop: "1px solid var(--slop-bevel-light)",
-        borderBottom: "1px solid var(--slop-bevel-dark)",
-        color: "var(--slop-text)",
-        fontFamily: "var(--slop-font-display)",
-        fontSize: 12,
-        display: "flex",
-        alignItems: "center",
-        padding: "0 8px",
-        gap: 14,
-        userSelect: "none",
-        zIndex: 9000,
-      }}
-    >
-      <span aria-hidden style={{ fontSize: 11 }}>
-        ◆
-      </span>
-      {MENUS.map(label => (
-        <span key={label} style={{ cursor: "default" }}>
-          {label}
+    <div className={`slop-menubar ${className}`.trim()}>
+      <span className="slop-menubar__brand slop-menubar__item">{brand}</span>
+      {items.map(item => (
+        <span key={item} className="slop-menubar__item">
+          {item} <span aria-hidden>▾</span>
         </span>
       ))}
-      <span style={{ flex: 1 }} />
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-        <LivePulse live={isLive} />
-        <span style={{ fontFamily: "var(--slop-font-body)", color: "var(--slop-text-muted)" }}>
-          {isLive ? "ON AIR" : "OFFLINE"}
+      <span className="flex-1" />
+      {right ?? (
+        <span className="slop-menubar__status">
+          <LivePulse live={isLive} />
+          <span>{isLive ? "On Air" : "Offline"}</span>
+          <span style={{ color: "var(--slop-text-muted)" }}>{clock}</span>
         </span>
-      </span>
-      {right}
-      <span style={{ fontFamily: "var(--slop-font-body)", color: "var(--slop-text-muted)" }}>{clock}</span>
+      )}
     </div>
   );
 };

@@ -2,42 +2,7 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-@theme {
-  --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
-  --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@plugin "daisyui" {
-  themes: dark;
-}
-
-@plugin "daisyui/theme" {
-  name: "dark";
-
-  --color-primary: #ff00aa;
-  --color-primary-content: #ffffff;
-  --color-secondary: #5a004a;
-  --color-secondary-content: #ffffff;
-  --color-accent: #ff00aa;
-  --color-accent-content: #ffffff;
-  --color-neutral: #e8e8e8;
-  --color-neutral-content: #1a1a1a;
-  --color-base-100: #1a1a1a;
-  --color-base-200: #262626;
-  --color-base-300: #333333;
-  --color-base-content: #e8e8e8;
-  --color-info: #333333;
-  --color-success: #34eeb6;
-  --color-warning: #ffcf72;
-  --color-error: #ff2255;
-
-  --radius-field: 0;
-  --radius-box: 0;
-  --tt-tailw: 6px;
-  --tt-bg: var(--color-primary);
-}
-
-/* Slop Platinum tokens — see DESIGN.md */
+/* === Slop Platinum tokens === */
 :root {
   --slop-bg: #1a1a1a;
   --slop-panel: #262626;
@@ -52,8 +17,44 @@
   --slop-titlebar: linear-gradient(#3a3a3a, #2a2a2a);
   --slop-titlebar-active: linear-gradient(#5a004a, #2a0020);
 
-  --slop-font-display: "Chicago", "ChicagoFLF", "Charcoal", system-ui, sans-serif;
-  --slop-font-body: "Geneva", "SF Mono", ui-monospace, Menlo, monospace;
+  --slop-font-display: "Chicago", "ChicagoFLF", "Geneva", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --slop-font-body: "Geneva", "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+  --slop-font-mono: "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+}
+
+@theme {
+  --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --font-slop: "Chicago", "ChicagoFLF", "Geneva", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-slop-body: "Geneva", "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+}
+
+@plugin "daisyui" {
+  themes: dark --prefersdark;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+
+  --color-primary: #ff00aa;
+  --color-primary-content: #ffffff;
+  --color-secondary: #333333;
+  --color-secondary-content: #e8e8e8;
+  --color-accent: #ff00aa;
+  --color-accent-content: #ffffff;
+  --color-neutral: #1a1a1a;
+  --color-neutral-content: #e8e8e8;
+  --color-base-100: #262626;
+  --color-base-200: #1a1a1a;
+  --color-base-300: #0f0f0f;
+  --color-base-content: #e8e8e8;
+  --color-info: #5a8fbf;
+  --color-success: #5fbf72;
+  --color-warning: #d4a64a;
+  --color-error: #ff2255;
+
+  --radius-field: 0;
+  --radius-box: 0;
+  --tt-tailw: 6px;
 }
 
 @layer base {
@@ -62,21 +63,40 @@
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentColor);
+    border-color: var(--slop-bevel-dark);
   }
 
+  html,
   body {
-    min-height: 100vh;
-    background: var(--slop-bg);
+    background-color: var(--slop-bg);
     color: var(--slop-text);
     font-family: var(--slop-font-body);
     font-size: 13px;
   }
 
-  h1, h2, h3, h4 {
-    font-family: var(--slop-font-display);
+  body {
+    min-height: 100vh;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     margin-bottom: 0.5rem;
-    line-height: 1;
+    line-height: 1.1;
+    font-family: var(--slop-font-display);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+  }
+
+  code,
+  pre,
+  .mono,
+  .font-mono {
+    font-family: var(--slop-font-mono);
   }
 }
 
@@ -85,8 +105,254 @@
   background: var(--slop-bg);
 }
 
-/* Slop Platinum keyframes */
-@keyframes slop-live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+/* === Bevels === */
+
+.slop-bevel-out {
+  border-top: 1px solid var(--slop-bevel-light);
+  border-left: 1px solid var(--slop-bevel-light);
+  border-right: 1px solid var(--slop-bevel-dark);
+  border-bottom: 1px solid var(--slop-bevel-dark);
+}
+
+.slop-bevel-in {
+  border-top: 1px solid var(--slop-bevel-dark);
+  border-left: 1px solid var(--slop-bevel-dark);
+  border-right: 1px solid var(--slop-bevel-light);
+  border-bottom: 1px solid var(--slop-bevel-light);
+}
+
+/* === Window === */
+
+.slop-window {
+  background: var(--slop-panel);
+  color: var(--slop-text);
+  border-top: 1px solid var(--slop-bevel-light);
+  border-left: 1px solid var(--slop-bevel-light);
+  border-right: 1px solid var(--slop-bevel-dark);
+  border-bottom: 1px solid var(--slop-bevel-dark);
+  border-radius: 0;
+  position: relative;
+}
+
+.slop-titlebar {
+  background: var(--slop-titlebar);
+  color: var(--slop-text);
+  font-family: var(--slop-font-display);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--slop-bevel-dark);
+}
+
+.slop-titlebar--active {
+  background: var(--slop-titlebar-active);
+  color: var(--slop-text);
+}
+
+.slop-titlebar__dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.slop-titlebar__dot {
+  width: 10px;
+  height: 10px;
+  background: var(--slop-panel-light);
+  border-top: 1px solid var(--slop-bevel-dark);
+  border-left: 1px solid var(--slop-bevel-dark);
+  border-right: 1px solid var(--slop-bevel-light);
+  border-bottom: 1px solid var(--slop-bevel-light);
+}
+
+.slop-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--slop-bevel-light) 0,
+    var(--slop-bevel-light) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+}
+
+/* === Button === */
+
+.slop-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--slop-panel-light);
+  color: var(--slop-text);
+  font-family: var(--slop-font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 5px 14px;
+  border-top: 1px solid var(--slop-bevel-light);
+  border-left: 1px solid var(--slop-bevel-light);
+  border-right: 1px solid var(--slop-bevel-dark);
+  border-bottom: 1px solid var(--slop-bevel-dark);
+  border-radius: 0;
+  cursor: pointer;
+  text-decoration: none;
+  user-select: none;
+}
+
+.slop-button:hover {
+  background: #3d3d3d;
+}
+
+.slop-button:active,
+.slop-button[data-pressed="true"] {
+  border-top: 1px solid var(--slop-bevel-dark);
+  border-left: 1px solid var(--slop-bevel-dark);
+  border-right: 1px solid var(--slop-bevel-light);
+  border-bottom: 1px solid var(--slop-bevel-light);
+}
+
+.slop-button--primary {
+  color: var(--slop-accent);
+}
+
+.slop-button--primary:hover {
+  color: var(--slop-accent-active);
+}
+
+/* === TextField === */
+
+.slop-textfield {
+  background: var(--slop-bg);
+  color: var(--slop-text);
+  font-family: var(--slop-font-mono);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--slop-bevel-dark);
+  border-left: 1px solid var(--slop-bevel-dark);
+  border-right: 1px solid var(--slop-bevel-light);
+  border-bottom: 1px solid var(--slop-bevel-light);
+  border-radius: 0;
+  outline: none;
+}
+
+.slop-textfield:focus {
+  border-color: var(--slop-accent);
+}
+
+/* === MenuBar === */
+
+.slop-menubar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9000;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--slop-panel);
+  border-bottom: 1px solid var(--slop-bevel-dark);
+  padding: 0 12px;
+  font-family: var(--slop-font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.slop-menubar__item {
+  color: var(--slop-text);
+  cursor: default;
+  padding: 2px 4px;
+}
+
+.slop-menubar__item:hover {
+  background: var(--slop-accent);
+  color: #ffffff;
+}
+
+.slop-menubar__brand {
+  color: var(--slop-accent);
+}
+
+.slop-menubar__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--slop-font-body);
+  color: var(--slop-text-muted);
+  text-transform: uppercase;
+}
+
+/* === LivePulse === */
+
+.slop-pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: var(--slop-live);
+  border-radius: 50%;
+  animation: slop-pulse 1s steps(2, end) infinite;
+}
+
+.slop-pulse--off {
+  background: var(--slop-text-muted);
+  animation: none;
+}
+
+@keyframes slop-pulse {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.15;
+  }
+}
+
+/* === Misc === */
+
+.slop-divider {
+  height: 0;
+  border-top: 1px solid var(--slop-bevel-dark);
+  border-bottom: 1px solid var(--slop-bevel-light);
+}
+
+.slop-link {
+  color: var(--slop-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.slop-link:hover {
+  color: var(--slop-accent-active);
+}
+
+.slop-mono {
+  font-family: var(--slop-font-mono);
+}
+
+/* keep chrome rectangular even from third-party CSS */
+.btn {
+  border-radius: 0 !important;
+  box-shadow: none;
+}
+
+.btn.btn-ghost {
+  box-shadow: none;
 }

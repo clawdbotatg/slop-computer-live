@@ -1,8 +1,6 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from "react";
-import { useRef } from "react";
-import { bevelStyle } from "./Bevel";
 import { TitleBar } from "./TitleBar";
 import { Rnd } from "react-rnd";
 
@@ -22,6 +20,7 @@ export type WindowProps = {
   onZoom?: () => void;
   onMove?: (pos: { x: number; y: number }) => void;
   onResize?: (size: { x: number; y: number; width: number; height: number }) => void;
+  bodyClassName?: string;
   bodyStyle?: CSSProperties;
   children?: ReactNode;
 };
@@ -42,26 +41,23 @@ export const Window = ({
   onZoom,
   onMove,
   onResize,
+  bodyClassName = "",
   bodyStyle,
   children,
 }: WindowProps) => {
-  const dragHandleRef = useRef<HTMLDivElement | null>(null);
-
   return (
     <Rnd
       default={{ x, y, width, height }}
       bounds="parent"
       minWidth={minWidth}
       minHeight={minHeight}
-      dragHandleClassName="slop-title-bar"
+      dragHandleClassName="slop-titlebar"
+      className="slop-window"
       style={{
-        ...bevelStyle("outset"),
-        background: "var(--slop-panel)",
         zIndex,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        borderRadius: 0,
       }}
       onMouseDown={onFocus}
       onDragStop={(_e, d) => onMove?.({ x: d.x, y: d.y })}
@@ -79,17 +75,15 @@ export const Window = ({
           height: 12,
           right: 0,
           bottom: 0,
-          background: "var(--slop-panel-light)",
-          borderTop: "1px solid var(--slop-bevel-light)",
-          borderLeft: "1px solid var(--slop-bevel-light)",
+          background:
+            "repeating-linear-gradient(135deg, var(--slop-bevel-light) 0, var(--slop-bevel-light) 1px, transparent 1px, transparent 3px)",
           cursor: "nwse-resize",
         },
       }}
     >
-      <div ref={dragHandleRef} style={{ flex: "0 0 auto" }}>
-        <TitleBar title={title} active={active} onClose={onClose} onMinimize={onMinimize} onZoom={onZoom} />
-      </div>
+      <TitleBar title={title} active={active} onClose={onClose} onMinimize={onMinimize} onZoom={onZoom} />
       <div
+        className={bodyClassName}
         style={{
           flex: 1,
           minHeight: 0,
