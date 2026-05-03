@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://localhost:8080/signal";
+const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://slop.computer/signal";
+const _RELAY_HTTP_URL = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "https://slop.computer"; void _RELAY_HTTP_URL;
 
 type CursorData = {
   x: number;
@@ -218,6 +219,25 @@ export function usePeerMesh(
         if (msg.type === "peer_leave") {
           const peer = msg.peer as PeerInfo;
           closePeerConnection(peer.id);
+          return;
+        }
+
+        if (msg.type === "peer_join") {
+          const peer = msg.peer as PeerInfo;
+          const myId = myIdRef.current;
+          // New peer joins with smaller ID → we are initiator
+          if (myId && peer.id < myId) {
+            const pc = createPeerConnection(peer.id);
+            peerConnectionsRef.current.set(peer.id, pc);
+            setPeerConnections(prev => {
+              const next = new Map(prev);
+              next.set(peer.id, pc);
+              return next;
+            });
+            pc.createOffer().then(offer => pc.setLocalDescription(offer)).then(() => {
+              send({ type: "offer", to: peer.id, payload: pc.localDescription!.toJSON() });
+            });
+          }
           return;
         }
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://localhost:8080/signal";
+const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://slop.computer/signal";
 
 export type Peer = {
   id: string;
