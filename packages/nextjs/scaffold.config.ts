@@ -9,8 +9,6 @@ export type ScaffoldConfig = {
   burnerWalletMode: "localNetworksOnly" | "allNetworks" | "disabled";
 };
 
-export const DEFAULT_ALCHEMY_API_KEY = "cR4WnXePioePZ5fFrnSiR";
-
 const scaffoldConfig = {
   // The networks on which your DApp is live
   targetNetworks: [chains.mainnet],
@@ -19,17 +17,15 @@ const scaffoldConfig = {
   // it has no effect if you only target the local network (default is 4000)
   pollingInterval: 3000,
 
-  // This is ours Alchemy's default API key.
-  // You can get your own at https://dashboard.alchemyapi.io
-  // It's recommended to store it in an env variable:
-  // .env.local for local testing, and in the Vercel/system env config for live apps.
-  alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || DEFAULT_ALCHEMY_API_KEY,
+  // Optional Alchemy API key. Empty by default — mainnet traffic is served by the
+  // BuidlGuidl RPC override below, so misconfiguration fails loudly instead of
+  // silently falling back to a shared demo key.
+  alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || "",
 
   // If you want to use a different RPC for a specific network, you can add it here.
   // The key is the chain ID, and the value is the HTTP RPC URL
   rpcOverrides: {
-    // Example:
-    // [chains.mainnet.id]: "https://mainnet.rpc.buidlguidl.com",
+    [chains.mainnet.id]: "https://mainnet.rpc.buidlguidl.com",
   },
 
   // This is ours WalletConnect's default project ID.
