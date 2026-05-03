@@ -14,7 +14,7 @@ const adminAddrs = env("ADMIN_ADDRESSES", "")
   .map(a => a.trim().toLowerCase())
   .filter(a => /^0x[a-f0-9]{40}$/.test(a));
 
-const corsOrigins = env("CORS_ORIGINS", "http://localhost:3000")
+const corsOrigins = env("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
