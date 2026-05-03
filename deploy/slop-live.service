@@ -1,0 +1,16 @@
+[Unit]
+Description=slop-computer-live Next.js frontend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/slop-computer-live/packages/nextjs
+ExecStart=/home/ubuntu/slop-computer-live/packages/nextjs/node_modules/.bin/next start -p 3000
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+[Install]
+WantedBy=multi-user.target

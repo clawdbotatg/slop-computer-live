@@ -1,0 +1,16 @@
+[Unit]
+Description=slop-computer-live relay (SIWE + password auth + WS signaling)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/slop-computer-live/packages/relay
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/ubuntu/slop-computer-live/packages/relay/.env
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

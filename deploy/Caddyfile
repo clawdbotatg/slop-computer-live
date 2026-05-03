@@ -1,0 +1,31 @@
+# slop-computer-live reverse proxy
+#
+# Replace `live.slop.computer` and `media.slop.computer` with your real
+# domains. Caddy auto-fetches Let's Encrypt certs on first start
+# (ports 80 + 443 must be reachable).
+#
+# WebSockets are upgraded automatically by `reverse_proxy`.
+
+live.slop.computer {
+    encode zstd gzip
+
+    # Relay HTTP routes (SIWE auth, admin start/stop) and WS /signal endpoint.
+    handle_path /signal* {
+        reverse_proxy localhost:8080
+    }
+    handle_path /auth/* {
+        reverse_proxy localhost:8080
+    }
+    handle_path /admin/api/* {
+        reverse_proxy localhost:8080
+    }
+
+    # Next.js app
+    reverse_proxy localhost:3000
+}
+
+media.slop.computer {
+    encode zstd gzip
+    # MediaMTX HLS output
+    reverse_proxy localhost:8888
+}

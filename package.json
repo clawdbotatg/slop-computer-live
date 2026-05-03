@@ -1,0 +1,61 @@
+{
+  "name": "slop-computer-live",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "packages/hardhat",
+      "packages/nextjs",
+      "packages/relay"
+    ]
+  },
+  "scripts": {
+    "account": "yarn hardhat:account",
+    "account:import": "yarn workspace @slop/hardhat account:import",
+    "account:generate": "yarn workspace @slop/hardhat account:generate",
+    "account:reveal-pk": "yarn workspace @slop/hardhat account:reveal-pk",
+    "chain": "yarn hardhat:chain",
+    "compile": "yarn hardhat:compile",
+    "deploy": "yarn hardhat:deploy",
+    "fork": "yarn hardhat:fork",
+    "format": "yarn next:format && yarn hardhat:format",
+    "generate": "yarn account:generate",
+    "hardhat:account": "yarn workspace @slop/hardhat account",
+    "hardhat:chain": "yarn workspace @slop/hardhat chain",
+    "hardhat:check-types": "yarn workspace @slop/hardhat check-types",
+    "hardhat:clean": "yarn workspace @slop/hardhat clean",
+    "hardhat:compile": "yarn workspace @slop/hardhat compile",
+    "hardhat:deploy": "yarn workspace @slop/hardhat deploy",
+    "hardhat:flatten": "yarn workspace @slop/hardhat flatten",
+    "hardhat:fork": "yarn workspace @slop/hardhat fork",
+    "hardhat:format": "yarn workspace @slop/hardhat format",
+    "hardhat:generate": "yarn workspace @slop/hardhat generate",
+    "hardhat:hardhat-verify": "yarn workspace @slop/hardhat hardhat-verify",
+    "hardhat:lint": "yarn workspace @slop/hardhat lint",
+    "hardhat:lint-staged": "yarn workspace @slop/hardhat lint-staged",
+    "hardhat:test": "yarn workspace @slop/hardhat test",
+    "hardhat:verify": "yarn workspace @slop/hardhat verify",
+    "lint": "yarn next:lint && yarn hardhat:lint",
+    "next:build": "yarn workspace @slop/nextjs build",
+    "next:check-types": "yarn workspace @slop/nextjs check-types",
+    "next:format": "yarn workspace @slop/nextjs format",
+    "next:lint": "yarn workspace @slop/nextjs lint",
+    "next:serve": "yarn workspace @slop/nextjs serve",
+    "relay:build": "yarn workspace @slop/relay build",
+    "relay:dev": "yarn workspace @slop/relay dev",
+    "relay:start": "yarn workspace @slop/relay start",
+    "postinstall": "husky",
+    "precommit": "lint-staged",
+    "start": "yarn workspace @slop/nextjs dev",
+    "test": "yarn hardhat:test",
+    "verify": "yarn hardhat:verify"
+  },
+  "packageManager": "yarn@4.13.0",
+  "devDependencies": {
+    "husky": "^9.1.6",
+    "lint-staged": "^15.2.10"
+  },
+  "engines": {
+    "node": ">=20.18.3"
+  }
+}

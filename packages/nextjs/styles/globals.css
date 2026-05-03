@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
+  --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@plugin "daisyui" {
+  themes: dark;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+
+  --color-primary: #ff00aa;
+  --color-primary-content: #ffffff;
+  --color-secondary: #5a004a;
+  --color-secondary-content: #ffffff;
+  --color-accent: #ff00aa;
+  --color-accent-content: #ffffff;
+  --color-neutral: #e8e8e8;
+  --color-neutral-content: #1a1a1a;
+  --color-base-100: #1a1a1a;
+  --color-base-200: #262626;
+  --color-base-300: #333333;
+  --color-base-content: #e8e8e8;
+  --color-info: #333333;
+  --color-success: #34eeb6;
+  --color-warning: #ffcf72;
+  --color-error: #ff2255;
+
+  --radius-field: 0;
+  --radius-box: 0;
+  --tt-tailw: 6px;
+  --tt-bg: var(--color-primary);
+}
+
+/* Slop Platinum tokens — see DESIGN.md */
+:root {
+  --slop-bg: #1a1a1a;
+  --slop-panel: #262626;
+  --slop-panel-light: #333333;
+  --slop-bevel-light: #4a4a4a;
+  --slop-bevel-dark: #0d0d0d;
+  --slop-text: #e8e8e8;
+  --slop-text-muted: #9a9a9a;
+  --slop-accent: #ff00aa;
+  --slop-accent-active: #ff66cc;
+  --slop-live: #ff2255;
+  --slop-titlebar: linear-gradient(#3a3a3a, #2a2a2a);
+  --slop-titlebar-active: linear-gradient(#5a004a, #2a0020);
+
+  --slop-font-display: "Chicago", "ChicagoFLF", "Charcoal", system-ui, sans-serif;
+  --slop-font-body: "Geneva", "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+
+  body {
+    min-height: 100vh;
+    background: var(--slop-bg);
+    color: var(--slop-text);
+    font-family: var(--slop-font-body);
+    font-size: 13px;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--slop-font-display);
+    margin-bottom: 0.5rem;
+    line-height: 1;
+  }
+}
+
+:root,
+[data-theme] {
+  background: var(--slop-bg);
+}
+
+/* Slop Platinum keyframes */
+@keyframes slop-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
