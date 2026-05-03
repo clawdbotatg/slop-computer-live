@@ -1,15 +1,16 @@
 import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 
 /**
- * SlopComputerFrontpage is deployed and managed by the slop-computer-frontpage
- * repo. Its address is sourced from NEXT_PUBLIC_FRONTPAGE_ADDRESS at runtime so
- * builds don't bake a stale address. The minimal ABI here covers the bits the
- * live page needs: read isLive / currentEpisode and (host-only) call goLive /
- * goOffline.
+ * SlopComputerFrontpage is deployed on mainnet (chain id 1) at:
+ *   0x94D987a8057b7795522589E36383C87356217820
+ * Owner: 0x11ce532845ce0eacda41f72fdc1c88c335981442 (clawd.atg.eth)
+ *
+ * The live page reads isLive / liveTitle / liveHlsUrl for audience display,
+ * and the host can call goLive / goOffline.
  */
 const FRONTPAGE_ADDRESS =
   (process.env.NEXT_PUBLIC_FRONTPAGE_ADDRESS as `0x${string}` | undefined) ??
-  "0x0000000000000000000000000000000000000000";
+  "0x94D987a8057b7795522589E36383C87356217820";
 
 const externalContracts = {
   1: {
@@ -25,14 +26,14 @@ const externalContracts = {
         },
         {
           type: "function",
-          name: "currentTitle",
+          name: "liveTitle",
           stateMutability: "view",
           inputs: [],
           outputs: [{ type: "string" }],
         },
         {
           type: "function",
-          name: "currentHlsUrl",
+          name: "liveHlsUrl",
           stateMutability: "view",
           inputs: [],
           outputs: [{ type: "string" }],
@@ -53,6 +54,13 @@ const externalContracts = {
           stateMutability: "nonpayable",
           inputs: [],
           outputs: [],
+        },
+        {
+          type: "function",
+          name: "owner",
+          stateMutability: "view",
+          inputs: [],
+          outputs: [{ type: "address" }],
         },
       ],
     },

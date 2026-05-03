@@ -17,9 +17,9 @@ const Home: NextPage = () => {
     query: READ_QUERY,
   });
 
-  const { data: currentTitle } = useScaffoldReadContract({
+  const { data: liveTitle } = useScaffoldReadContract({
     contractName: "SlopComputerFrontpage",
-    functionName: "currentTitle",
+    functionName: "liveTitle",
     watch: false,
     query: READ_QUERY,
   });
@@ -53,9 +53,9 @@ const Home: NextPage = () => {
             <LivePulse live={live} size={14} /> {live ? "the show is live now" : "next show TBA"}
           </h1>
 
-          {live && currentTitle ? (
+          {live && liveTitle ? (
             <p style={{ color: "var(--slop-text-muted)", marginTop: 8 }}>
-              Now playing: <strong style={{ color: "var(--slop-text)" }}>{currentTitle}</strong>
+              Now playing: <strong style={{ color: "var(--slop-text)" }}>{liveTitle}</strong>
             </p>
           ) : null}
 
