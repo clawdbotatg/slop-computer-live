@@ -1,11 +1,16 @@
 import { createPublicClient, http } from "viem";
-import { mainnet } from "viem/chains";
+import { mainnet as mainnetBase } from "viem/chains";
 import { parseSiweMessage, verifySiweMessage } from "viem/siwe";
 import { config } from "./config.js";
 
-const transport = config.alchemyApiKey
-  ? http(`https://eth-mainnet.g.alchemy.com/v2/${config.alchemyApiKey}`)
-  : http();
+if (!config.alchemyApiKey) throw new Error("ALCHEMY_API_KEY is required");
+
+const alchemyUrl = `https://eth-mainnet.g.alchemy.com/v2/${config.alchemyApiKey}`;
+const mainnet = {
+  ...mainnetBase,
+  rpcUrls: { default: { http: [alchemyUrl] }, public: { http: [alchemyUrl] } },
+} as const;
+const transport = http(alchemyUrl);
 
 const publicClient = createPublicClient({ chain: mainnet, transport });
 

@@ -45,12 +45,27 @@ const JoinForm = () => {
       ].join("\n");
       setStatus("Awaiting signature...");
       const signature = await signMessageAsync({ message });
-      const verifyRes = await fetch(`${RELAY_BASE}/auth/siwe`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, signature, nonce }),
-      });
+      setStatus("Verifying signature...");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15_000);
+      let verifyRes: Response;
+      try {
+        verifyRes = await fetch(`${RELAY_BASE}/auth/siwe`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, signature, nonce }),
+          signal: ctrl.signal,
+        });
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          setStatus("Auth failed: relay timed out after 15s");
+          return;
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
       const data = await verifyRes.json();
       if (!verifyRes.ok) {
         setStatus(`Auth failed: ${data.error ?? verifyRes.statusText}`);
