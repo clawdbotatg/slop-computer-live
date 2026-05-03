@@ -11,6 +11,8 @@ import { usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
 import { useSignalSocket } from "~~/hooks/useSignalSocket";
 
+export const dynamic = "force-dynamic";
+
 type WinDef = {
   id: string;
   title: string;
