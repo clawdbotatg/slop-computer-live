@@ -7,15 +7,21 @@ import { useScaffoldReadContract } from "~~/hooks/scaffold-eth";
 
 const HLS_URL = process.env.NEXT_PUBLIC_HLS_URL ?? "";
 
+const READ_QUERY = { refetchInterval: 30000, refetchOnWindowFocus: false } as const;
+
 const Home: NextPage = () => {
   const { data: isLive } = useScaffoldReadContract({
     contractName: "SlopComputerFrontpage",
     functionName: "isLive",
+    watch: false,
+    query: READ_QUERY,
   });
 
   const { data: currentTitle } = useScaffoldReadContract({
     contractName: "SlopComputerFrontpage",
     functionName: "currentTitle",
+    watch: false,
+    query: READ_QUERY,
   });
 
   const live = Boolean(isLive);

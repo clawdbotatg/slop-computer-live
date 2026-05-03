@@ -1,8 +1,8 @@
 import { wagmiConnectors } from "./wagmiConnectors";
 import { Chain, createClient, fallback, http } from "viem";
-import { hardhat, mainnet } from "viem/chains";
+import { hardhat } from "viem/chains";
 import { createConfig } from "wagmi";
-import scaffoldConfig, { ScaffoldConfig } from "~~/scaffold.config";
+import scaffoldConfig, { ScaffoldConfig, mainnet } from "~~/scaffold.config";
 import { getAlchemyHttpUrl } from "~~/utils/scaffold-eth";
 
 const { targetNetworks } = scaffoldConfig;
