@@ -43,7 +43,9 @@ export const MenuBar = ({
         <span className="slop-menubar__status">
           <LivePulse live={isLive} />
           <span>{isLive ? "On Air" : "Offline"}</span>
-          <span style={{ color: "var(--slop-text-muted)" }}>{clock}</span>
+          <span style={{ color: "var(--slop-text-muted)" }} suppressHydrationWarning>
+            {clock}
+          </span>
         </span>
       )}
     </div>

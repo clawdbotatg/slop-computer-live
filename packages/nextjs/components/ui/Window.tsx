@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { TitleBar } from "./TitleBar";
 import { Rnd } from "react-rnd";
@@ -45,6 +46,9 @@ export const Window = ({
   bodyStyle,
   children,
 }: WindowProps) => {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
   return (
     <Rnd
       default={{ x, y, width, height }}

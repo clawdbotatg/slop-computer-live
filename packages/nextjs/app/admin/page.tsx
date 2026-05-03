@@ -13,23 +13,52 @@ type AuthState =
   | { authenticated: false }
   | { authenticated: true; role: string; address: string | null; handle: string | null };
 
+type Peer = {
+  id: string;
+  role: string;
+  address: string | null;
+  handle: string | null;
+};
+
+const randomToken = () => {
+  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
+    const buf = new Uint8Array(6);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
+  }
+  return Math.random().toString(16).slice(2, 14);
+};
+
 const AdminPage: NextPage = () => {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const { address, isConnected } = useAccount();
   const { signMessageAsync } = useSignMessage();
   const [auth, setAuth] = useState<AuthState>({ authenticated: false });
+  const [peers, setPeers] = useState<Peer[]>([]);
   const [status, setStatus] = useState<string>("");
   const [invite, setInvite] = useState<string>("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
+    if (!mounted) return;
     fetch(`${RELAY_BASE}/auth/me`, { credentials: "include" })
       .then(r => r.json())
       .then((data: AuthState) => setAuth(data))
       .catch(() => setAuth({ authenticated: false }));
-  }, []);
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted) setInvite(prev => prev || "");
+    else setInvite(prev => prev || randomToken());
+  }, [mounted]);
+
+  const isHost = auth.authenticated && auth.role === "host";
 
   useEffect(() => {
     let cancelled = false;
+    if (!isHost) return;
     async function startCam() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -42,19 +71,39 @@ const AdminPage: NextPage = () => {
         setStatus(`Webcam unavailable: ${(err as Error).message}`);
       }
     }
-    if (auth.authenticated) startCam();
+    startCam();
     return () => {
       cancelled = true;
     };
-  }, [auth.authenticated]);
+  }, [isHost]);
 
-  const isHost = auth.authenticated && auth.role === "host";
+  useEffect(() => {
+    if (!isHost) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${RELAY_BASE}/admin/peers`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setPeers(data.peers ?? []);
+      } catch {
+        /* relay offline — leave list empty */
+      }
+    };
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [isHost]);
+
   const inviteUrl = useMemo(() => {
-    if (typeof window === "undefined") return "";
+    if (!mounted) return "";
     const u = new URL("/join", window.location.origin);
     if (invite) u.searchParams.set("invite", invite);
     return u.toString();
-  }, [invite]);
+  }, [invite, mounted]);
 
   const { writeContractAsync } = useScaffoldWriteContract({ contractName: "SlopComputerFrontpage" });
 
@@ -94,7 +143,7 @@ const AdminPage: NextPage = () => {
         return;
       }
       setAuth({ authenticated: true, role: data.role, address: data.address, handle: null });
-      setStatus(data.isAdmin ? "Signed in as host." : "Signed in (not an admin address).");
+      setStatus(data.isAdmin ? "Signed in as host." : "Signed in (not on the admin allowlist).");
     } catch (err) {
       setStatus(`Auth error: ${(err as Error).message}`);
     }
@@ -124,99 +173,144 @@ const AdminPage: NextPage = () => {
     }
   };
 
-  return (
-    <>
-      <MenuBar isLive={false} />
-      <main style={{ paddingTop: 50, padding: "50px 24px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
-        <h1
-          style={{
-            fontFamily: "var(--slop-font-display)",
-            fontSize: 22,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            margin: 0,
-          }}
-        >
-          Admin
-        </h1>
+  const heading = (
+    <h1
+      style={{
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 22,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        margin: 0,
+      }}
+    >
+      Admin
+    </h1>
+  );
 
-        {!isConnected ? (
-          <Bevel style={{ padding: 16, maxWidth: 520 }}>
-            <p>Connect your wallet to sign in.</p>
-            <div style={{ marginTop: 8 }}>
-              <RainbowKitCustomConnectButton />
-            </div>
-          </Bevel>
-        ) : !auth.authenticated ? (
-          <Bevel style={{ padding: 16, maxWidth: 520 }}>
-            <p style={{ marginTop: 0 }}>
-              Connected as <code>{address}</code>. Sign in with Ethereum to authenticate as host.
+  const landing = (
+    <Bevel style={{ padding: 16, maxWidth: 520 }}>
+      <h2
+        style={{
+          margin: 0,
+          fontFamily: "var(--slop-font-display)",
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+        }}
+      >
+        Admin sign-in
+      </h2>
+      <p style={{ color: "var(--slop-text-muted)", marginTop: 8 }}>This wallet must be on the admin allowlist.</p>
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
+        {mounted && isConnected ? (
+          <>
+            <p style={{ margin: 0, color: "var(--slop-text-muted)" }}>
+              Connected as <code>{address}</code>.
             </p>
             <Button variant="primary" onClick={handleSiwe}>
               Sign-In with Ethereum
             </Button>
-          </Bevel>
-        ) : (
-          <>
-            <Bevel style={{ padding: 16, maxWidth: 720 }}>
-              <p style={{ marginTop: 0 }}>
-                Authenticated as <code>{auth.address}</code> ({auth.role})
-                {!isHost && " — not an admin address per ADMIN_ADDRESSES on the relay."}
-              </p>
-            </Bevel>
-
-            <Bevel style={{ padding: 16, maxWidth: 720 }}>
-              <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-                Webcam preview
-              </h2>
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                playsInline
-                style={{
-                  width: 360,
-                  height: 240,
-                  background: "#000",
-                  marginTop: 8,
-                  border: "1px solid var(--slop-bevel-dark)",
-                }}
-              />
-            </Bevel>
-
-            <Bevel style={{ padding: 16, maxWidth: 720 }}>
-              <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Go live</h2>
-              <p style={{ color: "var(--slop-text-muted)" }}>
-                Provisions an RTMP session on the relay and calls{" "}
-                <code>SlopComputerFrontpage.goLive(title, hlsUrl)</code> on mainnet.
-              </p>
-              <Button variant="primary" onClick={handleGoLive} disabled={!isHost}>
-                Go live
-              </Button>
-            </Bevel>
-
-            <Bevel style={{ padding: 16, maxWidth: 720 }}>
-              <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-                Invite link
-              </h2>
-              <p style={{ color: "var(--slop-text-muted)" }}>
-                Anyone with this link + the current GUEST_PASSWORD can join. Rotate the password between shows.
-              </p>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-                <TextField
-                  placeholder="invite token (any string)"
-                  value={invite}
-                  onChange={e => setInvite(e.target.value)}
-                  style={{ minWidth: 200 }}
-                />
-              </div>
-              <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)" }}>
-                <code>{inviteUrl || "(set an invite token to generate)"}</code>
-              </p>
-            </Bevel>
           </>
+        ) : (
+          <RainbowKitCustomConnectButton />
         )}
+      </div>
+    </Bevel>
+  );
 
+  const adminPanel = (
+    <>
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <p style={{ marginTop: 0 }}>
+          Authenticated as <code>{auth.authenticated ? auth.address : ""}</code> ({auth.authenticated ? auth.role : ""})
+          {!isHost && " — not on the admin allowlist."}
+        </p>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Webcam preview
+        </h2>
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          playsInline
+          style={{
+            width: 360,
+            height: 240,
+            background: "#000",
+            marginTop: 8,
+            border: "1px solid var(--slop-bevel-dark)",
+          }}
+        />
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Go live</h2>
+        <p style={{ color: "var(--slop-text-muted)" }}>
+          Provisions an RTMP session on the relay and calls <code>SlopComputerFrontpage.goLive(title, hlsUrl)</code> on
+          mainnet.
+        </p>
+        <Button variant="primary" onClick={handleGoLive} disabled={!isHost}>
+          Go live
+        </Button>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Invite link</h2>
+        <p style={{ color: "var(--slop-text-muted)" }}>
+          Anyone with this link plus the current GUEST_PASSWORD can join. Rotate the password between shows.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+          <TextField
+            placeholder="invite token"
+            value={invite}
+            onChange={e => setInvite(e.target.value)}
+            style={{ minWidth: 220 }}
+          />
+          <Button onClick={() => setInvite(randomToken())}>Regenerate</Button>
+        </div>
+        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)" }}>
+          <code>{inviteUrl}</code>
+        </p>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Connected guests
+        </h2>
+        {peers.length === 0 ? (
+          <p style={{ color: "var(--slop-text-muted)", marginTop: 8 }}>No peers connected to the relay.</p>
+        ) : (
+          <ul style={{ margin: "8px 0 0 0", paddingLeft: 18 }}>
+            {peers.map(p => (
+              <li key={p.id} style={{ fontFamily: "var(--slop-font-body)" }}>
+                <code>{p.id.slice(0, 8)}</code> — {p.role}
+                {p.address ? ` — ${p.address}` : p.handle ? ` — ${p.handle}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Bevel>
+    </>
+  );
+
+  const showAdminPanel = mounted && auth.authenticated && isHost;
+
+  return (
+    <>
+      <MenuBar isLive={false} />
+      <main
+        style={{
+          paddingTop: 50,
+          padding: "50px 24px 24px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        {heading}
+        {showAdminPanel ? adminPanel : landing}
         {status ? (
           <Bevel style={{ padding: 12, maxWidth: 720, color: "var(--slop-text-muted)" }}>{status}</Bevel>
         ) : null}
