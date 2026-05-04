@@ -20,6 +20,24 @@ export type Peer = {
   connectedAt?: number;
 };
 
+export type SlotKind = "camera" | "screen";
+
+export type Publication = {
+  streamId: string;
+  peerId: string;
+  kind: SlotKind;
+  label: string;
+};
+
+export type SlotPosition = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  z: number;
+};
+
 type CursorData = { x: number; y: number };
 
 type SelfHint = {
@@ -28,34 +46,20 @@ type SelfHint = {
   handle: string | null;
 };
 
-export type WindowState = {
-  id: string;
-  kind: "camera" | "screen" | "remote" | "panel";
-  ownerPeerId: string | null;
-  ownerLabel: string | null;
-  title: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  z: number;
-  open: boolean;
-};
-
-export type WindowPatch = Partial<WindowState> & { id: string };
-
 export type PeerMeshState = {
   myId: string | null;
   peers: Peer[];
   connected: boolean;
+  // Streams keyed by stream.id (NOT peerId). Multiple streams per peer work.
   remoteStreams: Map<string, MediaStream>;
-  peerConnections: Map<string, RTCPeerConnection>;
+  // Currently-active publications across all peers (own + others).
+  publications: Publication[];
+  // Persistent layout positions (host-authoritative).
+  slots: Record<string, SlotPosition>;
   cursors: Record<string, CursorData>;
-  windows: Record<string, WindowState>;
-  addLocalStream: (stream: MediaStream) => void;
-  removeLocalStream: (stream: MediaStream) => void;
-  updateWindow: (patch: WindowPatch) => void;
-  removeWindow: (id: string) => void;
+  publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
+  unpublish: (streamId: string) => void;
+  updateSlot: (patch: Partial<SlotPosition> & { id: string }) => void;
 };
 
 export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshState {
@@ -63,22 +67,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [peers, setPeers] = useState<Peer[]>([]);
   const [connected, setConnected] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
-  const [peerConnections, setPeerConnections] = useState<Map<string, RTCPeerConnection>>(new Map());
+  const [publications, setPublications] = useState<Publication[]>([]);
+  const [slots, setSlots] = useState<Record<string, SlotPosition>>({});
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
-  const [windows, setWindows] = useState<Record<string, WindowState>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localStreamsRef = useRef<MediaStream[]>([]);
+  // Local streams we are publishing, mapped streamId -> MediaStream.
+  const localStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const selfRef = useRef<SelfHint | null>(self);
   selfRef.current = self;
 
   const send = useCallback((msg: object) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
   const closePeerConnection = useCallback((peerId: string) => {
@@ -87,6 +90,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       pc.ontrack = null;
       pc.onicecandidate = null;
       pc.onconnectionstatechange = null;
+      pc.onnegotiationneeded = null;
       try {
         pc.close();
       } catch {
@@ -94,13 +98,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       }
     }
     peerConnectionsRef.current.delete(peerId);
-    setPeerConnections(new Map(peerConnectionsRef.current));
-    setRemoteStreams(prev => {
-      if (!prev.has(peerId)) return prev;
-      const next = new Map(prev);
-      next.delete(peerId);
-      return next;
-    });
     setCursors(prev => {
       if (!(peerId in prev)) return prev;
       const next = { ...prev };
@@ -129,7 +126,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       const pc = new RTCPeerConnection(ICE_CONFIG);
 
       // Attach existing local streams so newly-formed pcs get our outgoing media.
-      for (const stream of localStreamsRef.current) {
+      for (const stream of localStreamsRef.current.values()) {
         for (const track of stream.getTracks()) {
           try {
             pc.addTrack(track, stream);
@@ -142,9 +139,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       pc.ontrack = event => {
         const stream = event.streams[0] ?? new MediaStream([event.track]);
         setRemoteStreams(prev => {
+          if (prev.get(stream.id) === stream) return prev;
           const next = new Map(prev);
-          next.set(peerId, stream);
+          next.set(stream.id, stream);
           return next;
+        });
+        // Track end → drop from map
+        event.track.addEventListener("ended", () => {
+          if (stream.getTracks().every(t => t.readyState === "ended")) {
+            setRemoteStreams(prev => {
+              if (!prev.has(stream.id)) return prev;
+              const next = new Map(prev);
+              next.delete(stream.id);
+              return next;
+            });
+          }
         });
       };
 
@@ -165,14 +174,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       };
 
       pc.onnegotiationneeded = () => {
-        // Only the side that adds tracks first should initiate; if both sides
-        // do simultaneously you hit glare. Our addLocalStream already nudges
-        // initiateOffer when state is stable, so this is just a safety net.
         if (pc.signalingState === "stable") void initiateOffer(peerId);
       };
 
       peerConnectionsRef.current.set(peerId, pc);
-      setPeerConnections(new Map(peerConnectionsRef.current));
       return pc;
     },
     [send, closePeerConnection, initiateOffer],
@@ -214,11 +219,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     }
   }, []);
 
-  const addLocalStream = useCallback(
-    (stream: MediaStream) => {
-      if (localStreamsRef.current.includes(stream)) return;
-      localStreamsRef.current = [...localStreamsRef.current, stream];
-      for (const [peerId, pc] of peerConnectionsRef.current) {
+  // ---- public API: publish / unpublish / updateSlot ----------------------
+
+  const publish = useCallback(
+    (stream: MediaStream, kind: SlotKind, label: string) => {
+      if (localStreamsRef.current.has(stream.id)) return;
+      localStreamsRef.current.set(stream.id, stream);
+      // Add tracks to all existing PCs; onnegotiationneeded handles the rest.
+      for (const pc of peerConnectionsRef.current.values()) {
         for (const track of stream.getTracks()) {
           try {
             pc.addTrack(track, stream);
@@ -226,19 +234,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             /* duplicate */
           }
         }
-        if (pc.signalingState === "stable") {
-          void initiateOffer(peerId);
-        }
       }
+      send({ type: "publish", streamId: stream.id, kind, label });
     },
-    [initiateOffer],
+    [send],
   );
 
-  const removeLocalStream = useCallback(
-    (stream: MediaStream) => {
+  const unpublish = useCallback(
+    (streamId: string) => {
+      const stream = localStreamsRef.current.get(streamId);
+      if (!stream) return;
+      localStreamsRef.current.delete(streamId);
       const tracks = new Set(stream.getTracks());
-      localStreamsRef.current = localStreamsRef.current.filter(s => s !== stream);
-      for (const [peerId, pc] of peerConnectionsRef.current) {
+      for (const pc of peerConnectionsRef.current.values()) {
         for (const sender of pc.getSenders()) {
           if (sender.track && tracks.has(sender.track)) {
             try {
@@ -248,13 +256,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             }
           }
         }
-        if (pc.signalingState === "stable") {
-          void initiateOffer(peerId);
-        }
       }
+      send({ type: "unpublish", streamId });
     },
-    [initiateOffer],
+    [send],
   );
+
+  const updateSlot = useCallback(
+    (patch: Partial<SlotPosition> & { id: string }) => {
+      send({ type: "slot_update", ...patch });
+    },
+    [send],
+  );
+
+  // ---- WS lifecycle ------------------------------------------------------
 
   useEffect(() => {
     if (!enabled) return;
@@ -271,7 +286,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         }
       });
       peerConnectionsRef.current = new Map();
-      setPeerConnections(new Map());
       setRemoteStreams(new Map());
     };
 
@@ -287,6 +301,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
         }, PING_INTERVAL_MS);
+        // Re-announce any locally-published streams (e.g. after reconnect).
+        for (const [streamId, stream] of localStreamsRef.current) {
+          const kind: SlotKind = stream
+            .getVideoTracks()
+            .some(t => (t as MediaStreamTrack).label.toLowerCase().includes("screen"))
+            ? "screen"
+            : "camera";
+          const hint = selfRef.current;
+          ws.send(
+            JSON.stringify({
+              type: "publish",
+              streamId,
+              kind,
+              label: hint?.handle ?? hint?.address ?? "anon",
+            }),
+          );
+        }
       };
 
       ws.onmessage = ev => {
@@ -312,16 +343,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           };
           setPeers([...others, me]);
 
-          // Initial window snapshot from server (host-authoritative layout).
-          if (Array.isArray(msg.windows)) {
-            const next: Record<string, WindowState> = {};
-            for (const w of msg.windows as WindowState[]) {
-              if (w && typeof w.id === "string") next[w.id] = w;
-            }
-            setWindows(next);
+          if (Array.isArray(msg.publications)) setPublications(msg.publications as Publication[]);
+          if (Array.isArray(msg.slots)) {
+            const next: Record<string, SlotPosition> = {};
+            for (const s of msg.slots as SlotPosition[]) next[s.id] = s;
+            setSlots(next);
           }
 
-          // Reset existing pcs (reconnect) and re-initiate to lower-id peers.
           teardownConnections();
           for (const peer of others) {
             if (peer.id < meId) {
@@ -369,20 +397,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
-        if (msg.type === "window" && msg.window && typeof (msg.window as WindowState).id === "string") {
-          const w = msg.window as WindowState;
-          setWindows(prev => ({ ...prev, [w.id]: w }));
+        if (msg.type === "published" && msg.publication) {
+          const pub = msg.publication as Publication;
+          setPublications(prev => {
+            const next = prev.filter(p => !(p.peerId === pub.peerId && p.streamId === pub.streamId));
+            next.push(pub);
+            return next;
+          });
           return;
         }
 
-        if (msg.type === "window_removed" && typeof msg.id === "string") {
-          const id = msg.id as string;
-          setWindows(prev => {
-            if (!(id in prev)) return prev;
-            const next = { ...prev };
-            delete next[id];
+        if (msg.type === "unpublished" && typeof msg.peerId === "string" && typeof msg.streamId === "string") {
+          const pid = msg.peerId as string;
+          const sid = msg.streamId as string;
+          setPublications(prev => prev.filter(p => !(p.peerId === pid && p.streamId === sid)));
+          setRemoteStreams(prev => {
+            if (!prev.has(sid)) return prev;
+            const next = new Map(prev);
+            next.delete(sid);
             return next;
           });
+          return;
+        }
+
+        if (msg.type === "slot" && msg.slot) {
+          const s = msg.slot as SlotPosition;
+          setSlots(prev => ({ ...prev, [s.id]: s }));
           return;
         }
       };
@@ -397,7 +437,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         myIdRef.current = null;
         teardownConnections();
         setPeers([]);
-        setWindows({});
+        setPublications([]);
         if (cancelled) return;
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       };
@@ -427,7 +467,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     };
   }, [enabled, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, initiateOffer]);
 
-  // Broadcast own cursor.
+  // Cursor broadcast at ~30 Hz.
   useEffect(() => {
     if (!connected) return;
     let lastSent = 0;
@@ -441,31 +481,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     return () => window.removeEventListener("mousemove", handler);
   }, [connected, send]);
 
-  const updateWindow = useCallback(
-    (patch: WindowPatch) => {
-      send({ type: "window_update", ...patch });
-    },
-    [send],
-  );
-
-  const removeWindow = useCallback(
-    (id: string) => {
-      send({ type: "window_remove", id });
-    },
-    [send],
-  );
-
   return {
     myId,
     peers,
     connected,
     remoteStreams,
-    peerConnections,
+    publications,
+    slots,
     cursors,
-    windows,
-    addLocalStream,
-    removeLocalStream,
-    updateWindow,
-    removeWindow,
+    publish,
+    unpublish,
+    updateSlot,
   };
 }

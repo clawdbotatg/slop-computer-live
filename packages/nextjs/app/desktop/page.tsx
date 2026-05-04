@@ -7,16 +7,30 @@ import { LocalStreamHandle, MyCameraControls } from "~~/components/desktop/MyCam
 import { WhosHere } from "~~/components/desktop/WhosHere";
 import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
-import { type WindowState, usePeerMesh } from "~~/hooks/usePeerMesh";
+import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
 
 export const dynamic = "force-dynamic";
 
-const SHARED_DEFAULT_W = 360;
-const SHARED_DEFAULT_H = 260;
-const SHARED_OFFSET_BASE_X = 80;
-const SHARED_OFFSET_BASE_Y = 280;
-const SHARED_OFFSET_STEP = 30;
+const DEFAULT_W = 360;
+const DEFAULT_H = 260;
+const DEFAULT_BASE_X = 80;
+const DEFAULT_BASE_Y = 280;
+const DEFAULT_STEP = 30;
+
+// Slot id is stable for host streams (so position persists across reloads).
+// Guest stream slots are tied to the current streamId — positions don't
+// persist across publish/unpublish, but they DO persist while the publisher
+// stays connected (since the WS+publication outlives a stream id).
+function slotIdFor(pub: Publication): string {
+  if (pub.kind === "camera" || pub.kind === "screen") {
+    // Host? We don't actually know which peer is the host here without extra
+    // metadata; the relay enforces the host-ness server-side. We use a
+    // per-peer slot id so the layout is stable per-publisher.
+    return `peer-${pub.peerId}-${pub.kind}`;
+  }
+  return `peer-${pub.peerId}-${pub.streamId}`;
+}
 
 const Desktop: NextPage = () => {
   const { session, loading } = useSession();
@@ -30,28 +44,6 @@ const Desktop: NextPage = () => {
   const isHost = session.authenticated && session.isAdmin;
 
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
-
-  const addStream = useCallback(
-    (h: LocalStreamHandle) => {
-      setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
-      mesh.addLocalStream(h.stream);
-    },
-    [mesh],
-  );
-
-  const stopStream = useCallback(
-    (id: string) => {
-      setStreams(prev => {
-        const target = prev.find(s => s.id === id);
-        if (target) {
-          mesh.removeLocalStream(target.stream);
-          target.stream.getTracks().forEach(t => t.stop());
-        }
-        return prev.filter(s => s.id !== id);
-      });
-    },
-    [mesh],
-  );
 
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
@@ -68,146 +60,125 @@ const Desktop: NextPage = () => {
     [mesh.peers],
   );
 
-  // ---- Host: declare shared windows for every visible stream --------------
-  // Window IDs are stable across host reloads:
-  //   host-camera, host-screen        — host's own streams
-  //   peer-<peerId>-camera            — guest streams (peerId is ephemeral; GC'd on leave)
-  // Only the host (admin) has authority to create/move/close shared windows.
-  useEffect(() => {
-    if (!isHost || !mesh.myId) return;
+  const addStream = useCallback(
+    (h: LocalStreamHandle) => {
+      setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
+      mesh.publish(h.stream, h.kind === "screen" ? "screen" : "camera", myLabel);
+    },
+    [mesh, myLabel],
+  );
 
-    const ensure = (id: string, base: Partial<WindowState>) => {
-      const existing = mesh.windows[id];
-      if (existing) {
-        // Window exists from a previous session — re-bind ownerPeerId to the
-        // current session so streamForWindow() can find the live MediaStream.
-        if (base.ownerPeerId && existing.ownerPeerId !== base.ownerPeerId) {
-          mesh.updateWindow({ id, ownerPeerId: base.ownerPeerId, ownerLabel: base.ownerLabel ?? null });
+  const stopStream = useCallback(
+    (id: string) => {
+      setStreams(prev => {
+        const target = prev.find(s => s.id === id);
+        if (target) {
+          mesh.unpublish(id);
+          target.stream.getTracks().forEach(t => t.stop());
         }
-        return;
+        return prev.filter(s => s.id !== id);
+      });
+    },
+    [mesh],
+  );
+
+  // Default slot position for a new publication that doesn't have one yet.
+  const defaultSlot = useCallback(
+    (slotId: string, index: number): SlotPosition => ({
+      id: slotId,
+      x: DEFAULT_BASE_X + index * DEFAULT_STEP,
+      y: DEFAULT_BASE_Y + index * DEFAULT_STEP,
+      width: DEFAULT_W,
+      height: DEFAULT_H,
+      z: 5 + index,
+    }),
+    [],
+  );
+
+  // Build the rendered window list from publications + slots.
+  // Order: by slot z (asc).
+  const windows = useMemo(() => {
+    return mesh.publications
+      .map((pub, i) => {
+        const slotId = slotIdFor(pub);
+        const slot = mesh.slots[slotId] ?? defaultSlot(slotId, i);
+        return { pub, slotId, slot };
+      })
+      .sort((a, b) => a.slot.z - b.slot.z);
+  }, [mesh.publications, mesh.slots, defaultSlot]);
+
+  // Resolve the live MediaStream for a publication.
+  const streamFor = useCallback(
+    (pub: Publication): MediaStream | null => {
+      if (pub.peerId === mesh.myId) {
+        const local = streams.find(s => s.stream.id === pub.streamId);
+        return local?.stream ?? null;
       }
-      const offset = Object.keys(mesh.windows).length;
-      mesh.updateWindow({
-        id,
-        kind: "camera",
-        title: id,
-        x: SHARED_OFFSET_BASE_X + offset * SHARED_OFFSET_STEP,
-        y: SHARED_OFFSET_BASE_Y + offset * SHARED_OFFSET_STEP,
-        width: SHARED_DEFAULT_W,
-        height: SHARED_DEFAULT_H,
-        z: 5 + offset,
-        open: true,
-        ownerPeerId: null,
-        ownerLabel: null,
-        ...base,
-      });
-    };
-
-    for (const s of streams) {
-      const isCam = s.kind === "cam";
-      ensure(isCam ? "host-camera" : "host-screen", {
-        kind: isCam ? "camera" : "screen",
-        ownerPeerId: mesh.myId,
-        ownerLabel: myLabel,
-        title: `${isCam ? "CAMERA" : "SCREEN"} — ${myLabel}`,
-      });
-    }
-
-    mesh.remoteStreams.forEach((_stream, peerId) => {
-      ensure(`peer-${peerId}-camera`, {
-        kind: "remote",
-        ownerPeerId: peerId,
-        ownerLabel: peerLabel(peerId),
-        title: `CAMERA — ${peerLabel(peerId)}`,
-      });
-    });
-  }, [isHost, mesh, mesh.myId, mesh.remoteStreams, mesh.windows, streams, myLabel, peerLabel]);
-
-  // Host: GC only guest-owned windows whose owner has disconnected.
-  // Host's own windows (host-camera, host-screen) are persistent — they survive
-  // reload and stay even when host hasn't re-published the stream yet.
-  useEffect(() => {
-    if (!isHost) return;
-    const peerIds = new Set(mesh.peers.map(p => p.id));
-    for (const w of Object.values(mesh.windows)) {
-      if (!w.id.startsWith("peer-")) continue;
-      if (w.ownerPeerId && !peerIds.has(w.ownerPeerId)) mesh.removeWindow(w.id);
-    }
-  }, [isHost, mesh, mesh.peers, mesh.windows]);
-
-  // Find the live MediaStream for a given window. If the window is owned
-  // by the current peer, use the local stream; otherwise fetch the remote
-  // stream from the peer connection mesh.
-  const streamForWindow = useCallback(
-    (w: WindowState): MediaStream | null => {
-      if (w.ownerPeerId && w.ownerPeerId === mesh.myId) {
-        if (w.id === "host-camera") return streams.find(s => s.kind === "cam")?.stream ?? null;
-        if (w.id === "host-screen") return streams.find(s => s.kind === "screen")?.stream ?? null;
-        return null;
-      }
-      if (w.ownerPeerId) return mesh.remoteStreams.get(w.ownerPeerId) ?? null;
-      return null;
+      return mesh.remoteStreams.get(pub.streamId) ?? null;
     },
     [mesh.myId, mesh.remoteStreams, streams],
   );
 
-  // ---- Window manipulation handlers (host only writes; guests no-op) ------
-  const focusWindow = useCallback(
-    (w: WindowState) => {
+  // ---- Slot editing — host only ------------------------------------------
+  const moveSlot = useCallback(
+    (slotId: string, x: number, y: number) => {
       if (!isHost) return;
-      const maxZ = Math.max(0, ...Object.values(mesh.windows).map(x => x.z));
-      if (w.z >= maxZ) return;
-      mesh.updateWindow({ id: w.id, z: maxZ + 1 });
+      mesh.updateSlot({ id: slotId, x, y });
     },
     [isHost, mesh],
   );
 
+  const resizeSlot = useCallback(
+    (slotId: string, x: number, y: number, width: number, height: number) => {
+      if (!isHost) return;
+      mesh.updateSlot({ id: slotId, x, y, width, height });
+    },
+    [isHost, mesh],
+  );
+
+  const focusSlot = useCallback(
+    (slotId: string) => {
+      if (!isHost) return;
+      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+      mesh.updateSlot({ id: slotId, z: maxZ + 1 });
+    },
+    [isHost, mesh],
+  );
+
+  // Closing a window means: stop publishing if it's mine. Otherwise no-op.
   const closeWindow = useCallback(
-    (w: WindowState) => {
-      if (!isHost) return;
-      // Closing a host stream window also stops the underlying stream.
-      if (w.id === "host-camera") {
-        streams.filter(s => s.kind === "cam").forEach(s => stopStream(s.id));
-      } else if (w.id === "host-screen") {
-        streams.filter(s => s.kind === "screen").forEach(s => stopStream(s.id));
+    (pub: Publication) => {
+      if (pub.peerId === mesh.myId) {
+        const local = streams.find(s => s.stream.id === pub.streamId);
+        if (local) stopStream(local.id);
       }
-      mesh.removeWindow(w.id);
     },
-    [isHost, mesh, stopStream, streams],
+    [mesh.myId, streams, stopStream],
   );
 
-  const moveWindow = useCallback(
-    (w: WindowState, x: number, y: number) => {
-      if (!isHost) return;
-      mesh.updateWindow({ id: w.id, x, y });
-    },
-    [isHost, mesh],
-  );
+  // Persist a default slot the first time we see a new publication on host.
+  useEffect(() => {
+    if (!isHost) return;
+    let i = 0;
+    for (const pub of mesh.publications) {
+      const slotId = slotIdFor(pub);
+      if (!mesh.slots[slotId]) {
+        mesh.updateSlot(defaultSlot(slotId, i));
+      }
+      i++;
+    }
+  }, [isHost, mesh, mesh.publications, mesh.slots, defaultSlot]);
 
-  const resizeWindow = useCallback(
-    (w: WindowState, x: number, y: number, width: number, height: number) => {
-      if (!isHost) return;
-      mesh.updateWindow({ id: w.id, x, y, width, height });
-    },
-    [isHost, mesh],
-  );
+  // Title prefix per kind.
+  const titleFor = (pub: Publication) => {
+    const verb = pub.kind === "screen" ? "SCREEN" : "CAMERA";
+    return `${verb} — ${pub.label || peerLabel(pub.peerId)}`;
+  };
 
-  // Render the shared window list.
-  const sharedWindows = useMemo(
-    () =>
-      Object.values(mesh.windows)
-        .filter(w => w.open)
-        .sort((a, b) => a.z - b.z),
-    [mesh.windows],
-  );
-
-  // Local-only utility windows (camera controls + who's here) are pinned.
   const remoteCursors = useMemo(() => {
     const result: Array<{ peerId: string; x: number; y: number; label: string }> = [];
     Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
-      if (peerId !== mesh.myId) {
-        result.push({ peerId, ...pos, label: peerLabel(peerId) });
-      }
+      if (peerId !== mesh.myId) result.push({ peerId, ...pos, label: peerLabel(peerId) });
     });
     return result;
   }, [mesh.cursors, mesh.myId, peerLabel]);
@@ -244,29 +215,29 @@ const Desktop: NextPage = () => {
           </div>
         ) : null}
 
-        {/* Shared windows — same on every connected peer's screen. */}
-        {sharedWindows.map(w => {
-          const stream = streamForWindow(w);
+        {/* Shared windows — one per active publication. Same on every peer. */}
+        {windows.map(({ pub, slotId, slot }) => {
+          const stream = streamFor(pub);
           return (
             <Window
-              key={w.id}
-              title={w.title}
-              x={w.x}
-              y={w.y}
-              width={w.width}
-              height={w.height}
-              zIndex={w.z}
-              onFocus={() => focusWindow(w)}
-              onClose={() => closeWindow(w)}
-              onMove={({ x, y }) => moveWindow(w, x, y)}
-              onResize={({ x, y, width, height }) => resizeWindow(w, x, y, width, height)}
+              key={`${pub.peerId}-${pub.streamId}`}
+              title={titleFor(pub)}
+              x={slot.x}
+              y={slot.y}
+              width={slot.width}
+              height={slot.height}
+              zIndex={slot.z}
+              onFocus={() => focusSlot(slotId)}
+              onClose={pub.peerId === mesh.myId ? () => closeWindow(pub) : undefined}
+              onMove={({ x, y }) => moveSlot(slotId, x, y)}
+              onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}
             >
               {stream ? (
                 <video
                   autoPlay
                   playsInline
-                  muted={w.ownerPeerId === mesh.myId}
+                  muted={pub.peerId === mesh.myId}
                   ref={el => {
                     if (el && el.srcObject !== stream) el.srcObject = stream;
                   }}
@@ -292,7 +263,7 @@ const Desktop: NextPage = () => {
           );
         })}
 
-        {/* Local-only utilities — fixed-position panels, not synced across peers. */}
+        {/* Local-only utility panels — not synced. */}
         {session.authenticated ? (
           <>
             <Window
@@ -312,7 +283,6 @@ const Desktop: NextPage = () => {
           </>
         ) : null}
 
-        {/* Remote peer cursors */}
         {remoteCursors.map(({ peerId, x, y, label }) => (
           <Cursor key={peerId} x={x} y={y} label={label} />
         ))}

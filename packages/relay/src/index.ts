@@ -4,7 +4,17 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
-import { applyWindowUpdate, getLayout, removeWindow, type WindowState } from "./desktop.js";
+import {
+  type Publication,
+  type SlotKind,
+  type SlotPosition,
+  applySlotUpdate,
+  clearPeerPublications,
+  getSlots,
+  listPublications,
+  publish as publishStream,
+  unpublish as unpublishStream,
+} from "./desktop.js";
 import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
@@ -169,19 +179,24 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 // --- WS /signal -------------------------------------------------------------
 // Client → server:
 //   { type: "offer"|"answer"|"ice", to: <peerId>, payload }
-//   { type: "cursor", x, y }                       // broadcast
-//   { type: "window_update", id, ...patch }         // host-only; updates layout snapshot + broadcast
-//   { type: "window_remove", id }                   // host-only
+//   { type: "cursor", x, y }                                  // broadcast
+//   { type: "publish", streamId, kind, label }                // I'm publishing this stream
+//   { type: "unpublish", streamId }                            // I stopped publishing
+//   { type: "slot_update", id, x, y, width, height, z }        // host-only: persist position
 //   { type: "ping" }
 // Server → client:
-//   { type: "hello", id, peers: [...], windows: [...] }
+//   { type: "hello", id, peers, publications, slots }
 //   { type: "peer_join" | "peer_leave", peer }
-//   { type: "signal", from, payload, kind }
+//   { type: "signal", from, kind, payload }
 //   { type: "cursor", from, x, y }
-//   { type: "window", window: WindowState }         // a single window changed
-//   { type: "window_removed", id }
+//   { type: "published", publication }
+//   { type: "unpublished", peerId, streamId }
+//   { type: "slot", slot }                                     // host moved a slot
 //   { type: "pong" }
 //   { type: "error", error }
+
+const isHostInfo = (info: { role: string; address: string | null }) =>
+  info.role === "host" && !!info.address && isAdminAddress(info.address);
 
 app.register(async function signalRoutes(fastify) {
   fastify.get("/signal", { websocket: true }, (socket, req) => {
@@ -207,7 +222,8 @@ app.register(async function signalRoutes(fastify) {
       type: "hello",
       id: peerId,
       peers: listPeers().filter(p => p.id !== peerId),
-      windows: getLayout(PRIMARY_HOST_ADDR),
+      publications: listPublications(),
+      slots: getSlots(PRIMARY_HOST_ADDR),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -244,37 +260,46 @@ app.register(async function signalRoutes(fastify) {
           broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
           return;
         }
-        case "window_update": {
-          // Host-only authority. Anyone else's update is ignored to keep
-          // the shared layout single-sourced.
-          if (info.role !== "host" || !info.address || !isAdminAddress(info.address)) {
+        case "publish": {
+          if (
+            typeof msg.streamId !== "string" ||
+            (msg.kind !== "camera" && msg.kind !== "screen") ||
+            typeof msg.label !== "string"
+          ) {
+            return send(socket, { type: "error", error: "bad_publish" });
+          }
+          const pub: Publication = {
+            streamId: msg.streamId,
+            peerId,
+            kind: msg.kind as SlotKind,
+            label: msg.label,
+          };
+          publishStream(pub);
+          broadcast({ type: "published", publication: pub });
+          return;
+        }
+        case "unpublish": {
+          if (typeof msg.streamId !== "string") {
+            return send(socket, { type: "error", error: "missing_streamId" });
+          }
+          const ok = unpublishStream(peerId, msg.streamId);
+          if (ok) broadcast({ type: "unpublished", peerId, streamId: msg.streamId });
+          return;
+        }
+        case "slot_update": {
+          if (!isHostInfo(info)) {
             return send(socket, { type: "error", error: "not_host" });
           }
           if (typeof msg.id !== "string") {
             return send(socket, { type: "error", error: "missing_id" });
           }
-          const patch: Partial<WindowState> & { id: string } = { id: msg.id };
-          for (const key of ["kind", "ownerPeerId", "ownerLabel", "title"] as const) {
-            if (msg[key] !== undefined) (patch as any)[key] = msg[key];
-          }
+          const patch: Partial<SlotPosition> & { id: string } = { id: msg.id };
           for (const key of ["x", "y", "width", "height", "z"] as const) {
             if (typeof msg[key] === "number") (patch as any)[key] = msg[key];
           }
-          if (typeof msg.open === "boolean") patch.open = msg.open;
-          const merged = applyWindowUpdate(PRIMARY_HOST_ADDR, patch);
+          const merged = applySlotUpdate(PRIMARY_HOST_ADDR, patch);
           if (!merged) return;
-          broadcast({ type: "window", window: merged });
-          return;
-        }
-        case "window_remove": {
-          if (info.role !== "host" || !info.address || !isAdminAddress(info.address)) {
-            return send(socket, { type: "error", error: "not_host" });
-          }
-          if (typeof msg.id !== "string") {
-            return send(socket, { type: "error", error: "missing_id" });
-          }
-          const ok = removeWindow(PRIMARY_HOST_ADDR, msg.id);
-          if (ok) broadcast({ type: "window_removed", id: msg.id });
+          broadcast({ type: "slot", slot: merged });
           return;
         }
         default:
@@ -283,7 +308,11 @@ app.register(async function signalRoutes(fastify) {
     });
 
     socket.on("close", () => {
+      const ended = clearPeerPublications(peerId);
       removePeer(peerId);
+      for (const p of ended) {
+        broadcast({ type: "unpublished", peerId, streamId: p.streamId });
+      }
       broadcast({ type: "peer_leave", peer: info });
     });
   });
