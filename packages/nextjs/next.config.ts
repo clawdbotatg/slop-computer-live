@@ -11,6 +11,13 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true",
   },
+  // Backwards-compat: /desktop used to be the participant view; now / is.
+  async redirects() {
+    return [
+      { source: "/desktop", destination: "/", permanent: true },
+      { source: "/desktop/:path*", destination: "/:path*", permanent: true },
+    ];
+  },
   webpack: config => {
     config.resolve.fallback = { fs: false, net: false, tls: false };
     config.externals.push("pino-pretty", "lokijs", "encoding");

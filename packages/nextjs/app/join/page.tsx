@@ -71,7 +71,7 @@ const JoinForm = () => {
         setStatus(`Auth failed: ${data.error ?? verifyRes.statusText}`);
         return;
       }
-      router.push("/desktop");
+      router.push("/");
     } catch (err) {
       setStatus(`Auth error: ${(err as Error).message}`);
     }
@@ -95,7 +95,7 @@ const JoinForm = () => {
         setStatus(`Auth failed: ${data.error ?? res.statusText}`);
         return;
       }
-      router.push("/desktop");
+      router.push("/");
     } catch (err) {
       setStatus(`Auth error: ${(err as Error).message}`);
     }
