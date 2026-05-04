@@ -1,4 +1,4 @@
-import { VT323 } from "next/font/google";
+import { Silkscreen } from "next/font/google";
 import "@rainbow-me/rainbowkit/styles.css";
 import "@scaffold-ui/components/styles.css";
 import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
@@ -6,8 +6,8 @@ import { ThemeProvider } from "~~/components/ThemeProvider";
 import "~~/styles/globals.css";
 import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
 
-const vt323 = VT323({
-  variable: "--slop-font-display",
+const silkscreen = Silkscreen({
+  variable: "--font-silkscreen",
   weight: "400",
   subsets: ["latin"],
 });
@@ -19,7 +19,7 @@ export const metadata = getMetadata({
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   return (
-    <html suppressHydrationWarning data-theme="dark" className={vt323.variable}>
+    <html suppressHydrationWarning data-theme="dark" className={silkscreen.variable}>
       <body>
         <ThemeProvider forcedTheme="dark">
           <ScaffoldEthAppWithProviders>{children}</ScaffoldEthAppWithProviders>

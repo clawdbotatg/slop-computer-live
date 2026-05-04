@@ -47,8 +47,8 @@
     rgba(255, 62, 201, 0.85) 100%
   );
 
-  --slop-font-display: var(--slop-font-display, "VT323"), "Courier New", ui-monospace, "Menlo", monospace;
-  --slop-font-body: var(--slop-font-display, "VT323"), "Courier New", ui-monospace, "Menlo", monospace;
+  --slop-font-display: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
+  --slop-font-body: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
   --slop-font-mono: ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
 }
 
