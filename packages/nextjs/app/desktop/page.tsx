@@ -110,7 +110,7 @@ const Desktop: NextPage = () => {
   // ---- Auto-resume publishing on reload ----------------------------------
   // Camera permission is sticky in Chrome once granted, so the next mount
   // can call getUserMedia silently. Screen share requires a user gesture so
-  // we skip resuming that automatically — the user has to click again.
+  // we render a placeholder "RESUME SCREEN SHARE" window instead.
   const sessionAuth = session.authenticated;
   useEffect(() => {
     if (!sessionAuth) return;
@@ -127,7 +127,6 @@ const Desktop: NextPage = () => {
         }
         addStream({ id: stream.id, kind: "cam", stream });
       } catch {
-        // permission denied or device gone — clear resume flag
         const cur = readResume();
         delete cur.camera;
         writeResume(cur);
@@ -139,6 +138,36 @@ const Desktop: NextPage = () => {
     // run once when the WS is up; addStream/mesh deps would re-fire
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionAuth, mesh.connected]);
+
+  // ---- Manual screen share resumption ------------------------------------
+  const startScreenShare = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      addStream({ id: stream.id, kind: "screen", stream });
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        stopStream(stream.id);
+      });
+    } catch {
+      const cur = readResume();
+      delete cur.screen;
+      writeResume(cur);
+    }
+  }, [addStream, stopStream]);
+
+  // True when localStorage says we WERE screen-sharing, but we don't have
+  // an active own screen publication yet (post-reload state).
+  const myOwnerKey = session.authenticated ? ((session.address ?? session.handle)?.toLowerCase() ?? null) : null;
+  const hasOwnScreenPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "screen");
+  const [wantScreenResume, setWantScreenResume] = useState(false);
+  useEffect(() => {
+    setWantScreenResume(Boolean(readResume().screen) && !hasOwnScreenPub);
+  }, [hasOwnScreenPub]);
+
+  const screenResumeSlotId = myOwnerKey ? `owner-${myOwnerKey}-screen` : null;
+  const screenResumeSlot =
+    screenResumeSlotId && mesh.slots[screenResumeSlotId]
+      ? mesh.slots[screenResumeSlotId]
+      : { id: screenResumeSlotId ?? "screen-resume", x: 80, y: 280, width: DEFAULT_W, height: DEFAULT_H, z: 4 };
 
   // Default slot position for a new publication that doesn't have one yet.
   const defaultSlot = useCallback(
@@ -320,6 +349,52 @@ const Desktop: NextPage = () => {
             </Window>
           );
         })}
+
+        {/* Screen-share resume placeholder — appears only on the publisher's
+            own screen, after a reload, until they click to re-acquire. */}
+        {wantScreenResume && screenResumeSlotId ? (
+          <Window
+            title={`SCREEN — ${myLabel} (paused)`}
+            x={screenResumeSlot.x}
+            y={screenResumeSlot.y}
+            width={screenResumeSlot.width}
+            height={screenResumeSlot.height}
+            zIndex={screenResumeSlot.z}
+            onClose={() => {
+              const cur = readResume();
+              delete cur.screen;
+              writeResume(cur);
+              setWantScreenResume(false);
+            }}
+            onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}
+            onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
+            bodyStyle={{ padding: 0, overflow: "hidden" }}
+          >
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                background: "#000",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                color: "var(--slop-text)",
+                fontSize: 12,
+                textAlign: "center",
+                padding: 16,
+              }}
+            >
+              <span style={{ color: "var(--slop-text-muted)" }}>
+                screen share paused on reload — browsers require a click to resume
+              </span>
+              <Button variant="primary" onClick={startScreenShare}>
+                Resume screen share
+              </Button>
+            </div>
+          </Window>
+        ) : null}
 
         {/* Local-only utility panels — not synced. */}
         {session.authenticated ? (
