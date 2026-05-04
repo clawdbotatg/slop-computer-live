@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
-import { LocalStreamHandle, MyCameraControls, StreamView } from "~~/components/desktop/MyCamera";
+import { LocalStreamHandle, MyCameraControls } from "~~/components/desktop/MyCamera";
 import { WhosHere } from "~~/components/desktop/WhosHere";
 import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
@@ -69,12 +69,23 @@ const Desktop: NextPage = () => {
   );
 
   // ---- Host: declare shared windows for every visible stream --------------
+  // Window IDs are stable across host reloads:
+  //   host-camera, host-screen        — host's own streams
+  //   peer-<peerId>-camera            — guest streams (peerId is ephemeral; GC'd on leave)
   // Only the host (admin) has authority to create/move/close shared windows.
   useEffect(() => {
     if (!isHost || !mesh.myId) return;
 
     const ensure = (id: string, base: Partial<WindowState>) => {
-      if (mesh.windows[id]) return;
+      const existing = mesh.windows[id];
+      if (existing) {
+        // Window exists from a previous session — re-bind ownerPeerId to the
+        // current session so streamForWindow() can find the live MediaStream.
+        if (base.ownerPeerId && existing.ownerPeerId !== base.ownerPeerId) {
+          mesh.updateWindow({ id, ownerPeerId: base.ownerPeerId, ownerLabel: base.ownerLabel ?? null });
+        }
+        return;
+      }
       const offset = Object.keys(mesh.windows).length;
       mesh.updateWindow({
         id,
@@ -92,10 +103,9 @@ const Desktop: NextPage = () => {
       });
     };
 
-    // Own streams (host's own camera + screen)
     for (const s of streams) {
       const isCam = s.kind === "cam";
-      ensure(`${isCam ? "camera" : "screen"}-${mesh.myId}-${s.id}`, {
+      ensure(isCam ? "host-camera" : "host-screen", {
         kind: isCam ? "camera" : "screen",
         ownerPeerId: mesh.myId,
         ownerLabel: myLabel,
@@ -103,9 +113,8 @@ const Desktop: NextPage = () => {
       });
     }
 
-    // Remote streams (guests publishing to host)
     mesh.remoteStreams.forEach((_stream, peerId) => {
-      ensure(`remote-${peerId}`, {
+      ensure(`peer-${peerId}-camera`, {
         kind: "remote",
         ownerPeerId: peerId,
         ownerLabel: peerLabel(peerId),
@@ -114,32 +123,27 @@ const Desktop: NextPage = () => {
     });
   }, [isHost, mesh, mesh.myId, mesh.remoteStreams, mesh.windows, streams, myLabel, peerLabel]);
 
-  // Host: garbage-collect windows whose owner is no longer connected.
+  // Host: GC only guest-owned windows whose owner has disconnected.
+  // Host's own windows (host-camera, host-screen) are persistent — they survive
+  // reload and stay even when host hasn't re-published the stream yet.
   useEffect(() => {
     if (!isHost) return;
     const peerIds = new Set(mesh.peers.map(p => p.id));
     for (const w of Object.values(mesh.windows)) {
-      if (!w.ownerPeerId) continue;
-      if (!peerIds.has(w.ownerPeerId)) mesh.removeWindow(w.id);
+      if (!w.id.startsWith("peer-")) continue;
+      if (w.ownerPeerId && !peerIds.has(w.ownerPeerId)) mesh.removeWindow(w.id);
     }
   }, [isHost, mesh, mesh.peers, mesh.windows]);
 
   // Find the live MediaStream for a given window (own or remote).
   const streamForWindow = useCallback(
     (w: WindowState): MediaStream | null => {
+      if (w.id === "host-camera") return streams.find(s => s.kind === "cam")?.stream ?? null;
+      if (w.id === "host-screen") return streams.find(s => s.kind === "screen")?.stream ?? null;
       if (!w.ownerPeerId) return null;
-      if (w.ownerPeerId === mesh.myId) {
-        // Own window — try to match by suffix `-<streamId>` first
-        const tail = w.id.split(`-${mesh.myId}-`)[1];
-        if (tail) {
-          const local = streams.find(s => s.id === tail);
-          if (local) return local.stream;
-        }
-        return streams[0]?.stream ?? null;
-      }
       return mesh.remoteStreams.get(w.ownerPeerId) ?? null;
     },
-    [mesh.myId, mesh.remoteStreams, streams],
+    [mesh.remoteStreams, streams],
   );
 
   // ---- Window manipulation handlers (host only writes; guests no-op) ------
@@ -156,14 +160,15 @@ const Desktop: NextPage = () => {
   const closeWindow = useCallback(
     (w: WindowState) => {
       if (!isHost) return;
-      // If it's an own-stream window, also stop the stream locally.
-      if (w.ownerPeerId === mesh.myId) {
-        const tail = w.id.split(`-${mesh.myId}-`)[1];
-        if (tail) stopStream(tail);
+      // Closing a host stream window also stops the underlying stream.
+      if (w.id === "host-camera") {
+        streams.filter(s => s.kind === "cam").forEach(s => stopStream(s.id));
+      } else if (w.id === "host-screen") {
+        streams.filter(s => s.kind === "screen").forEach(s => stopStream(s.id));
       }
       mesh.removeWindow(w.id);
     },
-    [isHost, mesh, stopStream],
+    [isHost, mesh, stopStream, streams],
   );
 
   const moveWindow = useCallback(
@@ -299,7 +304,6 @@ const Desktop: NextPage = () => {
             <Window title="WHO'S HERE" x={420} y={40} width={280} height={240} zIndex={2} bodyStyle={{ padding: 0 }}>
               <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />
             </Window>
-            <LocalPreviews streams={streams} onStop={stopStream} />
           </>
         ) : null}
 
@@ -311,24 +315,5 @@ const Desktop: NextPage = () => {
     </>
   );
 };
-
-const LocalPreviews = ({ streams, onStop }: { streams: LocalStreamHandle[]; onStop: (id: string) => void }) => (
-  <>
-    {streams.map((s, i) => (
-      <Window
-        key={`local-preview-${s.id}`}
-        title={`LOCAL PREVIEW — ${s.kind === "screen" ? "SCREEN" : "CAMERA"}`}
-        x={40 + i * 30}
-        y={500 + i * 30}
-        width={280}
-        height={180}
-        zIndex={2}
-        bodyStyle={{ padding: 0 }}
-      >
-        <StreamView stream={s.stream} muted onStop={() => onStop(s.id)} />
-      </Window>
-    ))}
-  </>
-);
 
 export default Desktop;

@@ -5,7 +5,11 @@
 // the host says. Anyone can read; only the host can write.
 //
 // State is keyed by host wallet address (lowercase) so a host reload restores
-// their last layout. In-memory only — fine for single-box v1.
+// their last layout. The map is mirrored to disk (LAYOUT_PATH) so a relay
+// process restart also survives.
+
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type WindowState = {
   id: string;
@@ -21,7 +25,43 @@ export type WindowState = {
   open: boolean;
 };
 
-const layoutsByHost = new Map<string, Map<string, WindowState>>();
+const LAYOUT_PATH = process.env.LAYOUT_PATH ?? "/var/lib/slop-relay/layouts.json";
+
+const layoutsByHost: Map<string, Map<string, WindowState>> = loadLayouts();
+
+function loadLayouts(): Map<string, Map<string, WindowState>> {
+  try {
+    const raw = readFileSync(LAYOUT_PATH, "utf8");
+    const obj = JSON.parse(raw) as Record<string, Record<string, WindowState>>;
+    const out = new Map<string, Map<string, WindowState>>();
+    for (const [host, windows] of Object.entries(obj)) {
+      out.set(host, new Map(Object.entries(windows)));
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
+let saveQueued = false;
+function scheduleSave(): void {
+  if (saveQueued) return;
+  saveQueued = true;
+  // Microtask: collapse multiple updates in one tick into a single write.
+  queueMicrotask(() => {
+    saveQueued = false;
+    try {
+      mkdirSync(dirname(LAYOUT_PATH), { recursive: true });
+      const obj: Record<string, Record<string, WindowState>> = {};
+      for (const [host, windows] of layoutsByHost) {
+        obj[host] = Object.fromEntries(windows);
+      }
+      writeFileSync(LAYOUT_PATH, JSON.stringify(obj));
+    } catch (err) {
+      console.error("[desktop] failed to persist layout:", err);
+    }
+  });
+}
 
 const normaliseHost = (addr: string | null | undefined): string | null =>
   addr ? addr.toLowerCase() : null;
@@ -58,6 +98,7 @@ export function applyWindowUpdate(
     open: patch.open ?? prev?.open ?? true,
   };
   layout.set(patch.id, merged);
+  scheduleSave();
   return merged;
 }
 
@@ -66,11 +107,14 @@ export function removeWindow(hostAddress: string | null, id: string): boolean {
   if (!host) return false;
   const layout = layoutsByHost.get(host);
   if (!layout) return false;
-  return layout.delete(id);
+  const ok = layout.delete(id);
+  if (ok) scheduleSave();
+  return ok;
 }
 
 export function clearLayout(hostAddress: string | null): void {
   const host = normaliseHost(hostAddress);
   if (!host) return;
-  layoutsByHost.delete(host);
+  const ok = layoutsByHost.delete(host);
+  if (ok) scheduleSave();
 }

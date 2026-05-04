@@ -92,7 +92,8 @@ export const Window = ({
 
   return (
     <Rnd
-      default={{ x, y, width, height }}
+      position={{ x, y }}
+      size={{ width, height }}
       bounds="parent"
       minWidth={minWidth}
       minHeight={minHeight}

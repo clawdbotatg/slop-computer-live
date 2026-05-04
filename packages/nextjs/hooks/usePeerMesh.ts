@@ -164,11 +164,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         }
       };
 
+      pc.onnegotiationneeded = () => {
+        // Only the side that adds tracks first should initiate; if both sides
+        // do simultaneously you hit glare. Our addLocalStream already nudges
+        // initiateOffer when state is stable, so this is just a safety net.
+        if (pc.signalingState === "stable") void initiateOffer(peerId);
+      };
+
       peerConnectionsRef.current.set(peerId, pc);
       setPeerConnections(new Map(peerConnectionsRef.current));
       return pc;
     },
-    [send, closePeerConnection],
+    [send, closePeerConnection, initiateOffer],
   );
 
   const handleOffer = useCallback(

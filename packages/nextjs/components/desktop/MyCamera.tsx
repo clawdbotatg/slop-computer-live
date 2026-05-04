@@ -58,8 +58,7 @@ export const MyCameraControls = ({ onStream, onStop }: Props) => {
   return (
     <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
       <p style={{ margin: 0, color: "var(--slop-text-muted)", fontSize: 12 }}>
-        Publish your camera, microphone, or screen. Each becomes its own window. WebRTC peering is still ahead — for now
-        you only see your own preview.
+        Publish your camera, microphone, or screen. Each becomes a shared window everyone on the desktop can see.
       </p>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Button onClick={startCam} disabled={busy !== null || activeIds.cam !== null} variant="primary">
