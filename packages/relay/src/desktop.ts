@@ -26,7 +26,8 @@ export type SlotKind = "camera" | "screen";
 
 export type Publication = {
   streamId: string;
-  peerId: string;
+  peerId: string;     // ephemeral; changes every WS reconnect
+  ownerKey: string;   // stable across reconnects (wallet address or handle)
   kind: SlotKind;
   label: string;
 };

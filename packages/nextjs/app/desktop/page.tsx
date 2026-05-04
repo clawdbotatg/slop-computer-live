@@ -18,19 +18,34 @@ const DEFAULT_BASE_X = 80;
 const DEFAULT_BASE_Y = 280;
 const DEFAULT_STEP = 30;
 
-// Slot id is stable for host streams (so position persists across reloads).
-// Guest stream slots are tied to the current streamId — positions don't
-// persist across publish/unpublish, but they DO persist while the publisher
-// stays connected (since the WS+publication outlives a stream id).
+// Slot id keyed by stable owner identity (wallet address or handle) so the
+// layout survives a reload — peerIds are ephemeral and would otherwise reset
+// the position every time the user reconnects.
 function slotIdFor(pub: Publication): string {
-  if (pub.kind === "camera" || pub.kind === "screen") {
-    // Host? We don't actually know which peer is the host here without extra
-    // metadata; the relay enforces the host-ness server-side. We use a
-    // per-peer slot id so the layout is stable per-publisher.
-    return `peer-${pub.peerId}-${pub.kind}`;
-  }
-  return `peer-${pub.peerId}-${pub.streamId}`;
+  return `owner-${pub.ownerKey}-${pub.kind}`;
 }
+
+const RESUME_KEY = "slop-resume-publishing-v1";
+
+type ResumeState = { camera?: boolean; screen?: boolean };
+
+const readResume = (): ResumeState => {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(RESUME_KEY) ?? "{}") as ResumeState;
+  } catch {
+    return {};
+  }
+};
+
+const writeResume = (state: ResumeState) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RESUME_KEY, JSON.stringify(state));
+  } catch {
+    /* quota / private mode */
+  }
+};
 
 const Desktop: NextPage = () => {
   const { session, loading } = useSession();
@@ -64,23 +79,66 @@ const Desktop: NextPage = () => {
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
       mesh.publish(h.stream, h.kind === "screen" ? "screen" : "camera", myLabel);
+      const r = readResume();
+      writeResume({ ...r, [h.kind === "screen" ? "screen" : "camera"]: true });
     },
     [mesh, myLabel],
   );
 
   const stopStream = useCallback(
     (id: string) => {
+      let stoppedKind: "cam" | "screen" | null = null;
       setStreams(prev => {
         const target = prev.find(s => s.id === id);
         if (target) {
+          stoppedKind = target.kind;
           mesh.unpublish(id);
           target.stream.getTracks().forEach(t => t.stop());
         }
         return prev.filter(s => s.id !== id);
       });
+      if (stoppedKind) {
+        const r = readResume();
+        if (stoppedKind === "cam") delete r.camera;
+        else delete r.screen;
+        writeResume(r);
+      }
     },
     [mesh],
   );
+
+  // ---- Auto-resume publishing on reload ----------------------------------
+  // Camera permission is sticky in Chrome once granted, so the next mount
+  // can call getUserMedia silently. Screen share requires a user gesture so
+  // we skip resuming that automatically — the user has to click again.
+  const sessionAuth = session.authenticated;
+  useEffect(() => {
+    if (!sessionAuth) return;
+    if (!mesh.connected) return;
+    const r = readResume();
+    if (!r.camera) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        addStream({ id: stream.id, kind: "cam", stream });
+      } catch {
+        // permission denied or device gone — clear resume flag
+        const cur = readResume();
+        delete cur.camera;
+        writeResume(cur);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // run once when the WS is up; addStream/mesh deps would re-fire
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionAuth, mesh.connected]);
 
   // Default slot position for a new publication that doesn't have one yet.
   const defaultSlot = useCallback(

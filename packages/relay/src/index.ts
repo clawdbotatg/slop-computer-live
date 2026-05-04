@@ -268,9 +268,11 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_publish" });
           }
+          const ownerKey = (info.address ?? info.handle ?? peerId).toLowerCase();
           const pub: Publication = {
             streamId: msg.streamId,
             peerId,
+            ownerKey,
             kind: msg.kind as SlotKind,
             label: msg.label,
           };
