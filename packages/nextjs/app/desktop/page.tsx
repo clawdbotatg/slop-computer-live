@@ -56,8 +56,6 @@ const Desktop: NextPage = () => {
   }, [session]);
 
   const mesh = usePeerMesh(session.authenticated, selfHint);
-  const isHost = session.authenticated && session.isAdmin;
-
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   // Position of the LOCAL panels (MY CAMERA + WHO'S HERE). These are not
@@ -211,30 +209,27 @@ const Desktop: NextPage = () => {
     [mesh.myId, mesh.remoteStreams, streams],
   );
 
-  // ---- Slot editing — host only ------------------------------------------
+  // ---- Slot editing — any authenticated peer (collaborative) -------------
   const moveSlot = useCallback(
     (slotId: string, x: number, y: number) => {
-      if (!isHost) return;
       mesh.updateSlot({ id: slotId, x, y });
     },
-    [isHost, mesh],
+    [mesh],
   );
 
   const resizeSlot = useCallback(
     (slotId: string, x: number, y: number, width: number, height: number) => {
-      if (!isHost) return;
       mesh.updateSlot({ id: slotId, x, y, width, height });
     },
-    [isHost, mesh],
+    [mesh],
   );
 
   const focusSlot = useCallback(
     (slotId: string) => {
-      if (!isHost) return;
       const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
       mesh.updateSlot({ id: slotId, z: maxZ + 1 });
     },
-    [isHost, mesh],
+    [mesh],
   );
 
   // Closing a window means: stop publishing if it's mine. Otherwise no-op.
@@ -254,9 +249,10 @@ const Desktop: NextPage = () => {
     [mesh, streams, stopStream],
   );
 
-  // Persist a default slot the first time we see a new publication on host.
+  // Persist a default slot the first time we see a new publication.
+  // Any peer can do this — the relay broadcasts the slot back to everyone,
+  // and if two peers race the result is identical (same default math).
   useEffect(() => {
-    if (!isHost) return;
     let i = 0;
     for (const pub of mesh.publications) {
       const slotId = slotIdFor(pub);
@@ -265,7 +261,7 @@ const Desktop: NextPage = () => {
       }
       i++;
     }
-  }, [isHost, mesh, mesh.publications, mesh.slots, defaultSlot]);
+  }, [mesh, mesh.publications, mesh.slots, defaultSlot]);
 
   // Title prefix per kind.
   const titleFor = (pub: Publication) => {

@@ -243,7 +243,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "cursor", x, y }                                  // broadcast
 //   { type: "publish", streamId, kind, label }                // I'm publishing this stream
 //   { type: "unpublish", streamId }                            // I stopped publishing
-//   { type: "slot_update", id, x, y, width, height, z }        // host-only: persist position
+//   { type: "slot_update", id, x, y, width, height, z }        // any auth'd peer; last write wins
 //   { type: "ping" }
 // Server → client:
 //   { type: "hello", id, peers, publications, slots }
@@ -350,9 +350,8 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "slot_update": {
-          if (!isHostInfo(info)) {
-            return send(socket, { type: "error", error: "not_host" });
-          }
+          // Any authenticated peer may rearrange the shared layout — same
+          // model as a collaborative whiteboard. Last write wins.
           if (typeof msg.id !== "string") {
             return send(socket, { type: "error", error: "missing_id" });
           }
