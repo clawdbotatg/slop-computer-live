@@ -40,9 +40,12 @@ The relay + MediaMTX stay on EC2; only the Next.js app moves. Vercel
 builds in parallel to local work, so a `git push` doesn't block. Point
 `live.slop.computer` CNAME at Vercel.
 
-## 4. Bigger EC2
+## 4. Bigger EC2 — pending
 
-t3.medium → t3.large doubles CPU. ~30% off build time. Costs money.
+User flagged this for later: scale up the slop-computer EC2 instance
+from **t3.medium → t3.large** (doubles CPU, ~30% off build time, also
+helps under live-show load). Stop instance in AWS console → change
+instance type → start. Costs ~2x as long as it stays large.
 
 ## 5. CI-driven deploys
 
