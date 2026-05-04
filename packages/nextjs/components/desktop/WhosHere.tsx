@@ -34,17 +34,26 @@ export const WhosHere = ({ myId, peers, connected }: Props) => {
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
+                  alignItems: "center",
                   gap: 8,
                   padding: "2px 4px",
                   background: isMe ? "rgba(255,62,201,0.08)" : undefined,
                 }}
               >
-                <span style={{ fontWeight: p.role === "host" ? 600 : undefined }}>
-                  {p.role === "host" ? "★ " : ""}
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    minWidth: 0,
+                    fontWeight: p.role === "host" ? 600 : undefined,
+                  }}
+                >
+                  {p.role === "host" ? <span aria-hidden>★</span> : null}
                   {labelOf(p)}
-                  {isMe ? " (you)" : ""}
+                  {isMe ? <span style={{ color: "var(--slop-text-muted)" }}>(you)</span> : null}
                 </span>
-                <span style={{ color: "var(--slop-text-muted)" }}>{p.role}</span>
+                <span style={{ color: "var(--slop-text-muted)", flexShrink: 0 }}>{p.role}</span>
               </li>
             );
           })}
