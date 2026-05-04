@@ -32,8 +32,26 @@ rtsp: no
 srt: no
 webrtc: no
 
-# Path rules: single static path "live" — host publishes via RTMP,
-# anyone can read the HLS output. Auth lives at the relay layer for v1.
+# Path rules: single static path "live" — host publishes via RTMP with
+# basic-auth credentials, anyone can read the HLS output. The relay shares
+# these same creds in its env so it can hand them to /admin/start callers.
+authMethod: internal
+authInternalUsers:
+  - user: live
+    pass: __MEDIAMTX_PUBLISH_PASS__
+    ips: []
+    permissions:
+      - action: publish
+        path: live
+  - user: any
+    pass: ""
+    ips: []
+    permissions:
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+
 paths:
   live:
     source: publisher

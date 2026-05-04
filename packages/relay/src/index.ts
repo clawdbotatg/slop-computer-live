@@ -169,13 +169,22 @@ function requireHost(req: { cookies: Record<string, string | undefined> }):
 app.post("/admin/start", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  // Phase 3: placeholder. Phase 6 will hit MediaMTX to provision a real path.
-  const streamKey = randomBytes(8).toString("hex");
+  // OBS Server: rtmpUrl. Stream key: streamKey. MediaMTX accepts the
+  // publish credentials via the URL form rtmp://user:pass@host:port/key.
+  // We expose both ways so the host can paste either into OBS depending on
+  // which form their version accepts.
+  const u = config.mediamtxPublishUser;
+  const p = config.mediamtxPublishPass;
+  const base = config.mediamtxRtmpIngress.replace(/^rtmp:\/\//, "");
+  const rtmpUrlAuthed = `rtmp://${encodeURIComponent(u)}:${encodeURIComponent(p)}@${base}`;
   return {
     ok: true,
     rtmpUrl: config.mediamtxRtmpIngress,
-    streamKey,
-    note: "placeholder — MediaMTX wiring lands in Phase 6",
+    streamKey: "live",
+    publishUser: u,
+    publishPass: p,
+    rtmpUrlAuthed,
+    hlsUrl: config.hlsUrl,
   };
 });
 

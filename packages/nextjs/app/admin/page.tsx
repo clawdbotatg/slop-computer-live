@@ -180,27 +180,59 @@ const AdminPage: NextPage = () => {
     }
   };
 
-  const handleGoLive = async () => {
-    setStatus("Provisioning RTMP session on relay...");
+  type StreamSession = {
+    rtmpUrl: string;
+    streamKey: string;
+    publishUser: string;
+    publishPass: string;
+    rtmpUrlAuthed: string;
+    hlsUrl: string;
+  };
+  const [stream, setStream] = useState<StreamSession | null>(null);
+  const [showTitle, setShowTitle] = useState("Slop Computer Live");
+
+  const handleGetRtmpInfo = async () => {
+    setStatus("Fetching RTMP credentials...");
     try {
-      const res = await fetch(`${RELAY_BASE}/admin/start`, {
-        method: "POST",
-        credentials: "include",
-      });
+      const res = await fetch(`${RELAY_BASE}/admin/start`, { method: "POST", credentials: "include" });
       const data = await res.json();
       if (!res.ok) {
         setStatus(`relay /admin/start failed: ${data.error ?? res.statusText}`);
         return;
       }
-      setStatus(`RTMP: ${data.rtmpUrl} key=${data.streamKey}. Calling goLive() onchain...`);
-      const hlsUrl = process.env.NEXT_PUBLIC_HLS_URL ?? "";
+      setStream(data as StreamSession);
+      setStatus("Got RTMP credentials. Paste into OBS, start streaming, then click Go Live to flip the contract.");
+    } catch (err) {
+      setStatus(`fetch failed: ${(err as Error).message}`);
+    }
+  };
+
+  const handleGoLive = async () => {
+    if (!stream) {
+      setStatus("Get RTMP info first.");
+      return;
+    }
+    setStatus("Calling goLive() on mainnet...");
+    try {
       await writeContractAsync({
         functionName: "goLive",
-        args: ["Live show", hlsUrl],
+        args: [showTitle || "Slop Computer Live", stream.hlsUrl],
       });
-      setStatus("goLive tx sent.");
+      setStatus("goLive tx sent — frontpage will flip to LIVE within ~12s.");
     } catch (err) {
       setStatus(`goLive failed: ${(err as Error).message}`);
+    }
+  };
+
+  const handleGoOffline = async () => {
+    setStatus("Calling goOffline()...");
+    try {
+      await writeContractAsync({ functionName: "goOffline" });
+      await fetch(`${RELAY_BASE}/admin/stop`, { method: "POST", credentials: "include" });
+      setStream(null);
+      setStatus("Offline.");
+    } catch (err) {
+      setStatus(`goOffline failed: ${(err as Error).message}`);
     }
   };
 
@@ -283,14 +315,59 @@ const AdminPage: NextPage = () => {
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Go live</h2>
-        <p style={{ color: "var(--slop-text-muted)" }}>
-          Provisions an RTMP session on the relay and calls <code>SlopComputerFrontpage.goLive(title, hlsUrl)</code> on
-          mainnet.
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Broadcast</h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
+          1. Click <strong>Get OBS info</strong>. 2. Paste the URL + key into OBS, set the Browser Source to{" "}
+          <code>https://live.slop.computer/desktop</code>, and start streaming. 3. Click <strong>Go live</strong> to
+          flip the mainnet contract — <code>slop.computer</code> will show the LIVE banner with the HLS player.
         </p>
-        <Button variant="primary" onClick={handleGoLive} disabled={!isHost}>
-          Go live
-        </Button>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+          <Button onClick={handleGetRtmpInfo} disabled={!isHost}>
+            Get OBS info
+          </Button>
+          <TextField
+            placeholder="Show title"
+            value={showTitle}
+            onChange={e => setShowTitle(e.target.value)}
+            style={{ minWidth: 240 }}
+          />
+          <Button variant="primary" onClick={handleGoLive} disabled={!isHost || !stream}>
+            Go live
+          </Button>
+          <Button onClick={handleGoOffline} disabled={!isHost}>
+            Go offline
+          </Button>
+        </div>
+
+        {stream ? (
+          <div
+            style={{
+              padding: 12,
+              background: "var(--slop-bevel-dark)",
+              fontFamily: "var(--slop-font-body)",
+              fontSize: 13,
+              display: "grid",
+              gridTemplateColumns: "auto 1fr",
+              columnGap: 12,
+              rowGap: 6,
+              wordBreak: "break-all",
+            }}
+          >
+            <span style={{ color: "var(--slop-text-muted)" }}>OBS Server URL:</span>
+            <code>{stream.rtmpUrl}</code>
+            <span style={{ color: "var(--slop-text-muted)" }}>OBS Stream Key:</span>
+            <code>{stream.streamKey}</code>
+            <span style={{ color: "var(--slop-text-muted)" }}>Auth user:</span>
+            <code>{stream.publishUser}</code>
+            <span style={{ color: "var(--slop-text-muted)" }}>Auth pass:</span>
+            <code>{stream.publishPass}</code>
+            <span style={{ color: "var(--slop-text-muted)" }}>Combined URL (alt):</span>
+            <code>{stream.rtmpUrlAuthed}</code>
+            <span style={{ color: "var(--slop-text-muted)" }}>HLS playback:</span>
+            <code>{stream.hlsUrl}</code>
+          </div>
+        ) : null}
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
