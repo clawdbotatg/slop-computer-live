@@ -238,14 +238,20 @@ const Desktop: NextPage = () => {
   );
 
   // Closing a window means: stop publishing if it's mine. Otherwise no-op.
+  // Synchronously clear the auto-resume flag here so reloads don't re-acquire
+  // a stream the user explicitly closed.
   const closeWindow = useCallback(
     (pub: Publication) => {
-      if (pub.peerId === mesh.myId) {
-        const local = streams.find(s => s.stream.id === pub.streamId);
-        if (local) stopStream(local.id);
-      }
+      if (pub.peerId !== mesh.myId) return;
+      const r = readResume();
+      if (pub.kind === "screen") delete r.screen;
+      else delete r.camera;
+      writeResume(r);
+      const local = streams.find(s => s.stream.id === pub.streamId);
+      if (local) stopStream(local.id);
+      else mesh.unpublish(pub.streamId);
     },
-    [mesh.myId, streams, stopStream],
+    [mesh, streams, stopStream],
   );
 
   // Persist a default slot the first time we see a new publication on host.
