@@ -34,54 +34,35 @@ export const MenuBar = ({
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
 
-  const identity =
-    session.authenticated && session.address ? (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        {session.isAdmin ? "ADMIN" : "GUEST"} ·
-        <Address address={session.address as AddressType} size="xs" onlyEnsOrAddress />
-      </span>
-    ) : (
-      <>{sessionLabel(session)}</>
-    );
-
   const authNode = session.authenticated ? (
-    <span
+    <button
+      type="button"
+      onClick={() => {
+        void signOut();
+      }}
       className="slop-menubar__item"
       style={{
-        color: session.isAdmin ? "var(--slop-magenta, #ff3ec9)" : undefined,
-        fontWeight: session.isAdmin ? 600 : undefined,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
+        background: "transparent",
+        border: 0,
+        color: "var(--slop-text-muted)",
+        cursor: "pointer",
+        fontSize: "inherit",
+        fontFamily: "inherit",
+        padding: "1px 4px",
+        textDecoration: "underline",
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
       }}
     >
-      {identity}
-      <button
-        type="button"
-        onClick={() => {
-          void signOut();
-        }}
-        style={{
-          marginLeft: 8,
-          background: "transparent",
-          border: 0,
-          color: "var(--slop-text-muted)",
-          cursor: "pointer",
-          fontSize: "inherit",
-          fontFamily: "inherit",
-          padding: 0,
-          textDecoration: "underline",
-        }}
-      >
-        sign out
-      </button>
-    </span>
+      sign out
+    </button>
   ) : (
     <Link href="/join" className="slop-menubar__item" style={{ textDecoration: "none", color: "inherit" }}>
       {sessionLabel(session)}
     </Link>
   );
 
+  // Right-to-left: Online/Offline (far right) · Sign out · (XX guests ▾)
   return (
     <div className={`slop-menubar ${className}`.trim()}>
       <span className="slop-menubar__brand slop-menubar__item">{brand}</span>
@@ -92,13 +73,15 @@ export const MenuBar = ({
       ))}
       <span className="flex-1" />
       {right ?? (
-        <span className="slop-menubar__status" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span className="slop-menubar__status" style={{ display: "flex", alignItems: "center", gap: 14 }}>
           {peers !== undefined ? <PeersDropdown peers={peers} myId={myId ?? null} /> : null}
-          <LivePulse live={isLive || (meshConnected ?? false)} />
-          <span>
-            {meshConnected !== undefined ? (meshConnected ? "Online" : "Offline") : isLive ? "On Air" : "Offline"}
-          </span>
           {authNode}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <LivePulse live={isLive || (meshConnected ?? false)} />
+            <span>
+              {meshConnected !== undefined ? (meshConnected ? "Online" : "Offline") : isLive ? "On Air" : "Offline"}
+            </span>
+          </span>
         </span>
       )}
     </div>
