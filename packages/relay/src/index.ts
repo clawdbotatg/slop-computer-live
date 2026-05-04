@@ -2,7 +2,7 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import {
   type Publication,
@@ -114,6 +114,34 @@ app.get("/auth/me", async req => {
     address: session.address,
     handle: session.handle,
     isAdmin: session.role === "host" && !!session.address && isAdminAddress(session.address),
+  };
+});
+
+// --- TURN credentials (HMAC, RFC 5766 ephemeral) ----------------------------
+// Issues a short-lived {username, credential, urls} pair for the WebRTC ICE
+// agent. Username is "<expiry-unix-seconds>:<random>", credential is
+// base64(HMAC-SHA1(turnSecret, username)). The TURN server validates the same
+// way using its `static-auth-secret`.
+app.get("/turn/credentials", async (req, reply) => {
+  const token = req.cookies[SESSION_COOKIE];
+  const session = getSession(token);
+  if (!session) return reply.code(401).send({ error: "Unauthenticated" });
+  if (!config.turnSecret || !config.turnHost) {
+    return reply.code(503).send({ error: "TURN not configured" });
+  }
+  const expiry = Math.floor(Date.now() / 1000) + config.turnTtlSeconds;
+  const id = randomBytes(4).toString("hex");
+  const username = `${expiry}:${id}`;
+  const credential = createHmac("sha1", config.turnSecret).update(username).digest("base64");
+  return {
+    username,
+    credential,
+    ttl: config.turnTtlSeconds,
+    urls: [
+      `stun:${config.turnHost}:3478`,
+      `turn:${config.turnHost}:3478?transport=udp`,
+      `turn:${config.turnHost}:3478?transport=tcp`,
+    ],
   };
 });
 

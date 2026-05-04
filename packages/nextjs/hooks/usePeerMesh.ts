@@ -3,10 +3,48 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://slop.computer/signal";
+const RELAY_HTTP_URL = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
-const ICE_CONFIG: RTCConfiguration = {
+// Fallback when our relay's TURN server isn't reachable yet — STUN-only.
+// This works for same-NAT testing but fails on symmetric NATs.
+const FALLBACK_ICE: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
+
+type TurnCreds = {
+  username: string;
+  credential: string;
+  ttl: number;
+  urls: string[];
+};
+
+let cachedTurn: { config: RTCConfiguration; expiresAt: number } | null = null;
+
+async function fetchIceConfig(): Promise<RTCConfiguration> {
+  // Reuse if still valid (refresh 60s before expiry).
+  if (cachedTurn && cachedTurn.expiresAt > Date.now() + 60_000) {
+    return cachedTurn.config;
+  }
+  try {
+    const res = await fetch(`${RELAY_HTTP_URL}/turn/credentials`, { credentials: "include" });
+    if (!res.ok) return FALLBACK_ICE;
+    const data = (await res.json()) as TurnCreds;
+    const config: RTCConfiguration = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: data.urls,
+          username: data.username,
+          credential: data.credential,
+        },
+      ],
+    };
+    cachedTurn = { config, expiresAt: Date.now() + data.ttl * 1000 };
+    return config;
+  } catch {
+    return FALLBACK_ICE;
+  }
+}
 
 const PING_INTERVAL_MS = 25_000;
 const CURSOR_THROTTLE_MS = 33; // ~30hz
@@ -79,6 +117,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const localStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const selfRef = useRef<SelfHint | null>(self);
   selfRef.current = self;
+  // ICE config (STUN+TURN) — refreshed once per session/credential expiry.
+  const iceConfigRef = useRef<RTCConfiguration>(FALLBACK_ICE);
 
   const send = useCallback((msg: object) => {
     const ws = wsRef.current;
@@ -124,7 +164,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
 
   const createPeerConnection = useCallback(
     (peerId: string): RTCPeerConnection => {
-      const pc = new RTCPeerConnection(ICE_CONFIG);
+      const pc = new RTCPeerConnection(iceConfigRef.current);
 
       // Attach existing local streams so newly-formed pcs get our outgoing media.
       for (const stream of localStreamsRef.current.values()) {
@@ -290,7 +330,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       setRemoteStreams(new Map());
     };
 
-    const connect = () => {
+    const connect = async () => {
+      if (cancelled) return;
+      iceConfigRef.current = await fetchIceConfig();
       if (cancelled) return;
       const ws = new WebSocket(RELAY_WS_URL);
       wsRef.current = ws;
@@ -440,7 +482,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         setPeers([]);
         setPublications([]);
         if (cancelled) return;
-        reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+        reconnectTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
       };
 
       ws.onerror = () => {
@@ -452,7 +494,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       };
     };
 
-    connect();
+    void connect();
 
     return () => {
       cancelled = true;

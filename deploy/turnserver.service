@@ -1,0 +1,18 @@
+[Unit]
+Description=coturn TURN/STUN server for slop-computer-live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=turnserver
+Group=turnserver
+ExecStart=/usr/bin/turnserver -c /etc/turnserver.conf --no-cli --pidfile=
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

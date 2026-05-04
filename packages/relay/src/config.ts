@@ -30,4 +30,7 @@ export const config = {
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),
   mediamtxRtmpIngress: env("MEDIAMTX_RTMP_INGRESS_URL", "rtmp://localhost:1935/live"),
+  turnSecret: env("TURN_SECRET", ""),
+  turnHost: env("TURN_HOST", ""),
+  turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),
 };
