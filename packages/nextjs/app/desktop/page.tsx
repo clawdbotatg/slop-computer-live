@@ -1,28 +1,22 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
 import { LocalStreamHandle, MyCameraControls, StreamView } from "~~/components/desktop/MyCamera";
 import { WhosHere } from "~~/components/desktop/WhosHere";
 import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
-import { usePeerMesh } from "~~/hooks/usePeerMesh";
+import { type WindowState, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
 
 export const dynamic = "force-dynamic";
 
-type WinDef = {
-  id: string;
-  title: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  zIndex: number;
-  bodyStyle?: React.CSSProperties;
-  body: React.ReactNode;
-};
+const SHARED_DEFAULT_W = 360;
+const SHARED_DEFAULT_H = 260;
+const SHARED_OFFSET_BASE_X = 80;
+const SHARED_OFFSET_BASE_Y = 280;
+const SHARED_OFFSET_STEP = 30;
 
 const Desktop: NextPage = () => {
   const { session, loading } = useSession();
@@ -33,9 +27,9 @@ const Desktop: NextPage = () => {
   }, [session]);
 
   const mesh = usePeerMesh(session.authenticated, selfHint);
+  const isHost = session.authenticated && session.isAdmin;
 
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
-  const [topZ, setTopZ] = useState(10);
 
   const addStream = useCallback(
     (h: LocalStreamHandle) => {
@@ -63,123 +57,141 @@ const Desktop: NextPage = () => {
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
     : "guest";
 
-  // Build a label for a remote peer
   const peerLabel = useCallback(
     (peerId: string): string => {
       const peer = mesh.peers.find(p => p.id === peerId);
-      if (!peer) return peerId;
+      if (!peer) return peerId.slice(0, 6);
       if (peer.handle) return peer.handle;
       if (peer.address) return shortAddress(peer.address);
-      return peerId.slice(0, 8);
+      return peerId.slice(0, 6);
     },
     [mesh.peers],
   );
 
-  // Collect remote stream windows
-  const remoteStreamWindows: WinDef[] = useMemo(() => {
-    const windows: WinDef[] = [];
-    let i = 0;
-    mesh.remoteStreams.forEach((stream, peerId) => {
-      const label = peerLabel(peerId);
-      windows.push({
-        id: `remote-${peerId}`,
-        title: `REMOTE — ${label}`,
-        x: 80 + i * 30,
-        y: 300 + i * 30,
-        width: 360,
-        height: 260,
-        zIndex: 4 + i,
-        bodyStyle: { padding: 0, overflow: "hidden" },
-        body: (
-          <video
-            autoPlay
-            playsInline
-            controls
-            muted
-            ref={el => {
-              if (el && el.srcObject !== stream) el.srcObject = stream;
-            }}
-            style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
-          />
-        ),
-      });
-      i++;
-    });
-    return windows;
-  }, [mesh.remoteStreams, peerLabel]);
+  // ---- Host: declare shared windows for every visible stream --------------
+  // Only the host (admin) has authority to create/move/close shared windows.
+  useEffect(() => {
+    if (!isHost || !mesh.myId) return;
 
-  const baseWindows: WinDef[] = useMemo(() => {
-    const list: WinDef[] = [];
-    if (session.authenticated) {
-      list.push({
-        id: "my-camera",
-        title: `MY CAMERA — ${myLabel}`,
-        x: 40,
-        y: 40,
-        width: 360,
-        height: 220,
-        zIndex: 1,
-        body: <MyCameraControls onStream={addStream} onStop={stopStream} />,
+    const ensure = (id: string, base: Partial<WindowState>) => {
+      if (mesh.windows[id]) return;
+      const offset = Object.keys(mesh.windows).length;
+      mesh.updateWindow({
+        id,
+        kind: "camera",
+        title: id,
+        x: SHARED_OFFSET_BASE_X + offset * SHARED_OFFSET_STEP,
+        y: SHARED_OFFSET_BASE_Y + offset * SHARED_OFFSET_STEP,
+        width: SHARED_DEFAULT_W,
+        height: SHARED_DEFAULT_H,
+        z: 5 + offset,
+        open: true,
+        ownerPeerId: null,
+        ownerLabel: null,
+        ...base,
       });
-      list.push({
-        id: "whos-here",
-        title: "WHO'S HERE",
-        x: 420,
-        y: 40,
-        width: 280,
-        height: 240,
-        zIndex: 2,
-        body: <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />,
+    };
+
+    // Own streams (host's own camera + screen)
+    for (const s of streams) {
+      const isCam = s.kind === "cam";
+      ensure(`${isCam ? "camera" : "screen"}-${mesh.myId}-${s.id}`, {
+        kind: isCam ? "camera" : "screen",
+        ownerPeerId: mesh.myId,
+        ownerLabel: myLabel,
+        title: `${isCam ? "CAMERA" : "SCREEN"} — ${myLabel}`,
       });
     }
-    streams.forEach((s, i) => {
-      list.push({
-        id: `stream-${s.id}`,
-        title: `${s.kind === "screen" ? "SCREEN SHARE" : "MY CAMERA"} — ${myLabel}`,
-        x: 80 + i * 30,
-        y: 280 + i * 30,
-        width: 360,
-        height: 260,
-        zIndex: 3 + i,
-        bodyStyle: { padding: 0 },
-        body: <StreamView stream={s.stream} muted onStop={() => stopStream(s.id)} />,
+
+    // Remote streams (guests publishing to host)
+    mesh.remoteStreams.forEach((_stream, peerId) => {
+      ensure(`remote-${peerId}`, {
+        kind: "remote",
+        ownerPeerId: peerId,
+        ownerLabel: peerLabel(peerId),
+        title: `CAMERA — ${peerLabel(peerId)}`,
       });
     });
-    for (const w of remoteStreamWindows) {
-      list.push(w);
+  }, [isHost, mesh, mesh.myId, mesh.remoteStreams, mesh.windows, streams, myLabel, peerLabel]);
+
+  // Host: garbage-collect windows whose owner is no longer connected.
+  useEffect(() => {
+    if (!isHost) return;
+    const peerIds = new Set(mesh.peers.map(p => p.id));
+    for (const w of Object.values(mesh.windows)) {
+      if (!w.ownerPeerId) continue;
+      if (!peerIds.has(w.ownerPeerId)) mesh.removeWindow(w.id);
     }
-    return list;
-  }, [
-    session.authenticated,
-    myLabel,
-    mesh.myId,
-    mesh.peers,
-    mesh.connected,
-    streams,
-    addStream,
-    stopStream,
-    remoteStreamWindows,
-  ]);
+  }, [isHost, mesh, mesh.peers, mesh.windows]);
 
-  const [zMap, setZMap] = useState<Record<string, number>>({});
-  const focus = (id: string) => {
-    setTopZ(z => z + 1);
-    setZMap(m => ({ ...m, [id]: topZ + 1 }));
-  };
-  const [closed, setClosed] = useState<Record<string, boolean>>({});
-  const close = (id: string) => {
-    if (id.startsWith("stream-")) {
-      const streamId = id.slice("stream-".length);
-      stopStream(streamId);
-    }
-    setClosed(c => ({ ...c, [id]: true }));
-  };
+  // Find the live MediaStream for a given window (own or remote).
+  const streamForWindow = useCallback(
+    (w: WindowState): MediaStream | null => {
+      if (!w.ownerPeerId) return null;
+      if (w.ownerPeerId === mesh.myId) {
+        // Own window — try to match by suffix `-<streamId>` first
+        const tail = w.id.split(`-${mesh.myId}-`)[1];
+        if (tail) {
+          const local = streams.find(s => s.id === tail);
+          if (local) return local.stream;
+        }
+        return streams[0]?.stream ?? null;
+      }
+      return mesh.remoteStreams.get(w.ownerPeerId) ?? null;
+    },
+    [mesh.myId, mesh.remoteStreams, streams],
+  );
 
-  const windows = baseWindows
-    .filter(w => !closed[w.id])
-    .map(w => (zMap[w.id] !== undefined ? { ...w, zIndex: zMap[w.id] } : w));
+  // ---- Window manipulation handlers (host only writes; guests no-op) ------
+  const focusWindow = useCallback(
+    (w: WindowState) => {
+      if (!isHost) return;
+      const maxZ = Math.max(0, ...Object.values(mesh.windows).map(x => x.z));
+      if (w.z >= maxZ) return;
+      mesh.updateWindow({ id: w.id, z: maxZ + 1 });
+    },
+    [isHost, mesh],
+  );
 
-  // Remote cursors (exclude self)
+  const closeWindow = useCallback(
+    (w: WindowState) => {
+      if (!isHost) return;
+      // If it's an own-stream window, also stop the stream locally.
+      if (w.ownerPeerId === mesh.myId) {
+        const tail = w.id.split(`-${mesh.myId}-`)[1];
+        if (tail) stopStream(tail);
+      }
+      mesh.removeWindow(w.id);
+    },
+    [isHost, mesh, stopStream],
+  );
+
+  const moveWindow = useCallback(
+    (w: WindowState, x: number, y: number) => {
+      if (!isHost) return;
+      mesh.updateWindow({ id: w.id, x, y });
+    },
+    [isHost, mesh],
+  );
+
+  const resizeWindow = useCallback(
+    (w: WindowState, x: number, y: number, width: number, height: number) => {
+      if (!isHost) return;
+      mesh.updateWindow({ id: w.id, x, y, width, height });
+    },
+    [isHost, mesh],
+  );
+
+  // Render the shared window list.
+  const sharedWindows = useMemo(
+    () =>
+      Object.values(mesh.windows)
+        .filter(w => w.open)
+        .sort((a, b) => a.z - b.z),
+    [mesh.windows],
+  );
+
+  // Local-only utility windows (camera controls + who's here) are pinned.
   const remoteCursors = useMemo(() => {
     const result: Array<{ peerId: string; x: number; y: number; label: string }> = [];
     Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
@@ -222,22 +234,74 @@ const Desktop: NextPage = () => {
           </div>
         ) : null}
 
-        {windows.map(w => (
-          <Window
-            key={w.id}
-            title={w.title}
-            x={w.x}
-            y={w.y}
-            width={w.width}
-            height={w.height}
-            zIndex={w.zIndex}
-            onFocus={() => focus(w.id)}
-            onClose={() => close(w.id)}
-            bodyStyle={w.bodyStyle ?? { padding: 0 }}
-          >
-            {w.body}
-          </Window>
-        ))}
+        {/* Shared windows — same on every connected peer's screen. */}
+        {sharedWindows.map(w => {
+          const stream = streamForWindow(w);
+          return (
+            <Window
+              key={w.id}
+              title={w.title}
+              x={w.x}
+              y={w.y}
+              width={w.width}
+              height={w.height}
+              zIndex={w.z}
+              onFocus={() => focusWindow(w)}
+              onClose={() => closeWindow(w)}
+              onMove={({ x, y }) => moveWindow(w, x, y)}
+              onResize={({ x, y, width, height }) => resizeWindow(w, x, y, width, height)}
+              bodyStyle={{ padding: 0, overflow: "hidden" }}
+            >
+              {stream ? (
+                <video
+                  autoPlay
+                  playsInline
+                  muted={w.ownerPeerId === mesh.myId}
+                  ref={el => {
+                    if (el && el.srcObject !== stream) el.srcObject = stream;
+                  }}
+                  style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    background: "#000",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--slop-text-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  waiting for stream…
+                </div>
+              )}
+            </Window>
+          );
+        })}
+
+        {/* Local-only utilities — fixed-position panels, not synced across peers. */}
+        {session.authenticated ? (
+          <>
+            <Window
+              title={`MY CAMERA — ${myLabel}`}
+              x={40}
+              y={40}
+              width={360}
+              height={220}
+              zIndex={1}
+              bodyStyle={{ padding: 0 }}
+            >
+              <MyCameraControls onStream={addStream} onStop={stopStream} />
+            </Window>
+            <Window title="WHO'S HERE" x={420} y={40} width={280} height={240} zIndex={2} bodyStyle={{ padding: 0 }}>
+              <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />
+            </Window>
+            <LocalPreviews streams={streams} onStop={stopStream} />
+          </>
+        ) : null}
 
         {/* Remote peer cursors */}
         {remoteCursors.map(({ peerId, x, y, label }) => (
@@ -247,5 +311,24 @@ const Desktop: NextPage = () => {
     </>
   );
 };
+
+const LocalPreviews = ({ streams, onStop }: { streams: LocalStreamHandle[]; onStop: (id: string) => void }) => (
+  <>
+    {streams.map((s, i) => (
+      <Window
+        key={`local-preview-${s.id}`}
+        title={`LOCAL PREVIEW — ${s.kind === "screen" ? "SCREEN" : "CAMERA"}`}
+        x={40 + i * 30}
+        y={500 + i * 30}
+        width={280}
+        height={180}
+        zIndex={2}
+        bodyStyle={{ padding: 0 }}
+      >
+        <StreamView stream={s.stream} muted onStop={() => onStop(s.id)} />
+      </Window>
+    ))}
+  </>
+);
 
 export default Desktop;

@@ -28,6 +28,22 @@ type SelfHint = {
   handle: string | null;
 };
 
+export type WindowState = {
+  id: string;
+  kind: "camera" | "screen" | "remote" | "panel";
+  ownerPeerId: string | null;
+  ownerLabel: string | null;
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  z: number;
+  open: boolean;
+};
+
+export type WindowPatch = Partial<WindowState> & { id: string };
+
 export type PeerMeshState = {
   myId: string | null;
   peers: Peer[];
@@ -35,8 +51,11 @@ export type PeerMeshState = {
   remoteStreams: Map<string, MediaStream>;
   peerConnections: Map<string, RTCPeerConnection>;
   cursors: Record<string, CursorData>;
+  windows: Record<string, WindowState>;
   addLocalStream: (stream: MediaStream) => void;
   removeLocalStream: (stream: MediaStream) => void;
+  updateWindow: (patch: WindowPatch) => void;
+  removeWindow: (id: string) => void;
 };
 
 export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshState {
@@ -46,6 +65,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [peerConnections, setPeerConnections] = useState<Map<string, RTCPeerConnection>>(new Map());
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
+  const [windows, setWindows] = useState<Record<string, WindowState>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -285,6 +305,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           };
           setPeers([...others, me]);
 
+          // Initial window snapshot from server (host-authoritative layout).
+          if (Array.isArray(msg.windows)) {
+            const next: Record<string, WindowState> = {};
+            for (const w of msg.windows as WindowState[]) {
+              if (w && typeof w.id === "string") next[w.id] = w;
+            }
+            setWindows(next);
+          }
+
           // Reset existing pcs (reconnect) and re-initiate to lower-id peers.
           teardownConnections();
           for (const peer of others) {
@@ -332,6 +361,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           setCursors(prev => ({ ...prev, [from]: { x, y } }));
           return;
         }
+
+        if (msg.type === "window" && msg.window && typeof (msg.window as WindowState).id === "string") {
+          const w = msg.window as WindowState;
+          setWindows(prev => ({ ...prev, [w.id]: w }));
+          return;
+        }
+
+        if (msg.type === "window_removed" && typeof msg.id === "string") {
+          const id = msg.id as string;
+          setWindows(prev => {
+            if (!(id in prev)) return prev;
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          return;
+        }
       };
 
       ws.onclose = () => {
@@ -344,6 +390,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
         myIdRef.current = null;
         teardownConnections();
         setPeers([]);
+        setWindows({});
         if (cancelled) return;
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       };
@@ -387,6 +434,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     return () => window.removeEventListener("mousemove", handler);
   }, [connected, send]);
 
+  const updateWindow = useCallback(
+    (patch: WindowPatch) => {
+      send({ type: "window_update", ...patch });
+    },
+    [send],
+  );
+
+  const removeWindow = useCallback(
+    (id: string) => {
+      send({ type: "window_remove", id });
+    },
+    [send],
+  );
+
   return {
     myId,
     peers,
@@ -394,7 +455,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     remoteStreams,
     peerConnections,
     cursors,
+    windows,
     addLocalStream,
     removeLocalStream,
+    updateWindow,
+    removeWindow,
   };
 }

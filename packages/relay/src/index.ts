@@ -4,9 +4,12 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
+import { applyWindowUpdate, getLayout, removeWindow, type WindowState } from "./desktop.js";
 import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
+
+const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? "info" },
@@ -164,16 +167,20 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 });
 
 // --- WS /signal -------------------------------------------------------------
-// Message types relayed between peers:
-//   { type: "offer"  | "answer" | "ice", to: <peerId>, payload }
-//   { type: "cursor", x, y }                          // broadcast
-//   { type: "window", id, x, y, w, h, z }             // broadcast (host-authoritative in v1)
-// Server-emitted:
-//   { type: "hello", id, peers: [...] }
+// Client → server:
+//   { type: "offer"|"answer"|"ice", to: <peerId>, payload }
+//   { type: "cursor", x, y }                       // broadcast
+//   { type: "window_update", id, ...patch }         // host-only; updates layout snapshot + broadcast
+//   { type: "window_remove", id }                   // host-only
+//   { type: "ping" }
+// Server → client:
+//   { type: "hello", id, peers: [...], windows: [...] }
 //   { type: "peer_join" | "peer_leave", peer }
 //   { type: "signal", from, payload, kind }
 //   { type: "cursor", from, x, y }
-//   { type: "window", from, ...state }
+//   { type: "window", window: WindowState }         // a single window changed
+//   { type: "window_removed", id }
+//   { type: "pong" }
 //   { type: "error", error }
 
 app.register(async function signalRoutes(fastify) {
@@ -196,7 +203,12 @@ app.register(async function signalRoutes(fastify) {
     };
 
     addPeer({ ...info, ws: socket, sessionToken: session.token });
-    send(socket, { type: "hello", id: peerId, peers: listPeers().filter(p => p.id !== peerId) });
+    send(socket, {
+      type: "hello",
+      id: peerId,
+      peers: listPeers().filter(p => p.id !== peerId),
+      windows: getLayout(PRIMARY_HOST_ADDR),
+    });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
     socket.on("message", (raw: Buffer | string) => {
@@ -232,20 +244,37 @@ app.register(async function signalRoutes(fastify) {
           broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
           return;
         }
-        case "window": {
-          broadcast(
-            {
-              type: "window",
-              from: peerId,
-              id: msg.id,
-              x: msg.x,
-              y: msg.y,
-              w: msg.w,
-              h: msg.h,
-              z: msg.z,
-            },
-            peerId,
-          );
+        case "window_update": {
+          // Host-only authority. Anyone else's update is ignored to keep
+          // the shared layout single-sourced.
+          if (info.role !== "host" || !info.address || !isAdminAddress(info.address)) {
+            return send(socket, { type: "error", error: "not_host" });
+          }
+          if (typeof msg.id !== "string") {
+            return send(socket, { type: "error", error: "missing_id" });
+          }
+          const patch: Partial<WindowState> & { id: string } = { id: msg.id };
+          for (const key of ["kind", "ownerPeerId", "ownerLabel", "title"] as const) {
+            if (msg[key] !== undefined) (patch as any)[key] = msg[key];
+          }
+          for (const key of ["x", "y", "width", "height", "z"] as const) {
+            if (typeof msg[key] === "number") (patch as any)[key] = msg[key];
+          }
+          if (typeof msg.open === "boolean") patch.open = msg.open;
+          const merged = applyWindowUpdate(PRIMARY_HOST_ADDR, patch);
+          if (!merged) return;
+          broadcast({ type: "window", window: merged });
+          return;
+        }
+        case "window_remove": {
+          if (info.role !== "host" || !info.address || !isAdminAddress(info.address)) {
+            return send(socket, { type: "error", error: "not_host" });
+          }
+          if (typeof msg.id !== "string") {
+            return send(socket, { type: "error", error: "missing_id" });
+          }
+          const ok = removeWindow(PRIMARY_HOST_ADDR, msg.id);
+          if (ok) broadcast({ type: "window_removed", id: msg.id });
           return;
         }
         default:
