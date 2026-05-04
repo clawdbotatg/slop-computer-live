@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { NextPage } from "next";
 import { LocalStreamHandle, MyCameraControls } from "~~/components/desktop/MyCamera";
 import { WhosHere } from "~~/components/desktop/WhosHere";
-import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
+import { Bevel, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
@@ -279,13 +279,13 @@ const Desktop: NextPage = () => {
 
   return (
     <>
+      <DesktopBackground />
       <MenuBar isLive={false} />
       <div
         style={{
           position: "fixed",
           inset: 0,
-          paddingTop: 22,
-          background: "radial-gradient(ellipse at 30% 40%, #2a0030 0%, #1a0a3a 40%, #0a0520 100%)",
+          paddingTop: 26,
           overflow: "hidden",
         }}
       >

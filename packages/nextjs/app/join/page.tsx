@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { NextPage } from "next";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
-import { Bevel, Button, MenuBar, TextField } from "~~/components/ui";
+import { Bevel, Button, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -161,8 +161,9 @@ const JoinForm = () => {
 
 const JoinPage: NextPage = () => (
   <>
+    <DesktopBackground />
     <MenuBar />
-    <main style={{ paddingTop: 60, display: "flex", justifyContent: "center" }}>
+    <main style={{ position: "relative", paddingTop: 60, display: "flex", justifyContent: "center" }}>
       <Suspense fallback={<div style={{ color: "var(--slop-text-muted)" }}>Loading…</div>}>
         <JoinForm />
       </Suspense>

@@ -6,7 +6,7 @@ import type { NextPage } from "next";
 import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
-import { Bevel, Button, MenuBar, TextField } from "~~/components/ui";
+import { Bevel, Button, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
 import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -560,9 +560,11 @@ const AdminPage: NextPage = () => {
 
   return (
     <>
+      <DesktopBackground />
       <MenuBar isLive={false} />
       <main
         style={{
+          position: "relative",
           paddingTop: 50,
           padding: "50px 24px 24px",
           display: "flex",

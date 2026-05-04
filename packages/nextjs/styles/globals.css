@@ -2,30 +2,60 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-/* === Slop Platinum tokens === */
+/* === Slop tokens (E2 · ASCII Topo) ======================================
+   Aqua glossy chrome over a dark vaporwave dithered topographic base.
+   Magenta primary, cyan secondary, lime for healthy/on-air, amber accent. */
 :root {
-  --slop-bg: #1a1a1a;
-  --slop-panel: #262626;
-  --slop-panel-light: #333333;
-  --slop-bevel-light: #4a4a4a;
-  --slop-bevel-dark: #0d0d0d;
-  --slop-text: #e8e8e8;
-  --slop-text-muted: #9a9a9a;
-  --slop-accent: #ff00aa;
-  --slop-accent-active: #ff66cc;
-  --slop-live: #ff2255;
-  --slop-titlebar: linear-gradient(#3a3a3a, #2a2a2a);
-  --slop-titlebar-active: linear-gradient(#5a004a, #2a0020);
+  /* base palette */
+  --slop-bg: #06030d;
+  --slop-base: radial-gradient(circle at 50% 30%, #14091e 0%, #06030d 70%, #000 100%);
+  --slop-panel: #0a0f24;
+  --slop-panel-glass: linear-gradient(180deg, rgba(10, 15, 36, 0.95) 0%, rgba(6, 8, 24, 0.92) 100%);
+  --slop-panel-light: #1a1638;
+  --slop-bevel-light: rgba(255, 255, 255, 0.18);
+  --slop-bevel-dark: #000;
 
-  --slop-font-display: "Chicago", "ChicagoFLF", "Geneva", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --slop-font-body: "Geneva", "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
-  --slop-font-mono: "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+  /* text */
+  --slop-text: #e8e0ff;
+  --slop-text-muted: #7878a0;
+
+  /* accents */
+  --slop-magenta: #ff3ec9;
+  --slop-magenta-dim: #c41a96;
+  --slop-purple: #7c4dff;
+  --slop-cyan: #3fcfff;
+  --slop-lime: #bcff5b;
+  --slop-amber: #ffae00;
+  --slop-red: #ff5577;
+
+  /* role */
+  --slop-accent: var(--slop-magenta);
+  --slop-accent-active: var(--slop-magenta-dim);
+  --slop-live: var(--slop-lime);
+
+  /* chrome derivatives */
+  --slop-titlebar: linear-gradient(
+    180deg,
+    var(--slop-purple) 0%,
+    rgba(124, 77, 255, 0.55) 50%,
+    rgba(124, 77, 255, 0.85) 100%
+  );
+  --slop-titlebar-active: linear-gradient(
+    180deg,
+    var(--slop-magenta) 0%,
+    rgba(255, 62, 201, 0.55) 50%,
+    rgba(255, 62, 201, 0.85) 100%
+  );
+
+  --slop-font-display: var(--slop-font-display, "VT323"), "Courier New", ui-monospace, "Menlo", monospace;
+  --slop-font-body: var(--slop-font-display, "VT323"), "Courier New", ui-monospace, "Menlo", monospace;
+  --slop-font-mono: ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
 }
 
 @theme {
   --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  --font-slop: "Chicago", "ChicagoFLF", "Geneva", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-slop-body: "Geneva", "SF Mono", ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+  --font-slop: "VT323", "Courier New", ui-monospace, monospace;
+  --font-slop-body: "VT323", "Courier New", ui-monospace, monospace;
 }
 
 @plugin "daisyui" {
@@ -35,25 +65,25 @@
 @plugin "daisyui/theme" {
   name: "dark";
 
-  --color-primary: #ff00aa;
+  --color-primary: #ff3ec9;
   --color-primary-content: #ffffff;
-  --color-secondary: #333333;
-  --color-secondary-content: #e8e8e8;
-  --color-accent: #ff00aa;
+  --color-secondary: #1a1638;
+  --color-secondary-content: #e8e0ff;
+  --color-accent: #ff3ec9;
   --color-accent-content: #ffffff;
-  --color-neutral: #1a1a1a;
-  --color-neutral-content: #e8e8e8;
-  --color-base-100: #262626;
-  --color-base-200: #1a1a1a;
-  --color-base-300: #0f0f0f;
-  --color-base-content: #e8e8e8;
-  --color-info: #5a8fbf;
-  --color-success: #5fbf72;
-  --color-warning: #d4a64a;
-  --color-error: #ff2255;
+  --color-neutral: #06030d;
+  --color-neutral-content: #e8e0ff;
+  --color-base-100: #0a0f24;
+  --color-base-200: #06030d;
+  --color-base-300: #03020a;
+  --color-base-content: #e8e0ff;
+  --color-info: #3fcfff;
+  --color-success: #bcff5b;
+  --color-warning: #ffae00;
+  --color-error: #ff5577;
 
-  --radius-field: 0;
-  --radius-box: 0;
+  --radius-field: 6px;
+  --radius-box: 12px;
   --tt-tailw: 6px;
 }
 
@@ -63,15 +93,16 @@
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--slop-bevel-dark);
+    border-color: rgba(255, 62, 201, 0.25);
   }
 
   html,
   body {
-    background-color: var(--slop-bg);
+    background: var(--slop-bg);
     color: var(--slop-text);
     font-family: var(--slop-font-body);
-    font-size: 13px;
+    font-size: 16px;
+    letter-spacing: 0.04em;
   }
 
   body {
@@ -87,9 +118,11 @@
     margin-bottom: 0.5rem;
     line-height: 1.1;
     font-family: var(--slop-font-display);
-    font-weight: 700;
-    letter-spacing: 0.01em;
+    font-weight: 400;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
+    color: var(--slop-text);
+    text-shadow: 0 0 6px rgba(255, 62, 201, 0.25);
   }
 
   code,
@@ -105,53 +138,42 @@
   background: var(--slop-bg);
 }
 
-/* === Bevels === */
-
-.slop-bevel-out {
-  border-top: 1px solid var(--slop-bevel-light);
-  border-left: 1px solid var(--slop-bevel-light);
-  border-right: 1px solid var(--slop-bevel-dark);
-  border-bottom: 1px solid var(--slop-bevel-dark);
-}
-
-.slop-bevel-in {
-  border-top: 1px solid var(--slop-bevel-dark);
-  border-left: 1px solid var(--slop-bevel-dark);
-  border-right: 1px solid var(--slop-bevel-light);
-  border-bottom: 1px solid var(--slop-bevel-light);
-}
-
-/* === Window === */
+/* === Window (glassy aqua) ============================================ */
 
 .slop-window {
-  background: var(--slop-panel);
+  background: var(--slop-panel-glass);
   color: var(--slop-text);
-  border-top: 1px solid var(--slop-bevel-light);
-  border-left: 1px solid var(--slop-bevel-light);
-  border-right: 1px solid var(--slop-bevel-dark);
-  border-bottom: 1px solid var(--slop-bevel-dark);
-  border-radius: 0;
+  border: 1px solid rgba(255, 62, 201, 0.5);
+  border-radius: 12px;
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 0 24px rgba(255, 62, 201, 0.2);
   position: relative;
+  overflow: hidden;
 }
 
 .slop-titlebar {
   background: var(--slop-titlebar);
-  color: var(--slop-text);
+  color: #000;
   font-family: var(--slop-font-display);
   text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  font-size: 11px;
-  padding: 4px 8px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  font-size: 16px;
+  padding: 5px 12px;
   display: flex;
   align-items: center;
   gap: 6px;
-  border-bottom: 1px solid var(--slop-bevel-dark);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.25);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
 .slop-titlebar--active {
   background: var(--slop-titlebar-active);
-  color: var(--slop-text);
+  color: #000;
 }
 
 .slop-titlebar__dots {
@@ -161,97 +183,116 @@
 }
 
 .slop-titlebar__dot {
-  width: 10px;
-  height: 10px;
-  background: var(--slop-panel-light);
-  border-top: 1px solid var(--slop-bevel-dark);
-  border-left: 1px solid var(--slop-bevel-dark);
-  border-right: 1px solid var(--slop-bevel-light);
-  border-bottom: 1px solid var(--slop-bevel-light);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 25%, #fff 0%, #ff5f57 80%);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 #fff;
+}
+
+.slop-titlebar__dot:nth-child(2) {
+  background: radial-gradient(circle at 30% 25%, #fff 0%, #febc2e 80%);
+}
+
+.slop-titlebar__dot:nth-child(3) {
+  background: radial-gradient(circle at 30% 25%, #fff 0%, #28c840 80%);
 }
 
 .slop-resize {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   background: repeating-linear-gradient(
     135deg,
-    var(--slop-bevel-light) 0,
-    var(--slop-bevel-light) 1px,
+    rgba(255, 62, 201, 0.6) 0,
+    rgba(255, 62, 201, 0.6) 1px,
     transparent 1px,
     transparent 3px
   );
   pointer-events: none;
 }
 
-/* === Button === */
+/* === Button (pill / aqua gradient) =================================== */
 
 .slop-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: var(--slop-panel-light);
+  background: linear-gradient(180deg, var(--slop-panel-light) 0%, var(--slop-panel) 100%);
   color: var(--slop-text);
   font-family: var(--slop-font-display);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  font-weight: 700;
-  font-size: 11px;
-  padding: 5px 14px;
-  border-top: 1px solid var(--slop-bevel-light);
-  border-left: 1px solid var(--slop-bevel-light);
-  border-right: 1px solid var(--slop-bevel-dark);
-  border-bottom: 1px solid var(--slop-bevel-dark);
-  border-radius: 0;
+  font-weight: 400;
+  font-size: 16px;
+  padding: 5px 16px;
+  border: 1px solid rgba(124, 77, 255, 0.6);
+  border-radius: 9999px;
   cursor: pointer;
   text-decoration: none;
   user-select: none;
+  box-shadow:
+    0 0 8px rgba(124, 77, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  transition:
+    transform 0.05s,
+    box-shadow 0.1s;
 }
 
 .slop-button:hover {
-  background: #3d3d3d;
+  box-shadow:
+    0 0 16px rgba(124, 77, 255, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .slop-button:active,
 .slop-button[data-pressed="true"] {
-  border-top: 1px solid var(--slop-bevel-dark);
-  border-left: 1px solid var(--slop-bevel-dark);
-  border-right: 1px solid var(--slop-bevel-light);
-  border-bottom: 1px solid var(--slop-bevel-light);
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
 .slop-button--primary {
-  color: var(--slop-accent);
+  background: linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim) 100%);
+  color: #fff;
+  border: 1px solid var(--slop-magenta);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 4px 12px rgba(255, 62, 201, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .slop-button--primary:hover {
-  color: var(--slop-accent-active);
+  box-shadow:
+    0 4px 18px rgba(255, 62, 201, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
-/* === TextField === */
+/* === TextField (terminal-style input) ================================ */
 
 .slop-textfield {
-  background: var(--slop-bg);
+  background: rgba(0, 0, 0, 0.6);
   color: var(--slop-text);
-  font-family: var(--slop-font-mono);
-  font-size: 12px;
-  padding: 4px 6px;
-  border-top: 1px solid var(--slop-bevel-dark);
-  border-left: 1px solid var(--slop-bevel-dark);
-  border-right: 1px solid var(--slop-bevel-light);
-  border-bottom: 1px solid var(--slop-bevel-light);
-  border-radius: 0;
+  font-family: var(--slop-font-display);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 62, 201, 0.4);
+  border-radius: 6px;
   outline: none;
+  box-shadow: inset 0 0 10px rgba(255, 62, 201, 0.15);
 }
 
 .slop-textfield:focus {
-  border-color: var(--slop-accent);
+  border-color: var(--slop-magenta);
+  box-shadow: inset 0 0 10px rgba(255, 62, 201, 0.3);
 }
 
-/* === MenuBar === */
+/* === MenuBar ========================================================== */
 
 .slop-menubar {
   position: fixed;
@@ -259,17 +300,20 @@
   left: 0;
   right: 0;
   z-index: 9000;
-  height: 22px;
+  height: 26px;
   display: flex;
   align-items: center;
   gap: 16px;
-  background: var(--slop-panel);
-  border-bottom: 1px solid var(--slop-bevel-dark);
+  background: linear-gradient(180deg, rgba(255, 62, 201, 0.18) 0%, rgba(0, 0, 0, 0.7) 100%);
+  border-bottom: 1px solid var(--slop-magenta);
+  box-shadow:
+    0 2px 16px rgba(255, 62, 201, 0.45),
+    inset 0 1px 0 rgba(255, 62, 201, 0.35);
   padding: 0 12px;
   font-family: var(--slop-font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   user-select: none;
 }
@@ -277,16 +321,28 @@
 .slop-menubar__item {
   color: var(--slop-text);
   cursor: default;
-  padding: 2px 4px;
+  padding: 1px 4px;
 }
 
 .slop-menubar__item:hover {
-  background: var(--slop-accent);
-  color: #ffffff;
+  background: var(--slop-magenta);
+  color: #000;
 }
 
 .slop-menubar__brand {
-  color: var(--slop-accent);
+  background: linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-purple) 100%);
+  color: #fff !important;
+  padding: 1px 10px;
+  border-radius: 9999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 0 12px rgba(255, 62, 201, 0.5);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+.slop-menubar__brand:hover {
+  background: linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-purple) 100%);
+  color: #fff;
 }
 
 .slop-menubar__status {
@@ -296,63 +352,93 @@
   font-family: var(--slop-font-body);
   color: var(--slop-text-muted);
   text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-/* === LivePulse === */
+/* === LivePulse ======================================================== */
 
 .slop-pulse {
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  background: var(--slop-live);
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  animation: slop-pulse 1s steps(2, end) infinite;
+  background: radial-gradient(circle at 30% 30%, var(--slop-lime) 0%, #4ba30a 100%);
+  box-shadow:
+    0 0 10px var(--slop-lime),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5);
+  animation: slop-pulse 1.2s ease-in-out infinite;
 }
 
 .slop-pulse--off {
   background: var(--slop-text-muted);
+  box-shadow: none;
   animation: none;
 }
 
 @keyframes slop-pulse {
   0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
   100% {
-    opacity: 0.15;
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
   }
 }
 
-/* === Misc === */
+/* === Misc ============================================================ */
 
 .slop-divider {
-  height: 0;
-  border-top: 1px solid var(--slop-bevel-dark);
-  border-bottom: 1px solid var(--slop-bevel-light);
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(255, 62, 201, 0.5) 0,
+    rgba(255, 62, 201, 0.5) 4px,
+    transparent 4px,
+    transparent 8px
+  );
 }
 
 .slop-link {
-  color: var(--slop-accent);
+  color: var(--slop-cyan);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .slop-link:hover {
-  color: var(--slop-accent-active);
+  color: var(--slop-magenta);
 }
 
 .slop-mono {
   font-family: var(--slop-font-mono);
 }
 
-/* keep chrome rectangular even from third-party CSS */
+/* Bevel utility classes — kept for backwards compat with existing
+   components, but neutralised since the new chrome doesn't use them. */
+.slop-bevel-out,
+.slop-bevel-in {
+  border: 1px solid rgba(255, 62, 201, 0.25);
+}
+
+/* keep daisyui buttons rounded to match */
 .btn {
-  border-radius: 0 !important;
+  border-radius: 9999px !important;
   box-shadow: none;
 }
 
 .btn.btn-ghost {
   box-shadow: none;
+}
+
+/* === Desktop background (E2 · ASCII Topo) ===========================
+   Used by /desktop's full-screen surface. Layered SVG + CSS to render
+   the dotted dither, mountain hatch, starfield, and bubble blobs. */
+
+.slop-desktop-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--slop-base);
+  pointer-events: none;
 }

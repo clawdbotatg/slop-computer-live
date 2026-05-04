@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { NextPage } from "next";
-import { Bevel, Button, LivePulse, MenuBar } from "~~/components/ui";
+import { Bevel, Button, DesktopBackground, LivePulse, MenuBar } from "~~/components/ui";
 import { useScaffoldReadContract } from "~~/hooks/scaffold-eth";
 
 const HLS_URL = process.env.NEXT_PUBLIC_HLS_URL ?? "";
@@ -28,9 +28,11 @@ const Home: NextPage = () => {
 
   return (
     <>
+      <DesktopBackground />
       <MenuBar isLive={live} />
       <main
         style={{
+          position: "relative",
           minHeight: "100vh",
           paddingTop: 60,
           display: "flex",
