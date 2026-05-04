@@ -11,7 +11,7 @@ live.slop.computer {
 
     # Relay HTTP routes (SIWE auth, admin start/stop) and WS /signal endpoint.
     # NOTE: port 8081 — :8080 is owned by based-keno on this host.
-    @relay path /signal* /auth/* /admin/api/*
+    @relay path /signal* /auth/* /admin/*
     reverse_proxy @relay localhost:8081
 
     # Next.js app
