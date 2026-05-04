@@ -135,15 +135,20 @@ const Desktop: NextPage = () => {
     }
   }, [isHost, mesh, mesh.peers, mesh.windows]);
 
-  // Find the live MediaStream for a given window (own or remote).
+  // Find the live MediaStream for a given window. If the window is owned
+  // by the current peer, use the local stream; otherwise fetch the remote
+  // stream from the peer connection mesh.
   const streamForWindow = useCallback(
     (w: WindowState): MediaStream | null => {
-      if (w.id === "host-camera") return streams.find(s => s.kind === "cam")?.stream ?? null;
-      if (w.id === "host-screen") return streams.find(s => s.kind === "screen")?.stream ?? null;
-      if (!w.ownerPeerId) return null;
-      return mesh.remoteStreams.get(w.ownerPeerId) ?? null;
+      if (w.ownerPeerId && w.ownerPeerId === mesh.myId) {
+        if (w.id === "host-camera") return streams.find(s => s.kind === "cam")?.stream ?? null;
+        if (w.id === "host-screen") return streams.find(s => s.kind === "screen")?.stream ?? null;
+        return null;
+      }
+      if (w.ownerPeerId) return mesh.remoteStreams.get(w.ownerPeerId) ?? null;
+      return null;
     },
-    [mesh.remoteStreams, streams],
+    [mesh.myId, mesh.remoteStreams, streams],
   );
 
   // ---- Window manipulation handlers (host only writes; guests no-op) ------
