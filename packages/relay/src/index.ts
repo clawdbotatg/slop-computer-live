@@ -169,21 +169,17 @@ function requireHost(req: { cookies: Record<string, string | undefined> }):
 app.post("/admin/start", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  // OBS Server: rtmpUrl. Stream key: streamKey. MediaMTX accepts the
-  // publish credentials via the URL form rtmp://user:pass@host:port/key.
-  // We expose both ways so the host can paste either into OBS depending on
-  // which form their version accepts.
+  // OBS only takes two fields — Server URL and Stream Key. We collapse the
+  // MediaMTX publish credentials into the stream key as a query string so
+  // the secret is in ONE place, not split across visible fields. Final URL
+  // OBS publishes to: rtmp://host:port/live?user=...&pass=...
   const u = config.mediamtxPublishUser;
   const p = config.mediamtxPublishPass;
-  const base = config.mediamtxRtmpIngress.replace(/^rtmp:\/\//, "");
-  const rtmpUrlAuthed = `rtmp://${encodeURIComponent(u)}:${encodeURIComponent(p)}@${base}`;
+  const streamKey = `live?user=${encodeURIComponent(u)}&pass=${encodeURIComponent(p)}`;
   return {
     ok: true,
     rtmpUrl: config.mediamtxRtmpIngress,
-    streamKey: "live",
-    publishUser: u,
-    publishPass: p,
-    rtmpUrlAuthed,
+    streamKey,
     hlsUrl: config.hlsUrl,
   };
 });

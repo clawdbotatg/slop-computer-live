@@ -183,9 +183,6 @@ const AdminPage: NextPage = () => {
   type StreamSession = {
     rtmpUrl: string;
     streamKey: string;
-    publishUser: string;
-    publishPass: string;
-    rtmpUrlAuthed: string;
     hlsUrl: string;
   };
   const [stream, setStream] = useState<StreamSession | null>(null);
@@ -357,15 +354,14 @@ const AdminPage: NextPage = () => {
             <span style={{ color: "var(--slop-text-muted)" }}>OBS Server URL:</span>
             <code>{stream.rtmpUrl}</code>
             <span style={{ color: "var(--slop-text-muted)" }}>OBS Stream Key:</span>
-            <code>{stream.streamKey}</code>
-            <span style={{ color: "var(--slop-text-muted)" }}>Auth user:</span>
-            <code>{stream.publishUser}</code>
-            <span style={{ color: "var(--slop-text-muted)" }}>Auth pass:</span>
-            <code>{stream.publishPass}</code>
-            <span style={{ color: "var(--slop-text-muted)" }}>Combined URL (alt):</span>
-            <code>{stream.rtmpUrlAuthed}</code>
+            <code style={{ color: "var(--slop-magenta, #ff3ec9)" }}>{stream.streamKey}</code>
             <span style={{ color: "var(--slop-text-muted)" }}>HLS playback:</span>
             <code>{stream.hlsUrl}</code>
+            <span />
+            <span style={{ color: "var(--slop-text-muted)", fontSize: 11 }}>
+              Stream key contains the publish password — keep it secret. Rotate by restarting the relay with a new
+              MEDIAMTX_PUBLISH_PASS.
+            </span>
           </div>
         ) : null}
       </Bevel>
