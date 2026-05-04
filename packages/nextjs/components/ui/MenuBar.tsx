@@ -3,6 +3,8 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { LivePulse } from "./LivePulse";
+import { Address } from "@scaffold-ui/components";
+import type { Address as AddressType } from "viem";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 
 interface MenuBarProps {
@@ -33,15 +35,28 @@ export const MenuBar = ({
 
   const clock = now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
 
+  const identity =
+    session.authenticated && session.address ? (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {session.isAdmin ? "ADMIN" : "GUEST"} ·
+        <Address address={session.address as AddressType} size="xs" onlyEnsOrAddress />
+      </span>
+    ) : (
+      <>{sessionLabel(session)}</>
+    );
+
   const authNode = session.authenticated ? (
     <span
       className="slop-menubar__item"
       style={{
         color: session.isAdmin ? "var(--slop-magenta, #ff3ec9)" : undefined,
         fontWeight: session.isAdmin ? 600 : undefined,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
       }}
     >
-      {sessionLabel(session)}
+      {identity}
       <button
         type="button"
         onClick={() => {

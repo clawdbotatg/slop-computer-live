@@ -1,7 +1,8 @@
 "use client";
 
+import { Address } from "@scaffold-ui/components";
+import type { Address as AddressType } from "viem";
 import type { Peer } from "~~/hooks/usePeerMesh";
-import { shortAddress } from "~~/hooks/useSession";
 
 type Props = {
   myId: string | null;
@@ -9,7 +10,11 @@ type Props = {
   connected: boolean;
 };
 
-const labelOf = (p: Peer) => p.handle ?? (p.address ? shortAddress(p.address) : p.id.slice(0, 6));
+const labelOf = (p: Peer) => {
+  if (p.handle) return <span>{p.handle}</span>;
+  if (p.address) return <Address address={p.address as AddressType} size="xs" onlyEnsOrAddress />;
+  return <span>{p.id.slice(0, 6)}</span>;
+};
 
 export const WhosHere = ({ myId, peers, connected }: Props) => {
   return (

@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
+import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
 import { Bevel, Button, MenuBar, TextField } from "~~/components/ui";
@@ -249,10 +251,16 @@ const AdminPage: NextPage = () => {
   const adminPanel = (
     <>
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <p style={{ marginTop: 0 }}>
-          Authenticated as <code>{auth.authenticated ? auth.address : ""}</code> ({auth.authenticated ? auth.role : ""})
-          {!isHost && " — not on the admin allowlist."}
-        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 0 }}>
+          <span>Authenticated as</span>
+          {auth.authenticated && auth.address ? (
+            <Address address={auth.address as AddressType} size="sm" />
+          ) : (
+            <code>—</code>
+          )}
+          <span>({auth.authenticated ? auth.role : ""})</span>
+          {!isHost && <span style={{ color: "var(--slop-text-muted)" }}>— not on the admin allowlist.</span>}
+        </div>
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
@@ -329,7 +337,7 @@ const AdminPage: NextPage = () => {
                   </td>
                   <td style={{ padding: "4px 8px" }}>
                     {p.address ? (
-                      <code>{p.address}</code>
+                      <Address address={p.address as AddressType} size="xs" />
                     ) : p.handle ? (
                       p.handle
                     ) : (
