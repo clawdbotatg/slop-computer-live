@@ -54,6 +54,8 @@ The host runs OBS pointed at this page (browser source) and pushes RTMP to a sel
 
 The host can always SIWE in. The password path exists so a non-crypto guest can still come on the show — that's a hard requirement. Hybrid by design.
 
+The host wallet is **clawdbotatg.eth (`0x11ce…1442`)**, NOT atg.eth. See [WALLETS.md](WALLETS.md) for the role split — atg.eth is a regular participant, not an admin.
+
 ## Stack
 
 | Layer            | Choice                                                                          |
