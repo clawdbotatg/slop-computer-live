@@ -86,11 +86,19 @@ export const MenuBar = ({
         <span className="slop-menubar__status" style={{ display: "flex", alignItems: "center", gap: 14 }}>
           {peers !== undefined ? <PeersDropdown peers={peers} myId={myId ?? null} /> : null}
           {authNode}
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{ display: "inline-flex", alignItems: "center", padding: "0 4px", cursor: "help" }}
+            title={
+              meshConnected !== undefined
+                ? meshConnected
+                  ? "Online — connected to the slop relay over a WebSocket. Mesh signaling, cursor sync, and shared layout updates all flow."
+                  : "Offline — WebSocket to the relay is down. Auto-reconnecting every 2s. Check your network or auth."
+                : isLive
+                  ? "On Air — the show is live (contract isLive() = true)."
+                  : "Off Air — the show is not currently broadcasting."
+            }
+          >
             <LivePulse live={isLive || (meshConnected ?? false)} />
-            <span>
-              {meshConnected !== undefined ? (meshConnected ? "Online" : "Offline") : isLive ? "On Air" : "Offline"}
-            </span>
           </span>
         </span>
       )}

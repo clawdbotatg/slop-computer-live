@@ -370,8 +370,10 @@
 }
 
 .slop-pulse--off {
-  background: var(--slop-text-muted);
-  box-shadow: none;
+  background: radial-gradient(circle at 30% 30%, var(--slop-red) 0%, #7a0e22 100%);
+  box-shadow:
+    0 0 6px var(--slop-red),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5);
   animation: none;
 }
 
