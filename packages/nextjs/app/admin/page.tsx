@@ -185,8 +185,58 @@ const AdminPage: NextPage = () => {
     streamKey: string;
     hlsUrl: string;
   };
+  type Fanout = {
+    id: "youtube" | "twitch" | "twitter" | "kick";
+    name: string;
+    configured: boolean;
+    running: boolean;
+    startedAt?: string;
+  };
   const [stream, setStream] = useState<StreamSession | null>(null);
   const [showTitle, setShowTitle] = useState("Slop Computer Live");
+  const [fanouts, setFanouts] = useState<Fanout[]>([]);
+  const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isHost) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${RELAY_BASE}/admin/fanouts`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setFanouts(data.fanouts ?? []);
+      } catch {
+        /* relay offline — leave list empty */
+      }
+    };
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [isHost]);
+
+  const toggleFanout = async (id: string, action: "start" | "stop") => {
+    setFanoutBusy(id);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/fanouts/${id}/${action}`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(`fanout ${action} failed: ${data.error ?? res.statusText}`);
+      } else if (data.fanouts) {
+        setFanouts(data.fanouts);
+      }
+    } catch (err) {
+      setStatus(`fanout ${action} failed: ${(err as Error).message}`);
+    } finally {
+      setFanoutBusy(null);
+    }
+  };
 
   const handleGetRtmpInfo = async () => {
     setStatus("Fetching RTMP credentials...");
@@ -364,6 +414,80 @@ const AdminPage: NextPage = () => {
             </span>
           </div>
         ) : null}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Restream destinations
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
+          OBS pushes once to slop.computer. The relay re-publishes to each enabled destination with{" "}
+          <code>ffmpeg -c copy</code>. Stream keys live in the relay env, never in the browser.
+        </p>
+        {fanouts.length === 0 ? (
+          <p style={{ color: "var(--slop-text-muted)", fontSize: 12 }}>
+            No destinations available — relay isn&apos;t responding.
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {fanouts.map(f => (
+              <div
+                key={f.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "8px 12px",
+                  border: "1px solid var(--slop-bevel-dark)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                  <span
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: 10,
+                      fontFamily: "var(--slop-font-display)",
+                      letterSpacing: "0.05em",
+                      color: f.running ? "#fff" : "var(--slop-text-muted)",
+                      background: f.running ? "var(--slop-magenta, #ff3ec9)" : "transparent",
+                      border: f.running ? "0" : "1px solid var(--slop-bevel-dark)",
+                      minWidth: 60,
+                      textAlign: "center",
+                    }}
+                  >
+                    {f.running ? "LIVE" : f.configured ? "OFF" : "UNCONFIGURED"}
+                  </span>
+                  <span style={{ fontWeight: 600 }}>{f.name}</span>
+                  {f.startedAt ? (
+                    <span style={{ color: "var(--slop-text-muted)", fontSize: 11 }}>
+                      since {new Date(f.startedAt).toLocaleTimeString()}
+                    </span>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {f.configured ? (
+                    f.running ? (
+                      <Button onClick={() => toggleFanout(f.id, "stop")} disabled={fanoutBusy === f.id}>
+                        Stop
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="primary"
+                        onClick={() => toggleFanout(f.id, "start")}
+                        disabled={fanoutBusy === f.id}
+                      >
+                        Start
+                      </Button>
+                    )
+                  ) : (
+                    <span style={{ color: "var(--slop-text-muted)", fontSize: 11 }}>set key in relay env</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>

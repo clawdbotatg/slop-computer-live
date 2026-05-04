@@ -15,6 +15,7 @@ import {
   publish as publishStream,
   unpublish as unpublishStream,
 } from "./desktop.js";
+import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
@@ -198,6 +199,33 @@ app.get("/admin/peers", async (req, reply) => {
 
 type KickBody = { id?: unknown };
 
+// --- Fanout (server-side restream to YouTube/Twitch/X/Kick) -----------------
+app.get("/admin/fanouts", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return { fanouts: listFanouts() };
+});
+
+app.post<{ Params: { id: string } }>("/admin/fanouts/:id/start", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const id = req.params.id;
+  if (!isKnownFanoutId(id)) return reply.code(400).send({ error: "Unknown destination" });
+  const result = startFanout(id, line => app.log.info(line));
+  if (!result.ok) return reply.code(400).send({ error: result.error });
+  return { ok: true, fanouts: listFanouts() };
+});
+
+app.post<{ Params: { id: string } }>("/admin/fanouts/:id/stop", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const id = req.params.id;
+  if (!isKnownFanoutId(id)) return reply.code(400).send({ error: "Unknown destination" });
+  const result = stopFanout(id);
+  if (!result.ok) return reply.code(400).send({ error: result.error });
+  return { ok: true, fanouts: listFanouts() };
+});
+
 app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -366,3 +394,13 @@ app
     app.log.error(err);
     process.exit(1);
   });
+
+// Clean up restream children on shutdown so destinations see a clean
+// "stream ended" rather than a network drop.
+const cleanShutdown = (signal: NodeJS.Signals) => {
+  app.log.info(`received ${signal} — stopping fanouts`);
+  shutdownAllFanouts();
+  app.close().finally(() => process.exit(0));
+};
+process.on("SIGTERM", cleanShutdown);
+process.on("SIGINT", cleanShutdown);
