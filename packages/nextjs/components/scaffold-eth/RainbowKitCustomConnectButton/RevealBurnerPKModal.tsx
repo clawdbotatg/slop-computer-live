@@ -12,7 +12,8 @@ export const RevealBurnerPKModal = () => {
 
   const handleCopyPK = async () => {
     try {
-      const storage = rainbowkitBurnerWallet.useSessionStorage ? sessionStorage : localStorage;
+      if (typeof window === "undefined") return;
+      const storage = rainbowkitBurnerWallet.useSessionStorage ? window.sessionStorage : window.localStorage;
       const burnerPK = storage?.getItem(BURNER_WALLET_PK_KEY);
       if (!burnerPK) throw new Error("Burner wallet private key not found");
       await copyToClipboard(burnerPK);
