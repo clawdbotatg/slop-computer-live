@@ -1,7 +1,7 @@
 "use client";
 
+import type { Peer } from "~~/hooks/usePeerMesh";
 import { shortAddress } from "~~/hooks/useSession";
-import type { Peer } from "~~/hooks/useSignalSocket";
 
 type Props = {
   myId: string | null;

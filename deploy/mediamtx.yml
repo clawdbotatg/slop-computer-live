@@ -1,0 +1,40 @@
+# MediaMTX config for slop.computer
+# RTMP ingest on :1935, HLS output on :8888, no auth on read.
+# Publishing requires the host to know the stream key (set in path config below).
+
+logLevel: info
+logDestinations: [stdout]
+
+api: no
+metrics: no
+playback: no
+pprof: no
+
+# Plain RTMP ingest (host pushes here)
+rtmp: yes
+rtmpAddress: :1935
+rtmpEncryption: "no"
+
+# HLS read (Caddy proxies media.slop.computer/hls/* here)
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigin: "*"
+hlsEncryption: no
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+
+# Disable other protocols we don't need
+rtsp: no
+srt: no
+webrtc: no
+
+# Path rules: single static path "live" — host publishes via RTMP,
+# anyone can read the HLS output. Auth lives at the relay layer for v1.
+paths:
+  live:
+    source: publisher
+    sourceOnDemand: no

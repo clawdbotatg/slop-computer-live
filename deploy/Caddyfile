@@ -20,6 +20,11 @@ live.slop.computer {
 
 media.slop.computer {
     encode zstd gzip
-    # MediaMTX HLS output
+    # MediaMTX HLS output. The app speaks https://media.slop.computer/hls/live/index.m3u8
+    # and MediaMTX serves at http://localhost:8888/live/index.m3u8 — strip the /hls prefix.
+    handle_path /hls/* {
+        reverse_proxy localhost:8888
+    }
+    # Bare-domain access still works for raw MediaMTX paths.
     reverse_proxy localhost:8888
 }

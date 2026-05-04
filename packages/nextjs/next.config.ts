@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   devIndicators: false,
+  outputFileTracingRoot: path.join(__dirname),
   typescript: {
     ignoreBuildErrors: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true",
   },

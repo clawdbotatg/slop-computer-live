@@ -9,7 +9,6 @@ import { Bevel, Button, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
-import { useSignalSocket } from "~~/hooks/useSignalSocket";
 
 export const dynamic = "force-dynamic";
 
@@ -33,23 +32,32 @@ const Desktop: NextPage = () => {
     return { role: session.role, address: session.address, handle: session.handle };
   }, [session]);
 
-  const presence = useSignalSocket(session.authenticated, selfHint);
-  const peerMesh = usePeerMesh(session.authenticated, selfHint);
+  const mesh = usePeerMesh(session.authenticated, selfHint);
 
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
   const [topZ, setTopZ] = useState(10);
 
-  const addStream = useCallback((h: LocalStreamHandle) => {
-    setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
-  }, []);
+  const addStream = useCallback(
+    (h: LocalStreamHandle) => {
+      setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
+      mesh.addLocalStream(h.stream);
+    },
+    [mesh],
+  );
 
-  const stopStream = useCallback((id: string) => {
-    setStreams(prev => {
-      const target = prev.find(s => s.id === id);
-      target?.stream.getTracks().forEach(t => t.stop());
-      return prev.filter(s => s.id !== id);
-    });
-  }, []);
+  const stopStream = useCallback(
+    (id: string) => {
+      setStreams(prev => {
+        const target = prev.find(s => s.id === id);
+        if (target) {
+          mesh.removeLocalStream(target.stream);
+          target.stream.getTracks().forEach(t => t.stop());
+        }
+        return prev.filter(s => s.id !== id);
+      });
+    },
+    [mesh],
+  );
 
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
@@ -58,20 +66,20 @@ const Desktop: NextPage = () => {
   // Build a label for a remote peer
   const peerLabel = useCallback(
     (peerId: string): string => {
-      const peer = presence.peers.find(p => p.id === peerId);
+      const peer = mesh.peers.find(p => p.id === peerId);
       if (!peer) return peerId;
       if (peer.handle) return peer.handle;
       if (peer.address) return shortAddress(peer.address);
       return peerId.slice(0, 8);
     },
-    [presence.peers],
+    [mesh.peers],
   );
 
-  // Collect remote stream windows (added on right side, below whos-here)
+  // Collect remote stream windows
   const remoteStreamWindows: WinDef[] = useMemo(() => {
     const windows: WinDef[] = [];
     let i = 0;
-    peerMesh.remoteStreams.forEach((stream, peerId) => {
+    mesh.remoteStreams.forEach((stream, peerId) => {
       const label = peerLabel(peerId);
       windows.push({
         id: `remote-${peerId}`,
@@ -85,10 +93,11 @@ const Desktop: NextPage = () => {
         body: (
           <video
             autoPlay
-            muted
             playsInline
+            controls
+            muted
             ref={el => {
-              if (el) el.srcObject = stream;
+              if (el && el.srcObject !== stream) el.srcObject = stream;
             }}
             style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
           />
@@ -97,7 +106,7 @@ const Desktop: NextPage = () => {
       i++;
     });
     return windows;
-  }, [peerMesh.remoteStreams, peerLabel]);
+  }, [mesh.remoteStreams, peerLabel]);
 
   const baseWindows: WinDef[] = useMemo(() => {
     const list: WinDef[] = [];
@@ -120,7 +129,7 @@ const Desktop: NextPage = () => {
         width: 280,
         height: 240,
         zIndex: 2,
-        body: <WhosHere myId={presence.myId} peers={presence.peers} connected={presence.connected} />,
+        body: <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />,
       });
     }
     streams.forEach((s, i) => {
@@ -136,7 +145,6 @@ const Desktop: NextPage = () => {
         body: <StreamView stream={s.stream} muted onStop={() => stopStream(s.id)} />,
       });
     });
-    // Add remote peer video windows
     for (const w of remoteStreamWindows) {
       list.push(w);
     }
@@ -144,9 +152,9 @@ const Desktop: NextPage = () => {
   }, [
     session.authenticated,
     myLabel,
-    presence.myId,
-    presence.peers,
-    presence.connected,
+    mesh.myId,
+    mesh.peers,
+    mesh.connected,
     streams,
     addStream,
     stopStream,
@@ -174,13 +182,13 @@ const Desktop: NextPage = () => {
   // Remote cursors (exclude self)
   const remoteCursors = useMemo(() => {
     const result: Array<{ peerId: string; x: number; y: number; label: string }> = [];
-    Object.entries(peerMesh.cursors).forEach(([peerId, pos]) => {
-      if (peerId !== presence.myId) {
+    Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
+      if (peerId !== mesh.myId) {
         result.push({ peerId, ...pos, label: peerLabel(peerId) });
       }
     });
     return result;
-  }, [peerMesh.cursors, presence.myId, peerLabel]);
+  }, [mesh.cursors, mesh.myId, peerLabel]);
 
   return (
     <>
