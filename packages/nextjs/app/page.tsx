@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
 import { LocalStreamHandle, MyCameraControls } from "~~/components/desktop/MyCamera";
-import { WhosHere } from "~~/components/desktop/WhosHere";
 import { Bevel, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
@@ -61,7 +60,6 @@ const Desktop: NextPage = () => {
   // Position of the LOCAL panels (MY CAMERA + WHO'S HERE). These are not
   // synced — each peer drags them around their own screen freely.
   const [myCameraPos, setMyCameraPos] = useState({ x: 40, y: 40, w: 360, h: 220 });
-  const [whosHerePos, setWhosHerePos] = useState({ x: 420, y: 40, w: 280, h: 240 });
 
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
@@ -280,7 +278,7 @@ const Desktop: NextPage = () => {
   return (
     <>
       <DesktopBackground />
-      <MenuBar isLive={false} />
+      <MenuBar peers={mesh.peers} myId={mesh.myId} meshConnected={mesh.connected} />
       <div
         style={{
           position: "fixed",
@@ -418,19 +416,6 @@ const Desktop: NextPage = () => {
               bodyStyle={{ padding: 0 }}
             >
               <MyCameraControls onStream={addStream} onStop={stopStream} />
-            </Window>
-            <Window
-              title="WHO'S HERE"
-              x={whosHerePos.x}
-              y={whosHerePos.y}
-              width={whosHerePos.w}
-              height={whosHerePos.h}
-              zIndex={2}
-              onMove={({ x, y }) => setWhosHerePos(p => ({ ...p, x, y }))}
-              onResize={({ x, y, width, height }) => setWhosHerePos({ x, y, w: width, h: height })}
-              bodyStyle={{ padding: 0 }}
-            >
-              <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />
             </Window>
           </>
         ) : null}

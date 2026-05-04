@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { LivePulse } from "./LivePulse";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
+import type { Peer } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 
 interface MenuBarProps {
@@ -13,6 +14,10 @@ interface MenuBarProps {
   isLive?: boolean;
   right?: React.ReactNode;
   className?: string;
+  /** Pass mesh state when on the desktop view to render the guest dropdown. */
+  peers?: Peer[];
+  myId?: string | null;
+  meshConnected?: boolean;
 }
 
 const DEFAULT_ITEMS = ["File", "Live", "Wallet"];
@@ -23,17 +28,11 @@ export const MenuBar = ({
   isLive = false,
   right,
   className = "",
+  peers,
+  myId,
+  meshConnected,
 }: MenuBarProps) => {
-  const [now, setNow] = useState<Date | null>(null);
   const { session, signOut } = useSession();
-
-  useEffect(() => {
-    setNow(new Date());
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const clock = now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
 
   const identity =
     session.authenticated && session.address ? (
@@ -94,16 +93,113 @@ export const MenuBar = ({
       <span className="flex-1" />
       {right ?? (
         <span className="slop-menubar__status" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <LivePulse live={isLive} />
-          <span>{isLive ? "On Air" : "Offline"}</span>
-          {authNode}
-          <span style={{ color: "var(--slop-text-muted)" }} suppressHydrationWarning>
-            {clock}
+          {peers !== undefined ? <PeersDropdown peers={peers} myId={myId ?? null} /> : null}
+          <LivePulse live={isLive || (meshConnected ?? false)} />
+          <span>
+            {meshConnected !== undefined ? (meshConnected ? "Online" : "Offline") : isLive ? "On Air" : "Offline"}
           </span>
+          {authNode}
         </span>
       )}
     </div>
   );
 };
+
+function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <span ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: "transparent",
+          border: 0,
+          color: "inherit",
+          font: "inherit",
+          cursor: "pointer",
+          padding: "0 6px",
+          letterSpacing: "0.04em",
+        }}
+      >
+        ({peers.length} guest{peers.length === 1 ? "" : "s"}) <span aria-hidden>▾</span>
+      </button>
+      {open ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            minWidth: 240,
+            background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,62,201,0.5)",
+            borderRadius: 8,
+            boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
+            padding: 4,
+            zIndex: 9100,
+            color: "var(--slop-text)",
+          }}
+        >
+          {peers.length === 0 ? (
+            <div style={{ padding: "6px 12px", color: "var(--slop-text-muted)", fontSize: 12 }}>just you so far.</div>
+          ) : (
+            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              {peers.map(p => {
+                const isMe = p.id === myId;
+                return (
+                  <li
+                    key={p.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      padding: "5px 10px",
+                      borderRadius: 4,
+                      background: isMe ? "rgba(255,62,201,0.12)" : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontWeight: p.role === "host" ? 600 : undefined,
+                      }}
+                    >
+                      {p.role === "host" ? <span aria-hidden>★</span> : null}
+                      {p.handle ? (
+                        <span>{p.handle}</span>
+                      ) : p.address ? (
+                        <Address address={p.address as AddressType} size="xs" onlyEnsOrAddress />
+                      ) : (
+                        <span>{p.id.slice(0, 6)}</span>
+                      )}
+                      {isMe ? <span style={{ color: "var(--slop-text-muted)" }}>(you)</span> : null}
+                    </span>
+                    <span style={{ color: "var(--slop-text-muted)", fontSize: 11, flexShrink: 0 }}>{p.role}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </span>
+  );
+}
 
 export default MenuBar;
