@@ -26,6 +26,10 @@ export const config = {
   adminAddresses: adminAddrs,
   adminDomain: env("ADMIN_DOMAIN", "localhost:3000"),
   guestPassword: env("GUEST_PASSWORD", ""),
+  // Set to ".slop.computer" so auth cookies are shared between slop.computer
+  // (where login UIs live) and live.slop.computer (where the relay is hosted).
+  // Leave empty for local dev — defaults to same-origin only.
+  cookieDomain: env("COOKIE_DOMAIN", ""),
   sessionSecret: env("SIWE_SESSION_SECRET", "dev-secret-change-me"),
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),
