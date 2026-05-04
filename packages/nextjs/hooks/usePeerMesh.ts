@@ -58,7 +58,7 @@ export type Peer = {
   connectedAt?: number;
 };
 
-export type SlotKind = "camera" | "screen";
+export type SlotKind = "camera" | "screen" | "audio";
 
 export type Publication = {
   streamId: string;

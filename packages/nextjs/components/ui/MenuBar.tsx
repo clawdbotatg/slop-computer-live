@@ -8,26 +8,38 @@ import type { Address as AddressType } from "viem";
 import type { Peer } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 
+export type MenuItem = {
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  shortcut?: string;
+  divider?: boolean;
+};
+
+export type Menu = {
+  label: string;
+  items: MenuItem[];
+};
+
 interface MenuBarProps {
   brand?: string;
-  items?: string[];
   isLive?: boolean;
   right?: React.ReactNode;
   className?: string;
+  /** Cascading menus rendered to the right of the brand. */
+  menus?: Menu[];
   /** Pass mesh state when on the desktop view to render the guest dropdown. */
   peers?: Peer[];
   myId?: string | null;
   meshConnected?: boolean;
 }
 
-const DEFAULT_ITEMS = ["File", "Live", "Wallet"];
-
 export const MenuBar = ({
-  brand = "Slop",
-  items = DEFAULT_ITEMS,
+  brand = "slop.computer",
   isLive = false,
   right,
   className = "",
+  menus = [],
   peers,
   myId,
   meshConnected,
@@ -66,10 +78,8 @@ export const MenuBar = ({
   return (
     <div className={`slop-menubar ${className}`.trim()}>
       <span className="slop-menubar__brand slop-menubar__item">{brand}</span>
-      {items.map(item => (
-        <span key={item} className="slop-menubar__item">
-          {item} <span aria-hidden>▾</span>
-        </span>
+      {menus.map(menu => (
+        <Dropdown key={menu.label} menu={menu} />
       ))}
       <span className="flex-1" />
       {right ?? (
@@ -87,6 +97,116 @@ export const MenuBar = ({
     </div>
   );
 };
+
+function Dropdown({ menu }: { menu: Menu }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <span ref={ref} style={{ position: "relative" }} className="slop-menubar__item">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: "transparent",
+          border: 0,
+          color: "inherit",
+          font: "inherit",
+          letterSpacing: "inherit",
+          textTransform: "inherit",
+          cursor: "pointer",
+          padding: "1px 4px",
+        }}
+      >
+        {menu.label} <span aria-hidden>▾</span>
+      </button>
+      {open ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            minWidth: 220,
+            background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,62,201,0.5)",
+            borderRadius: 8,
+            boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
+            padding: 4,
+            zIndex: 9100,
+            color: "var(--slop-text)",
+            textTransform: "none",
+          }}
+        >
+          {menu.items.map((item, i) =>
+            item.divider ? (
+              <div
+                key={i}
+                style={{
+                  height: 1,
+                  background:
+                    "repeating-linear-gradient(90deg, rgba(255,62,201,0.4) 0, rgba(255,62,201,0.4) 4px, transparent 4px, transparent 8px)",
+                  margin: "4px 6px",
+                }}
+              />
+            ) : (
+              <button
+                key={i}
+                type="button"
+                disabled={item.disabled}
+                onClick={() => {
+                  setOpen(false);
+                  item.onClick?.();
+                }}
+                style={{
+                  display: "flex",
+                  width: "100%",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "5px 12px",
+                  background: "transparent",
+                  border: 0,
+                  color: item.disabled ? "var(--slop-text-muted)" : "var(--slop-text)",
+                  font: "inherit",
+                  cursor: item.disabled ? "not-allowed" : "pointer",
+                  borderRadius: 4,
+                  textAlign: "left",
+                  letterSpacing: "0.04em",
+                }}
+                onMouseEnter={e => {
+                  if (item.disabled) return;
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+                  (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                  (e.currentTarget as HTMLButtonElement).style.color = item.disabled
+                    ? "var(--slop-text-muted)"
+                    : "var(--slop-text)";
+                }}
+              >
+                <span>{item.label}</span>
+                {item.shortcut ? (
+                  <span style={{ marginLeft: 24, color: "var(--slop-text-muted)" }}>{item.shortcut}</span>
+                ) : null}
+              </button>
+            ),
+          )}
+        </div>
+      ) : null}
+    </span>
+  );
+}
 
 function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) {
   const [open, setOpen] = useState(false);

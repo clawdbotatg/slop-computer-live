@@ -329,7 +329,7 @@ app.register(async function signalRoutes(fastify) {
         case "publish": {
           if (
             typeof msg.streamId !== "string" ||
-            (msg.kind !== "camera" && msg.kind !== "screen") ||
+            (msg.kind !== "camera" && msg.kind !== "screen" && msg.kind !== "audio") ||
             typeof msg.label !== "string"
           ) {
             return send(socket, { type: "error", error: "bad_publish" });

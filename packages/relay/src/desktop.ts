@@ -22,7 +22,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type SlotKind = "camera" | "screen";
+export type SlotKind = "camera" | "screen" | "audio";
 
 export type Publication = {
   streamId: string;

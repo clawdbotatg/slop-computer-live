@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
-import { LocalStreamHandle, MyCameraControls } from "~~/components/desktop/MyCamera";
+import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { Bevel, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
+import { useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
 
@@ -26,7 +27,7 @@ function slotIdFor(pub: Publication): string {
 
 const RESUME_KEY = "slop-resume-publishing-v1";
 
-type ResumeState = { camera?: boolean; screen?: boolean };
+type ResumeState = Partial<Record<StreamKind, boolean>>;
 
 const readResume = (): ResumeState => {
   if (typeof window === "undefined") return {};
@@ -57,10 +58,6 @@ const Desktop: NextPage = () => {
   const mesh = usePeerMesh(session.authenticated, selfHint);
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
-  // Position of the LOCAL panels (MY CAMERA + WHO'S HERE). These are not
-  // synced — each peer drags them around their own screen freely.
-  const [myCameraPos, setMyCameraPos] = useState({ x: 40, y: 40, w: 360, h: 220 });
-
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
     : "guest";
@@ -79,16 +76,16 @@ const Desktop: NextPage = () => {
   const addStream = useCallback(
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
-      mesh.publish(h.stream, h.kind === "screen" ? "screen" : "camera", myLabel);
+      mesh.publish(h.stream, h.kind, myLabel);
       const r = readResume();
-      writeResume({ ...r, [h.kind === "screen" ? "screen" : "camera"]: true });
+      writeResume({ ...r, [h.kind]: true });
     },
     [mesh, myLabel],
   );
 
   const stopStream = useCallback(
     (id: string) => {
-      let stoppedKind: "cam" | "screen" | null = null;
+      let stoppedKind: StreamKind | null = null;
       setStreams(prev => {
         const target = prev.find(s => s.id === id);
         if (target) {
@@ -100,12 +97,33 @@ const Desktop: NextPage = () => {
       });
       if (stoppedKind) {
         const r = readResume();
-        if (stoppedKind === "cam") delete r.camera;
-        else delete r.screen;
+        delete r[stoppedKind];
         writeResume(r);
       }
     },
     [mesh],
+  );
+
+  const media = useLocalMedia(addStream, stopStream);
+  const shareMenu = useMemo(
+    () => ({
+      label: "Share",
+      items: [
+        {
+          label: media.activeAudio ? "Stop audio" : "Audio",
+          onClick: () => (media.activeAudio ? media.stop("audio") : void media.startAudio()),
+        },
+        {
+          label: media.activeCamera ? "Stop video" : "Video",
+          onClick: () => (media.activeCamera ? media.stop("camera") : void media.startCamera()),
+        },
+        {
+          label: media.activeScreen ? "Stop screen" : "Screen",
+          onClick: () => (media.activeScreen ? media.stop("screen") : void media.startScreen()),
+        },
+      ],
+    }),
+    [media],
   );
 
   // ---- Auto-resume publishing on reload ----------------------------------
@@ -126,7 +144,7 @@ const Desktop: NextPage = () => {
           stream.getTracks().forEach(t => t.stop());
           return;
         }
-        addStream({ id: stream.id, kind: "cam", stream });
+        addStream({ id: stream.id, kind: "camera", stream });
       } catch {
         const cur = readResume();
         delete cur.camera;
@@ -237,8 +255,7 @@ const Desktop: NextPage = () => {
     (pub: Publication) => {
       if (pub.peerId !== mesh.myId) return;
       const r = readResume();
-      if (pub.kind === "screen") delete r.screen;
-      else delete r.camera;
+      delete r[pub.kind];
       writeResume(r);
       const local = streams.find(s => s.stream.id === pub.streamId);
       if (local) stopStream(local.id);
@@ -263,7 +280,7 @@ const Desktop: NextPage = () => {
 
   // Title prefix per kind.
   const titleFor = (pub: Publication) => {
-    const verb = pub.kind === "screen" ? "SCREEN" : "CAMERA";
+    const verb = pub.kind === "screen" ? "SCREEN" : pub.kind === "audio" ? "AUDIO" : "CAMERA";
     return `${verb} — ${pub.label || peerLabel(pub.peerId)}`;
   };
 
@@ -278,7 +295,12 @@ const Desktop: NextPage = () => {
   return (
     <>
       <DesktopBackground />
-      <MenuBar peers={mesh.peers} myId={mesh.myId} meshConnected={mesh.connected} />
+      <MenuBar
+        menus={session.authenticated ? [shareMenu] : []}
+        peers={mesh.peers}
+        myId={mesh.myId}
+        meshConnected={mesh.connected}
+      />
       <div
         style={{
           position: "fixed",
@@ -399,25 +421,6 @@ const Desktop: NextPage = () => {
               </Button>
             </div>
           </Window>
-        ) : null}
-
-        {/* Local-only utility panels — not synced. Each peer drags freely. */}
-        {session.authenticated ? (
-          <>
-            <Window
-              title={`MY CAMERA — ${myLabel}`}
-              x={myCameraPos.x}
-              y={myCameraPos.y}
-              width={myCameraPos.w}
-              height={myCameraPos.h}
-              zIndex={1}
-              onMove={({ x, y }) => setMyCameraPos(p => ({ ...p, x, y }))}
-              onResize={({ x, y, width, height }) => setMyCameraPos({ x, y, w: width, h: height })}
-              bodyStyle={{ padding: 0 }}
-            >
-              <MyCameraControls onStream={addStream} onStop={stopStream} />
-            </Window>
-          </>
         ) : null}
 
         {remoteCursors.map(({ peerId, x, y, label }) => (
