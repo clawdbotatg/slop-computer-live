@@ -60,6 +60,11 @@ const Desktop: NextPage = () => {
 
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
+  // Position of the LOCAL panels (MY CAMERA + WHO'S HERE). These are not
+  // synced — each peer drags them around their own screen freely.
+  const [myCameraPos, setMyCameraPos] = useState({ x: 40, y: 40, w: 360, h: 220 });
+  const [whosHerePos, setWhosHerePos] = useState({ x: 420, y: 40, w: 280, h: 240 });
+
   const myLabel = session.authenticated
     ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
     : "guest";
@@ -396,21 +401,33 @@ const Desktop: NextPage = () => {
           </Window>
         ) : null}
 
-        {/* Local-only utility panels — not synced. */}
+        {/* Local-only utility panels — not synced. Each peer drags freely. */}
         {session.authenticated ? (
           <>
             <Window
               title={`MY CAMERA — ${myLabel}`}
-              x={40}
-              y={40}
-              width={360}
-              height={220}
+              x={myCameraPos.x}
+              y={myCameraPos.y}
+              width={myCameraPos.w}
+              height={myCameraPos.h}
               zIndex={1}
+              onMove={({ x, y }) => setMyCameraPos(p => ({ ...p, x, y }))}
+              onResize={({ x, y, width, height }) => setMyCameraPos({ x, y, w: width, h: height })}
               bodyStyle={{ padding: 0 }}
             >
               <MyCameraControls onStream={addStream} onStop={stopStream} />
             </Window>
-            <Window title="WHO'S HERE" x={420} y={40} width={280} height={240} zIndex={2} bodyStyle={{ padding: 0 }}>
+            <Window
+              title="WHO'S HERE"
+              x={whosHerePos.x}
+              y={whosHerePos.y}
+              width={whosHerePos.w}
+              height={whosHerePos.h}
+              zIndex={2}
+              onMove={({ x, y }) => setWhosHerePos(p => ({ ...p, x, y }))}
+              onResize={({ x, y, width, height }) => setWhosHerePos({ x, y, w: width, h: height })}
+              bodyStyle={{ padding: 0 }}
+            >
               <WhosHere myId={mesh.myId} peers={mesh.peers} connected={mesh.connected} />
             </Window>
           </>

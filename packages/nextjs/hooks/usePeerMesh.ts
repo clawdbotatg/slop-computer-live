@@ -305,6 +305,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
 
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
+      // Optimistic local update so a controlled <Rnd> doesn't snap back
+      // while waiting for the server echo. Relay broadcast then confirms.
+      setSlots(prev => {
+        const cur = prev[patch.id];
+        const merged: SlotPosition = {
+          id: patch.id,
+          x: patch.x ?? cur?.x ?? 80,
+          y: patch.y ?? cur?.y ?? 280,
+          width: patch.width ?? cur?.width ?? 360,
+          height: patch.height ?? cur?.height ?? 260,
+          z: patch.z ?? cur?.z ?? 5,
+        };
+        return { ...prev, [patch.id]: merged };
+      });
       send({ type: "slot_update", ...patch });
     },
     [send],
