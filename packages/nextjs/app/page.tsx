@@ -180,19 +180,20 @@ const Desktop: NextPage = () => {
   }, [sessionAuth, mesh.connected]);
 
   // ---- Manual screen share resumption ------------------------------------
+  // Route through media.startScreen (the same path the Share menu uses) so
+  // activeIds in useLocalMedia gets populated. Calling getDisplayMedia
+  // directly bypassed that, leaving media.activeScreen=false even while
+  // the share was live — the menu then offered a second "Screen" instead
+  // of "Stop screen".
   const startScreenShare = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      addStream({ id: stream.id, kind: "screen", stream });
-      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
-        stopStream(stream.id);
-      });
+      await media.startScreen();
     } catch {
       const cur = readResume();
       delete cur.screen;
       writeResume(cur);
     }
-  }, [addStream, stopStream]);
+  }, [media]);
 
   // True when localStorage says we WERE screen-sharing, but we don't have
   // an active own screen publication yet (post-reload state).
