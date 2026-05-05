@@ -47,7 +47,8 @@ export function JoinCard({ invite }: { invite?: string }) {
       ].join("\n");
       setStatus("Awaiting signature...");
       const signature = await signMessageAsync({ message });
-      setStatus("Verifying signature...");
+      setStatus("Verifying signature… (POST /auth/siwe)");
+      const t0 = performance.now();
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 15_000);
       let verifyRes: Response;
@@ -59,21 +60,30 @@ export function JoinCard({ invite }: { invite?: string }) {
           body: JSON.stringify({ message, signature, nonce }),
           signal: ctrl.signal,
         });
+
+        console.log(`[JoinCard] /auth/siwe responded ${verifyRes.status} in ${Math.round(performance.now() - t0)}ms`);
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           setStatus("Auth failed: relay timed out after 15s");
           return;
         }
+
+        console.error("[JoinCard] /auth/siwe fetch threw", err);
         throw err;
       } finally {
         clearTimeout(timer);
       }
+      setStatus(`Verify HTTP ${verifyRes.status} — parsing response…`);
       const data = await verifyRes.json();
+
+      console.log("[JoinCard] /auth/siwe body", data);
       if (!verifyRes.ok) {
         setStatus(`Auth failed: ${data.error ?? verifyRes.statusText}`);
         return;
       }
+      setStatus("Signed in — refreshing session…");
       await refresh();
+      setStatus("Done.");
     } catch (err) {
       setStatus(`Auth error: ${(err as Error).message}`);
     }
