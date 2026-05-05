@@ -12,12 +12,13 @@ interface TitleBarProps {
 }
 
 const Dot = ({ onClick, label }: { onClick?: () => void; label?: string }) => {
-  if (!onClick) return <span className="slop-titlebar__dot" aria-hidden />;
+  if (!onClick) return <span className="slop-titlebar__dot" aria-hidden data-grab="false" />;
   return (
     <span
       className="slop-titlebar__dot"
       role="button"
       aria-label={label}
+      data-grab="false"
       style={{ cursor: "pointer" }}
       onClick={e => {
         e.stopPropagation();

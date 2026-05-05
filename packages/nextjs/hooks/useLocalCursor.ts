@@ -32,8 +32,13 @@ export function useLocalCursor() {
       ) {
         return "text";
       }
-      if (el.closest('[data-grab="true"], .slop-resize')) return "grab";
-      return "pointer";
+      // Walk up to the nearest cursor-marked ancestor. data-grab="false"
+      // (e.g. close/min/zoom dots inside a draggable titlebar) wins because
+      // it's closer in the DOM, so we return "pointer" for that subtree.
+      const marker = el.closest("[data-grab], .slop-resize");
+      if (!marker) return "pointer";
+      if (marker.classList.contains("slop-resize")) return "grab";
+      return marker.getAttribute("data-grab") === "true" ? "grab" : "pointer";
     };
 
     const onMove = (e: MouseEvent) => {
