@@ -11,8 +11,13 @@ const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 const SESSION_CHANGED = "slop:session-changed";
 
 export function notifySessionChanged() {
-  if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_CHANGED));
+  if (typeof window !== "undefined") {
+    console.log("[useSession] notifySessionChanged → dispatching", SESSION_CHANGED);
+    window.dispatchEvent(new Event(SESSION_CHANGED));
+  }
 }
+
+let instanceCounter = 0;
 
 export type Session =
   | { authenticated: false }
@@ -34,6 +39,7 @@ export type UseSessionResult = {
 export function useSession(): UseSessionResult {
   const [session, setSession] = useState<Session>({ authenticated: false });
   const [loading, setLoading] = useState(true);
+  const instanceId = useState(() => ++instanceCounter)[0];
 
   const refresh = useCallback(async () => {
     try {
@@ -43,13 +49,16 @@ export function useSession(): UseSessionResult {
         return;
       }
       const data = (await res.json()) as Session;
+
+      console.log(`[useSession#${instanceId}] refresh → session = ${data.authenticated}`);
       setSession(data);
-    } catch {
+    } catch (err) {
+      console.error(`[useSession#${instanceId}] refresh failed`, err);
       setSession({ authenticated: false });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [instanceId]);
 
   const signOut = useCallback(async () => {
     try {
@@ -73,7 +82,10 @@ export function useSession(): UseSessionResult {
       if (document.visibilityState === "visible") refresh();
     };
     const onPageShow = () => refresh();
-    const onChanged = () => refresh();
+    const onChanged = () => {
+      console.log(`[useSession#${instanceId}] heard ${SESSION_CHANGED} → refresh()`);
+      refresh();
+    };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener(SESSION_CHANGED, onChanged);
