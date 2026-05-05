@@ -109,6 +109,19 @@ const Desktop: NextPage = () => {
   );
 
   const media = useLocalMedia(addStream, stopStream);
+  // Forward-declared so the share menu's "Stop screen" handler can clear it
+  // synchronously, regardless of whether we're actively sharing or just have
+  // a post-reload resume placeholder up.
+  const [wantScreenResume, setWantScreenResume] = useState(false);
+
+  const stopScreenAndPlaceholder = useCallback(() => {
+    if (media.activeScreen) media.stop("screen");
+    const cur = readResume();
+    delete cur.screen;
+    writeResume(cur);
+    setWantScreenResume(false);
+  }, [media]);
+
   const shareMenu = useMemo(
     () => ({
       label: "Share",
@@ -122,12 +135,16 @@ const Desktop: NextPage = () => {
           onClick: () => (media.activeCamera ? media.stop("camera") : void media.startCamera()),
         },
         {
-          label: media.activeScreen ? "Stop screen" : "Screen",
-          onClick: () => (media.activeScreen ? media.stop("screen") : void media.startScreen()),
+          // Treat the placeholder as "active" so the menu always offers a way
+          // to dismiss it; clicking stops both the live stream (if any) and
+          // any lingering placeholder.
+          label: media.activeScreen || wantScreenResume ? "Stop screen" : "Screen",
+          onClick: () =>
+            media.activeScreen || wantScreenResume ? stopScreenAndPlaceholder() : void media.startScreen(),
         },
       ],
     }),
-    [media],
+    [media, wantScreenResume, stopScreenAndPlaceholder],
   );
 
   // ---- Auto-resume publishing on reload ----------------------------------
@@ -181,7 +198,6 @@ const Desktop: NextPage = () => {
   // an active own screen publication yet (post-reload state).
   const myOwnerKey = session.authenticated ? ((session.address ?? session.handle)?.toLowerCase() ?? null) : null;
   const hasOwnScreenPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "screen");
-  const [wantScreenResume, setWantScreenResume] = useState(false);
   useEffect(() => {
     setWantScreenResume(Boolean(readResume().screen) && !hasOwnScreenPub);
   }, [hasOwnScreenPub]);
