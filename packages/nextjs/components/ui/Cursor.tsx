@@ -42,9 +42,7 @@ export const Cursor = ({ x, y, kind = "pointer", label, dimmed = false, bands }:
   const svg = useCursorSvg(kind);
   const b = bands ?? DEFAULT_BANDS;
 
-  // CSS vars cascade from this wrapper into the inline <svg>, where the
-  // band masks reference them as fill="var(--band-1)" etc.
-  const wrapperStyle = {
+  const wrapperStyle: CSSProperties = {
     position: "fixed",
     left: x - hot.x,
     top: y - hot.y,
@@ -53,6 +51,15 @@ export const Cursor = ({ x, y, kind = "pointer", label, dimmed = false, bands }:
     filter: "drop-shadow(1px 2px 0 rgba(0,0,0,0.5))",
     willChange: "transform",
     opacity: dimmed ? 0.65 : 1,
+  };
+
+  // Per-peer band colors are applied as inline CSS vars on the <svg>
+  // itself so they override the class-scoped defaults baked into the
+  // inlined SVG markup (`.slop-cursor-svg { --band-1: ... }`).
+  const svgStyle = {
+    display: "block",
+    userSelect: "none",
+    overflow: "visible",
     "--band-1": b.band1,
     "--band-2": b.band2,
     "--band-3": b.band3,
@@ -63,12 +70,13 @@ export const Cursor = ({ x, y, kind = "pointer", label, dimmed = false, bands }:
     <div style={wrapperStyle}>
       {svg ? (
         <svg
+          className="slop-cursor-svg"
           width={size}
           height={size}
           viewBox={svg.viewBox}
           xmlns="http://www.w3.org/2000/svg"
           preserveAspectRatio="xMidYMid meet"
-          style={{ display: "block", userSelect: "none", overflow: "visible" }}
+          style={svgStyle}
           dangerouslySetInnerHTML={{ __html: svg.markup }}
         />
       ) : (

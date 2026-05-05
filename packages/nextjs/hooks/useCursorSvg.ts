@@ -30,7 +30,12 @@ function processSvg(text: string): CursorSvg {
   const vbMatch = text.match(/<svg[^>]*viewBox=["']([^"']+)["']/i);
   const viewBox = vbMatch ? vbMatch[1] : "0 0 1024 1024";
   let t = text;
-  t = t.replace(/:root\s*\{[^}]*\}/g, "");
+  // Rewrite ":root" → ".slop-cursor-svg" so the CSS-var defaults inside
+  // the SVG only apply to this cursor (not <html>). The inline svg in
+  // Cursor.tsx carries that class. Per-peer band overrides are still
+  // applied via inline style on the same svg, which wins over the
+  // class-level rule.
+  t = t.replace(/:root\b/g, ".slop-cursor-svg");
   t = t.replace(/^[\s\S]*?<svg[^>]*>/, "");
   t = t.replace(/<\/svg>\s*$/, "");
   return { markup: t, viewBox };
