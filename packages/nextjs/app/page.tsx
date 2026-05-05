@@ -416,13 +416,16 @@ const Desktop: NextPage = () => {
             </div>
           </Window>
         ) : null}
-
-        {remoteCursors.map(({ peerId, x, y, label }) => (
-          <Cursor key={peerId} x={x} y={y} label={label} />
-        ))}
-
-        {localCursor.pos ? <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} /> : null}
       </div>
+
+      {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
+          by its overflow:hidden when over the menubar. Position: fixed +
+          zIndex 2^31 keeps them on top of every other layer. */}
+      {remoteCursors.map(({ peerId, x, y, label }) => (
+        <Cursor key={peerId} x={x} y={y} label={label} />
+      ))}
+
+      {localCursor.pos ? <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} /> : null}
     </>
   );
 };

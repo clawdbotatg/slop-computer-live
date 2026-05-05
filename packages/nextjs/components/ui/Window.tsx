@@ -116,17 +116,19 @@ export const Window = ({
         })
       }
       resizeHandleStyles={{
+        // Stop the bottom + right edge handles 24px before the corner so
+        // they don't cover the corner-resize handle. Edges resize one
+        // axis; the corner resizes both.
+        right: { height: "calc(100% - 24px)" },
+        bottom: { width: "calc(100% - 24px)" },
         bottomRight: {
-          // Large enough to win the click against the bottom + right edge
-          // handles (10px strips that overlap this corner). zIndex puts
-          // the corner handle on top so dragging here resizes both axes.
-          width: 22,
-          height: 22,
+          width: 24,
+          height: 24,
           right: 0,
           bottom: 0,
           background:
             "repeating-linear-gradient(135deg, var(--slop-bevel-light) 0, var(--slop-bevel-light) 1px, transparent 1px, transparent 3px)",
-          zIndex: 2,
+          zIndex: 3,
         },
       }}
       resizeHandleClasses={{ bottomRight: "slop-resize" }}
