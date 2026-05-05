@@ -15,11 +15,10 @@ const SIZE: Record<CursorKind, number> = {
 };
 
 // Hotspot offsets in cursor pixels — where the click point lands inside
-// the rendered SVG. Pointer dialed in with the dev nudge tool to land on
-// the index-finger tip; others tuned to roughly the middle of the palm.
+// the rendered SVG. Dialed in with the dev nudge tool against /cursor-test.
 const HOTSPOT: Record<CursorKind, { x: number; y: number }> = {
-  pointer: { x: SIZE.pointer * 0.22 - 1, y: SIZE.pointer * 0.12 + 4 },
-  grab: { x: SIZE.grab * 0.45, y: SIZE.grab * 0.35 },
+  pointer: { x: SIZE.pointer * 0.22 - 2, y: SIZE.pointer * 0.12 + 3 },
+  grab: { x: SIZE.grab * 0.45 - 12, y: SIZE.grab * 0.35 },
   grabbing: { x: SIZE.grabbing * 0.45, y: SIZE.grabbing * 0.35 },
   text: { x: SIZE.text * 0.5, y: SIZE.text * 0.5 },
 };
