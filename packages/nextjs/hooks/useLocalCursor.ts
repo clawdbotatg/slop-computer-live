@@ -56,14 +56,17 @@ export function useLocalCursor() {
     };
     const onLeave = () => setPos(null);
 
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("mouseup", onUp);
+    // Capture phase: react-rnd / re-resizable stops propagation on
+    // resize-handle mousedown, so a bubble-phase listener on window
+    // never fires and the cursor stays stuck on "grab" during a drag.
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("mouseup", onUp, true);
     document.addEventListener("mouseleave", onLeave);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("mouseup", onUp, true);
       document.removeEventListener("mouseleave", onLeave);
     };
   }, []);
