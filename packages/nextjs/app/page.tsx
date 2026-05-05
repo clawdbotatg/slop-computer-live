@@ -193,14 +193,16 @@ const Desktop: NextPage = () => {
       : { id: screenResumeSlotId ?? "screen-resume", x: 80, y: 280, width: DEFAULT_W, height: DEFAULT_H, z: 4 };
 
   // Default slot position for a new publication that doesn't have one yet.
+  // New windows land on top of any existing windows. baseZ is taken at the
+  // call site so the first new window sits above the current maximum.
   const defaultSlot = useCallback(
-    (slotId: string, index: number): SlotPosition => ({
+    (slotId: string, index: number, baseZ: number): SlotPosition => ({
       id: slotId,
       x: DEFAULT_BASE_X + index * DEFAULT_STEP,
       y: DEFAULT_BASE_Y + index * DEFAULT_STEP,
       width: DEFAULT_W,
       height: DEFAULT_H,
-      z: 5 + index,
+      z: baseZ + index + 1,
     }),
     [],
   );
@@ -208,10 +210,11 @@ const Desktop: NextPage = () => {
   // Build the rendered window list from publications + slots.
   // Order: by slot z (asc).
   const windows = useMemo(() => {
+    const baseZ = Math.max(4, ...Object.values(mesh.slots).map(s => s.z));
     return mesh.publications
       .map((pub, i) => {
         const slotId = slotIdFor(pub);
-        const slot = mesh.slots[slotId] ?? defaultSlot(slotId, i);
+        const slot = mesh.slots[slotId] ?? defaultSlot(slotId, i, baseZ);
         return { pub, slotId, slot };
       })
       .sort((a, b) => a.slot.z - b.slot.z);
@@ -269,14 +272,16 @@ const Desktop: NextPage = () => {
   );
 
   // Persist a default slot the first time we see a new publication.
-  // Any peer can do this — the relay broadcasts the slot back to everyone,
-  // and if two peers race the result is identical (same default math).
+  // Any peer can do this — the relay broadcasts the slot back to everyone.
+  // baseZ is captured once at the start so multiple new publications get
+  // sequential z values above all existing windows.
   useEffect(() => {
+    const baseZ = Math.max(4, ...Object.values(mesh.slots).map(s => s.z));
     let i = 0;
     for (const pub of mesh.publications) {
       const slotId = slotIdFor(pub);
       if (!mesh.slots[slotId]) {
-        mesh.updateSlot(defaultSlot(slotId, i));
+        mesh.updateSlot(defaultSlot(slotId, i, baseZ));
       }
       i++;
     }
