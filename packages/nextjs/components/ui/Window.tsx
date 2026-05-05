@@ -117,15 +117,15 @@ export const Window = ({
       }
       resizeHandleStyles={{
         bottomRight: {
-          width: 12,
-          height: 12,
+          width: 14,
+          height: 14,
           right: 0,
           bottom: 0,
           background:
             "repeating-linear-gradient(135deg, var(--slop-bevel-light) 0, var(--slop-bevel-light) 1px, transparent 1px, transparent 3px)",
-          cursor: "nwse-resize",
         },
       }}
+      resizeHandleClasses={{ bottomRight: "slop-resize" }}
     >
       {body}
     </Rnd>

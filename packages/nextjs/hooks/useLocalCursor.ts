@@ -32,7 +32,7 @@ export function useLocalCursor() {
       ) {
         return "text";
       }
-      if (el.closest("[data-grab=true]")) return "grab";
+      if (el.closest('[data-grab="true"], .slop-resize')) return "grab";
       return "pointer";
     };
 

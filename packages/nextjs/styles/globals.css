@@ -105,6 +105,13 @@
     letter-spacing: 0.04em;
   }
 
+  /* Hide the system cursor everywhere — we render a custom one in
+     React via useLocalCursor. The few CSS rules below that explicitly
+     set `cursor:` are overridden so they all stay invisible. */
+  *, *::before, *::after {
+    cursor: none !important;
+  }
+
   body {
     min-height: 100vh;
   }
