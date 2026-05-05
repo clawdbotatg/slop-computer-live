@@ -4,6 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
+// Each useSession() call has its own React state. When one component
+// (e.g. JoinCard) signs in, the others (e.g. /page.tsx, MenuBar) don't
+// notice until they re-fetch /auth/me. Broadcasting a custom event when
+// the session changes lets every instance refresh in lockstep.
+const SESSION_CHANGED = "slop:session-changed";
+
+export function notifySessionChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_CHANGED));
+}
+
 export type Session =
   | { authenticated: false }
   | {
@@ -48,26 +58,33 @@ export function useSession(): UseSessionResult {
       /* ignore */
     }
     setSession({ authenticated: false });
+    notifySessionChanged();
   }, []);
+
+  // Wrap refresh to also broadcast so other useSession instances refetch.
+  const refreshAndBroadcast = useCallback(async () => {
+    await refresh();
+    notifySessionChanged();
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
-    // Re-check on window focus + on bfcache restores so a sign-out in
-    // another tab (or another app on the same shared cookie) is reflected
-    // here without a manual reload.
     const onVis = () => {
       if (document.visibilityState === "visible") refresh();
     };
     const onPageShow = () => refresh();
+    const onChanged = () => refresh();
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pageshow", onPageShow);
+    window.addEventListener(SESSION_CHANGED, onChanged);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener(SESSION_CHANGED, onChanged);
     };
   }, [refresh]);
 
-  return { session, loading, refresh, signOut };
+  return { session, loading, refresh: refreshAndBroadcast, signOut };
 }
 
 export function shortAddress(addr: string): string {
