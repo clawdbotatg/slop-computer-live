@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <style>
+      :root {
+        --outline: #141414;
+        --fill: #ffffff;
+        --shadow: #c8d3da;
+      }
+
+      .outline { fill: var(--outline); }
+      .fill { fill: var(--fill); }
+      .shadow { fill: var(--shadow); opacity: 0.75; }
+    </style>
+  </defs>
+
+  <g id="text-cursor">
+    <path class="outline" d="
+      M91 24
+      H165
+      C179 24 190 35 190 49
+      C190 63 179 74 165 74
+      H151
+      V182
+      H165
+      C179 182 190 193 190 207
+      C190 221 179 232 165 232
+      H91
+      C77 232 66 221 66 207
+      C66 193 77 182 91 182
+      H105
+      V74
+      H91
+      C77 74 66 63 66 49
+      C66 35 77 24 91 24
+      Z" />
+
+    <path class="fill" d="
+      M91 42
+      C87 42 84 45 84 49
+      C84 53 87 56 91 56
+      H121
+      V200
+      H91
+      C87 200 84 203 84 207
+      C84 211 87 214 91 214
+      H165
+      C169 214 172 211 172 207
+      C172 203 169 200 165 200
+      H135
+      V56
+      H165
+      C169 56 172 53 172 49
+      C172 45 169 42 165 42
+      Z" />
+
+    <path class="shadow" d="
+      M91 49
+      H112
+      V193
+      H91
+      C83 193 77 199 77 207
+      C77 215 83 221 91 221
+      H100
+      C96 218 94 213 94 207
+      C94 201 98 196 104 195
+      H121
+      V56
+      H91
+      C85 56 80 53 78 49
+      C80 46 85 44 91 44
+      Z" />
+
+    <path class="fill" d="
+      M122 56
+      H135
+      V200
+      H122
+      Z" />
+  </g>
+</svg>

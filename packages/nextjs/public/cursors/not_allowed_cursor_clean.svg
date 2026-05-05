@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <style>
+      :root {
+        --outline: #141414;
+        --fill: #ffffff;
+        --shadow: #c8d3da;
+      }
+
+      .outline { fill: var(--outline); }
+      .fill { fill: var(--fill); }
+      .shadow { fill: var(--shadow); opacity: 0.72; }
+    </style>
+  </defs>
+
+  <g id="not-allowed-cursor">
+    <!-- outer black circle -->
+    <circle class="outline" cx="128" cy="128" r="94" />
+
+    <!-- white ring area -->
+    <circle class="fill" cx="128" cy="128" r="72" />
+
+    <!-- subtle gray lower-left shadow inside ring -->
+    <path class="shadow" d="
+      M74 148
+      C82 183 113 207 150 201
+      C179 196 199 176 205 149
+      C198 187 166 216 128 216
+      C88 216 55 186 50 148
+      Z" />
+
+    <!-- inner black circle/hole -->
+    <circle class="outline" cx="128" cy="128" r="52" />
+
+    <!-- white center -->
+    <circle class="fill" cx="128" cy="128" r="37" />
+
+    <!-- black diagonal slash, rounded ends -->
+    <path class="outline" d="
+      M81 181
+      C75 175 75 166 81 160
+      L160 81
+      C166 75 175 75 181 81
+      C187 87 187 96 181 102
+      L102 181
+      C96 187 87 187 81 181
+      Z" />
+
+    <!-- white inset on slash to keep the chunky outlined style -->
+    <path class="fill" d="
+      M101 166
+      L166 101
+      L155 90
+      L90 155
+      Z" />
+
+    <!-- restore black slash core so it reads clearly -->
+    <path class="outline" d="
+      M91 170
+      L170 91
+      L184 105
+      L105 184
+      Z" />
+
+    <!-- subtle gray highlight on lower-right of center -->
+    <path class="shadow" d="
+      M143 165
+      C163 158 176 143 179 123
+      C184 148 166 174 139 181
+      C122 185 106 180 95 170
+      Z" />
+  </g>
+</svg>

@@ -6,6 +6,7 @@ import { JoinCard } from "~~/components/JoinCard";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
+import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
@@ -292,6 +293,8 @@ const Desktop: NextPage = () => {
     return result;
   }, [mesh.cursors, mesh.myId, peerLabel]);
 
+  const localCursor = useLocalCursor();
+
   return (
     <>
       <DesktopBackground />
@@ -307,6 +310,9 @@ const Desktop: NextPage = () => {
           inset: 0,
           paddingTop: 26,
           overflow: "hidden",
+          // Hide the system cursor — we render a custom one that follows
+          // the mouse and switches to grab/grabbing/text on hover.
+          cursor: "none",
         }}
       >
         {!loading && !session.authenticated ? (
@@ -414,6 +420,8 @@ const Desktop: NextPage = () => {
         {remoteCursors.map(({ peerId, x, y, label }) => (
           <Cursor key={peerId} x={x} y={y} label={label} />
         ))}
+
+        {localCursor.pos ? <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} /> : null}
       </div>
     </>
   );

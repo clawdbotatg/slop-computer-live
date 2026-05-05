@@ -38,7 +38,7 @@ export const TitleBar = ({
   className = "",
 }: TitleBarProps) => {
   return (
-    <div className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
+    <div data-grab="true" className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
       {showDots && (
         <div className="slop-titlebar__dots">
           <Dot onClick={onClose} label="close" />

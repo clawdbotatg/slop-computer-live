@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <style>
+      :root {
+        --outline: #141414;
+        --fill: #ffffff;
+        --shadow: #c8d3da;
+      }
+
+      .outline { fill: var(--outline); }
+      .fill { fill: var(--fill); }
+      .shadow { fill: var(--shadow); opacity: 0.75; }
+    </style>
+  </defs>
+
+  <g id="move-cursor">
+    <!-- black outer silhouette -->
+    <path class="outline" d="
+      M128 18
+      C135 18 141 21 146 27
+      L179 69
+      C187 80 181 96 167 99
+      H148
+      V108
+      H157
+      V90
+      C157 81 162 73 170 70
+      C178 66 187 68 193 74
+      L235 112
+      C241 117 244 123 244 128
+      C244 134 241 140 235 145
+      L193 183
+      C187 189 178 191 170 187
+      C162 183 157 175 157 166
+      V148
+      H148
+      V157
+      H167
+      C181 160 187 176 179 187
+      L146 229
+      C141 235 135 238 128 238
+      C121 238 115 235 110 229
+      L77 187
+      C69 176 75 160 89 157
+      H108
+      V148
+      H99
+      V166
+      C99 175 94 183 86 187
+      C78 191 69 189 63 183
+      L21 145
+      C15 140 12 134 12 128
+      C12 123 15 117 21 112
+      L63 74
+      C69 68 78 66 86 70
+      C94 73 99 81 99 90
+      V108
+      H108
+      V99
+      H89
+      C75 96 69 80 77 69
+      L110 27
+      C115 21 121 18 128 18
+      Z" />
+
+    <!-- white main shape -->
+    <path class="fill" d="
+      M128 40
+      L100 76
+      H122
+      V122
+      H76
+      V100
+      L40 128
+      L76 156
+      V134
+      H122
+      V180
+      H100
+      L128 216
+      L156 180
+      H134
+      V134
+      H180
+      V156
+      L216 128
+      L180 100
+      V122
+      H134
+      V76
+      H156
+      Z" />
+
+    <!-- subtle gray lower/left shadow, kept inside white shape -->
+    <path class="shadow" d="
+      M128 54
+      L113 73
+      H128
+      V122
+      H79
+      V110
+      L52 128
+      L79 146
+      V134
+      H128
+      V183
+      H113
+      L128 202
+      L128 216
+      L100 180
+      H122
+      V134
+      H76
+      V156
+      L40 128
+      L76 100
+      V122
+      H122
+      V76
+      H100
+      Z" />
+
+    <!-- restore crisp white center/right after shadow -->
+    <path class="fill" d="
+      M134 76
+      H156
+      L128 40
+      V122
+      H180
+      V100
+      L216 128
+      L180 156
+      V134
+      H134
+      V180
+      H156
+      L128 216
+      V134
+      H122
+      V122
+      H128
+      Z" />
+  </g>
+</svg>
