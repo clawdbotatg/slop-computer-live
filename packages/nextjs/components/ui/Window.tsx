@@ -129,6 +129,7 @@ export const Window = ({
           background:
             "repeating-linear-gradient(135deg, var(--slop-bevel-light) 0, var(--slop-bevel-light) 1px, transparent 1px, transparent 3px)",
           zIndex: 3,
+          pointerEvents: "auto",
         },
       }}
       resizeHandleClasses={{ bottomRight: "slop-resize" }}

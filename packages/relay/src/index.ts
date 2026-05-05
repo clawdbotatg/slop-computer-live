@@ -68,7 +68,6 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     maxAge: config.sessionTTLSeconds,
-    ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
   });
   return { ok: true, role: session.role, address: session.address, isAdmin: check.isAdmin };
 });
@@ -95,7 +94,6 @@ app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     maxAge: config.sessionTTLSeconds,
-    ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
   });
   return { ok: true, role: "guest", handle };
 });
@@ -103,10 +101,7 @@ app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
 app.post("/auth/logout", async (req, reply) => {
   const token = req.cookies[SESSION_COOKIE];
   if (token) deleteSession(token);
-  reply.clearCookie(SESSION_COOKIE, {
-    path: "/",
-    ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
-  });
+  reply.clearCookie(SESSION_COOKIE, { path: "/" });
   return { ok: true };
 });
 

@@ -207,22 +207,6 @@
   background: radial-gradient(circle at 30% 25%, #fff 0%, #28c840 80%);
 }
 
-.slop-resize {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  background: repeating-linear-gradient(
-    135deg,
-    rgba(255, 62, 201, 0.6) 0,
-    rgba(255, 62, 201, 0.6) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  pointer-events: none;
-}
-
 /* === Button (pill / aqua gradient) =================================== */
 
 .slop-button {
