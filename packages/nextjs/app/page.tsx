@@ -148,34 +148,33 @@ const Desktop: NextPage = () => {
   );
 
   // ---- Auto-resume publishing on reload ----------------------------------
-  // Camera permission is sticky in Chrome once granted, so the next mount
-  // can call getUserMedia silently. Screen share requires a user gesture so
-  // we render a placeholder "RESUME SCREEN SHARE" window instead.
+  // Camera + mic permissions are sticky in Chrome once granted, so the next
+  // mount can call getUserMedia silently. Screen share requires a user
+  // gesture so we render a placeholder "RESUME SCREEN SHARE" window instead.
+  //
+  // Both resumes route through useLocalMedia.startX so activeIds gets
+  // populated — calling getUserMedia directly leaves media.activeCamera
+  // false and the Share menu reads "Video" instead of "Stop video".
   const sessionAuth = session.authenticated;
   useEffect(() => {
     if (!sessionAuth) return;
     if (!mesh.connected) return;
     const r = readResume();
-    if (!r.camera) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        if (cancelled) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-        addStream({ id: stream.id, kind: "camera", stream });
-      } catch {
+    if (r.camera) {
+      media.startCamera().catch(() => {
         const cur = readResume();
         delete cur.camera;
         writeResume(cur);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // run once when the WS is up; addStream/mesh deps would re-fire
+      });
+    }
+    if (r.audio) {
+      media.startAudio().catch(() => {
+        const cur = readResume();
+        delete cur.audio;
+        writeResume(cur);
+      });
+    }
+    // run once when the WS is up; media deps would re-fire
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionAuth, mesh.connected]);
 
