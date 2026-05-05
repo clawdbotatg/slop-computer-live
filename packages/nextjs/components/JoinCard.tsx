@@ -105,14 +105,16 @@ export function JoinCard({ invite }: { invite?: string }) {
 
   return (
     <Bevel style={{ padding: 24, width: "min(480px, 92vw)" }}>
-      <h1 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Join the show</h1>
+      <h1 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+        Join the session
+      </h1>
       {invite ? (
         <p style={{ color: "var(--slop-text-muted)" }}>
           Invite: <code>{invite}</code>
         </p>
       ) : (
         <p style={{ color: "var(--slop-text-muted)" }}>
-          Sign in with Ethereum, or use the show&apos;s guest password if you want to stay anonymous.
+          Sign in with Ethereum, or use the session&apos;s guest password if you want to stay anonymous.
         </p>
       )}
 

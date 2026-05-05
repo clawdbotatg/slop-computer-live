@@ -588,7 +588,17 @@ Browser window chrome ("Every signature reviewed before send.").
 
 ---
 
-## 5. Co-op wallets (Cold multisig + Hot agent wallet)
+## 5. Co-op wallets (Cold custom multisig + Hot agent wallet)
+
+> **Cold wallet is a custom multisig** — not Gnosis Safe. The contract
+> shape, deployment factory, signature-encoding format, and execution
+> entry point are all TBD and will live in `packages/hardhat/contracts/`.
+> Wherever this section says "the multisig contract" or "the contract,"
+> read it as "our own Solidity contract that we control end-to-end."
+> Implementation is deferred to a sibling `MULTISIG_CONTRACT_PLAN.md`
+> that owns: storage layout, owner mgmt, sig verification (ECDSA over
+> what hash?), execution function, replay protection (nonce vs
+> commit-reveal), upgradeability decision, and chain-deploy strategy.
 
 Two wallet windows that live on the desktop. Both are **shared** —
 any connected peer can see balances, pending requests, and history.
@@ -602,7 +612,7 @@ type WalletId = "cold" | "hot";   // one of each per session, fixed for v1
 type Wallet =
   | {
       id: "cold";
-      kind: "safe";                            // Gnosis Safe
+      kind: "multisig";                        // our custom multisig contract (TBD)
       address: `0x${string}` | null;           // null until deployed
       chainId: number;
       owners: `0x${string}`[];                 // session participants' wallet addresses
@@ -629,31 +639,49 @@ type HotPolicy =
 
 Default policy for v1: `host-only` for hot. `ai-agent` is a follow-up.
 
-### Cold wallet (Gnosis Safe)
+### Cold wallet (custom multisig)
 
-A Safe deployed on the chosen chain at session start (or on first
-`Go Live` — better, deploy lazily on first use to avoid spending gas on
-sessions that never sign anything). Owners = the wallet addresses of
-the host + SIWE-authenticated guests present in the session at the
-moment of deploy. `threshold` chosen by the host (default `ceil(N*2/3)`).
+The cold wallet is an instance of our custom multisig contract,
+deployed on the chosen chain. Lazy deploy on first signature request
+(don't waste gas on sessions that never sign). Owners = wallet addresses
+of the host + SIWE-authenticated guests present at the moment of
+deploy. `threshold` chosen by the host (default `ceil(N*2/3)`).
+
+The contract details (storage layout, sig encoding, execution function,
+replay protection, optional upgradeability) live in the sibling
+`MULTISIG_CONTRACT_PLAN.md` doc. This section assumes only:
+
+- A factory at a known address per chain that deploys an instance with
+  `(owners[], threshold)` constructor args. Address known
+  ahead-of-time via CREATE2 if we want it deterministic, otherwise
+  read from the factory's deploy-event return.
+- An execution function roughly shaped
+  `execute(target, value, data, signatures[])` that the host calls
+  once threshold sigs are collected.
+- A signature scheme — placeholder: ECDSA sigs over an EIP-712 typed
+  hash of `(chainId, contract, nonce, target, value, data)`. Final
+  shape decided in the contract plan.
 
 Implications:
 
-- **Password-only guests have no Safe vote.** They can see the wallet,
-  see pending requests, comment via cursors, but they can't sign because
-  they have no on-chain identity. UX-wise, render them as "viewer" rows
-  in the owners list.
-- Owners are baked in **at deploy time**. Adding/removing owners
-  mid-session requires a Safe `addOwnerWithThreshold` /
-  `removeOwner` tx, which itself needs threshold signatures. Out of v1
-  scope — for v1, owners are frozen at deploy.
-- Safe address is announced via the relay so every peer's wallet UI
-  shows the same one. Stored per session, not persisted across relay
-  restart in v1 (fits the in-memory rule).
+- **Password-only guests have no vote.** They can see the wallet, see
+  pending requests, see signatures arrive, but can't sign because they
+  have no on-chain identity. UX-wise, render them as "viewer" rows in
+  the owners list.
+- Owners are baked in **at deploy time**. Mid-session owner edits
+  require a self-call to the multisig (which itself needs threshold
+  sigs). Out of v1 scope — for v1, owners are frozen at deploy.
+- Multisig address is announced via the relay so every peer's wallet
+  UI shows the same one. Stored per session, not persisted across
+  relay restart in v1 (fits the in-memory rule, but see open
+  question about losing access to funds on restart).
 
 ### Sign-request lifecycle (Cold)
 
-A `SignRequest` is the unit of co-signing:
+A `SignRequest` is the unit of co-signing. The exact `payload` shape
+for `kind: "transaction"` is defined by our multisig's expected
+typed-data struct (see `MULTISIG_CONTRACT_PLAN.md`); below uses a
+generic `TransactionPayload` placeholder.
 
 ```ts
 type SignRequest = {
@@ -669,6 +697,10 @@ type SignRequest = {
   signatures: Record<`0x${string}`, `0x${string}`>;   // ownerAddr → signature
   status: "pending" | "ready" | "executing" | "executed" | "rejected" | "expired";
   result?: { hash?: `0x${string}`; signature?: `0x${string}`; error?: string };
+  // For cold transactions, the contract typed-data hash that owners
+  // sign over. Computed by the relay from (chainId, multisigAddr,
+  // nonce, payload) using the multisig's domain separator.
+  signingHash?: `0x${string}`;
 };
 ```
 
@@ -680,22 +712,29 @@ Flow:
 2. A `<WalletWindow>` on every peer's desktop shows the new pending
    request. Owners get **Sign / Reject** buttons; non-owners see
    read-only.
-3. Each owner that clicks Sign produces a Safe-style EIP-712 sig over
-   the SafeTx hash and sends `wallet_sign { requestId, signature }`.
-   Relay validates the sig against the owner set and adds it.
-4. When `signatures.length >= threshold`, status flips to `ready`. The
-   host (or any peer with the right — for v1: host only) clicks
-   **Execute**, which submits `execTransaction` to the Safe via
+3. Each owner that clicks Sign produces an EIP-712 sig over the
+   multisig's `signingHash` and sends `wallet_sign { requestId, signature }`.
+   Relay validates the sig recovers to a current owner address and
+   stores it.
+4. When `Object.keys(signatures).length >= threshold`, status flips
+   to `ready`. The host (for v1: host only) clicks **Execute**, which
+   calls the multisig's `execute(target, value, data, sigs[])` via
    wagmi/viem. The host's wallet pays gas.
-5. Tx hash → `wallet_executed { requestId, hash }`. Browser window's
-   pending `sendTransaction` promise resolves with the hash. The dapp
-   sees a successful response, possibly minutes later. (Some dapps will
-   timeout — accept this; it's the price of multisig.)
+5. Tx hash → `wallet_request_upd { status: "executed", result: { hash }}`.
+   Browser window's pending `sendTransaction` promise resolves with
+   the hash. The dapp sees a successful response, possibly minutes
+   later. (Some dapps will timeout — accept this; it's the price of
+   multisig.)
 
 For `personal_sign` / `eip712` requests, there's no on-chain execute —
-once threshold is reached the relay assembles the combined Safe sig
-(EIP-1271 contract sig format) and resolves the pending promise
-client-side.
+once threshold is reached the relay returns the collected raw owner
+sigs to the requesting peer. **Note:** verifying a multisig's signed
+message off-chain requires EIP-1271 (`isValidSignature` on the
+multisig contract). Whether dapps that accept the resulting "signature"
+will then call `isValidSignature` against our multisig is up to each
+dapp — many won't. Treat off-chain multisig signing as best-effort
+v1; document in the wallet UI when an `eip712` request is bound to
+the cold wallet ("Some dapps may not accept multisig signatures").
 
 ### Hot wallet (EOA)
 
@@ -747,8 +786,8 @@ needs a `viem` `PublicClient` per chain (Alchemy URLs from env per the
 RPC rule) for nonce reads, gas estimation, and broadcast.
 
 **Crucial:** the relay must reject any `wallet_sign` whose signature
-doesn't recover to one of the Safe's owners. Don't trust the client
-to send only valid sigs.
+doesn't recover to one of the multisig's current owners. Don't trust
+the client to send only valid sigs.
 
 ### React state shape additions
 
@@ -759,7 +798,7 @@ type PeerMeshState = {
   wallets: Record<WalletId, Wallet>;
   walletRequests: SignRequest[];        // pending across all wallets
 
-  walletCreateSafe: (owners: address[], threshold: number, chainId: number) => Promise<void>;
+  walletCreateMultisig: (owners: address[], threshold: number, chainId: number) => Promise<void>;
   walletRequest:    (input: { walletId, kind, payload, origin }) => Promise<{ hash?; signature? }>;
   walletSign:       (requestId: string) => Promise<void>;       // signs locally with wagmi, sends sig
   walletExecute:    (requestId: string) => Promise<void>;       // host only
@@ -802,28 +841,37 @@ Body sections:
 └──────────────────────────────────────────────────────────┘
 ```
 
-Clicking `Sign` triggers wagmi's `signTypedData` over the SafeTx struct
-locally with the user's connected wallet. Clicking `Execute` (only
-visible to host once `signatures >= threshold`) sends the
-`execTransaction` via `useWriteContract`.
+Clicking `Sign` triggers wagmi's `signTypedData` over our multisig's
+typed-data struct (per `MULTISIG_CONTRACT_PLAN.md`) with the user's
+connected wallet. Clicking `Execute` (only visible to host once
+`signatures.length >= threshold`) calls the multisig's execute
+function via `useWriteContract`.
 
 ### Security & footguns to call out before shipping
 
 - **Hot wallet key on the relay.** Single point of compromise. Document
   as throwaway funds only. Rotate per session. Audit logs of every send.
-- **Safe deploy gas paid by host.** First wallet creation can cost real
-  ETH. Don't auto-deploy on session start — lazy on first request,
-  surface a confirmation dialog showing the gas estimate.
+- **Multisig deploy gas paid by host.** First wallet creation can cost
+  real ETH. Don't auto-deploy on session start — lazy on first
+  request, surface a confirmation dialog showing the gas estimate.
 - **Browser app sandbox is loose** (§4). All risk is gated by the wallet
   review queue — make sure the queue UI is unmissable. A sleeper rule
   for v2: rate-limit `wallet_request` per-window per-minute to stop a
   malicious dapp from spamming the queue.
-- **Owner-set frozen at Safe deploy.** A guest who joins late cannot
-  sign; an owner who leaves mid-session can still sign remotely if they
-  kept a session cookie. Acceptable for v1; document.
-- **Replay across chains.** Use chainId-aware EIP-712 domain separator
-  in every signature payload. Safe handles this for `execTransaction`;
-  we have to do it ourselves for personal_sign/typed_data flows.
+- **Owner-set frozen at multisig deploy.** A guest who joins late
+  cannot sign; an owner who leaves mid-session can still sign remotely
+  if they kept a session cookie. Acceptable for v1; document.
+- **Replay across chains.** Multisig contract MUST include `chainId`
+  and the contract's own address in its EIP-712 domain separator
+  (handled in `MULTISIG_CONTRACT_PLAN.md`). Same applies to any
+  off-chain personal_sign/typed_data we surface as "co-signed by the
+  multisig."
+- **Replay across nonces.** Multisig contract MUST include a
+  monotonic nonce in the signing struct so the same `(target, data)`
+  can't be replayed twice. Stale `signingHash`es become invalid as
+  soon as a tx is executed — the relay must recompute and ask owners
+  to re-sign if a pending request's nonce is invalidated by a faster
+  one. This is a real concurrency case in a multi-peer UI.
 - **What happens when Browser navigates mid-pending-request?** The
   pending `sendTransaction` Promise should still resolve when the tx
   eventually executes — it's keyed by request id, not URL. The dapp at
@@ -871,7 +919,7 @@ Full additions to the WS message vocabulary (reference for implementers):
 | `browser_navigate`    | `{ windowId, url }`                                              |
 | `browser_set_wallet`  | `{ windowId, walletId: WalletId \| null }`                       |
 | `browser_set_chain`   | `{ windowId, chainId }`                                          |
-| `wallet_create_safe`  | `{ owners, threshold, chainId }`                                 |
+| `wallet_create_multisig` | `{ owners, threshold, chainId }`                              |
 | `wallet_request`      | `{ walletId, kind, payload, origin }`                            |
 | `wallet_sign`         | `{ requestId, signature }`                                       |
 | `wallet_execute`      | `{ requestId }`                                                  |
@@ -924,7 +972,7 @@ type PeerMeshState = {
   // Wallets (§5)
   wallets: Record<WalletId, Wallet>;
   walletRequests: SignRequest[];
-  walletCreateSafe: (owners: `0x${string}`[], threshold: number, chainId: number) => Promise<void>;
+  walletCreateMultisig: (owners: `0x${string}`[], threshold: number, chainId: number) => Promise<void>;
   walletRequest:    (input: { walletId: WalletId; kind: SignRequest["kind"]; payload: unknown; origin: SignRequest["origin"] }) => Promise<{ hash?: `0x${string}`; signature?: `0x${string}` }>;
   walletSign:       (requestId: string) => Promise<void>;
   walletExecute:    (requestId: string) => Promise<void>;
@@ -984,10 +1032,13 @@ Each step is independently mergeable and shippable.
    host-only policy. Relay signs + broadcasts via viem (Alchemy RPC).
    Browser → Hot wallet path resolves a real tx hash.
 
-5d. **Cold wallet (Safe).** Lazy deploy on first `wallet_request`.
-   Sig collection via wagmi `signTypedData` on each owner's client.
-   Host-triggered `execTransaction` once threshold met. Browser → Cold
-   path resolves a real tx hash via Safe.
+5d. **Cold wallet (custom multisig).** Depends on
+   `MULTISIG_CONTRACT_PLAN.md` landing first — contract + factory
+   deployed to testnet. Lazy deploy from factory on first
+   `wallet_request`. Sig collection via wagmi `signTypedData` on
+   each owner's client over the multisig's typed-data struct.
+   Host-triggered execute call once threshold met. Browser → Cold
+   path resolves a real tx hash. Test on Sepolia first.
 
 5e. **Wallet windows.** `<WalletWindow walletId="cold">` /
    `<WalletWindow walletId="hot">` rendered as standard `<Window>`s
