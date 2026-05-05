@@ -117,12 +117,16 @@ export const Window = ({
       }
       resizeHandleStyles={{
         bottomRight: {
-          width: 14,
-          height: 14,
+          // Large enough to win the click against the bottom + right edge
+          // handles (10px strips that overlap this corner). zIndex puts
+          // the corner handle on top so dragging here resizes both axes.
+          width: 22,
+          height: 22,
           right: 0,
           bottom: 0,
           background:
             "repeating-linear-gradient(135deg, var(--slop-bevel-light) 0, var(--slop-bevel-light) 1px, transparent 1px, transparent 3px)",
+          zIndex: 2,
         },
       }}
       resizeHandleClasses={{ bottomRight: "slop-resize" }}
