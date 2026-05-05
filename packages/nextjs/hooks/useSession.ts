@@ -52,6 +52,19 @@ export function useSession(): UseSessionResult {
 
   useEffect(() => {
     refresh();
+    // Re-check on window focus + on bfcache restores so a sign-out in
+    // another tab (or another app on the same shared cookie) is reflected
+    // here without a manual reload.
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const onPageShow = () => refresh();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [refresh]);
 
   return { session, loading, refresh, signOut };

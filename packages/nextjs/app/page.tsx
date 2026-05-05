@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import type { NextPage } from "next";
+import { JoinCard } from "~~/components/JoinCard";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
-import { Bevel, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
+import { Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
-import { sessionLabel, shortAddress, useSession } from "~~/hooks/useSession";
+import { shortAddress, useSession } from "~~/hooks/useSession";
 
 export const dynamic = "force-dynamic";
 
@@ -313,19 +313,7 @@ const Desktop: NextPage = () => {
           <div
             style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
           >
-            <Bevel style={{ padding: 20, maxWidth: 420 }}>
-              <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-                You&apos;re not signed in
-              </h2>
-              <p style={{ color: "var(--slop-text-muted)" }}>
-                Sign in with Ethereum or with the show&apos;s guest password to publish your camera and see who else is
-                on the desktop.
-              </p>
-              <p style={{ color: "var(--slop-text-muted)", fontSize: 12 }}>Status: {sessionLabel(session)}</p>
-              <Link href="/join" style={{ textDecoration: "none" }}>
-                <Button variant="primary">Go to /join</Button>
-              </Link>
-            </Bevel>
+            <JoinCard />
           </div>
         ) : null}
 

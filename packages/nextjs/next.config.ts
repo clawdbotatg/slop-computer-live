@@ -11,18 +11,15 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true",
   },
-  // Backwards-compat:
-  //  - /desktop used to be the participant view; now / is.
-  //  - /admin and /join moved to slop.computer (the audience domain) so the
-  //    cookie set there on .slop.computer is then visible to live.slop.computer.
+  // Backwards-compat: /desktop used to be the participant view; now / is.
+  // /join used to redirect to slop.computer/join — now auth lives inline on /,
+  // so /join just redirects to /.
   async redirects() {
     return [
       { source: "/desktop", destination: "/", permanent: true },
       { source: "/desktop/:path*", destination: "/:path*", permanent: true },
-      { source: "/admin", destination: "https://slop.computer/admin", permanent: false },
-      { source: "/admin/:path*", destination: "https://slop.computer/admin/:path*", permanent: false },
-      { source: "/join", destination: "https://slop.computer/join", permanent: false },
-      { source: "/join/:path*", destination: "https://slop.computer/join/:path*", permanent: false },
+      { source: "/join", destination: "/", permanent: true },
+      { source: "/join/:path*", destination: "/", permanent: true },
     ];
   },
   webpack: config => {
