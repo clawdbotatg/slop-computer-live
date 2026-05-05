@@ -1,3 +1,4 @@
+export { BandFlag } from "./BandFlag";
 export { Bevel, bevelStyle } from "./Bevel";
 export { Button } from "./Button";
 export { Cursor } from "./Cursor";

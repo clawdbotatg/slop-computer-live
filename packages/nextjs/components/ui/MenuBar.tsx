@@ -2,11 +2,13 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { BandFlag } from "./BandFlag";
 import { LivePulse } from "./LivePulse";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import type { Peer } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
+import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 export type MenuItem = {
   label: string;
@@ -301,6 +303,7 @@ function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) 
                         <span>{p.id.slice(0, 6)}</span>
                       )}
                       {isMe ? <span style={{ color: "var(--slop-text-muted)" }}>(you)</span> : null}
+                      <BandFlag bands={bandsFromIdentity({ address: p.address, handle: p.handle, fallback: p.id })} />
                     </span>
                     <span style={{ color: "var(--slop-text-muted)", fontSize: 11, flexShrink: 0 }}>{p.role}</span>
                   </li>

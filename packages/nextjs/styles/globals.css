@@ -207,6 +207,17 @@
   background: radial-gradient(circle at 30% 25%, #fff 0%, #28c840 80%);
 }
 
+/* Cursor name tags: strip the copy-icon button + block-explorer link styling
+   from any <Address /> rendered as a remote-peer cursor label. */
+.slop-cursor-label button {
+  display: none !important;
+}
+.slop-cursor-label a {
+  pointer-events: none;
+  color: inherit !important;
+  text-decoration: none !important;
+}
+
 /* === Button (pill / aqua gradient) =================================== */
 
 .slop-button {

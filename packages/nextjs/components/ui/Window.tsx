@@ -5,6 +5,8 @@ import type { CSSProperties, ReactNode } from "react";
 import { TitleBar } from "./TitleBar";
 import { Rnd } from "react-rnd";
 
+const TITLEBAR_HEIGHT = 36;
+
 export type WindowProps = {
   title: string;
   x?: number;
@@ -24,7 +26,13 @@ export type WindowProps = {
   bodyClassName?: string;
   bodyStyle?: CSSProperties;
   children?: ReactNode;
+  // Inset within the viewport that maximize should respect (e.g. 26px top
+  // for the menubar in production). Defaults to 0 on all sides.
+  containerInset?: { top?: number; right?: number; bottom?: number; left?: number };
 };
+
+type WindowMode = "normal" | "max" | "dock";
+type Rect = { x: number; y: number; width: number; height: number };
 
 export const Window = ({
   title,
@@ -45,13 +53,70 @@ export const Window = ({
   bodyClassName = "",
   bodyStyle,
   children,
+  containerInset,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  const [mode, setMode] = useState<WindowMode>("normal");
+  const [savedRect, setSavedRect] = useState<Rect | null>(null);
+
+  const insets = {
+    top: containerInset?.top ?? 0,
+    right: containerInset?.right ?? 0,
+    bottom: containerInset?.bottom ?? 0,
+    left: containerInset?.left ?? 0,
+  };
+
+  const restore = () => {
+    if (!savedRect) return;
+    onMove?.({ x: savedRect.x, y: savedRect.y });
+    onResize?.({ ...savedRect });
+    setMode("normal");
+  };
+
+  const handleZoom = () => {
+    onZoom?.();
+    if (mode === "max") {
+      restore();
+      return;
+    }
+    if (mode === "normal") setSavedRect({ x, y, width, height });
+    const W = window.innerWidth - insets.left - insets.right;
+    const H = window.innerHeight - insets.top - insets.bottom;
+    onMove?.({ x: insets.left, y: insets.top });
+    onResize?.({ x: insets.left, y: insets.top, width: W, height: H });
+    setMode("max");
+  };
+
+  const handleMinimize = () => {
+    onMinimize?.();
+    if (mode === "dock") {
+      restore();
+      return;
+    }
+    // From max → snap back to the saved size first so the docked titlebar
+    // is the window's natural width, not viewport-wide. From normal → save
+    // current rect so we can restore later.
+    let dockX = x;
+    let dockW = width;
+    let dockH = height;
+    if (mode === "max" && savedRect) {
+      dockX = savedRect.x;
+      dockW = savedRect.width;
+      dockH = savedRect.height;
+    } else if (mode === "normal") {
+      setSavedRect({ x, y, width, height });
+    }
+    const dockY = window.innerHeight - insets.bottom - TITLEBAR_HEIGHT;
+    onMove?.({ x: dockX, y: dockY });
+    onResize?.({ x: dockX, y: dockY, width: dockW, height: dockH });
+    setMode("dock");
+  };
+
   const body = (
     <>
-      <TitleBar title={title} active={active} onClose={onClose} onMinimize={onMinimize} onZoom={onZoom} />
+      <TitleBar title={title} active={active} onClose={onClose} onMinimize={handleMinimize} onZoom={handleZoom} />
       <div
         className={bodyClassName}
         style={{
@@ -106,15 +171,28 @@ export const Window = ({
         overflow: "hidden",
       }}
       onMouseDown={onFocus}
-      onDragStop={(_e, d) => onMove?.({ x: d.x, y: d.y })}
-      onResizeStop={(_e, _dir, ref, _delta, position) =>
-        onResize?.({
-          x: position.x,
-          y: position.y,
-          width: ref.offsetWidth,
-          height: ref.offsetHeight,
-        })
-      }
+      onDragStop={(_e, d) => {
+        // react-rnd fires onDragStop on every mouseup, even when the user
+        // didn't actually move the window (e.g. a click on a titlebar dot).
+        // Only treat this as a manual move if something changed — otherwise
+        // we'd nuke the saved restore-rect on every click of max/min.
+        if (d.x === x && d.y === y) return;
+        onMove?.({ x: d.x, y: d.y });
+        if (mode !== "normal") {
+          setMode("normal");
+          setSavedRect(null);
+        }
+      }}
+      onResizeStop={(_e, _dir, ref, _delta, position) => {
+        const newW = ref.offsetWidth;
+        const newH = ref.offsetHeight;
+        if (position.x === x && position.y === y && newW === width && newH === height) return;
+        onResize?.({ x: position.x, y: position.y, width: newW, height: newH });
+        if (mode !== "normal") {
+          setMode("normal");
+          setSavedRect(null);
+        }
+      }}
       resizeHandleStyles={{
         // Stop the bottom + right edge handles 24px before the corner so
         // they don't cover the corner-resize handle. Edges resize one

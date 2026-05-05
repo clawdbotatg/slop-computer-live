@@ -1,15 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
+import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
-import { Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
+import { BandFlag, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
+import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 export const dynamic = "force-dynamic";
 
@@ -286,12 +289,36 @@ const Desktop: NextPage = () => {
   };
 
   const remoteCursors = useMemo(() => {
-    const result: Array<{ peerId: string; x: number; y: number; label: string }> = [];
+    const result: Array<{
+      peerId: string;
+      x: number;
+      y: number;
+      handle: string | null;
+      address: string | null;
+    }> = [];
     Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
-      if (peerId !== mesh.myId) result.push({ peerId, ...pos, label: peerLabel(peerId) });
+      if (peerId === mesh.myId) return;
+      const peer = mesh.peers.find(p => p.id === peerId);
+      result.push({
+        peerId,
+        x: pos.x,
+        y: pos.y,
+        handle: peer?.handle ?? null,
+        address: peer?.address ?? null,
+      });
     });
     return result;
-  }, [mesh.cursors, mesh.myId, peerLabel]);
+  }, [mesh.cursors, mesh.myId, mesh.peers]);
+
+  const myBands = useMemo(
+    () =>
+      bandsFromIdentity({
+        address: session.authenticated ? session.address : null,
+        handle: session.authenticated ? session.handle : null,
+        fallback: mesh.myId,
+      }),
+    [session, mesh.myId],
+  );
 
   const localCursor = useLocalCursor();
 
@@ -340,6 +367,7 @@ const Desktop: NextPage = () => {
               onMove={({ x, y }) => moveSlot(slotId, x, y)}
               onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}
+              containerInset={{ top: 26 }}
             >
               {stream ? (
                 <video
@@ -390,6 +418,7 @@ const Desktop: NextPage = () => {
             onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}
             onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
+            containerInset={{ top: 26 }}
           >
             <div
               style={{
@@ -421,11 +450,34 @@ const Desktop: NextPage = () => {
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +
           zIndex 2^31 keeps them on top of every other layer. */}
-      {remoteCursors.map(({ peerId, x, y, label }) => (
-        <Cursor key={peerId} x={x} y={y} label={label} />
-      ))}
+      {remoteCursors.map(({ peerId, x, y, handle, address }) => {
+        const bands = bandsFromIdentity({ address, handle, fallback: peerId });
+        return (
+          <Cursor
+            key={peerId}
+            x={x}
+            y={y}
+            dimmed
+            bands={bands}
+            label={
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                {handle ? (
+                  <span>{handle}</span>
+                ) : address ? (
+                  <Address address={address as AddressType} size="xs" onlyEnsOrAddress />
+                ) : (
+                  <span>{peerId.slice(0, 6)}</span>
+                )}
+                <BandFlag bands={bands} />
+              </span>
+            }
+          />
+        );
+      })}
 
-      {localCursor.pos ? <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} /> : null}
+      {localCursor.pos ? (
+        <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} bands={myBands} />
+      ) : null}
     </>
   );
 };
