@@ -10,18 +10,20 @@ const SRC: Record<CursorKind, string> = {
 // Hotspot offsets (in cursor pixels) — where the click point is inside
 // the SVG so we shift the rendered image to align with the real mouse.
 // Tuned to roughly center on the index-finger tip / i-beam center.
-const HOTSPOT: Record<CursorKind, { x: number; y: number }> = {
-  pointer: { x: 8, y: 4 },
-  grab: { x: 16, y: 12 },
-  grabbing: { x: 16, y: 12 },
-  text: { x: 12, y: 12 },
-};
-
 const SIZE: Record<CursorKind, number> = {
-  pointer: 36,
-  grab: 36,
+  pointer: 64,
+  grab: 64,
   grabbing: 36,
   text: 24,
+};
+
+// Hotspot offsets in cursor pixels (where the click point lands inside
+// the rendered SVG). Roughly the index-finger tip / i-beam center.
+const HOTSPOT: Record<CursorKind, { x: number; y: number }> = {
+  pointer: { x: SIZE.pointer * 0.22, y: SIZE.pointer * 0.12 },
+  grab: { x: SIZE.grab * 0.45, y: SIZE.grab * 0.35 },
+  grabbing: { x: SIZE.grabbing * 0.45, y: SIZE.grabbing * 0.35 },
+  text: { x: SIZE.text * 0.5, y: SIZE.text * 0.5 },
 };
 
 type CursorProps = {
