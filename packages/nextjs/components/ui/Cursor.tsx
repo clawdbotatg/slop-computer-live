@@ -7,9 +7,6 @@ const SRC: Record<CursorKind, string> = {
   text: "/cursors/text_cursor_ibeam_clean.svg",
 };
 
-// Hotspot offsets (in cursor pixels) — where the click point is inside
-// the SVG so we shift the rendered image to align with the real mouse.
-// Tuned to roughly center on the index-finger tip / i-beam center.
 const SIZE: Record<CursorKind, number> = {
   pointer: 64,
   grab: 64,
@@ -17,11 +14,11 @@ const SIZE: Record<CursorKind, number> = {
   text: 24,
 };
 
-// Hotspot offsets in cursor pixels (where the click point lands inside
-// the rendered SVG). Roughly the index-finger tip / i-beam center.
-// +4 nudge on the pointer to land deeper into the fingertip.
+// Hotspot offsets in cursor pixels — where the click point lands inside
+// the rendered SVG. Pointer dialed in with the dev nudge tool to land on
+// the index-finger tip; others tuned to roughly the middle of the palm.
 const HOTSPOT: Record<CursorKind, { x: number; y: number }> = {
-  pointer: { x: SIZE.pointer * 0.22 + 4, y: SIZE.pointer * 0.12 + 4 },
+  pointer: { x: SIZE.pointer * 0.22 + 1, y: SIZE.pointer * 0.12 + 6 },
   grab: { x: SIZE.grab * 0.45, y: SIZE.grab * 0.35 },
   grabbing: { x: SIZE.grabbing * 0.45, y: SIZE.grabbing * 0.35 },
   text: { x: SIZE.text * 0.5, y: SIZE.text * 0.5 },
@@ -44,7 +41,6 @@ export const Cursor = ({ x, y, kind = "pointer", label }: CursorProps) => {
         left: x - hot.x,
         top: y - hot.y,
         pointerEvents: "none",
-        // Above the menubar (z 9000) and any open dropdowns (z 9100+).
         zIndex: 2147483647,
         filter: "drop-shadow(1px 2px 0 rgba(0,0,0,0.5))",
         willChange: "transform",
