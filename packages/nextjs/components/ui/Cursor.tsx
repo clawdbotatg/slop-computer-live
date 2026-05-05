@@ -19,8 +19,9 @@ const SIZE: Record<CursorKind, number> = {
 
 // Hotspot offsets in cursor pixels (where the click point lands inside
 // the rendered SVG). Roughly the index-finger tip / i-beam center.
+// +4 nudge on the pointer to land deeper into the fingertip.
 const HOTSPOT: Record<CursorKind, { x: number; y: number }> = {
-  pointer: { x: SIZE.pointer * 0.22, y: SIZE.pointer * 0.12 },
+  pointer: { x: SIZE.pointer * 0.22 + 4, y: SIZE.pointer * 0.12 + 4 },
   grab: { x: SIZE.grab * 0.45, y: SIZE.grab * 0.35 },
   grabbing: { x: SIZE.grabbing * 0.45, y: SIZE.grabbing * 0.35 },
   text: { x: SIZE.text * 0.5, y: SIZE.text * 0.5 },
@@ -43,7 +44,8 @@ export const Cursor = ({ x, y, kind = "pointer", label }: CursorProps) => {
         left: x - hot.x,
         top: y - hot.y,
         pointerEvents: "none",
-        zIndex: 10000,
+        // Above the menubar (z 9000) and any open dropdowns (z 9100+).
+        zIndex: 2147483647,
         filter: "drop-shadow(1px 2px 0 rgba(0,0,0,0.5))",
         willChange: "transform",
       }}
