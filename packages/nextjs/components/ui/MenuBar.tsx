@@ -49,8 +49,9 @@ export const MenuBar = ({
   const authNode = session.authenticated ? (
     <button
       type="button"
-      onClick={() => {
-        void signOut();
+      onClick={async () => {
+        await signOut();
+        window.location.href = process.env.NEXT_PUBLIC_AUDIENCE_URL || "https://slop.computer/";
       }}
       className="slop-menubar__item"
       style={{
