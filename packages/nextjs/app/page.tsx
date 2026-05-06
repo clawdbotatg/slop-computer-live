@@ -192,24 +192,6 @@ const Desktop: NextPage = () => {
         { label: "Cascade Windows", disabled: true },
         { divider: true, label: "" },
         {
-          label: "Open at 1920 × 1080",
-          onClick: () => {
-            // Chrome/Edge/Safari/FF all block window.resizeTo on the
-            // current tab regardless of tab count — script can only set
-            // the size of a window it spawned itself. So a popup is
-            // genuinely the only path. Self-corrects to a true 1920×1080
-            // INNER viewport on mount via window.name === "slop-1920".
-            const dx = window.outerWidth - window.innerWidth;
-            const dy = window.outerHeight - window.innerHeight;
-            window.open(
-              window.location.href,
-              "slop-1920",
-              `popup=yes,width=${1920 + dx},height=${1080 + dy},left=0,top=0`,
-            );
-          },
-        },
-        { divider: true, label: "" },
-        {
           label: "Full Screen",
           shortcut: "⌃⌘F",
           onClick: () => {
@@ -221,26 +203,6 @@ const Desktop: NextPage = () => {
     }),
     [],
   );
-
-  // ---- Popup self-correction --------------------------------------------
-  // When a tab is opened via View → Open at 1920 × 1080 we set window.name
-  // to "slop-1920". Once it loads we measure the actual chrome offset
-  // (which the parent couldn't know at window.open time) and resizeTo so
-  // the *inner* viewport is exactly 1920 × 1080 — what OBS / window
-  // capture cares about. This works because the popup is a script-spawned
-  // window; it has resize permission its parent does not.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.name !== "slop-1920") return;
-    const correct = () => {
-      const dx = window.outerWidth - window.innerWidth;
-      const dy = window.outerHeight - window.innerHeight;
-      window.resizeTo(1920 + dx, 1080 + dy);
-    };
-    correct();
-    const t = setTimeout(correct, 400);
-    return () => clearTimeout(t);
-  }, []);
 
   // ---- Slot clamp on viewport resize ------------------------------------
   // When the viewport shrinks (manual resize, View → 1920×1080, browser
