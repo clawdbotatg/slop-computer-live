@@ -3,69 +3,79 @@
 import type { CSSProperties, ReactNode } from "react";
 
 export type LoadingBarProps = {
-  /** Number of blocks in the bar. */
+  /** Inner track width in characters (~7px each in mono). Default 20. */
   cells?: number;
-  /** Width and height of each block in pixels. */
-  size?: number;
-  /** Optional caption underneath. */
-  label?: ReactNode;
-  /** Override the cycle duration (seconds). Lower = faster march. */
+  /** 0–100 for a determinate fill (e.g. BITRATE 70%). Omit for indeterminate. */
+  progress?: number;
+  /** Caption to the right. Defaults to "{progress}%" if progress is given. */
+  caption?: ReactNode;
+  /** Indeterminate cycle duration (seconds). */
   cycleSeconds?: number;
   className?: string;
   style?: CSSProperties;
 };
 
-// Indeterminate loader — a row of inset blocks with a magenta wave that
-// marches left-to-right and wraps. Tuned to look like the CLI/installer
-// loaders from a 1999 OS rather than a smooth modern spinner.
+const CHAR_WIDTH = 7;
+
+// Bracketed CLI bar matching the slop-platinum stream-settings mockup.
+//   [ ██████████░░░░░░░░ ] 70%
+// Determinate mode renders the fill at the given progress. Indeterminate
+// fills 0→100, holds briefly, then resets — DOS-installer feel rather than
+// a smooth modern spinner.
 export const LoadingBar = ({
-  cells = 16,
-  size = 14,
-  label,
-  cycleSeconds = 1.6,
+  cells = 20,
+  progress,
+  caption,
+  cycleSeconds = 1.8,
   className = "",
   style,
 }: LoadingBarProps) => {
-  const cellArr = Array.from({ length: cells }, (_, i) => i);
+  const trackWidth = cells * CHAR_WIDTH;
+  const isDeterminate = typeof progress === "number" && Number.isFinite(progress);
+  const clamped = isDeterminate ? Math.max(0, Math.min(100, progress!)) : 0;
+
   return (
-    <div
+    <span
       className={`slop-loader ${className}`.trim()}
       style={{
         display: "inline-flex",
-        flexDirection: "column",
         alignItems: "center",
-        gap: 8,
+        gap: 4,
+        fontFamily: "var(--slop-font-body), monospace",
+        fontSize: 13,
+        color: "var(--slop-text-muted)",
         ...style,
       }}
     >
-      <div style={{ display: "flex", gap: 2 }}>
-        {cellArr.map(i => (
-          <span
-            key={i}
-            className="slop-loader__cell"
-            style={{
-              width: size,
-              height: size,
-              animationDelay: `${(i / cells) * cycleSeconds}s`,
-              animationDuration: `${cycleSeconds}s`,
-            }}
-          />
-        ))}
-      </div>
-      {label ? (
+      <span aria-hidden>[</span>
+      <span
+        className="slop-loader__track"
+        style={{
+          position: "relative",
+          width: trackWidth,
+          height: 12,
+        }}
+      >
         <span
-          style={{
-            fontFamily: "var(--slop-font-body), monospace",
-            fontSize: 11,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            color: "var(--slop-text-muted)",
-          }}
-        >
-          {label}
-        </span>
+          className={`slop-loader__bar${isDeterminate ? "" : " slop-loader__bar--indeterminate"}`}
+          style={
+            isDeterminate
+              ? { width: `${clamped}%` }
+              : {
+                  // CSS animation needs to know the cycle duration; everything
+                  // else lives in globals.css so the keyframes are reusable.
+                  animationDuration: `${cycleSeconds}s`,
+                }
+          }
+        />
+      </span>
+      <span aria-hidden>]</span>
+      {caption !== undefined ? (
+        <span style={{ marginLeft: 4 }}>{caption}</span>
+      ) : isDeterminate ? (
+        <span style={{ marginLeft: 4 }}>{Math.round(clamped)}%</span>
       ) : null}
-    </div>
+    </span>
   );
 };
 

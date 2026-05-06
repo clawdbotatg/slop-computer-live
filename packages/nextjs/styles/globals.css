@@ -442,28 +442,66 @@
 }
 
 /* === LoadingBar ======================================================= */
+/*
+ * Bracketed CLI bar from the stream-settings mockup. Inset dark track,
+ * magenta gradient fill, sharp edges. Determinate mode is a static width;
+ * indeterminate fills 0→100% then resets each cycle.
+ */
 
-.slop-loader__cell {
+.slop-loader__track {
   display: inline-block;
-  background: var(--slop-bevel-dark);
-  border-top: 1px solid var(--slop-bevel-light);
-  border-left: 1px solid var(--slop-bevel-light);
-  border-right: 1px solid #000;
-  border-bottom: 1px solid #000;
-  animation: slop-loader-march ease-in-out infinite;
-  /* duration set inline so callers can tune it per instance */
+  background: #06030d;
+  border-top: 1px solid #000;
+  border-left: 1px solid #000;
+  border-right: 1px solid var(--slop-bevel-light);
+  border-bottom: 1px solid var(--slop-bevel-light);
+  overflow: hidden;
+  vertical-align: middle;
 }
 
-@keyframes slop-loader-march {
-  0%,
-  60%,
-  100% {
-    background: var(--slop-bevel-dark);
-    box-shadow: none;
+.slop-loader__bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(0, 0, 0, 0.0) 30%, rgba(0, 0, 0, 0.25) 100%),
+    linear-gradient(90deg, var(--slop-magenta-dim) 0%, var(--slop-magenta) 100%);
+  box-shadow: 0 0 6px rgba(255, 62, 201, 0.5);
+}
+
+.slop-loader__bar--indeterminate {
+  width: 0%;
+  animation: slop-loader-fill ease-in-out infinite;
+}
+
+@keyframes slop-loader-fill {
+  0% {
+    width: 0%;
+    opacity: 1;
   }
-  25% {
-    background: var(--slop-magenta);
-    box-shadow: 0 0 6px var(--slop-magenta);
+  55% {
+    width: 100%;
+    opacity: 1;
+  }
+  68% {
+    width: 100%;
+    opacity: 1;
+  }
+  72% {
+    width: 100%;
+    opacity: 0;
+  }
+  72.01% {
+    width: 0%;
+    opacity: 0;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    width: 0%;
+    opacity: 1;
   }
 }
 

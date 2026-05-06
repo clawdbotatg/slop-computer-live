@@ -430,9 +430,9 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
             }}
           >
             <LoadingBar
-              cells={18}
-              label={
-                connState === "open" ? "fetching dapp" : connState === "connecting" ? "connecting" : "host offline"
+              cells={22}
+              caption={
+                connState === "open" ? "FETCHING DAPP" : connState === "connecting" ? "CONNECTING" : "HOST OFFLINE"
               }
             />
           </div>
