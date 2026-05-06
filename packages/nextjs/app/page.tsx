@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
@@ -194,12 +194,28 @@ const Desktop: NextPage = () => {
         {
           label: "1920 × 1080",
           onClick: () => {
-            // Resize the browser window so the viewport is exactly 1920×1080
-            // — useful for OBS / window capture. resizeTo takes outer dims, so
-            // add the current chrome offset (frame + scrollbars + devtools).
+            // Try to resize the current tab first — this works when the
+            // window contains a single tab (script-resize permission).
+            // Most multi-tab Chrome windows silently ignore it, so we
+            // detect that and fall back to opening a fresh popup at the
+            // target size; the popup self-corrects for chrome offset on
+            // mount via the `window.name === "slop-1920"` effect below.
             const dx = window.outerWidth - window.innerWidth;
             const dy = window.outerHeight - window.innerHeight;
             window.resizeTo(1920 + dx, 1080 + dy);
+            setTimeout(() => {
+              const ok = Math.abs(window.innerWidth - 1920) <= 4 && Math.abs(window.innerHeight - 1080) <= 4;
+              if (!ok) {
+                window.open(
+                  window.location.href,
+                  "slop-1920",
+                  `popup=yes,width=${1920 + dx},height=${1080 + dy},left=0,top=0`,
+                );
+              }
+              // Fire resize manually so the slot-clamp effect runs even if
+              // the browser didn't dispatch one (some no-op resizes don't).
+              window.dispatchEvent(new Event("resize"));
+            }, 80);
           },
         },
         { divider: true, label: "" },
@@ -215,6 +231,55 @@ const Desktop: NextPage = () => {
     }),
     [],
   );
+
+  // ---- Popup self-correction --------------------------------------------
+  // When a tab is opened via the View → 1920 × 1080 menu we set window.name
+  // to "slop-1920". Once it loads we measure the actual chrome offset (which
+  // wasn't knowable from the parent at window.open time) and resizeTo so the
+  // *inner* viewport is exactly 1920 × 1080 — that's what OBS / capture cards
+  // care about.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.name !== "slop-1920") return;
+    const correct = () => {
+      const dx = window.outerWidth - window.innerWidth;
+      const dy = window.outerHeight - window.innerHeight;
+      window.resizeTo(1920 + dx, 1080 + dy);
+    };
+    correct();
+    const t = setTimeout(correct, 400);
+    return () => clearTimeout(t);
+  }, []);
+
+  // ---- Slot clamp on viewport resize ------------------------------------
+  // When the viewport shrinks (manual resize, View → 1920×1080, browser
+  // zoom, etc.) any open windows that were positioned for a larger viewport
+  // would otherwise be parked off-screen. Pull them back inside the visible
+  // area, shrinking width/height first if they no longer fit.
+  const meshUpdateSlot = mesh.updateSlot;
+  const slotsRef = useRef(mesh.slots);
+  slotsRef.current = mesh.slots;
+  useEffect(() => {
+    const MENUBAR = 38;
+    const onResize = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      Object.values(slotsRef.current).forEach(slot => {
+        let { x, y, width, height } = slot;
+        if (width > vw) width = vw;
+        if (height > vh - MENUBAR) height = vh - MENUBAR;
+        if (x + width > vw) x = vw - width;
+        if (y + height > vh) y = vh - height;
+        if (x < 0) x = 0;
+        if (y < MENUBAR) y = MENUBAR;
+        if (x !== slot.x || y !== slot.y || width !== slot.width || height !== slot.height) {
+          meshUpdateSlot({ id: slot.id, x, y, width, height });
+        }
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [meshUpdateSlot]);
 
   // ---- Auto-resume publishing on reload ----------------------------------
   // Camera + mic permissions are sticky in Chrome once granted, so the next
