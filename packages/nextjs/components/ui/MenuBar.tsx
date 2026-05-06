@@ -49,25 +49,12 @@ export const MenuBar = ({
   const { session, signOut } = useSession();
 
   const authNode = session.authenticated ? (
-    <button
-      type="button"
-      onClick={async () => {
+    <PowerMenu
+      onSignOut={async () => {
         await signOut();
         window.location.href = process.env.NEXT_PUBLIC_AUDIENCE_URL || "https://slop.computer/";
       }}
-      className="slop-menubar__item"
-      style={{
-        color: "var(--slop-text-muted)",
-        cursor: "pointer",
-        fontSize: "inherit",
-        fontFamily: "inherit",
-        textDecoration: "underline",
-        textTransform: "uppercase",
-        letterSpacing: "0.04em",
-      }}
-    >
-      sign out
-    </button>
+    />
   ) : (
     <Link href="/join" className="slop-menubar__item" style={{ textDecoration: "none", color: "inherit" }}>
       {sessionLabel(session)}
@@ -316,6 +303,113 @@ function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) 
               })}
             </ul>
           )}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <span
+      ref={ref}
+      style={{ position: "relative", display: "inline-flex" }}
+      className="slop-menubar__item"
+      title="Power"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-label="Power menu"
+        style={{
+          background: "transparent",
+          border: 0,
+          color: "inherit",
+          padding: 0,
+          margin: 0,
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          lineHeight: 1,
+        }}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          aria-hidden
+        >
+          {/* IEC power glyph: arc opening at top, vertical line through the gap. */}
+          <path d="M5.5 9 A 8 8 0 1 0 18.5 9" />
+          <line x1="12" y1="3.5" x2="12" y2="12.5" />
+        </svg>
+      </button>
+      {open ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            minWidth: 160,
+            background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,62,201,0.5)",
+            borderRadius: 8,
+            boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
+            padding: 4,
+            zIndex: 9100,
+            color: "var(--slop-text)",
+            textTransform: "none",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              void onSignOut();
+            }}
+            style={{
+              display: "flex",
+              width: "100%",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "6px 12px",
+              background: "transparent",
+              border: 0,
+              color: "var(--slop-text)",
+              font: "inherit",
+              cursor: "pointer",
+              borderRadius: 4,
+              letterSpacing: "0.04em",
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+              (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+              (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+            }}
+          >
+            [ sign out ]
+          </button>
         </div>
       ) : null}
     </span>
