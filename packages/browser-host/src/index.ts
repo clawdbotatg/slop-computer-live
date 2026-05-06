@@ -99,6 +99,44 @@ type Tab = {
 const tabs = new Map<string, Tab>();
 const tabBoots = new Map<string, Promise<Tab>>();
 
+// Map a KeyboardEvent.key value to the legacy "windows virtual key code"
+// CDP expects. Without it, Chrome treats special keys (Backspace, Delete,
+// Tab, Enter, arrows) as keyCode=0 and the input element ignores them.
+const SPECIAL_VK: Record<string, number> = {
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  Shift: 16,
+  Control: 17,
+  Alt: 18,
+  Pause: 19,
+  CapsLock: 20,
+  Escape: 27,
+  " ": 32,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46,
+  Meta: 91,
+  ContextMenu: 93,
+  F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117,
+  F7: 118, F8: 119, F9: 120, F10: 121, F11: 122, F12: 123,
+};
+
+function virtualKeyCode(key: string): number {
+  if (SPECIAL_VK[key] !== undefined) return SPECIAL_VK[key]!;
+  // Letters and digits: keyCode is the uppercase ASCII code. e.key for the
+  // 'a' key is 'a' (or 'A' with shift); both map to keyCode 65.
+  if (key.length === 1) return key.toUpperCase().charCodeAt(0);
+  return 0;
+}
+
 const send = (ws: WebSocket, msg: unknown) => {
   if (ws.readyState === ws.OPEN) {
     try {
@@ -407,6 +445,12 @@ app.register(async function (fastify) {
             const text = typeof msg.text === "string" ? msg.text : undefined;
             const cdpType: "keyDown" | "keyUp" | "char" =
               event === "down" ? "keyDown" : event === "up" ? "keyUp" : "char";
+            // CDP's Input.dispatchKeyEvent ignores special keys (Backspace,
+            // Delete, arrows, etc.) unless we also send the legacy
+            // windowsVirtualKeyCode. Without it Chrome sees keyCode=0 and
+            // the input element's default handler (delete-char-left/right,
+            // move caret, submit, etc.) never fires.
+            const vk = cdpType === "char" ? 0 : virtualKeyCode(key);
             void tab.cdp
               .send("Input.dispatchKeyEvent", {
                 type: cdpType,
@@ -414,6 +458,8 @@ app.register(async function (fastify) {
                 code,
                 text,
                 modifiers: Number(msg.modifiers ?? 0),
+                windowsVirtualKeyCode: vk,
+                nativeVirtualKeyCode: vk,
               })
               .catch(() => undefined);
             return;

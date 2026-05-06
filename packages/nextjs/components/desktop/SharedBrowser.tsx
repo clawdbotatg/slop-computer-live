@@ -236,19 +236,22 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
   };
   // Capture key events on the stage when it has focus. Key events are
   // captured at the element level rather than window so typing in our URL
-  // bar doesn't get swallowed by the iframe stand-in.
+  // bar doesn't get swallowed by the canvas stand-in.
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!canControl) return;
+    // CDP keyDown with `text` produces the input directly — no separate
+    // char event needed (and sending one would double-type printable keys).
+    // Special keys (Delete, Backspace, arrows) come through with no text;
+    // the server uses the windowsVirtualKeyCode it derives from key.
+    const text = e.key.length === 1 ? e.key : undefined;
     sendInput({
       type: "key",
       event: "down",
       key: e.key,
       code: e.code,
+      text,
       modifiers: (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0),
     });
-    if (e.key.length === 1) {
-      sendInput({ type: "key", event: "char", key: e.key, code: e.code, text: e.key });
-    }
     e.preventDefault();
   };
   const onKeyUp = (e: React.KeyboardEvent) => {
