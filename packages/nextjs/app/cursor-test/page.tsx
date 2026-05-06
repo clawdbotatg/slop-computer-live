@@ -104,7 +104,7 @@ export default function CursorTestPage() {
           onMove={p => update(s.id, p)}
           onResize={r => update(s.id, r)}
           onClose={() => setSlots(prev => prev.filter(p => p.id !== s.id))}
-          containerInset={{ top: 26 }}
+          containerInset={{ top: 38 }}
         >
           <div style={{ padding: 12, fontFamily: "monospace", fontSize: 12 }}>
             <div>id: {s.id}</div>

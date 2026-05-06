@@ -5,6 +5,7 @@ export { Cursor } from "./Cursor";
 export { DesktopBackground } from "./DesktopBackground";
 export { LivePulse } from "./LivePulse";
 export { MenuBar } from "./MenuBar";
+export type { Menu, MenuItem } from "./MenuBar";
 export { TextField } from "./TextField";
 export { TitleBar } from "./TitleBar";
 export { Window } from "./Window";

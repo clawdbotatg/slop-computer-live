@@ -6,7 +6,7 @@ import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
-import { BandFlag, Button, DesktopBackground, MenuBar, Window } from "~~/components/ui";
+import { BandFlag, Button, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { useLocalMedia } from "~~/hooks/useLocalMedia";
@@ -145,6 +145,63 @@ const Desktop: NextPage = () => {
       ],
     }),
     [media, wantScreenResume, stopScreenAndPlaceholder],
+  );
+
+  const fileMenu = useMemo<Menu>(
+    () => ({
+      label: "File",
+      items: [
+        { label: "New Window", shortcut: "⌘N", disabled: true },
+        { label: "Open…", shortcut: "⌘O", disabled: true },
+        { divider: true, label: "" },
+        { label: "Close Window", shortcut: "⌘W", disabled: true },
+        { label: "Save Layout", shortcut: "⌘S", disabled: true },
+        { divider: true, label: "" },
+        { label: "Reload", shortcut: "⌘R", onClick: () => window.location.reload() },
+      ],
+    }),
+    [],
+  );
+
+  const editMenu = useMemo<Menu>(
+    () => ({
+      label: "Edit",
+      items: [
+        { label: "Undo", shortcut: "⌘Z", disabled: true },
+        { label: "Redo", shortcut: "⇧⌘Z", disabled: true },
+        { divider: true, label: "" },
+        { label: "Cut", shortcut: "⌘X", disabled: true },
+        { label: "Copy", shortcut: "⌘C", disabled: true },
+        { label: "Paste", shortcut: "⌘V", disabled: true },
+        { divider: true, label: "" },
+        { label: "Select All", shortcut: "⌘A", disabled: true },
+      ],
+    }),
+    [],
+  );
+
+  const viewMenu = useMemo<Menu>(
+    () => ({
+      label: "View",
+      items: [
+        { label: "✓ Show Cursors", disabled: true },
+        { label: "✓ Show Bands", disabled: true },
+        { label: "  Show Grid", disabled: true },
+        { divider: true, label: "" },
+        { label: "Tile Windows", disabled: true },
+        { label: "Cascade Windows", disabled: true },
+        { divider: true, label: "" },
+        {
+          label: "Full Screen",
+          shortcut: "⌃⌘F",
+          onClick: () => {
+            if (document.fullscreenElement) document.exitFullscreen?.();
+            else document.documentElement.requestFullscreen?.();
+          },
+        },
+      ],
+    }),
+    [],
   );
 
   // ---- Auto-resume publishing on reload ----------------------------------
@@ -347,7 +404,7 @@ const Desktop: NextPage = () => {
     <>
       <DesktopBackground />
       <MenuBar
-        menus={session.authenticated ? [shareMenu] : []}
+        menus={session.authenticated ? [fileMenu, editMenu, viewMenu, shareMenu] : [fileMenu, editMenu, viewMenu]}
         peers={mesh.peers}
         myId={mesh.myId}
         meshConnected={mesh.connected}
@@ -388,7 +445,7 @@ const Desktop: NextPage = () => {
               onMove={({ x, y }) => moveSlot(slotId, x, y)}
               onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}
-              containerInset={{ top: 26 }}
+              containerInset={{ top: 38 }}
             >
               {stream ? (
                 <video
@@ -439,7 +496,7 @@ const Desktop: NextPage = () => {
             onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}
             onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
-            containerInset={{ top: 26 }}
+            containerInset={{ top: 38 }}
           >
             <div
               style={{

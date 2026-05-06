@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useDisconnect } from "wagmi";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -36,6 +37,7 @@ export type UseSessionResult = {
 export function useSession(): UseSessionResult {
   const [session, setSession] = useState<Session>({ authenticated: false });
   const [loading, setLoading] = useState(true);
+  const { disconnectAsync } = useDisconnect();
 
   const refresh = useCallback(async () => {
     try {
@@ -59,9 +61,31 @@ export function useSession(): UseSessionResult {
     } catch {
       /* ignore */
     }
+    // Drop the wallet connection too so the next visit shows the Connect
+    // button instead of auto-reconnecting via wagmi's persisted state.
+    try {
+      await disconnectAsync();
+    } catch {
+      /* no active connector */
+    }
+    // wagmi.disconnect() alone isn't enough — RainbowKit, WalletConnect, and
+    // ReOwn each cache connector metadata under their own prefixes. If any of
+    // those survive, the next page load silently re-establishes the connection
+    // and JoinCard skips the Connect Wallet button. Sign-out should be a
+    // total reset, so blow them all away.
+    if (typeof window !== "undefined") {
+      try {
+        const prefixes = ["wagmi", "rk-", "wc@", "@w3m", "@appkit", "WCM_VERSION"];
+        Object.keys(window.localStorage)
+          .filter(k => prefixes.some(p => k.startsWith(p)))
+          .forEach(k => window.localStorage.removeItem(k));
+      } catch {
+        /* private mode / quota */
+      }
+    }
     setSession({ authenticated: false });
     notifySessionChanged();
-  }, []);
+  }, [disconnectAsync]);
 
   // Wrap refresh to also broadcast so other useSession instances refetch.
   const refreshAndBroadcast = useCallback(async () => {
