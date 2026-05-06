@@ -162,7 +162,15 @@
 }
 
 .slop-titlebar {
-  background: var(--slop-titlebar);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.28) 0px,
+      rgba(0, 0, 0, 0.28) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    var(--slop-titlebar);
   color: #000;
   font-family: var(--slop-font-display);
   text-transform: uppercase;
@@ -179,7 +187,15 @@
 }
 
 .slop-titlebar--active {
-  background: var(--slop-titlebar-active);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.28) 0px,
+      rgba(0, 0, 0, 0.28) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    var(--slop-titlebar-active);
   color: #000;
 }
 
@@ -306,7 +322,15 @@
   display: flex;
   align-items: stretch;
   gap: 4px;
-  background: linear-gradient(180deg, rgba(255, 62, 201, 0.18) 0%, rgba(0, 0, 0, 0.7) 100%);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.32) 0px,
+      rgba(0, 0, 0, 0.32) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    linear-gradient(180deg, rgba(255, 62, 201, 0.18) 0%, rgba(0, 0, 0, 0.7) 100%);
   border-bottom: 1px solid var(--slop-magenta);
   box-shadow:
     0 2px 16px rgba(255, 62, 201, 0.45),
