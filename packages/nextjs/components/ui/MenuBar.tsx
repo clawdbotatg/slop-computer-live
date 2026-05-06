@@ -323,26 +323,18 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
   }, [open]);
 
   return (
-    <span
-      ref={ref}
-      style={{ position: "relative", display: "inline-flex" }}
-      className="slop-menubar__item"
-      title="Power"
-    >
+    <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-label="Power menu"
+        title="Power"
+        className="slop-menubar__item"
         style={{
-          background: "transparent",
-          border: 0,
           color: "inherit",
-          padding: 0,
-          margin: 0,
+          font: "inherit",
           cursor: "pointer",
-          display: "inline-flex",
-          alignItems: "center",
-          lineHeight: 1,
+          margin: 0,
         }}
       >
         <svg
