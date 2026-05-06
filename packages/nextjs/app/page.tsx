@@ -194,22 +194,22 @@ const Desktop: NextPage = () => {
         {
           label: "1920 × 1080",
           onClick: () => {
-            // Try to resize the current tab first — this works when the
-            // window contains a single tab (script-resize permission).
-            // Most multi-tab Chrome windows silently ignore it, so we
-            // detect that and fall back to opening a fresh popup at the
-            // target size; the popup self-corrects for chrome offset on
-            // mount via the `window.name === "slop-1920"` effect below.
+            // resizeTo on the main tab is silently blocked by Chrome / Edge
+            // when the window holds more than one tab, and by Safari / FF
+            // entirely. There's no script workaround for that — popping a
+            // new window felt clunky, so we just try the resize and if it
+            // didn't take, tell the user to detach the tab into its own
+            // window first.
             const dx = window.outerWidth - window.innerWidth;
             const dy = window.outerHeight - window.innerHeight;
             window.resizeTo(1920 + dx, 1080 + dy);
             setTimeout(() => {
               const ok = Math.abs(window.innerWidth - 1920) <= 4 && Math.abs(window.innerHeight - 1080) <= 4;
               if (!ok) {
-                window.open(
-                  window.location.href,
-                  "slop-1920",
-                  `popup=yes,width=${1920 + dx},height=${1080 + dy},left=0,top=0`,
+                alert(
+                  "Browser blocked the resize.\n\n" +
+                    "Drag this tab out into its own window (so it's the only tab there), " +
+                    "then pick 1920 × 1080 again.",
                 );
               }
               // Fire resize manually so the slot-clamp effect runs even if
@@ -231,25 +231,6 @@ const Desktop: NextPage = () => {
     }),
     [],
   );
-
-  // ---- Popup self-correction --------------------------------------------
-  // When a tab is opened via the View → 1920 × 1080 menu we set window.name
-  // to "slop-1920". Once it loads we measure the actual chrome offset (which
-  // wasn't knowable from the parent at window.open time) and resizeTo so the
-  // *inner* viewport is exactly 1920 × 1080 — that's what OBS / capture cards
-  // care about.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.name !== "slop-1920") return;
-    const correct = () => {
-      const dx = window.outerWidth - window.innerWidth;
-      const dy = window.outerHeight - window.innerHeight;
-      window.resizeTo(1920 + dx, 1080 + dy);
-    };
-    correct();
-    const t = setTimeout(correct, 400);
-    return () => clearTimeout(t);
-  }, []);
 
   // ---- Slot clamp on viewport resize ------------------------------------
   // When the viewport shrinks (manual resize, View → 1920×1080, browser
