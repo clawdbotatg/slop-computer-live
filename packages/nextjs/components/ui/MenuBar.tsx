@@ -78,18 +78,7 @@ export const MenuBar = ({
   return (
     <div className={`slop-menubar ${className}`.trim()}>
       <span className="slop-menubar__brand slop-menubar__item">
-        <svg className="slop-menubar__brand-icon" width="16" height="14" viewBox="0 0 16 14" aria-hidden>
-          {/* monitor */}
-          <rect x="0.5" y="0.5" width="15" height="10" fill="#1a0a1f" stroke="#fff" strokeWidth="1" />
-          {/* screen */}
-          <rect x="2" y="2" width="12" height="7" fill="#00ffe1" />
-          {/* scanline */}
-          <rect x="2" y="3.5" width="12" height="0.5" fill="#1a0a1f" opacity="0.4" />
-          <rect x="2" y="6" width="12" height="0.5" fill="#1a0a1f" opacity="0.4" />
-          {/* stand */}
-          <rect x="6" y="11" width="4" height="1" fill="#fff" />
-          <rect x="3" y="12" width="10" height="1.5" fill="#fff" />
-        </svg>
+        <img src="/logo-mark.png" alt="" className="slop-menubar__brand-icon" width={22} height={22} aria-hidden />
         <span>{brand}</span>
       </span>
       {menus.map(menu => (
