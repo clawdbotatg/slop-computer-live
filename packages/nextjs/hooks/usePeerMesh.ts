@@ -106,6 +106,11 @@ export type PeerMeshState = {
   myId: string | null;
   peers: Peer[];
   connected: boolean;
+  // True once the first `hello` payload has been processed — i.e. we know
+  // the authoritative slots, browsers, and publications. Use this to gate
+  // any UI that would otherwise flash from a fallback to the persisted
+  // value (icon positions, browser windows, etc.).
+  bootstrapped: boolean;
   // Streams keyed by stream.id (NOT peerId). Multiple streams per peer work.
   remoteStreams: Map<string, MediaStream>;
   // Currently-active publications across all peers (own + others).
@@ -136,6 +141,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
+  const [bootstrapped, setBootstrapped] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -482,6 +488,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             for (const b of msg.browsers as Browser[]) next[b.id] = b;
             setBrowsers(next);
           }
+          // Flip last so consumers can `if (bootstrapped) render` without
+          // worrying about whether slots/browsers have been applied yet.
+          setBootstrapped(true);
 
           teardownConnections();
           for (const peer of others) {
@@ -598,6 +607,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           pingTimer = null;
         }
         setConnected(false);
+        setBootstrapped(false);
         setMyId(null);
         myIdRef.current = null;
         teardownConnections();
@@ -650,6 +660,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     myId,
     peers,
     connected,
+    bootstrapped,
     remoteStreams,
     publications,
     slots,

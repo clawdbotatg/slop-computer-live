@@ -525,8 +525,11 @@ const Desktop: NextPage = () => {
 
         {/* Desktop icons. Position is stored in the shared slots system so
             every peer sees them in the same place (and a relay restart
-            doesn't reset the layout). z stays low so windows render above. */}
-        {session.authenticated
+            doesn't reset the layout). Gated on `bootstrapped` so we don't
+            render at the fallback position before the first hello arrives —
+            otherwise the icon flashes from default to its persisted spot
+            on every reload. */}
+        {session.authenticated && mesh.bootstrapped
           ? (() => {
               const slot = mesh.slots["icon-browser"] ?? {
                 id: "icon-browser",
