@@ -441,6 +441,32 @@
   }
 }
 
+/* === LoadingBar ======================================================= */
+
+.slop-loader__cell {
+  display: inline-block;
+  background: var(--slop-bevel-dark);
+  border-top: 1px solid var(--slop-bevel-light);
+  border-left: 1px solid var(--slop-bevel-light);
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
+  animation: slop-loader-march ease-in-out infinite;
+  /* duration set inline so callers can tune it per instance */
+}
+
+@keyframes slop-loader-march {
+  0%,
+  60%,
+  100% {
+    background: var(--slop-bevel-dark);
+    box-shadow: none;
+  }
+  25% {
+    background: var(--slop-magenta);
+    box-shadow: 0 0 6px var(--slop-magenta);
+  }
+}
+
 /* === Misc ============================================================ */
 
 .slop-divider {

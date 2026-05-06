@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
-import { Button, TextField } from "~~/components/ui";
+import { Button, LoadingBar, TextField } from "~~/components/ui";
 import type { Browser, TxRequest } from "~~/hooks/usePeerMesh";
 
 // Hardcoded for v1. Eventually this is the slop-computer smart-contract
@@ -427,12 +427,14 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "var(--slop-text-muted)",
-              fontFamily: "monospace",
-              fontSize: 12,
             }}
           >
-            {connState === "open" ? "loading…" : connState === "connecting" ? "connecting…" : "browser-host offline"}
+            <LoadingBar
+              cells={18}
+              label={
+                connState === "open" ? "fetching dapp" : connState === "connecting" ? "connecting" : "host offline"
+              }
+            />
           </div>
         )}
       </div>
