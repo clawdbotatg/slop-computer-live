@@ -1,0 +1,16 @@
+[Unit]
+Description=slop-computer-live browser-host (Puppeteer + screencast + impersonator)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/slop-computer-live/packages/browser-host
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/ubuntu/slop-computer-live/packages/browser-host/.env
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

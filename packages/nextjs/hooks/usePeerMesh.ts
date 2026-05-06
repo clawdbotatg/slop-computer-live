@@ -79,6 +79,23 @@ export type SlotPosition = {
 
 type CursorData = { x: number; y: number };
 
+export type Browser = {
+  id: string;
+  url: string;
+  openedBy: string;
+  openedAt: number;
+};
+
+export type TxRequest = {
+  from: string;
+  browserId: string;
+  calldata: string;
+  to: string | null;
+  value: string | null;
+  chainId: number | null;
+  receivedAt: number;
+};
+
 type SelfHint = {
   role: "host" | "guest";
   address: string | null;
@@ -96,9 +113,17 @@ export type PeerMeshState = {
   // Persistent layout positions (host-authoritative).
   slots: Record<string, SlotPosition>;
   cursors: Record<string, CursorData>;
+  // Shared browser windows.
+  browsers: Record<string, Browser>;
+  // Recent tx_request broadcasts (newest first, capped client-side).
+  txRequests: TxRequest[];
   publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
   unpublish: (streamId: string) => void;
   updateSlot: (patch: Partial<SlotPosition> & { id: string }) => void;
+  openBrowser: (id: string, url: string) => void;
+  navigateBrowser: (id: string, url: string) => void;
+  closeBrowser: (id: string) => void;
+  broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
 export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshState {
@@ -109,6 +134,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [publications, setPublications] = useState<Publication[]>([]);
   const [slots, setSlots] = useState<Record<string, SlotPosition>>({});
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
+  const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
+  const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -303,6 +330,50 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const openBrowser = useCallback(
+    (id: string, url: string) => {
+      // Optimistic local insert so the window pops in instantly.
+      setBrowsers(prev => ({ ...prev, [id]: { id, url, openedBy: myIdRef.current ?? "", openedAt: Date.now() } }));
+      send({ type: "browser_open", id, url });
+    },
+    [send],
+  );
+
+  const navigateBrowser = useCallback(
+    (id: string, url: string) => {
+      setBrowsers(prev => (prev[id] ? { ...prev, [id]: { ...prev[id], url } } : prev));
+      send({ type: "browser_navigate", id, url });
+    },
+    [send],
+  );
+
+  const closeBrowser = useCallback(
+    (id: string) => {
+      setBrowsers(prev => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      send({ type: "browser_close", id });
+    },
+    [send],
+  );
+
+  const broadcastTxRequest = useCallback(
+    (req: Omit<TxRequest, "from" | "receivedAt">) => {
+      send({
+        type: "tx_request",
+        browserId: req.browserId,
+        calldata: req.calldata,
+        to: req.to,
+        value: req.value,
+        chainId: req.chainId,
+      });
+    },
+    [send],
+  );
+
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
       // Optimistic local update so a controlled <Rnd> doesn't snap back
@@ -406,6 +477,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             for (const s of msg.slots as SlotPosition[]) next[s.id] = s;
             setSlots(next);
           }
+          if (Array.isArray(msg.browsers)) {
+            const next: Record<string, Browser> = {};
+            for (const b of msg.browsers as Browser[]) next[b.id] = b;
+            setBrowsers(next);
+          }
 
           teardownConnections();
           for (const peer of others) {
@@ -482,6 +558,38 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           setSlots(prev => ({ ...prev, [s.id]: s }));
           return;
         }
+
+        if (msg.type === "browser" && msg.browser) {
+          const b = msg.browser as Browser;
+          setBrowsers(prev => ({ ...prev, [b.id]: b }));
+          return;
+        }
+
+        if (msg.type === "browser_closed" && typeof msg.id === "string") {
+          const id = msg.id as string;
+          setBrowsers(prev => {
+            if (!prev[id]) return prev;
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          return;
+        }
+
+        if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
+          const req: TxRequest = {
+            from: typeof msg.from === "string" ? msg.from : "",
+            browserId: msg.browserId,
+            calldata: msg.calldata,
+            to: typeof msg.to === "string" ? msg.to : null,
+            value: typeof msg.value === "string" ? msg.value : null,
+            chainId: typeof msg.chainId === "number" ? msg.chainId : null,
+            receivedAt: Date.now(),
+          };
+          // Cap history at 50 to stop unbounded growth on long sessions.
+          setTxRequests(prev => [req, ...prev].slice(0, 50));
+          return;
+        }
       };
 
       ws.onclose = () => {
@@ -546,8 +654,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     publications,
     slots,
     cursors,
+    browsers,
+    txRequests,
     publish,
     unpublish,
     updateSlot,
+    openBrowser,
+    navigateBrowser,
+    closeBrowser,
+    broadcastTxRequest,
   };
 }

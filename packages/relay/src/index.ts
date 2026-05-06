@@ -15,6 +15,12 @@ import {
   publish as publishStream,
   unpublish as unpublishStream,
 } from "./desktop.js";
+import {
+  closeBrowser as closeSharedBrowser,
+  listBrowsers,
+  navigateBrowser as navigateSharedBrowser,
+  openBrowser as openSharedBrowser,
+} from "./browsers.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
@@ -226,6 +232,47 @@ app.post<{ Params: { id: string } }>("/admin/fanouts/:id/stop", async (req, repl
   return { ok: true, fanouts: listFanouts() };
 });
 
+// --- Browser-host tx ingress -----------------------------------------------
+// The browser-host POSTs captured wallet calls here so all WS-connected peers
+// see them in their tx panels. Authenticated by a shared bearer secret —
+// keeps random clients from injecting fake tx_request messages.
+type BrowserTxBody = { browserId?: unknown; payload?: unknown };
+app.post<{ Body: BrowserTxBody }>("/internal/browser-tx", async (req, reply) => {
+  const expected = process.env.BROWSER_HOST_INGRESS_SECRET;
+  if (!expected) return reply.code(503).send({ error: "ingress not configured" });
+  const auth = req.headers.authorization;
+  if (auth !== `Bearer ${expected}`) return reply.code(401).send({ error: "bad token" });
+  const body = (req.body ?? {}) as BrowserTxBody;
+  if (typeof body.browserId !== "string") return reply.code(400).send({ error: "missing browserId" });
+  const payload = (body.payload ?? {}) as { method?: unknown; params?: unknown };
+  const method = typeof payload.method === "string" ? payload.method : "";
+  const params = Array.isArray(payload.params) ? payload.params : [];
+  // Pull `to`, `value`, calldata out of the first eth_sendTransaction param,
+  // best-effort — other write methods (personal_sign / signTypedData) just
+  // get the raw payload back as calldata.
+  let to: string | null = null;
+  let value: string | null = null;
+  let calldata = "";
+  if (method === "eth_sendTransaction" && params[0] && typeof params[0] === "object") {
+    const tx = params[0] as { to?: unknown; value?: unknown; data?: unknown };
+    to = typeof tx.to === "string" ? tx.to : null;
+    value = typeof tx.value === "string" ? tx.value : null;
+    calldata = typeof tx.data === "string" ? tx.data : JSON.stringify(tx);
+  } else {
+    calldata = JSON.stringify({ method, params });
+  }
+  broadcast({
+    type: "tx_request",
+    from: "browser-host",
+    browserId: body.browserId,
+    calldata,
+    to,
+    value,
+    chainId: null,
+  });
+  return { ok: true };
+});
+
 app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -244,15 +291,22 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "publish", streamId, kind, label }                // I'm publishing this stream
 //   { type: "unpublish", streamId }                            // I stopped publishing
 //   { type: "slot_update", id, x, y, width, height, z }        // any auth'd peer; last write wins
+//   { type: "browser_open", id, url }                          // any peer; spawns a shared browser
+//   { type: "browser_navigate", id, url }                      // any peer; sets URL of an existing browser
+//   { type: "browser_close", id }                              // any peer; closes a shared browser
+//   { type: "tx_request", browserId, calldata, to, value, chainId }  // captured impersonator tx
 //   { type: "ping" }
 // Server → client:
-//   { type: "hello", id, peers, publications, slots }
+//   { type: "hello", id, peers, publications, slots, browsers }
 //   { type: "peer_join" | "peer_leave", peer }
 //   { type: "signal", from, kind, payload }
 //   { type: "cursor", from, x, y }
 //   { type: "published", publication }
 //   { type: "unpublished", peerId, streamId }
 //   { type: "slot", slot }                                     // host moved a slot
+//   { type: "browser", browser }                               // browser opened or navigated
+//   { type: "browser_closed", id }
+//   { type: "tx_request", from, browserId, calldata, to, value, chainId }
 //   { type: "pong" }
 //   { type: "error", error }
 
@@ -285,6 +339,7 @@ app.register(async function signalRoutes(fastify) {
       peers: listPeers().filter(p => p.id !== peerId),
       publications: listPublications(),
       slots: getSlots(PRIMARY_HOST_ADDR),
+      browsers: listBrowsers(PRIMARY_HOST_ADDR),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -362,6 +417,49 @@ app.register(async function signalRoutes(fastify) {
           const merged = applySlotUpdate(PRIMARY_HOST_ADDR, patch);
           if (!merged) return;
           broadcast({ type: "slot", slot: merged });
+          return;
+        }
+        case "browser_open": {
+          if (typeof msg.id !== "string" || typeof msg.url !== "string") {
+            return send(socket, { type: "error", error: "bad_browser_open" });
+          }
+          const browser = openSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url, peerId);
+          broadcast({ type: "browser", browser });
+          return;
+        }
+        case "browser_navigate": {
+          if (typeof msg.id !== "string" || typeof msg.url !== "string") {
+            return send(socket, { type: "error", error: "bad_browser_navigate" });
+          }
+          const browser = navigateSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url);
+          if (!browser) return;
+          broadcast({ type: "browser", browser });
+          return;
+        }
+        case "browser_close": {
+          if (typeof msg.id !== "string") {
+            return send(socket, { type: "error", error: "missing_id" });
+          }
+          const ok = closeSharedBrowser(PRIMARY_HOST_ADDR, msg.id);
+          if (ok) broadcast({ type: "browser_closed", id: msg.id });
+          return;
+        }
+        case "tx_request": {
+          // Forward the captured impersonator tx to every peer so they all see
+          // the same calldata. We don't validate or store — this is just a
+          // shared notification surface.
+          if (typeof msg.browserId !== "string" || typeof msg.calldata !== "string") {
+            return send(socket, { type: "error", error: "bad_tx_request" });
+          }
+          broadcast({
+            type: "tx_request",
+            from: peerId,
+            browserId: msg.browserId,
+            calldata: msg.calldata,
+            to: typeof msg.to === "string" ? msg.to : null,
+            value: typeof msg.value === "string" ? msg.value : null,
+            chainId: typeof msg.chainId === "number" ? msg.chainId : null,
+          });
           return;
         }
         default:

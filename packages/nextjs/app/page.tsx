@@ -5,7 +5,9 @@ import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
+import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { BandFlag, Button, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
@@ -145,6 +147,15 @@ const Desktop: NextPage = () => {
       ],
     }),
     [media, wantScreenResume, stopScreenAndPlaceholder],
+  );
+
+  const meshOpenBrowser = mesh.openBrowser;
+  const spawnBrowser = useCallback(
+    (url = "https://app.zerion.io") => {
+      const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
+      meshOpenBrowser(id, url);
+    },
+    [meshOpenBrowser],
   );
 
   const fileMenu = useMemo<Menu>(
@@ -390,6 +401,60 @@ const Desktop: NextPage = () => {
     }
   }, [mesh, mesh.publications, mesh.slots, defaultSlot]);
 
+  // Same idea for shared browser windows. Default size is sized so that the
+  // stage area (window minus titlebar + URL bar + impersonator strip ≈ 110px)
+  // approximates the server viewport's 1280:800 ratio — minimal letterbox
+  // bars on first open.
+  useEffect(() => {
+    const baseZ = Math.max(4, ...Object.values(mesh.slots).map(s => s.z));
+    let i = 0;
+    for (const browser of Object.values(mesh.browsers)) {
+      const slotId = `browser-${browser.id}`;
+      if (!mesh.slots[slotId]) {
+        mesh.updateSlot({
+          id: slotId,
+          x: 120 + i * 24,
+          y: 120 + i * 24,
+          width: 800,
+          height: 610,
+          z: baseZ + i + 1,
+        });
+      }
+      i++;
+    }
+  }, [mesh, mesh.browsers, mesh.slots]);
+
+  // Listen for postMessage tx_request events from any iframe inside the page
+  // and rebroadcast via the relay so all peers see the captured calldata.
+  // The dapp side has to opt in to this protocol — most don't yet, but it
+  // gives Impersonator-aware iframes a way to surface tx attempts to the
+  // whole show.
+  const meshBroadcastTx = mesh.broadcastTxRequest;
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      const data = e.data as { type?: unknown; browserId?: unknown; calldata?: unknown } | null;
+      if (!data || typeof data !== "object") return;
+      if (data.type !== "slop:tx_request") return;
+      if (typeof data.browserId !== "string" || typeof data.calldata !== "string") return;
+      const d = data as {
+        browserId: string;
+        calldata: string;
+        to?: unknown;
+        value?: unknown;
+        chainId?: unknown;
+      };
+      meshBroadcastTx({
+        browserId: d.browserId,
+        calldata: d.calldata,
+        to: typeof d.to === "string" ? d.to : null,
+        value: typeof d.value === "string" ? d.value : null,
+        chainId: typeof d.chainId === "number" ? d.chainId : null,
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [meshBroadcastTx]);
+
   // Title prefix per kind.
   const titleFor = (pub: Publication) => {
     const verb = pub.kind === "screen" ? "SCREEN" : pub.kind === "audio" ? "AUDIO" : "CAMERA";
@@ -458,6 +523,34 @@ const Desktop: NextPage = () => {
           </div>
         ) : null}
 
+        {/* Desktop icons. Position is stored in the shared slots system so
+            every peer sees them in the same place (and a relay restart
+            doesn't reset the layout). z stays low so windows render above. */}
+        {session.authenticated
+          ? (() => {
+              const slot = mesh.slots["icon-browser"] ?? {
+                id: "icon-browser",
+                x: 24,
+                y: 60,
+                width: 88,
+                height: 110,
+                z: 1,
+              };
+              return (
+                <DesktopIcon
+                  key="icon-browser"
+                  iconSrc="/icons/browser.png"
+                  label="Browser"
+                  x={slot.x}
+                  y={slot.y}
+                  zIndex={1}
+                  onMove={({ x, y }) => mesh.updateSlot({ id: "icon-browser", x, y })}
+                  onDoubleClick={() => spawnBrowser()}
+                />
+              );
+            })()
+          : null}
+
         {/* Shared windows — one per active publication. Same on every peer. */}
         {windows.map(({ pub, slotId, slot }) => {
           const stream = streamFor(pub);
@@ -503,6 +596,46 @@ const Desktop: NextPage = () => {
                   waiting for stream…
                 </div>
               )}
+            </Window>
+          );
+        })}
+
+        {/* Shared browser windows — URL synced across all peers. */}
+        {Object.values(mesh.browsers).map(browser => {
+          const slotId = `browser-${browser.id}`;
+          const slot = mesh.slots[slotId] ?? {
+            id: slotId,
+            x: 120,
+            y: 120,
+            width: 720,
+            height: 540,
+            z: 6,
+          };
+          const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
+          return (
+            <Window
+              key={slotId}
+              title={`BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`}
+              x={slot.x}
+              y={slot.y}
+              width={slot.width}
+              height={slot.height}
+              zIndex={slot.z}
+              minWidth={320}
+              minHeight={240}
+              onFocus={() => focusSlot(slotId)}
+              onClose={() => mesh.closeBrowser(browser.id)}
+              onMove={({ x, y }) => moveSlot(slotId, x, y)}
+              onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
+              bodyStyle={{ padding: 0, overflow: "hidden" }}
+              containerInset={{ top: 38 }}
+            >
+              <SharedBrowser
+                browser={browser}
+                txRequests={txForThis}
+                onNavigate={url => mesh.navigateBrowser(browser.id, url)}
+                canControl={session.authenticated}
+              />
             </Window>
           );
         })}

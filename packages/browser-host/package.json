@@ -1,0 +1,30 @@
+{
+  "name": "@slop/browser-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.1",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "dotenv": "^17.0.0",
+    "fastify": "^5.2.1",
+    "puppeteer": "^24.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "@types/node": "~18.19.50",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.20.0",
+    "typescript": "~5.8.2"
+  },
+  "packageManager": "yarn@4.13.0"
+}

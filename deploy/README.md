@@ -34,6 +34,16 @@ cp packages/nextjs/.env.example packages/nextjs/.env.local
 cp packages/relay/.env.example packages/relay/.env
 yarn next:build
 yarn relay:build
+yarn browser:build
+```
+
+The browser-host pulls a Chromium build into `~/.cache/puppeteer` on first
+install — about 250 MB. Make sure the EC2 instance has `--no-sandbox`-friendly
+deps installed:
+
+```bash
+sudo apt-get install -y libnss3 libatk-bridge2.0-0 libxkbcommon0 libxcomposite1 \
+  libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libatspi2.0-0
 ```
 
 ## Wire up Caddy + systemd
@@ -44,8 +54,9 @@ sudo systemctl reload caddy
 
 sudo cp deploy/slop-live.service /etc/systemd/system/
 sudo cp deploy/slop-relay.service /etc/systemd/system/
+sudo cp deploy/slop-browser-host.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now slop-live slop-relay
+sudo systemctl enable --now slop-live slop-relay slop-browser-host
 ```
 
 ## Updating
@@ -54,8 +65,8 @@ sudo systemctl enable --now slop-live slop-relay
 cd /home/ubuntu/slop-computer-live
 git pull
 yarn install
-yarn next:build && yarn relay:build
-sudo systemctl restart slop-live slop-relay
+yarn next:build && yarn relay:build && yarn browser:build
+sudo systemctl restart slop-live slop-relay slop-browser-host
 ```
 
 ## Notes

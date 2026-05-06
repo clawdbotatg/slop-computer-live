@@ -6,7 +6,8 @@
     "packages": [
       "packages/hardhat",
       "packages/nextjs",
-      "packages/relay"
+      "packages/relay",
+      "packages/browser-host"
     ]
   },
   "scripts": {
@@ -44,6 +45,9 @@
     "relay:build": "yarn workspace @slop/relay build",
     "relay:dev": "yarn workspace @slop/relay dev",
     "relay:start": "yarn workspace @slop/relay start",
+    "browser:build": "yarn workspace @slop/browser-host build",
+    "browser:dev": "yarn workspace @slop/browser-host dev",
+    "browser:start": "yarn workspace @slop/browser-host start",
     "postinstall": "husky",
     "precommit": "lint-staged",
     "start": "yarn workspace @slop/nextjs dev",

@@ -11,8 +11,14 @@ live.slop.computer {
 
     # Relay HTTP routes (SIWE auth, admin start/stop, TURN creds) and WS
     # /signal endpoint. NOTE: port 8081 — :8080 is owned by based-keno.
-    @relay path /signal* /auth/* /admin/* /turn/*
+    @relay path /signal* /auth/* /admin/* /turn/* /internal/*
     reverse_proxy @relay localhost:8081
+
+    # Browser-host: shared headless Chrome with frame streaming + impersonator.
+    # Frontend connects to wss://live.slop.computer/browser/stream/<id>.
+    handle_path /browser/* {
+        reverse_proxy localhost:8090
+    }
 
     # Next.js app
     reverse_proxy localhost:3000
