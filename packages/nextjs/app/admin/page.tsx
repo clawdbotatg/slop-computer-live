@@ -10,6 +10,66 @@ import { Bevel, Button, DesktopBackground, MenuBar, TextField } from "~~/compone
 import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+const FRONTPAGE_ADDRESS = process.env.NEXT_PUBLIC_FRONTPAGE_ADDRESS ?? "";
+
+// Services we surface in the admin "Services" panel. Each one optionally
+// has a healthUrl (for live status + metadata). For URLs we can't probe
+// from the browser (CORS or no /health route), we still render the row
+// with a clickable link and an "n/a" status.
+type ServiceDef = {
+  id: string;
+  label: string;
+  url: string;
+  healthUrl?: string;
+  // Format the JSON the /health endpoint returns into a one-line meta.
+  formatMeta?: (data: Record<string, unknown>) => string;
+};
+
+const SERVICES: ServiceDef[] = [
+  {
+    id: "relay",
+    label: "Relay",
+    url: "https://relay.slop.computer/health",
+    healthUrl: "https://relay.slop.computer/health",
+    formatMeta: d => {
+      const peers = typeof d.peers === "number" ? d.peers : 0;
+      return `${peers} peer${peers === 1 ? "" : "s"}`;
+    },
+  },
+  {
+    id: "browser-host",
+    label: "Browser host",
+    url: "https://browser.slop.computer/health",
+    healthUrl: "https://browser.slop.computer/health",
+    formatMeta: d => {
+      const tabs = typeof d.tabs === "number" ? d.tabs : 0;
+      const impersonating = typeof d.impersonating === "string" ? d.impersonating.slice(0, 6) + "…" : "—";
+      return `${tabs} tab${tabs === 1 ? "" : "s"} · ${impersonating}`;
+    },
+  },
+  {
+    id: "media",
+    label: "MediaMTX (HLS)",
+    url: "https://media.slop.computer/hls/live/index.m3u8",
+    // No /health endpoint and CORS is unset on MediaMTX, so we can't probe
+    // status reliably from the browser. Link only.
+  },
+  {
+    id: "frontpage",
+    label: "Frontpage (audience)",
+    url: "https://slop.computer/",
+  },
+  {
+    id: "live",
+    label: "Live desktop",
+    url: "https://live.slop.computer/",
+  },
+];
+
+const ETHERSCAN = (addr: string) => `https://etherscan.io/address/${addr}`;
+
+type ServiceStatus = "checking" | "up" | "down" | "n/a";
+type ServiceState = { status: ServiceStatus; meta?: string };
 
 type AuthState =
   | { authenticated: false }
@@ -197,6 +257,45 @@ const AdminPage: NextPage = () => {
   const [fanouts, setFanouts] = useState<Fanout[]>([]);
   const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
 
+  // ---- Services health -----------------------------------------------------
+  // Poll each /health URL every 5s. Services without a healthUrl render as
+  // "n/a" (link-only). A failed fetch (CORS, network, 5xx) → "down".
+  const [serviceStates, setServiceStates] = useState<Record<string, ServiceState>>(() => {
+    const init: Record<string, ServiceState> = {};
+    for (const s of SERVICES) init[s.id] = { status: s.healthUrl ? "checking" : "n/a" };
+    return init;
+  });
+  useEffect(() => {
+    if (!mounted) return;
+    let cancelled = false;
+    const probe = async (svc: ServiceDef): Promise<ServiceState> => {
+      if (!svc.healthUrl) return { status: "n/a" };
+      try {
+        const res = await fetch(svc.healthUrl, { cache: "no-store" });
+        if (!res.ok) return { status: "down", meta: `HTTP ${res.status}` };
+        const data = (await res.json()) as Record<string, unknown>;
+        return { status: "up", meta: svc.formatMeta?.(data) };
+      } catch (err) {
+        return { status: "down", meta: (err as Error).message };
+      }
+    };
+    const tick = async () => {
+      const results = await Promise.all(SERVICES.map(async svc => [svc.id, await probe(svc)] as const));
+      if (cancelled) return;
+      setServiceStates(prev => {
+        const next = { ...prev };
+        for (const [id, state] of results) next[id] = state;
+        return next;
+      });
+    };
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [mounted]);
+
   useEffect(() => {
     if (!isHost) return;
     let cancelled = false;
@@ -339,6 +438,110 @@ const AdminPage: NextPage = () => {
           )}
           <span>({auth.authenticated ? auth.role : ""})</span>
           {!isHost && <span style={{ color: "var(--slop-text-muted)" }}>— not on the admin allowlist.</span>}
+        </div>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Services</h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
+          live status · refreshes every 5s
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {SERVICES.map(svc => {
+            const state = serviceStates[svc.id] ?? { status: "checking" as ServiceStatus };
+            const dotColor =
+              state.status === "up"
+                ? "#22c55e"
+                : state.status === "down"
+                  ? "#ef4444"
+                  : state.status === "checking"
+                    ? "#eab308"
+                    : "var(--slop-text-muted)";
+            return (
+              <a
+                key={svc.id}
+                href={svc.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "16px 160px 1fr 16px",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 10px",
+                  border: "1px solid var(--slop-bevel-dark)",
+                  textDecoration: "none",
+                  color: "inherit",
+                  fontFamily: "var(--slop-font-body)",
+                  fontSize: 13,
+                }}
+              >
+                <span
+                  aria-label={state.status}
+                  title={state.status}
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: "50%",
+                    background: dotColor,
+                    boxShadow: state.status === "up" ? `0 0 6px ${dotColor}` : "none",
+                  }}
+                />
+                <span style={{ fontWeight: 600 }}>{svc.label}</span>
+                <span
+                  style={{
+                    color: "var(--slop-text-muted)",
+                    fontSize: 11,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {state.meta ?? svc.url.replace(/^https?:\/\//, "")}
+                </span>
+                <span aria-hidden style={{ color: "var(--slop-text-muted)" }}>
+                  ↗
+                </span>
+              </a>
+            );
+          })}
+          {FRONTPAGE_ADDRESS ? (
+            <a
+              href={ETHERSCAN(FRONTPAGE_ADDRESS)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "16px 160px 1fr 16px",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 10px",
+                border: "1px solid var(--slop-bevel-dark)",
+                textDecoration: "none",
+                color: "inherit",
+                fontFamily: "var(--slop-font-body)",
+                fontSize: 13,
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: "50%",
+                  background: "var(--slop-magenta, #ff3ec9)",
+                  boxShadow: "0 0 6px var(--slop-magenta, #ff3ec9)",
+                }}
+              />
+              <span style={{ fontWeight: 600 }}>Frontpage contract</span>
+              <span style={{ color: "var(--slop-text-muted)", fontSize: 11, fontFamily: "monospace" }}>
+                {FRONTPAGE_ADDRESS.slice(0, 10)}…{FRONTPAGE_ADDRESS.slice(-4)} · mainnet
+              </span>
+              <span aria-hidden style={{ color: "var(--slop-text-muted)" }}>
+                ↗
+              </span>
+            </a>
+          ) : null}
         </div>
       </Bevel>
 
