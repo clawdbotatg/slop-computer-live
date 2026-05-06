@@ -192,6 +192,18 @@ const Desktop: NextPage = () => {
         { label: "Cascade Windows", disabled: true },
         { divider: true, label: "" },
         {
+          label: "1920 × 1080",
+          onClick: () => {
+            // Resize the browser window so the viewport is exactly 1920×1080
+            // — useful for OBS / window capture. resizeTo takes outer dims, so
+            // add the current chrome offset (frame + scrollbars + devtools).
+            const dx = window.outerWidth - window.innerWidth;
+            const dy = window.outerHeight - window.innerHeight;
+            window.resizeTo(1920 + dx, 1080 + dy);
+          },
+        },
+        { divider: true, label: "" },
+        {
           label: "Full Screen",
           shortcut: "⌃⌘F",
           onClick: () => {
@@ -554,7 +566,24 @@ const Desktop: NextPage = () => {
       })}
 
       {localCursor.pos ? (
-        <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} bands={myBands} />
+        <Cursor
+          x={localCursor.pos.x}
+          y={localCursor.pos.y}
+          kind={localCursor.kind}
+          bands={myBands}
+          label={
+            session.authenticated ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                {session.handle ? (
+                  <span>{session.handle}</span>
+                ) : session.address ? (
+                  <Address address={session.address as AddressType} size="xs" onlyEnsOrAddress />
+                ) : null}
+                <BandFlag bands={myBands} />
+              </span>
+            ) : null
+          }
+        />
       ) : null}
     </>
   );
