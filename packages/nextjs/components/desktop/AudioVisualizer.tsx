@@ -51,7 +51,8 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
     const buf = new Uint8Array(analyser.fftSize);
     const lineColor = bands.band1; // waveform
     const dotColor = bands.band2; // inner circle fill
-    const haloColor = bands.band3; // glow around the dot
+    // band3 is used as a hard ring border on the circle element itself,
+    // not in the RAF — see the JSX below.
     let raf = 0;
 
     const loop = () => {
@@ -69,8 +70,9 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       if (circle) {
         circle.style.transform = `scale(${1 + amp * 0.6})`;
         circle.style.opacity = `${0.7 + amp * 0.3}`;
-        // Inner glow tinted by dotColor (band2), outer halo by haloColor (band3).
-        circle.style.boxShadow = `0 0 ${16 + amp * 60}px ${dotColor}, 0 0 ${40 + amp * 100}px ${haloColor}`;
+        // Soft glow in band2 (dot color) so the dot has dimensional bloom.
+        // The hard band3 ring is a static border on the element itself.
+        circle.style.boxShadow = `0 0 ${16 + amp * 60}px ${dotColor}`;
       }
 
       // ---- waveform: paint time-domain across the canvas ----
@@ -151,7 +153,11 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
             aspectRatio: "1",
             borderRadius: "50%",
             background: bands.band2,
-            boxShadow: `0 0 16px ${bands.band2}, 0 0 40px ${bands.band3}`,
+            // Hard band3 ring + soft band2 glow — gives all three colors
+            // distinct visual roles even when band2 and band3 are HSL-close.
+            border: `3px solid ${bands.band3}`,
+            boxSizing: "border-box",
+            boxShadow: `0 0 16px ${bands.band2}`,
             transition: "transform 60ms linear, opacity 60ms linear, box-shadow 60ms linear",
             willChange: "transform, opacity, box-shadow",
           }}
