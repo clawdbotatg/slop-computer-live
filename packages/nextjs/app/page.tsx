@@ -151,7 +151,7 @@ const Desktop: NextPage = () => {
 
   const meshOpenBrowser = mesh.openBrowser;
   const spawnBrowser = useCallback(
-    (url = "https://app.zerion.io") => {
+    (url = "https://clawd-slop-landing-nextjs.vercel.app/") => {
       const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
       meshOpenBrowser(id, url);
     },
