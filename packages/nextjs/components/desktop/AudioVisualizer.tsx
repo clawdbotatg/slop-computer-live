@@ -10,17 +10,15 @@ export type AudioVisualizerProps = {
   muted?: boolean;
 };
 
-// Pulsing circle that breathes with the audio amplitude. Used as the body
-// of audio-kind windows in the desktop. Streams are observed via an
-// AnalyserNode reading time-domain data each frame; the circle's
-// transform.scale + box-shadow ride the RMS so loud speech = bigger ring.
+// Layered visualizer: a small solid circle that breathes with RMS amplitude,
+// plus a waveform oscilloscope across the full window — both painted in the
+// peer's primary blockie color (band1) so it reads as their identity.
 //
-// Note: we intentionally drive the DOM via a ref each animation frame
-// rather than React state — re-rendering at 60Hz would tank perf in busy
-// rooms. A hidden <audio> element handles actual playback so callers
-// don't have to wire that separately.
+// All animation is ref-driven (no React re-renders at 60Hz). One AnalyserNode
+// drives both layers from the same time-domain buffer.
 export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualizerProps) => {
   const circleRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
@@ -43,32 +41,67 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       return;
     }
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.6;
+    // 2048 samples gives a smoother waveform than 1024 without measurable cost.
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.4;
     source.connect(analyser);
 
-    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const buf = new Uint8Array(analyser.fftSize);
+    const color = bands.band1;
     let raf = 0;
+
     const loop = () => {
       analyser.getByteTimeDomainData(buf);
-      // RMS of centered samples — robust against DC offset, scales with
-      // perceived loudness better than peak.
+
+      // ---- circle: scale with RMS ----
       let sum = 0;
       for (let i = 0; i < buf.length; i++) {
         const v = ((buf[i] ?? 128) - 128) / 128;
         sum += v * v;
       }
       const rms = Math.sqrt(sum / buf.length);
-      // RMS for normal speech sits around 0.05-0.2; multiply so a quiet
-      // talker still moves the ring noticeably and a yell pegs it.
       const amp = Math.min(1, rms * 3);
-      const el = circleRef.current;
-      if (el) {
-        const scale = 1 + amp * 0.55;
-        el.style.transform = `scale(${scale})`;
-        el.style.opacity = `${0.55 + amp * 0.45}`;
-        el.style.boxShadow = `0 0 ${24 + amp * 60}px ${bands.band1}, 0 0 ${60 + amp * 80}px ${bands.band2}`;
+      const circle = circleRef.current;
+      if (circle) {
+        circle.style.transform = `scale(${1 + amp * 0.6})`;
+        circle.style.opacity = `${0.7 + amp * 0.3}`;
+        circle.style.boxShadow = `0 0 ${16 + amp * 60}px ${color}, 0 0 ${40 + amp * 100}px ${color}`;
       }
+
+      // ---- waveform: paint time-domain across the canvas ----
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (cssW > 0 && cssH > 0) {
+          const targetW = Math.round(cssW * dpr);
+          const targetH = Math.round(cssH * dpr);
+          if (canvas.width !== targetW || canvas.height !== targetH) {
+            canvas.width = targetW;
+            canvas.height = targetH;
+          }
+          const cctx = canvas.getContext("2d");
+          if (cctx) {
+            cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            cctx.clearRect(0, 0, cssW, cssH);
+            cctx.lineWidth = 2;
+            cctx.strokeStyle = color;
+            cctx.shadowColor = color;
+            cctx.shadowBlur = 6;
+            cctx.beginPath();
+            const step = cssW / buf.length;
+            for (let i = 0; i < buf.length; i++) {
+              const v = ((buf[i] ?? 128) - 128) / 128; // -1 .. 1
+              const y = cssH / 2 + v * cssH * 0.4;
+              if (i === 0) cctx.moveTo(0, y);
+              else cctx.lineTo(i * step, y);
+            }
+            cctx.stroke();
+          }
+        }
+      }
+
       raf = requestAnimationFrame(loop);
     };
     loop();
@@ -82,31 +115,51 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       }
       void ctx.close();
     };
-  }, [stream, bands.band1, bands.band2]);
+  }, [stream, bands.band1]);
 
   return (
     <div
       style={{
         width: "100%",
         height: "100%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#06030d",
         position: "relative",
+        background: "#06030d",
+        overflow: "hidden",
       }}
     >
       <audio ref={audioRef} autoPlay muted={muted} style={{ display: "none" }} />
+      {/* Centering wrapper — the circle's own transform is the scale */}
       <div
-        ref={circleRef}
         style={{
-          width: "min(40%, 120px)",
-          aspectRatio: "1",
-          borderRadius: "50%",
-          background: `radial-gradient(circle at 30% 30%, ${bands.band1} 0%, ${bands.band2} 60%, ${bands.band3} 100%)`,
-          boxShadow: `0 0 24px ${bands.band1}, 0 0 60px ${bands.band2}`,
-          transition: "transform 60ms linear, opacity 60ms linear",
-          willChange: "transform, opacity",
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          pointerEvents: "none",
+        }}
+      >
+        <div
+          ref={circleRef}
+          style={{
+            width: "min(15%, 36px)",
+            aspectRatio: "1",
+            borderRadius: "50%",
+            background: bands.band1,
+            boxShadow: `0 0 16px ${bands.band1}, 0 0 40px ${bands.band1}`,
+            transition: "transform 60ms linear, opacity 60ms linear, box-shadow 60ms linear",
+            willChange: "transform, opacity, box-shadow",
+          }}
+        />
+      </div>
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
         }}
       />
     </div>
