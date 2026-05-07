@@ -5,6 +5,7 @@ import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
+import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
@@ -615,6 +616,12 @@ const Desktop: NextPage = () => {
         {/* Shared windows — one per active publication. Same on every peer. */}
         {windows.map(({ pub, slotId, slot }) => {
           const stream = streamFor(pub);
+          const peer = mesh.peers.find(p => p.id === pub.peerId);
+          const pubBands = bandsFromIdentity({
+            address: peer?.address ?? null,
+            handle: peer?.handle ?? null,
+            fallback: pub.ownerKey || pub.peerId,
+          });
           return (
             <Window
               key={`${pub.peerId}-${pub.streamId}`}
@@ -632,15 +639,19 @@ const Desktop: NextPage = () => {
               containerInset={{ top: 38 }}
             >
               {stream ? (
-                <video
-                  autoPlay
-                  playsInline
-                  muted={pub.peerId === mesh.myId}
-                  ref={el => {
-                    if (el && el.srcObject !== stream) el.srcObject = stream;
-                  }}
-                  style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
-                />
+                pub.kind === "audio" ? (
+                  <AudioVisualizer stream={stream} bands={pubBands} muted={pub.peerId === mesh.myId} />
+                ) : (
+                  <video
+                    autoPlay
+                    playsInline
+                    muted={pub.peerId === mesh.myId}
+                    ref={el => {
+                      if (el && el.srcObject !== stream) el.srcObject = stream;
+                    }}
+                    style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
+                  />
+                )
               ) : (
                 <div
                   style={{
