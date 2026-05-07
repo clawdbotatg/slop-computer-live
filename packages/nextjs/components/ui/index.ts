@@ -1,6 +1,7 @@
 export { BandFlag } from "./BandFlag";
 export { Bevel, bevelStyle } from "./Bevel";
 export { Button } from "./Button";
+export { ClickRipple } from "./ClickRipple";
 export { Cursor } from "./Cursor";
 export { DesktopBackground } from "./DesktopBackground";
 export { LivePulse } from "./LivePulse";

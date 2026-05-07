@@ -8,7 +8,7 @@ import { JoinCard } from "~~/components/JoinCard";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
-import { BandFlag, Button, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
+import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { useLocalMedia } from "~~/hooks/useLocalMedia";
@@ -455,6 +455,20 @@ const Desktop: NextPage = () => {
     return () => window.removeEventListener("message", onMessage);
   }, [meshBroadcastTx]);
 
+  // Broadcast every click so all peers see a colored ripple at the spot
+  // where you clicked. Uses 'click' (down+up on same target) rather than
+  // 'mousedown' so a drag-to-resize on a Window doesn't fire ripples.
+  const meshSendClick = mesh.sendClick;
+  const meshConnected = mesh.connected;
+  useEffect(() => {
+    if (!meshConnected) return;
+    const onClick = (e: MouseEvent) => {
+      meshSendClick(e.clientX, e.clientY);
+    };
+    window.addEventListener("click", onClick);
+    return () => window.removeEventListener("click", onClick);
+  }, [meshConnected, meshSendClick]);
+
   // Title prefix per kind.
   const titleFor = (pub: Publication) => {
     const verb = pub.kind === "screen" ? "SCREEN" : pub.kind === "audio" ? "AUDIO" : "CAMERA";
@@ -690,6 +704,19 @@ const Desktop: NextPage = () => {
           </Window>
         ) : null}
       </div>
+
+      {/* Click ripples — rendered at top level (not inside the desktop
+          wrapper) so the rings aren't clipped over the menubar. Each
+          ripple self-prunes from mesh.clicks ~1s after the click. */}
+      {mesh.clicks.map(click => {
+        const peer = mesh.peers.find(p => p.id === click.peerId);
+        const bands = bandsFromIdentity({
+          address: peer?.address ?? null,
+          handle: peer?.handle ?? null,
+          fallback: click.peerId,
+        });
+        return <ClickRipple key={click.id} x={click.x} y={click.y} bands={bands} />;
+      })}
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +

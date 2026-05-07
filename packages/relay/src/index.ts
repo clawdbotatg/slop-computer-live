@@ -288,6 +288,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 // Client → server:
 //   { type: "offer"|"answer"|"ice", to: <peerId>, payload }
 //   { type: "cursor", x, y }                                  // broadcast
+//   { type: "click", x, y }                                    // ripple broadcast (incl. sender)
 //   { type: "publish", streamId, kind, label }                // I'm publishing this stream
 //   { type: "unpublish", streamId }                            // I stopped publishing
 //   { type: "slot_update", id, x, y, width, height, z }        // any auth'd peer; last write wins
@@ -374,6 +375,14 @@ app.register(async function signalRoutes(fastify) {
         case "cursor": {
           if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
           broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
+          return;
+        }
+        case "click": {
+          if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
+          // Include the sender — the click ripple should appear on the
+          // clicker's own screen at the same time it appears for everyone
+          // else, otherwise click+ripple feel desynced.
+          broadcast({ type: "click", from: peerId, x: msg.x, y: msg.y });
           return;
         }
         case "publish": {

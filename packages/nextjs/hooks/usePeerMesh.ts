@@ -79,6 +79,15 @@ export type SlotPosition = {
 
 type CursorData = { x: number; y: number };
 
+export type ClickEvent = {
+  /** Monotonic id used as React key + for cleanup. Local-only. */
+  id: number;
+  peerId: string;
+  x: number;
+  y: number;
+  receivedAt: number;
+};
+
 export type Browser = {
   id: string;
   url: string;
@@ -118,6 +127,9 @@ export type PeerMeshState = {
   // Persistent layout positions (host-authoritative).
   slots: Record<string, SlotPosition>;
   cursors: Record<string, CursorData>;
+  /** Recent click ripples — auto-prune after the animation completes. */
+  clicks: ClickEvent[];
+  sendClick: (x: number, y: number) => void;
   // Shared browser windows.
   browsers: Record<string, Browser>;
   // Recent tx_request broadcasts (newest first, capped client-side).
@@ -139,6 +151,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [publications, setPublications] = useState<Publication[]>([]);
   const [slots, setSlots] = useState<Record<string, SlotPosition>>({});
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
+  const [clicks, setClicks] = useState<ClickEvent[]>([]);
+  const clickIdRef = useRef(0);
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -366,6 +380,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const sendClick = useCallback(
+    (x: number, y: number) => {
+      send({ type: "click", x, y });
+    },
+    [send],
+  );
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -539,6 +560,22 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "click") {
+          const from = msg.from as string;
+          const x = msg.x as number;
+          const y = msg.y as number;
+          if (typeof from !== "string" || typeof x !== "number" || typeof y !== "number") return;
+          clickIdRef.current += 1;
+          const evt: ClickEvent = { id: clickIdRef.current, peerId: from, x, y, receivedAt: Date.now() };
+          // Cap to 30 in flight so a click-spammer doesn't blow up the
+          // render tree. The animation finishes in ~900ms and self-prunes.
+          setClicks(prev => (prev.length >= 30 ? [...prev.slice(-29), evt] : [...prev, evt]));
+          setTimeout(() => {
+            setClicks(prev => prev.filter(c => c.id !== evt.id));
+          }, 1000);
+          return;
+        }
+
         if (msg.type === "published" && msg.publication) {
           const pub = msg.publication as Publication;
           setPublications(prev => {
@@ -665,6 +702,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     publications,
     slots,
     cursors,
+    clicks,
+    sendClick,
     browsers,
     txRequests,
     publish,
