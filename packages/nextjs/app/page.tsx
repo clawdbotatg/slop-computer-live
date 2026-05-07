@@ -102,23 +102,26 @@ const Desktop: NextPage = () => {
     [mesh, myLabel],
   );
 
+  // Track current streams in a ref so stopStream can read them without
+  // triggering a callback rebuild on every streams change. The previous
+  // version assigned `stoppedKind` inside a setStreams updater and read it
+  // afterward — but React 18 doesn't run updaters synchronously, so the
+  // resume-flag cleanup ran with stoppedKind still null. Net effect:
+  // closing the audio/camera window stopped the stream but left the
+  // localStorage resume flag set, so a reload picked the stream back up.
+  const streamsRef = useRef<LocalStreamHandle[]>([]);
+  streamsRef.current = streams;
+
   const stopStream = useCallback(
     (id: string) => {
-      let stoppedKind: StreamKind | null = null;
-      setStreams(prev => {
-        const target = prev.find(s => s.id === id);
-        if (target) {
-          stoppedKind = target.kind;
-          mesh.unpublish(id);
-          target.stream.getTracks().forEach(t => t.stop());
-        }
-        return prev.filter(s => s.id !== id);
-      });
-      if (stoppedKind) {
-        const r = readResume();
-        delete r[stoppedKind];
-        writeResume(r);
-      }
+      const target = streamsRef.current.find(s => s.id === id);
+      if (!target) return;
+      mesh.unpublish(id);
+      target.stream.getTracks().forEach(t => t.stop());
+      setStreams(prev => prev.filter(s => s.id !== id));
+      const r = readResume();
+      delete r[target.kind];
+      writeResume(r);
     },
     [mesh],
   );
