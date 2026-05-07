@@ -24,6 +24,18 @@ const DEFAULT_BASE_X = 80;
 const DEFAULT_BASE_Y = 280;
 const DEFAULT_STEP = 30;
 
+// Apps catalog comes from the relay's /apps endpoint, which reads
+// /var/lib/slop-relay/apps.json on every request. To add a new app, edit
+// that JSON on the box — no rebuild needed.
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+type AppEntry = { id: string; label: string; icon: string; url: string };
+
+// Default cascade for icons whose slot hasn't been saved yet — single
+// column down the left edge, 110px apart vertically.
+const ICON_DEFAULT_X = 24;
+const ICON_DEFAULT_Y0 = 60;
+const ICON_ROW_PITCH = 110;
+
 // Slot id keyed by stable owner identity (wallet address or handle) so the
 // layout survives a reload — peerIds are ephemeral and would otherwise reset
 // the position every time the user reconnects.
@@ -157,6 +169,25 @@ const Desktop: NextPage = () => {
     },
     [meshOpenBrowser],
   );
+
+  // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
+  // who lands on the page (signed in or not) eventually sees the right
+  // set; positions of each icon are still slot-synced like before.
+  const [apps, setApps] = useState<AppEntry[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${RELAY_HTTP}/apps`, { cache: "no-store" })
+      .then(r => r.json())
+      .then((data: { apps?: AppEntry[] }) => {
+        if (!cancelled && Array.isArray(data.apps)) setApps(data.apps);
+      })
+      .catch(() => {
+        /* relay offline → no icons; not fatal */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fileMenu = useMemo<Menu>(
     () => ({
@@ -555,35 +586,35 @@ const Desktop: NextPage = () => {
           </div>
         ) : null}
 
-        {/* Desktop icons. Position is stored in the shared slots system so
-            every peer sees them in the same place (and a relay restart
-            doesn't reset the layout). Gated on `bootstrapped` so we don't
-            render at the fallback position before the first hello arrives —
-            otherwise the icon flashes from default to its persisted spot
-            on every reload. */}
+        {/* Desktop icons. Catalog comes from the relay's /apps endpoint
+            (JSON file on the box, no rebuild needed). Position lives in
+            the shared slots system keyed by `icon-${app.id}` so dragging
+            syncs across peers and survives reloads. Gated on
+            `bootstrapped` to avoid the position-flash on first paint. */}
         {session.authenticated && mesh.bootstrapped
-          ? (() => {
-              const slot = mesh.slots["icon-browser"] ?? {
-                id: "icon-browser",
-                x: 24,
-                y: 60,
+          ? apps.map((app, i) => {
+              const slotId = `icon-${app.id}`;
+              const slot = mesh.slots[slotId] ?? {
+                id: slotId,
+                x: ICON_DEFAULT_X,
+                y: ICON_DEFAULT_Y0 + i * ICON_ROW_PITCH,
                 width: 88,
                 height: 110,
                 z: 1,
               };
               return (
                 <DesktopIcon
-                  key="icon-browser"
-                  iconSrc="/icons/browser.png"
-                  label="Browser"
+                  key={slotId}
+                  iconSrc={app.icon}
+                  label={app.label}
                   x={slot.x}
                   y={slot.y}
                   zIndex={1}
-                  onMove={({ x, y }) => mesh.updateSlot({ id: "icon-browser", x, y })}
-                  onDoubleClick={() => spawnBrowser()}
+                  onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
+                  onDoubleClick={() => spawnBrowser(app.url)}
                 />
               );
-            })()
+            })
           : null}
 
         {/* Shared windows — one per active publication. Same on every peer. */}

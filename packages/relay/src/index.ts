@@ -46,6 +46,47 @@ app.get("/health", async () => ({
   peers: listPeers().length,
 }));
 
+// --- Apps registry ----------------------------------------------------------
+// JSON-driven desktop app catalog. Edit /var/lib/slop-relay/apps.json on the
+// box and the next page load picks it up — no rebuild, no restart. Schema:
+//   { "apps": [{ "id", "label", "icon", "url" }] }
+//
+// `icon` can be a relative path (served by Next.js, e.g. "/icons/foo.png")
+// or an absolute URL. `url` is what the SharedBrowser will load when the
+// icon is double-clicked.
+
+import { readFileSync as _readFileSync } from "node:fs";
+
+const APPS_PATH = process.env.APPS_PATH ?? "/var/lib/slop-relay/apps.json";
+
+type AppEntry = { id: string; label: string; icon: string; url: string };
+
+const DEFAULT_APPS: AppEntry[] = [
+  {
+    id: "browser",
+    label: "Browser",
+    icon: "/icons/browser.png",
+    url: "https://clawd-slop-landing-nextjs.vercel.app/",
+  },
+];
+
+app.get("/apps", async (_req, reply) => {
+  // Re-read on every request so editing the file on the host is instant.
+  // Cheap (~ms) at the rates this gets hit.
+  try {
+    const raw = _readFileSync(APPS_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { apps?: unknown };
+    const apps = Array.isArray(parsed.apps) ? (parsed.apps as AppEntry[]) : DEFAULT_APPS;
+    reply.header("cache-control", "no-store");
+    return { apps };
+  } catch {
+    // Missing or malformed file → fall back to the built-in default. Keeps
+    // dev environments and fresh installs working without setup.
+    reply.header("cache-control", "no-store");
+    return { apps: DEFAULT_APPS };
+  }
+});
+
 // --- SIWE auth --------------------------------------------------------------
 
 app.get("/auth/siwe/nonce", async () => ({ nonce: issueNonce() }));
