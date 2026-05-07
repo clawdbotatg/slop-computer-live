@@ -581,14 +581,6 @@ const Desktop: NextPage = () => {
           cursor: "none",
         }}
       >
-        {!loading && !session.authenticated ? (
-          <div
-            style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
-          >
-            <JoinCard />
-          </div>
-        ) : null}
-
         {/* Desktop icons. Catalog comes from the relay's /apps endpoint
             (JSON file on the box, no rebuild needed). Position lives in
             the shared slots system keyed by `icon-${app.id}` so dragging
@@ -756,6 +748,28 @@ const Desktop: NextPage = () => {
           </Window>
         ) : null}
       </div>
+
+      {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
+          covers the desktop AND the menubar so nothing behind it is
+          interactable. The local cursor (zIndex 2^31) stays on top of
+          the blur so the user sees themselves move. */}
+      {!loading && !session.authenticated ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            background: "rgba(8,4,18,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <JoinCard />
+        </div>
+      ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop
           wrapper) so the rings aren't clipped over the menubar. Each
