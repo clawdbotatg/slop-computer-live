@@ -6,8 +6,10 @@ import type { NextPage } from "next";
 import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
-import { Bevel, Button, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
+import { Bevel, Button, Cursor, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
 import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
+import { useLocalCursor } from "~~/hooks/useLocalCursor";
+import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const FRONTPAGE_ADDRESS = process.env.NEXT_PUBLIC_FRONTPAGE_ADDRESS ?? "";
@@ -761,6 +763,21 @@ const AdminPage: NextPage = () => {
 
   const showAdminPanel = mounted && auth.authenticated && isHost;
 
+  // globals.css hides the system cursor everywhere via `cursor: none`. The
+  // desktop page renders a custom Cursor in its place; admin needs to do
+  // the same or the page renders cursor-less. Bands match the connected
+  // wallet so it visually ties to the host's identity in the menubar.
+  const localCursor = useLocalCursor();
+  const myBands = useMemo(
+    () =>
+      bandsFromIdentity({
+        address: auth.authenticated ? auth.address : null,
+        handle: null,
+        fallback: "admin",
+      }),
+    [auth],
+  );
+
   return (
     <>
       <DesktopBackground />
@@ -781,6 +798,9 @@ const AdminPage: NextPage = () => {
           <Bevel style={{ padding: 12, maxWidth: 720, color: "var(--slop-text-muted)" }}>{status}</Bevel>
         ) : null}
       </main>
+      {localCursor.pos ? (
+        <Cursor x={localCursor.pos.x} y={localCursor.pos.y} kind={localCursor.kind} bands={myBands} />
+      ) : null}
     </>
   );
 };
