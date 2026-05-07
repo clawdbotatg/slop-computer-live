@@ -23,7 +23,15 @@ import {
 } from "./browsers.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
-import { SESSION_COOKIE, consumeNonce, createSession, deleteSession, getSession, issueNonce } from "./sessions.js";
+import {
+  SESSION_COOKIE,
+  consumeNonce,
+  createAgentSession,
+  createSession,
+  deleteSession,
+  getSession,
+  issueNonce,
+} from "./sessions.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
@@ -55,7 +63,9 @@ app.get("/health", async () => ({
 // or an absolute URL. `url` is what the SharedBrowser will load when the
 // icon is double-clicked.
 
-import { readFileSync as _readFileSync } from "node:fs";
+import { readFileSync as _readFileSync, readdirSync as _readdirSync } from "node:fs";
+import { mkdir as _mkdir, writeFile as _writeFile } from "node:fs/promises";
+import { dirname as _dirname, resolve as _resolve } from "node:path";
 
 const APPS_PATH = process.env.APPS_PATH ?? "/var/lib/slop-relay/apps.json";
 
@@ -70,22 +80,318 @@ const DEFAULT_APPS: AppEntry[] = [
   },
 ];
 
-app.get("/apps", async (_req, reply) => {
-  // Re-read on every request so editing the file on the host is instant.
-  // Cheap (~ms) at the rates this gets hit.
+function readApps(): AppEntry[] {
   try {
     const raw = _readFileSync(APPS_PATH, "utf8");
     const parsed = JSON.parse(raw) as { apps?: unknown };
-    const apps = Array.isArray(parsed.apps) ? (parsed.apps as AppEntry[]) : DEFAULT_APPS;
-    reply.header("cache-control", "no-store");
-    return { apps };
+    return Array.isArray(parsed.apps) ? (parsed.apps as AppEntry[]) : DEFAULT_APPS;
   } catch {
-    // Missing or malformed file → fall back to the built-in default. Keeps
-    // dev environments and fresh installs working without setup.
-    reply.header("cache-control", "no-store");
-    return { apps: DEFAULT_APPS };
+    return DEFAULT_APPS;
+  }
+}
+
+async function writeApps(apps: AppEntry[]): Promise<void> {
+  await _mkdir(_dirname(APPS_PATH), { recursive: true });
+  await _writeFile(APPS_PATH, JSON.stringify({ apps }, null, 2));
+}
+
+app.get("/apps", async (_req, reply) => {
+  // Re-read on every request so editing the file on the host is instant.
+  reply.header("cache-control", "no-store");
+  return { apps: readApps() };
+});
+
+// =============================================================================
+// /v1/* — Agent API
+// -----------------------------------------------------------------------------
+// Authenticated session cookie OR `Authorization: Bearer <agent-token>`.
+// Lets a participant's local LLM (Claude Code, local Llama, anything that
+// can curl) read state and mutate the shared desktop the same way the
+// real-time WS clients can. Agent tokens are minted via /v1/agent-token,
+// scoped to the same identity as the requester's session, valid 7 days.
+// =============================================================================
+
+type V1Auth = { session: import("./sessions.js").Session; isHost: boolean };
+
+function v1AuthFromReq(req: {
+  cookies: Record<string, string | undefined>;
+  headers: Record<string, string | string[] | undefined>;
+}): V1Auth | null {
+  // Bearer first, cookie fallback.
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    const tok = authHeader.slice(7).trim();
+    const s = getSession(tok);
+    if (s) return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+  }
+  const cookieTok = req.cookies[SESSION_COOKIE];
+  const s = getSession(cookieTok);
+  if (!s) return null;
+  return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+}
+
+const ICONS_DIR = process.env.ICONS_DIR ?? _resolve(process.cwd(), "../nextjs/public/icons");
+
+// --- Auth: mint agent token + skill file ------------------------------------
+
+app.get("/v1/agent-token", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const agent = createAgentSession(a.session);
+  return {
+    token: agent.token,
+    expiresAt: agent.expiresAt,
+    scope: a.isHost ? "host" : "peer",
+    identity: { address: agent.address, handle: agent.handle, role: agent.role },
+  };
+});
+
+// --- Read: full state snapshot ----------------------------------------------
+
+app.get("/v1/state", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return {
+    you: {
+      address: a.session.address,
+      handle: a.session.handle,
+      role: a.session.role,
+      isHost: a.isHost,
+    },
+    peers: listPeers(),
+    publications: listPublications(),
+    slots: getSlots(PRIMARY_HOST_ADDR),
+    browsers: listBrowsers(PRIMARY_HOST_ADDR),
+    apps: readApps(),
+  };
+});
+
+// --- Read: list available icon PNGs -----------------------------------------
+
+app.get("/v1/icons", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  try {
+    const entries = _readdirSync(ICONS_DIR, { withFileTypes: true });
+    const icons = entries
+      .filter(e => e.isFile() && /\.(png|svg|jpg|jpeg|webp)$/i.test(e.name))
+      .map(e => ({ name: e.name, url: `/icons/${e.name}` }));
+    return { icons };
+  } catch (err) {
+    return reply.code(500).send({ error: "icons-dir-unreadable", path: ICONS_DIR });
   }
 });
+
+// --- Apps: host-only mutators -----------------------------------------------
+
+type AppBody = { id?: unknown; label?: unknown; icon?: unknown; url?: unknown };
+
+app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const body = (req.body ?? {}) as AppBody;
+  const id = typeof body.id === "string" ? body.id.trim() : "";
+  const label = typeof body.label === "string" ? body.label : "";
+  const icon = typeof body.icon === "string" ? body.icon : "";
+  const url = typeof body.url === "string" ? body.url : "";
+  if (!id || !label || !icon || !url) {
+    return reply.code(400).send({ error: "missing-fields", required: ["id", "label", "icon", "url"] });
+  }
+  if (!/^[a-z0-9-]{1,40}$/.test(id)) {
+    return reply.code(400).send({ error: "bad-id", note: "lowercase letters, digits, dashes, 1-40 chars" });
+  }
+  const apps = readApps();
+  const idx = apps.findIndex(a => a.id === id);
+  const next: AppEntry = { id, label, icon, url };
+  if (idx >= 0) apps[idx] = next;
+  else apps.push(next);
+  await writeApps(apps);
+  return { ok: true, app: next, total: apps.length };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/apps/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const apps = readApps();
+  const next = apps.filter(a => a.id !== req.params.id);
+  if (next.length === apps.length) return reply.code(404).send({ error: "no-such-app" });
+  await writeApps(next);
+  return { ok: true, removed: req.params.id, total: next.length };
+});
+
+// --- Slots: any authenticated peer can rearrange the shared layout ----------
+
+type SlotBody = { id?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; z?: unknown };
+
+app.post<{ Body: SlotBody }>("/v1/slots", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const body = (req.body ?? {}) as SlotBody;
+  if (typeof body.id !== "string") return reply.code(400).send({ error: "missing-id" });
+  const patch: Partial<SlotPosition> & { id: string } = { id: body.id };
+  for (const key of ["x", "y", "width", "height", "z"] as const) {
+    if (typeof body[key] === "number") (patch as Record<string, unknown>)[key] = body[key];
+  }
+  const merged = applySlotUpdate(PRIMARY_HOST_ADDR, patch);
+  if (!merged) return reply.code(500).send({ error: "no-host-configured" });
+  // Broadcast to live WS peers so they see the move in real time, same
+  // as the existing slot_update WS handler.
+  broadcast({ type: "slot", slot: merged });
+  return { ok: true, slot: merged };
+});
+
+// --- Browsers: open / navigate / close --------------------------------------
+
+type OpenBrowserBody = { id?: unknown; url?: unknown };
+
+app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const body = (req.body ?? {}) as OpenBrowserBody;
+  const url = typeof body.url === "string" ? body.url : "";
+  if (!url) return reply.code(400).send({ error: "missing-url" });
+  const id =
+    typeof body.id === "string" && body.id.trim() ? body.id.trim() : `browser-${Math.random().toString(36).slice(2, 8)}`;
+  const browser = openSharedBrowser(PRIMARY_HOST_ADDR, id, url, "agent");
+  broadcast({ type: "browser", browser });
+  return { ok: true, browser };
+});
+
+type NavBody = { url?: unknown };
+
+app.post<{ Params: { id: string }; Body: NavBody }>("/v1/browsers/:id/navigate", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const url = typeof req.body?.url === "string" ? req.body.url : "";
+  if (!url) return reply.code(400).send({ error: "missing-url" });
+  const browser = navigateSharedBrowser(PRIMARY_HOST_ADDR, req.params.id, url);
+  if (!browser) return reply.code(404).send({ error: "no-such-browser" });
+  broadcast({ type: "browser", browser });
+  return { ok: true, browser };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/browsers/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const ok = closeSharedBrowser(PRIMARY_HOST_ADDR, req.params.id);
+  if (!ok) return reply.code(404).send({ error: "no-such-browser" });
+  broadcast({ type: "browser_closed", id: req.params.id });
+  return { ok: true };
+});
+
+// --- Skill file: a markdown the user can drop into a local AI ---------------
+
+app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  // Either embed a token the caller already minted (e.g. UI passes ?token=…)
+  // or mint a fresh one inline so curl-only flows can grab a complete file.
+  const token = typeof req.query.token === "string" && req.query.token ? req.query.token : createAgentSession(a.session).token;
+  reply.header("content-type", "text/markdown; charset=utf-8");
+  reply.header("cache-control", "no-store");
+  reply.header("content-disposition", `attachment; filename="slop-agent.md"`);
+  return skillMarkdown(token, a.isHost);
+});
+
+function skillMarkdown(token: string, isHost: boolean): string {
+  const base = "https://relay.slop.computer";
+  const auth = `Authorization: Bearer ${token}`;
+  return `# slop-computer-live agent
+
+You are an agent participating in a live multi-user desktop session at
+\`live.slop.computer\`. The relay exposes a small REST API you can use to
+**read state** (peers, slots, browsers, apps) and **mutate the desktop**
+(open browsers, move windows${isHost ? ", add/remove apps" : ""}) the same
+way the live web clients do.
+
+## Auth
+
+Every request needs:
+
+\`\`\`
+${auth}
+\`\`\`
+
+This token is yours, scoped \`${isHost ? "host" : "peer"}\`, valid for 7 days.
+Don't paste it into shared chats.
+
+## Endpoints
+
+### Read
+
+- \`GET ${base}/v1/state\` — full snapshot: \`{ you, peers, publications, slots, browsers, apps }\`.
+- \`GET ${base}/v1/icons\` — \`{ icons: [{ name, url }] }\` available to use as app/icon paths.
+- \`GET ${base}/v1/apps\` — current app catalog.
+
+### Move / resize a window (any peer)
+
+\`\`\`
+POST ${base}/v1/slots
+{ "id": "browser-abc123", "x": 200, "y": 80, "width": 800, "height": 610 }
+\`\`\`
+
+Slot ids look like \`browser-<hex>\`, \`icon-<appId>\`, or \`owner-<addr>-camera\`.
+
+### Open / navigate / close a browser (any peer)
+
+\`\`\`
+POST ${base}/v1/browsers          { "url": "https://app.ens.domains" }
+POST ${base}/v1/browsers/:id/navigate { "url": "https://uniswap.org" }
+DELETE ${base}/v1/browsers/:id
+\`\`\`
+
+The headless Chrome impersonates \`vitalik.eth\` automatically — captured
+\`eth_sendTransaction\` payloads land in every peer's tx panel.
+
+${isHost ? `### Apps registry (host only)
+
+\`\`\`
+POST ${base}/v1/apps      { "id": "ens", "label": "ENS", "icon": "/icons/ens.png", "url": "https://app.ens.domains" }
+DELETE ${base}/v1/apps/:id
+\`\`\`
+
+Adding an entry persists to the relay's \`apps.json\`. Newly opened pages
+will see the new icon on next load.
+` : ""}
+## Recipes
+
+**See who's connected and what's open:**
+
+\`\`\`bash
+curl -s -H "${auth}" ${base}/v1/state | jq '{peers,browsers,apps}'
+\`\`\`
+
+**Open a dapp in the shared browser:**
+
+\`\`\`bash
+curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+  ${base}/v1/browsers -d '{"url":"https://app.aave.com"}'
+\`\`\`
+
+**Tile two browser windows side-by-side:**
+
+\`\`\`bash
+# get the browser ids from /v1/state, then:
+curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+  ${base}/v1/slots -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
+curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+  ${base}/v1/slots -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
+\`\`\`
+
+## Conventions
+
+- 200/2xx = success. 400 = bad input. 401 = bad/expired token. 403 = host-only
+  endpoint, you have peer scope. 404 = id doesn't exist. 500 = relay misconfig.
+- Mutations broadcast to live WS peers; everyone sees your change in
+  real time. There is no undo — be intentional.
+- Don't poll \`/v1/state\` faster than once a second; subscribe to the WS
+  if you need real-time (\`wss://relay.slop.computer/signal\`, but that's
+  out of scope for the basic skill).
+`;
+}
 
 // --- SIWE auth --------------------------------------------------------------
 

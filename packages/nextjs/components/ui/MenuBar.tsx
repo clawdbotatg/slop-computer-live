@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { AgentTokenModal } from "./AgentTokenModal";
 import { BandFlag } from "./BandFlag";
 import { LivePulse } from "./LivePulse";
 import { Address } from "@scaffold-ui/components";
@@ -305,6 +306,7 @@ function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) 
 
 function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
+  const [showAgentModal, setShowAgentModal] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -315,6 +317,30 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  const itemStyle: React.CSSProperties = {
+    display: "flex",
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "6px 12px",
+    background: "transparent",
+    border: 0,
+    color: "var(--slop-text)",
+    font: "inherit",
+    cursor: "pointer",
+    borderRadius: 4,
+    letterSpacing: "0.04em",
+  };
+  const onItemHover = (e: React.MouseEvent<HTMLButtonElement>) => {
+    (e.currentTarget as HTMLButtonElement).style.background =
+      "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+    (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+  };
+  const onItemLeave = (e: React.MouseEvent<HTMLButtonElement>) => {
+    (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+    (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+  };
 
   return (
     <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
@@ -368,36 +394,37 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
             type="button"
             onClick={() => {
               setOpen(false);
+              setShowAgentModal(true);
+            }}
+            style={itemStyle}
+            onMouseEnter={onItemHover}
+            onMouseLeave={onItemLeave}
+          >
+            [ agent token… ]
+          </button>
+          <div
+            style={{
+              height: 1,
+              background:
+                "repeating-linear-gradient(90deg, rgba(255,62,201,0.4) 0, rgba(255,62,201,0.4) 4px, transparent 4px, transparent 8px)",
+              margin: "4px 6px",
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
               void onSignOut();
             }}
-            style={{
-              display: "flex",
-              width: "100%",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "6px 12px",
-              background: "transparent",
-              border: 0,
-              color: "var(--slop-text)",
-              font: "inherit",
-              cursor: "pointer",
-              borderRadius: 4,
-              letterSpacing: "0.04em",
-            }}
-            onMouseEnter={e => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
-              (e.currentTarget as HTMLButtonElement).style.color = "#fff";
-            }}
-            onMouseLeave={e => {
-              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-              (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
-            }}
+            style={itemStyle}
+            onMouseEnter={onItemHover}
+            onMouseLeave={onItemLeave}
           >
             [ sign out ]
           </button>
         </div>
       ) : null}
+      {showAgentModal ? <AgentTokenModal onClose={() => setShowAgentModal(false)} /> : null}
     </span>
   );
 }

@@ -44,6 +44,29 @@ export function createSession(args: { role: Role; address: string | null; handle
   return session;
 }
 
+const AGENT_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
+ * Mint a long-lived "agent" token tied to the same identity as `base`.
+ * Used by the BYO-AI flow: a participant signs in normally, asks the relay
+ * for an agent token, then hands it to a local LLM along with a skill file.
+ * Agent tokens are accepted via Authorization: Bearer on /v1/* routes.
+ */
+export function createAgentSession(base: Pick<Session, "role" | "address" | "handle">): Session {
+  pruneSessions();
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + AGENT_TOKEN_TTL_MS;
+  const session: Session = {
+    token,
+    expiresAt,
+    role: base.role,
+    address: base.address,
+    handle: base.handle,
+  };
+  sessions.set(token, session);
+  return session;
+}
+
 export function getSession(token: string | undefined | null): Session | null {
   if (!token) return null;
   const s = sessions.get(token);
