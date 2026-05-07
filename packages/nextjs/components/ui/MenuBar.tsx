@@ -499,7 +499,7 @@ function SlopMenu({ brand }: { brand: string }) {
           textTransform: "inherit",
           cursor: "pointer",
           margin: 0,
-          padding: 0,
+          /* leave padding to .slop-menubar__item — overriding it nuked the brand spacing */
         }}
       >
         <img src="/logo-mark.png" alt="" className="slop-menubar__brand-icon" width={22} height={22} aria-hidden />
