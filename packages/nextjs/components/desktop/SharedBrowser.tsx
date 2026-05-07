@@ -146,7 +146,14 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
 
   const reload = () => {
     if (!canControl) return;
-    onNavigate(browser.url);
+    // Send `reload` directly over the host WS — onNavigate(browser.url)
+    // would round-trip through the relay with the same URL string, which
+    // doesn't trigger our [browser.url]-keyed effect, so the headless
+    // tab never sees a navigate. The host's `reload` handler also
+    // recreates the tab if the renderer has crashed.
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "reload" }));
   };
 
   // ---- Input forwarding ----------------------------------------------------

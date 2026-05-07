@@ -94,6 +94,12 @@ type Tab = {
   url: string;
   subscribers: Set<WebSocket>;
   shutdownTimer: NodeJS.Timeout | null;
+  /** Wall-clock ms when the most recent frame was emitted. Used by
+   *  /diag/:id to spot frozen tabs. */
+  lastFrameAt: number;
+  /** True once we've seen a renderer crash / process death on this tab.
+   *  Reload requests on a crashed tab go straight to "destroy + recreate". */
+  crashed: boolean;
 };
 
 const tabs = new Map<string, Tab>();
@@ -286,12 +292,30 @@ async function createTab(id: string, url: string): Promise<Tab> {
   cdp.on("Page.screencastFrame", async evt => {
     const tab = tabs.get(id);
     if (!tab) return;
+    tab.lastFrameAt = Date.now();
     broadcastTab(tab, { type: "frame", data: evt.data, sessionId: evt.sessionId });
     try {
       await cdp.send("Page.screencastFrameAck", { sessionId: evt.sessionId });
     } catch {
       /* tab closed */
     }
+  });
+
+  // Renderer crash signals — both flavors. page.on('error') fires when the
+  // renderer process itself dies (Chrome's "Aw, snap!" page); pageerror is
+  // for uncaught JS exceptions from the dapp (less serious). The CDP
+  // Inspector.targetCrashed event is the lowest-level signal from Chrome
+  // itself. Mark the tab crashed so a reload request takes the destroy+
+  // recreate path.
+  page.on("error", err => {
+    const tab = tabs.get(id);
+    if (tab) tab.crashed = true;
+    app.log.error({ id, err: err instanceof Error ? err.message : String(err) }, "renderer-crashed");
+  });
+  cdp.on("Inspector.targetCrashed", () => {
+    const tab = tabs.get(id);
+    if (tab) tab.crashed = true;
+    app.log.error({ id }, "target-crashed");
   });
 
   // Surface URL changes (in-page nav) so the URL bar across all peers
@@ -307,7 +331,16 @@ async function createTab(id: string, url: string): Promise<Tab> {
     broadcastTab(tab, { type: "url", url: next });
   });
 
-  const tab: Tab = { id, page, cdp, url, subscribers: new Set(), shutdownTimer: null };
+  const tab: Tab = {
+    id,
+    page,
+    cdp,
+    url,
+    subscribers: new Set(),
+    shutdownTimer: null,
+    lastFrameAt: Date.now(),
+    crashed: false,
+  };
   tabs.set(id, tab);
 
   try {
@@ -369,6 +402,39 @@ app.get("/health", async () => ({
   impersonating: config.impersonatedAddress,
 }));
 
+// Diagnostics. Lists tab metadata so a wedged tab can be inspected from the
+// outside (subscribers count, frame staleness, crash flag). Unauthenticated
+// — info only, no actions.
+app.get("/diag", async () => {
+  const now = Date.now();
+  return {
+    tabs: [...tabs.values()].map(t => ({
+      id: t.id,
+      url: t.url,
+      subscribers: t.subscribers.size,
+      lastFrameAt: t.lastFrameAt,
+      msSinceLastFrame: now - t.lastFrameAt,
+      crashed: t.crashed,
+      pageClosed: t.page.isClosed(),
+    })),
+  };
+});
+
+app.get<{ Params: { id: string } }>("/diag/:id", async (req, reply) => {
+  const t = tabs.get(req.params.id);
+  if (!t) return reply.code(404).send({ error: "no such tab" });
+  const now = Date.now();
+  return {
+    id: t.id,
+    url: t.url,
+    subscribers: t.subscribers.size,
+    lastFrameAt: t.lastFrameAt,
+    msSinceLastFrame: now - t.lastFrameAt,
+    crashed: t.crashed,
+    pageClosed: t.page.isClosed(),
+  };
+});
+
 // ---- WS /stream/:id -------------------------------------------------------
 
 app.register(async function (fastify) {
@@ -414,6 +480,39 @@ app.register(async function (fastify) {
             void tab.page.goto(msg.url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(err => {
               app.log.warn({ err, url: msg.url }, "navigate failed");
             });
+            return;
+          }
+          case "reload": {
+            // The frontend's Reload button hits this. If the renderer is
+            // crashed or page.reload() throws (hung renderer, network
+            // dead, etc.) fall through to destroying and re-creating the
+            // tab at the same URL — the heaviest stick we have.
+            const url = tab.url;
+            const isCrashed = tab.crashed;
+            app.log.info({ id: tab.id, url, crashed: isCrashed }, "reload requested");
+            const t = tab;
+            const recreate = async () => {
+              app.log.warn({ id: t.id }, "reload escalating to destroy+recreate");
+              await destroyTab(t.id);
+              try {
+                const next = await createTab(t.id, url);
+                // Move existing subscribers over to the new tab so the
+                // user doesn't have to manually reconnect.
+                for (const ws of t.subscribers) next.subscribers.add(ws);
+              } catch (err) {
+                app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
+              }
+            };
+            if (isCrashed) {
+              void recreate();
+            } else {
+              void t.page
+                .reload({ waitUntil: "domcontentloaded", timeout: 15_000 })
+                .catch(err => {
+                  app.log.warn({ id: t.id, err: err.message }, "page.reload failed");
+                  return recreate();
+                });
+            }
             return;
           }
           case "mouse": {
