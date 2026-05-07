@@ -99,40 +99,65 @@ type Tab = {
 const tabs = new Map<string, Tab>();
 const tabBoots = new Map<string, Promise<Tab>>();
 
-// Map a KeyboardEvent.key value to the legacy "windows virtual key code"
-// CDP expects. Without it, Chrome treats special keys (Backspace, Delete,
-// Tab, Enter, arrows) as keyCode=0 and the input element ignores them.
-const SPECIAL_VK: Record<string, number> = {
-  Backspace: 8,
-  Tab: 9,
-  Enter: 13,
-  Shift: 16,
-  Control: 17,
-  Alt: 18,
-  Pause: 19,
-  CapsLock: 20,
-  Escape: 27,
-  " ": 32,
-  PageUp: 33,
-  PageDown: 34,
-  End: 35,
-  Home: 36,
-  ArrowLeft: 37,
-  ArrowUp: 38,
-  ArrowRight: 39,
-  ArrowDown: 40,
-  Insert: 45,
-  Delete: 46,
-  Meta: 91,
-  ContextMenu: 93,
+// Map a KeyboardEvent.code value (the physical key, unambiguous regardless
+// of Shift state or layout) to the legacy "windows virtual key code" that
+// Chrome's input handler expects. Without it, Chrome's input element
+// ignores the keystroke (special keys), or — worse — interprets it as the
+// wrong key (e.g. punctuation whose ASCII value collides with a special
+// key's VK: '.' is ASCII 46, which is also VK_DELETE).
+const CODE_VK: Record<string, number> = {
+  // Letters
+  KeyA: 65, KeyB: 66, KeyC: 67, KeyD: 68, KeyE: 69, KeyF: 70,
+  KeyG: 71, KeyH: 72, KeyI: 73, KeyJ: 74, KeyK: 75, KeyL: 76,
+  KeyM: 77, KeyN: 78, KeyO: 79, KeyP: 80, KeyQ: 81, KeyR: 82,
+  KeyS: 83, KeyT: 84, KeyU: 85, KeyV: 86, KeyW: 87, KeyX: 88,
+  KeyY: 89, KeyZ: 90,
+  // Top-row digits
+  Digit0: 48, Digit1: 49, Digit2: 50, Digit3: 51, Digit4: 52,
+  Digit5: 53, Digit6: 54, Digit7: 55, Digit8: 56, Digit9: 57,
+  // Numpad
+  Numpad0: 96, Numpad1: 97, Numpad2: 98, Numpad3: 99, Numpad4: 100,
+  Numpad5: 101, Numpad6: 102, Numpad7: 103, Numpad8: 104, Numpad9: 105,
+  NumpadMultiply: 106, NumpadAdd: 107, NumpadSubtract: 109,
+  NumpadDecimal: 110, NumpadDivide: 111, NumpadEnter: 13,
+  // OEM punctuation — these are why '.' was breaking
+  Semicolon: 186, Equal: 187, Comma: 188, Minus: 189, Period: 190,
+  Slash: 191, Backquote: 192, BracketLeft: 219, Backslash: 220,
+  BracketRight: 221, Quote: 222, IntlBackslash: 226,
+  // Whitespace + line editing
+  Space: 32, Backspace: 8, Tab: 9, Enter: 13,
+  // Navigation
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+  Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45, Delete: 46,
+  // System
+  Escape: 27, CapsLock: 20, Pause: 19, ScrollLock: 145, PrintScreen: 44,
+  // Modifiers (left/right discriminated)
+  ShiftLeft: 16, ShiftRight: 16,
+  ControlLeft: 17, ControlRight: 17,
+  AltLeft: 18, AltRight: 18,
+  MetaLeft: 91, MetaRight: 92, ContextMenu: 93,
+  // Function row
   F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117,
   F7: 118, F8: 119, F9: 120, F10: 121, F11: 122, F12: 123,
 };
 
-function virtualKeyCode(key: string): number {
-  if (SPECIAL_VK[key] !== undefined) return SPECIAL_VK[key]!;
-  // Letters and digits: keyCode is the uppercase ASCII code. e.key for the
-  // 'a' key is 'a' (or 'A' with shift); both map to keyCode 65.
+// Last-resort key-name lookup for keys we somehow get without a code (older
+// browsers, synthetic events). Keep this small — code is the source of truth.
+const KEY_VK: Record<string, number> = {
+  Backspace: 8, Tab: 9, Enter: 13, Escape: 27, " ": 32,
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+  Delete: 46, Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45,
+  Shift: 16, Control: 17, Alt: 18, Meta: 91, CapsLock: 20,
+  F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117,
+  F7: 118, F8: 119, F9: 120, F10: 121, F11: 122, F12: 123,
+};
+
+function virtualKeyCode(key: string, code: string): number {
+  if (code && CODE_VK[code] !== undefined) return CODE_VK[code]!;
+  if (key && KEY_VK[key] !== undefined) return KEY_VK[key]!;
+  // Final fallback: if we got a single printable char and no code,
+  // assume it's a letter/digit where ASCII == VK. Punctuation will be
+  // wrong here, but this path only triggers for synthetic events.
   if (key.length === 1) return key.toUpperCase().charCodeAt(0);
   return 0;
 }
@@ -450,7 +475,7 @@ app.register(async function (fastify) {
             // windowsVirtualKeyCode. Without it Chrome sees keyCode=0 and
             // the input element's default handler (delete-char-left/right,
             // move caret, submit, etc.) never fires.
-            const vk = cdpType === "char" ? 0 : virtualKeyCode(key);
+            const vk = cdpType === "char" ? 0 : virtualKeyCode(key, code);
             void tab.cdp
               .send("Input.dispatchKeyEvent", {
                 type: cdpType,
