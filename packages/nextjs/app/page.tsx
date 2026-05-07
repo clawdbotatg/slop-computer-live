@@ -456,17 +456,35 @@ const Desktop: NextPage = () => {
   }, [meshBroadcastTx]);
 
   // Broadcast every click so all peers see a colored ripple at the spot
-  // where you clicked. Uses 'click' (down+up on same target) rather than
-  // 'mousedown' so a drag-to-resize on a Window doesn't fire ripples.
+  // where you clicked. The browser's own `click` fires after a window
+  // titlebar drag (mousedown + mouseup on the same element), so we track
+  // the down position and skip the ripple when the pointer moved more than
+  // a few pixels — that's a drag, not a click.
   const meshSendClick = mesh.sendClick;
   const meshConnected = mesh.connected;
   useEffect(() => {
     if (!meshConnected) return;
+    const DRAG_THRESHOLD = 6;
+    let downX = 0;
+    let downY = 0;
+    let armed = false;
+    const onDown = (e: MouseEvent) => {
+      downX = e.clientX;
+      downY = e.clientY;
+      armed = true;
+    };
     const onClick = (e: MouseEvent) => {
+      if (!armed) return;
+      armed = false;
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_THRESHOLD) return;
       meshSendClick(e.clientX, e.clientY);
     };
+    window.addEventListener("mousedown", onDown, true);
     window.addEventListener("click", onClick);
-    return () => window.removeEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("click", onClick);
+    };
   }, [meshConnected, meshSendClick]);
 
   // Title prefix per kind.
