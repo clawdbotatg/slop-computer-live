@@ -22,3 +22,7 @@ id_ed25519
 .ssh/
 .claude-prompt.txt
 .claude/
+
+# Out-of-band tooling lives in ~/clawd/slop-scripts (its own repo).
+# Anything that lands here is local scratch and should not be committed.
+scripts/
