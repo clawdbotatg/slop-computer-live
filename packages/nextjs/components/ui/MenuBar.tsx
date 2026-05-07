@@ -111,21 +111,18 @@ function Dropdown({ menu }: { menu: Menu }) {
   }, [open]);
 
   return (
-    <span ref={ref} style={{ position: "relative", display: "inline-flex" }} className="slop-menubar__item">
+    <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
+        className="slop-menubar__item"
         style={{
-          background: "transparent",
-          border: 0,
           color: "inherit",
           font: "inherit",
           letterSpacing: "inherit",
           textTransform: "inherit",
           cursor: "pointer",
-          padding: 0,
           margin: 0,
-          lineHeight: 1,
         }}
       >
         {menu.label} <span aria-hidden>▾</span>
@@ -224,20 +221,17 @@ function PeersDropdown({ peers, myId }: { peers: Peer[]; myId: string | null }) 
   }, [open]);
 
   return (
-    <span ref={ref} style={{ position: "relative", display: "inline-flex" }} className="slop-menubar__item">
+    <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
+        className="slop-menubar__item"
         style={{
-          background: "transparent",
-          border: 0,
           color: "inherit",
           font: "inherit",
-          cursor: "pointer",
-          padding: 0,
-          margin: 0,
           letterSpacing: "0.04em",
-          lineHeight: 1,
+          cursor: "pointer",
+          margin: 0,
         }}
       >
         ({peers.length} guest{peers.length === 1 ? "" : "s"}) <span aria-hidden>▾</span>
