@@ -483,36 +483,60 @@ app.register(async function (fastify) {
             return;
           }
           case "reload": {
-            // The frontend's Reload button hits this. If the renderer is
-            // crashed or page.reload() throws (hung renderer, network
-            // dead, etc.) fall through to destroying and re-creating the
-            // tab at the same URL — the heaviest stick we have.
+            // The frontend's Reload button hits this. Three layers, in
+            // order from cheap to nuclear:
+            //   1. Restart the CDP screencast — fixes the actual bug we
+            //      keep hitting where frames stop emitting on a healthy
+            //      tab and page.reload() alone doesn't unstick them.
+            //   2. page.reload() — handles "page is fine but I want a
+            //      fresh load."
+            //   3. destroy + recreate the tab at the same URL — last
+            //      resort for a crashed/hung renderer.
             const url = tab.url;
             const isCrashed = tab.crashed;
-            app.log.info({ id: tab.id, url, crashed: isCrashed }, "reload requested");
+            const stale = Date.now() - tab.lastFrameAt > 10_000;
+            app.log.info(
+              { id: tab.id, url, crashed: isCrashed, stale, msSinceFrame: Date.now() - tab.lastFrameAt },
+              "reload requested",
+            );
             const t = tab;
             const recreate = async () => {
               app.log.warn({ id: t.id }, "reload escalating to destroy+recreate");
+              const oldSubs = [...t.subscribers];
               await destroyTab(t.id);
               try {
                 const next = await createTab(t.id, url);
-                // Move existing subscribers over to the new tab so the
-                // user doesn't have to manually reconnect.
-                for (const ws of t.subscribers) next.subscribers.add(ws);
+                for (const ws of oldSubs) next.subscribers.add(ws);
               } catch (err) {
                 app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
               }
             };
-            if (isCrashed) {
+            // If the renderer is gone or the screencast hasn't emitted in
+            // 10s+ skip straight to recreate — page.reload() can't bring
+            // back a wedged screencast and just wastes time.
+            if (isCrashed || stale) {
               void recreate();
-            } else {
-              void t.page
-                .reload({ waitUntil: "domcontentloaded", timeout: 15_000 })
-                .catch(err => {
-                  app.log.warn({ id: t.id, err: err.message }, "page.reload failed");
-                  return recreate();
-                });
+              return;
             }
+            void (async () => {
+              try {
+                // Restart screencast. Calling startScreencast a second
+                // time replaces the existing one; stopping first is
+                // belt-and-suspenders against CDP edge cases.
+                await t.cdp.send("Page.stopScreencast").catch(() => undefined);
+                await t.page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
+                await t.cdp.send("Page.startScreencast", {
+                  format: "jpeg",
+                  quality: config.screencast.quality,
+                  maxWidth: config.screencast.maxWidth,
+                  maxHeight: config.screencast.maxHeight,
+                  everyNthFrame: config.screencast.everyNthFrame,
+                });
+              } catch (err) {
+                app.log.warn({ id: t.id, err: (err as Error).message }, "page.reload failed");
+                await recreate();
+              }
+            })();
             return;
           }
           case "mouse": {
