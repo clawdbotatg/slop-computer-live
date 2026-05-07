@@ -77,7 +77,15 @@ export type SlotPosition = {
   z: number;
 };
 
-type CursorData = { x: number; y: number };
+type CursorData = {
+  x: number;
+  y: number;
+  /** Optional inline identity — present when the source is an HTTP agent
+   *  that isn't a registered WS peer. Used to render label + blockie
+   *  colors without a peers-list lookup. */
+  address?: string | null;
+  handle?: string | null;
+};
 
 export type ClickEvent = {
   /** Monotonic id used as React key + for cleanup. Local-only. */
@@ -85,6 +93,9 @@ export type ClickEvent = {
   peerId: string;
   x: number;
   y: number;
+  /** Same inline-identity shape as CursorData. */
+  address?: string | null;
+  handle?: string | null;
   receivedAt: number;
 };
 
@@ -556,7 +567,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           const x = msg.x as number;
           const y = msg.y as number;
           if (typeof from !== "string" || typeof x !== "number" || typeof y !== "number") return;
-          setCursors(prev => ({ ...prev, [from]: { x, y } }));
+          const address = typeof msg.address === "string" ? (msg.address as string) : null;
+          const handle = typeof msg.handle === "string" ? (msg.handle as string) : null;
+          setCursors(prev => ({ ...prev, [from]: { x, y, address, handle } }));
           return;
         }
 
@@ -565,8 +578,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           const x = msg.x as number;
           const y = msg.y as number;
           if (typeof from !== "string" || typeof x !== "number" || typeof y !== "number") return;
+          const address = typeof msg.address === "string" ? (msg.address as string) : null;
+          const handle = typeof msg.handle === "string" ? (msg.handle as string) : null;
           clickIdRef.current += 1;
-          const evt: ClickEvent = { id: clickIdRef.current, peerId: from, x, y, receivedAt: Date.now() };
+          const evt: ClickEvent = {
+            id: clickIdRef.current,
+            peerId: from,
+            x,
+            y,
+            address,
+            handle,
+            receivedAt: Date.now(),
+          };
           // Cap to 30 in flight so a click-spammer doesn't blow up the
           // render tree. The animation finishes in ~900ms and self-prunes.
           setClicks(prev => (prev.length >= 30 ? [...prev.slice(-29), evt] : [...prev, evt]));

@@ -535,12 +535,15 @@ const Desktop: NextPage = () => {
     Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
       if (peerId === mesh.myId) return;
       const peer = mesh.peers.find(p => p.id === peerId);
+      // HTTP agents have no peers-list entry; their cursor message
+      // carries identity inline. Prefer the registered peer when
+      // present (real WS clients), fall back to the inline values.
       result.push({
         peerId,
         x: pos.x,
         y: pos.y,
-        handle: peer?.handle ?? null,
-        address: peer?.address ?? null,
+        handle: peer?.handle ?? pos.handle ?? null,
+        address: peer?.address ?? pos.address ?? null,
       });
     });
     return result;
@@ -759,9 +762,10 @@ const Desktop: NextPage = () => {
           ripple self-prunes from mesh.clicks ~1s after the click. */}
       {mesh.clicks.map(click => {
         const peer = mesh.peers.find(p => p.id === click.peerId);
+        // Same fallback chain as cursors: registered peer > inline > peerId hash.
         const bands = bandsFromIdentity({
-          address: peer?.address ?? null,
-          handle: peer?.handle ?? null,
+          address: peer?.address ?? click.address ?? null,
+          handle: peer?.handle ?? click.handle ?? null,
           fallback: click.peerId,
         });
         return <ClickRipple key={click.id} x={click.x} y={click.y} bands={bands} />;

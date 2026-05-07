@@ -282,6 +282,55 @@ app.delete<{ Params: { id: string } }>("/v1/browsers/:id", async (req, reply) =>
   return { ok: true };
 });
 
+// --- Cursor + click: agent presence -----------------------------------------
+// Lets an agent show up on the desktop the way a human does. Cursor moves
+// emit `cursor` messages keyed by a stable agent peer id; clicks emit a
+// `click` (which produces a colored ripple). Both include the session's
+// address/handle inline so the frontend can label + color them with the
+// user's blockie palette without needing a synthetic peer entry.
+
+function agentPeerId(token: string): string {
+  // Stable per-agent-token id — different LLMs the same human uses get
+  // distinct cursors/ripples. 12 chars is enough to avoid collisions.
+  return `agent-${token.slice(0, 12)}`;
+}
+
+type XYBody = { x?: unknown; y?: unknown };
+
+app.post<{ Body: XYBody }>("/v1/cursor", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const x = Number(req.body?.x);
+  const y = Number(req.body?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
+  broadcast({
+    type: "cursor",
+    from: agentPeerId(a.session.token),
+    address: a.session.address,
+    handle: a.session.handle,
+    x,
+    y,
+  });
+  return { ok: true };
+});
+
+app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const x = Number(req.body?.x);
+  const y = Number(req.body?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
+  broadcast({
+    type: "click",
+    from: agentPeerId(a.session.token),
+    address: a.session.address,
+    handle: a.session.handle,
+    x,
+    y,
+  });
+  return { ok: true };
+});
+
 // --- Skill file: a markdown the user can drop into a local AI ---------------
 
 app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
@@ -299,13 +348,17 @@ app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => 
 function skillMarkdown(token: string, isHost: boolean): string {
   const base = "https://relay.slop.computer";
   const auth = `Authorization: Bearer ${token}`;
+  const scope = isHost ? "host" : "peer";
+  const hostOnlyNote = isHost
+    ? ""
+    : "\n> ⚠ The endpoints below marked **host-only** require host scope. Yours is **peer** — those calls return 403. Ask the host to do them, or include them in plans you suggest.";
   return `# slop-computer-live agent
 
 You are an agent participating in a live multi-user desktop session at
 \`live.slop.computer\`. The relay exposes a small REST API you can use to
-**read state** (peers, slots, browsers, apps) and **mutate the desktop**
-(open browsers, move windows${isHost ? ", add/remove apps" : ""}) the same
-way the live web clients do.
+**read state** (peers, slots, browsers, apps), **mutate the desktop**
+(open browsers, move windows, add/remove apps), and **show presence**
+(cursors, clicks) — the same way the live web clients do.
 
 ## Auth
 
@@ -315,18 +368,18 @@ Every request needs:
 ${auth}
 \`\`\`
 
-This token is yours, scoped \`${isHost ? "host" : "peer"}\`, valid for 7 days.
-Don't paste it into shared chats.
+This token is yours, scoped \`${scope}\`, valid for 7 days. Don't paste it
+into shared chats.${hostOnlyNote}
 
 ## Endpoints
 
-### Read
+### Read (any scope)
 
 - \`GET ${base}/v1/state\` — full snapshot: \`{ you, peers, publications, slots, browsers, apps }\`.
 - \`GET ${base}/v1/icons\` — \`{ icons: [{ name, url }] }\` available to use as app/icon paths.
 - \`GET ${base}/v1/apps\` — current app catalog.
 
-### Move / resize a window (any peer)
+### Move / resize a window (any scope)
 
 \`\`\`
 POST ${base}/v1/slots
@@ -335,7 +388,7 @@ POST ${base}/v1/slots
 
 Slot ids look like \`browser-<hex>\`, \`icon-<appId>\`, or \`owner-<addr>-camera\`.
 
-### Open / navigate / close a browser (any peer)
+### Open / navigate / close a browser (any scope)
 
 \`\`\`
 POST ${base}/v1/browsers          { "url": "https://app.ens.domains" }
@@ -346,22 +399,35 @@ DELETE ${base}/v1/browsers/:id
 The headless Chrome impersonates \`vitalik.eth\` automatically — captured
 \`eth_sendTransaction\` payloads land in every peer's tx panel.
 
-${isHost ? `### Apps registry (host only)
+### Cursor + click presence (any scope)
+
+\`\`\`
+POST ${base}/v1/cursor   { "x": 800, "y": 400 }
+POST ${base}/v1/click    { "x": 800, "y": 400 }
+\`\`\`
+
+Cursor positions persist on every peer's screen labelled with your
+identity; clicks render a colored ripple in your blockie's palette.
+Use these to "be present" — point at things, react, draw attention.
+Don't spam: < 30 cursor msgs/sec is plenty.
+
+### Apps registry (host-only)
 
 \`\`\`
 POST ${base}/v1/apps      { "id": "ens", "label": "ENS", "icon": "/icons/ens.png", "url": "https://app.ens.domains" }
 DELETE ${base}/v1/apps/:id
 \`\`\`
 
-Adding an entry persists to the relay's \`apps.json\`. Newly opened pages
-will see the new icon on next load.
-` : ""}
+Persists to \`apps.json\` on the relay. New page loads see the new icon.
+\`icon\` can be a relative path served by Next.js (call \`GET /v1/icons\`
+to list options) or any absolute https URL.
+
 ## Recipes
 
 **See who's connected and what's open:**
 
 \`\`\`bash
-curl -s -H "${auth}" ${base}/v1/state | jq '{peers,browsers,apps}'
+curl -s -H "${auth}" ${base}/v1/state | jq '{peers,browsers,apps,you}'
 \`\`\`
 
 **Open a dapp in the shared browser:**
@@ -381,15 +447,43 @@ curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
   ${base}/v1/slots -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
 \`\`\`
 
+**Wave at the room (3 click ripples in a row):**
+
+\`\`\`bash
+for i in 700 800 900; do
+  curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+    ${base}/v1/click -d "{\\"x\\":\$i,\\"y\\":400}"
+  sleep 0.2
+done
+\`\`\`
+
+**Add an app (host-only):**
+
+\`\`\`bash
+# 1. see what icons are available
+curl -s -H "${auth}" ${base}/v1/icons | jq '.icons[].name'
+# 2. add the entry
+curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+  ${base}/v1/apps -d '{
+    "id": "ens",
+    "label": "ENS",
+    "icon": "/icons/ens.png",
+    "url": "https://app.ens.domains"
+  }'
+\`\`\`
+
 ## Conventions
 
-- 200/2xx = success. 400 = bad input. 401 = bad/expired token. 403 = host-only
-  endpoint, you have peer scope. 404 = id doesn't exist. 500 = relay misconfig.
+- 200/2xx = success. 400 = bad input. 401 = bad/expired token.
+  403 = host-only endpoint, you have peer scope. 404 = id doesn't exist.
+  500 = relay misconfig.
 - Mutations broadcast to live WS peers; everyone sees your change in
   real time. There is no undo — be intentional.
-- Don't poll \`/v1/state\` faster than once a second; subscribe to the WS
-  if you need real-time (\`wss://relay.slop.computer/signal\`, but that's
-  out of scope for the basic skill).
+- Don't poll \`/v1/state\` faster than once a second. For real-time you'd
+  use the WS at \`wss://relay.slop.computer/signal\`, but that's out of
+  scope for this skill.
+- Cursor coordinates are viewport pixels at the host's resolution
+  (~1440×900 typical). Stay inside the screen.
 `;
 }
 
