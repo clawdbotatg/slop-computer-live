@@ -55,6 +55,11 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
   const [hostTxRequests, setHostTxRequests] = useState<TxRequest[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  // Set when the host tells us the page navigated on its own (link click,
+  // window.location, popup-redirect). We mirror that URL into mesh state
+  // so all peers' URL bars update, but we must NOT echo it back as a
+  // "navigate" — that'd re-fetch the same URL and waste a round trip.
+  const incomingUrlRef = useRef<string | null>(null);
 
   // Keep the URL bar in sync with shared state, but don't clobber what the
   // user is in the middle of typing.
@@ -87,6 +92,14 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
       }
       if (msg.type === "frame" && typeof msg.data === "string") {
         setFrameSrc(`data:image/jpeg;base64,${msg.data}`);
+        return;
+      }
+      if (msg.type === "url" && typeof msg.url === "string") {
+        // Page navigated server-side. Stash so the navigate-effect skips
+        // sending this back, then update mesh state so all peers' URL
+        // bars reflect the new location.
+        incomingUrlRef.current = msg.url;
+        onNavigate(msg.url);
         return;
       }
       if (msg.type === "tx_request") {
@@ -130,8 +143,15 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
   }, [browser.id]);
 
   // Reflect URL changes from the shared mesh state to the headless tab.
+  // Skip when the URL change *originated* on the host (in-page link click,
+  // popup-redirect, etc.) — sending navigate back would re-fetch the same
+  // URL we're already on.
   useEffect(() => {
     if (connState !== "open") return;
+    if (browser.url === incomingUrlRef.current) {
+      incomingUrlRef.current = null;
+      return;
+    }
     const ws = wsRef.current;
     if (!ws) return;
     ws.send(JSON.stringify({ type: "navigate", url: browser.url }));

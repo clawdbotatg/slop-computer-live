@@ -217,6 +217,45 @@ async function createTab(id: string, url: string): Promise<Tab> {
   // fake provider before MetaMask, EIP-6963 listeners, etc. ever fire.
   await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(config.impersonatedAddress, config.chainId));
 
+  // Pin all navigations to this same tab. Without this:
+  //   - window.open(url) creates a new puppeteer Page we're not streaming →
+  //     user sees nothing happen, looks frozen.
+  //   - <a target="_blank"> does the same.
+  // We rewrite window.open to a same-window navigation, and intercept any
+  // _blank link click in the capture phase before the dapp's own handlers
+  // see it.
+  await page.evaluateOnNewDocument(() => {
+    try {
+      Object.defineProperty(window, "open", {
+        value: (url?: string | URL) => {
+          if (url) window.location.href = String(url);
+          return null;
+        },
+        writable: false,
+        configurable: false,
+      });
+    } catch {
+      /* ignore */
+    }
+    document.addEventListener(
+      "click",
+      ev => {
+        const t = ev.target;
+        if (!(t instanceof Element)) return;
+        const a = t.closest("a");
+        if (!a) return;
+        const target = a.getAttribute("target");
+        if (target !== "_blank") return;
+        const href = a.href;
+        if (!href) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        window.location.href = href;
+      },
+      true,
+    );
+  });
+
   page.on("console", msg => {
     const t = msg.type();
     if (t === "error" || t === "warn") app.log.info({ id, t, text: msg.text().slice(0, 300) }, "page-console");
@@ -224,6 +263,32 @@ async function createTab(id: string, url: string): Promise<Tab> {
   page.on("pageerror", err => {
     const message = err instanceof Error ? err.message : String(err);
     app.log.warn({ id, err: message }, "page-error");
+  });
+
+  // If a popup slips past the JS interception above (middle-click, CSP
+  // weirdness, programmatic <a>.click() pre-script, etc.) puppeteer fires
+  // 'popup' with the new Page. Capture its target URL and redirect the
+  // ORIGINAL page to it, then close the popup so we keep streaming the
+  // tab the user is actually watching.
+  page.on("popup", async popup => {
+    if (!popup) return;
+    try {
+      let url = popup.url();
+      // The popup may not have settled on a real URL yet.
+      if (!url || url === "about:blank") {
+        await new Promise(r => setTimeout(r, 80));
+        url = popup.url();
+      }
+      app.log.info({ id, popupUrl: url }, "popup intercepted — redirecting main tab");
+      await popup.close().catch(() => undefined);
+      if (url && url !== "about:blank") {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(err => {
+          app.log.warn({ id, err: err.message, url }, "popup goto failed");
+        });
+      }
+    } catch (err) {
+      app.log.warn({ id, err: (err as Error).message }, "popup handler errored");
+    }
   });
 
   // The injected provider's `fetch("/__slop_rpc", ...)` call is intercepted
