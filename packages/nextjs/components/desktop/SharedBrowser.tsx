@@ -235,11 +235,32 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
     if (!c) return;
     sendInput({ type: "mouse", event: "move", x: c.x, y: c.y, button: "none" });
   };
+  // Wheel events fire 60-120Hz natively. Without throttling we flood CDP
+  // with mouseWheel events on every scroll, which appears to be what
+  // wedges the screencast (frames stop arriving mid-scroll). Coalesce
+  // deltas inside ~30ms windows and flush at the end with the summed
+  // delta — gives smooth scroll without spamming the host.
+  const wheelAccum = useRef({ dx: 0, dy: 0, x: 0, y: 0, scheduled: 0 });
+  const flushWheel = useCallback(() => {
+    const w = wheelAccum.current;
+    w.scheduled = 0;
+    if (w.dx === 0 && w.dy === 0) return;
+    sendInput({ type: "wheel", x: w.x, y: w.y, deltaX: w.dx, deltaY: w.dy });
+    w.dx = 0;
+    w.dy = 0;
+  }, [sendInput]);
   const onWheel = (e: React.WheelEvent) => {
     if (!canControl) return;
     const c = toServerCoords(e);
     if (!c) return;
-    sendInput({ type: "wheel", x: c.x, y: c.y, deltaX: e.deltaX, deltaY: e.deltaY });
+    const w = wheelAccum.current;
+    w.dx += e.deltaX;
+    w.dy += e.deltaY;
+    w.x = c.x;
+    w.y = c.y;
+    if (!w.scheduled) {
+      w.scheduled = window.setTimeout(flushWheel, 30);
+    }
   };
   // Capture key events on the stage when it has focus. Key events are
   // captured at the element level rather than window so typing in our URL

@@ -97,6 +97,10 @@ type Tab = {
   /** Wall-clock ms when the most recent frame was emitted. Used by
    *  /diag/:id to spot frozen tabs. */
   lastFrameAt: number;
+  /** Wall-clock ms of the most recent input event (key / mouse / wheel).
+   *  Watchdog only restarts the screencast when input came AFTER the
+   *  last frame — otherwise a static page would keep getting kicked. */
+  lastInputAt: number;
   /** True once we've seen a renderer crash / process death on this tab.
    *  Reload requests on a crashed tab go straight to "destroy + recreate". */
   crashed: boolean;
@@ -339,6 +343,7 @@ async function createTab(id: string, url: string): Promise<Tab> {
     subscribers: new Set(),
     shutdownTimer: null,
     lastFrameAt: Date.now(),
+    lastInputAt: 0,
     crashed: false,
   };
   tabs.set(id, tab);
@@ -392,6 +397,57 @@ function cancelShutdown(tab: Tab) {
     tab.shutdownTimer = null;
   }
 }
+
+// ---- Watchdog ------------------------------------------------------------
+// Symptom we keep hitting: user gives input (scroll, click, keystroke), the
+// CDP screencast stops emitting frames even though the renderer is alive
+// and the page is responsive to subsequent navigation. Once it's wedged,
+// page.reload() doesn't unstick it.
+//
+// Recovery: every 4s, for each tab with a live subscriber, if the last
+// input was AFTER the last frame and >5s have passed since the last frame,
+// stop+restart Page.startScreencast. That's the lightest stick that
+// actually fixes wedged screencasts; if it doesn't restore frames within
+// another cycle, the next reload click escalates to destroy+recreate.
+//
+// The "input came after frame" gate prevents us from kicking legitimately
+// static pages (no input → no expected redraw → no frame is fine).
+
+const WATCHDOG_INTERVAL_MS = 4000;
+const WATCHDOG_FRAME_STALENESS_MS = 5000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const tab of tabs.values()) {
+    if (tab.subscribers.size === 0) continue;
+    if (tab.crashed) continue;
+    const stale = now - tab.lastFrameAt;
+    if (stale < WATCHDOG_FRAME_STALENESS_MS) continue;
+    // Only kick if input came after the last frame — proves the user
+    // expected a redraw that never arrived.
+    if (tab.lastInputAt <= tab.lastFrameAt) continue;
+    app.log.warn(
+      { id: tab.id, msSinceFrame: stale, msSinceInput: now - tab.lastInputAt },
+      "watchdog: wedged screencast — restarting",
+    );
+    void (async () => {
+      try {
+        await tab.cdp.send("Page.stopScreencast").catch(() => undefined);
+        await tab.cdp.send("Page.startScreencast", {
+          format: "jpeg",
+          quality: config.screencast.quality,
+          maxWidth: config.screencast.maxWidth,
+          maxHeight: config.screencast.maxHeight,
+          everyNthFrame: config.screencast.everyNthFrame,
+        });
+        // Optimistic — give the next watchdog cycle a clean slate.
+        tab.lastFrameAt = now;
+      } catch (err) {
+        app.log.error({ id: tab.id, err: (err as Error).message }, "watchdog restart failed");
+      }
+    })();
+  }
+}, WATCHDOG_INTERVAL_MS);
 
 // ---- HTTP -----------------------------------------------------------------
 
@@ -547,6 +603,7 @@ app.register(async function (fastify) {
               buttonRaw === "right" ? "right" : buttonRaw === "middle" ? "middle" : buttonRaw === "none" ? "none" : "left";
             const event = (msg.event as string) ?? "click";
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            tab.lastInputAt = Date.now();
             const cdpType: "mousePressed" | "mouseReleased" | "mouseMoved" =
               event === "down"
                 ? "mousePressed"
@@ -573,6 +630,7 @@ app.register(async function (fastify) {
             const dx = Number(msg.deltaX ?? 0);
             const dy = Number(msg.deltaY ?? 0);
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            tab.lastInputAt = Date.now();
             void tab.cdp
               .send("Input.dispatchMouseEvent", {
                 type: "mouseWheel",
@@ -591,6 +649,7 @@ app.register(async function (fastify) {
             const key = String(msg.key ?? "");
             const code = String(msg.code ?? "");
             const text = typeof msg.text === "string" ? msg.text : undefined;
+            tab.lastInputAt = Date.now();
             const cdpType: "keyDown" | "keyUp" | "char" =
               event === "down" ? "keyDown" : event === "up" ? "keyUp" : "char";
             // CDP's Input.dispatchKeyEvent ignores special keys (Backspace,
