@@ -65,10 +65,8 @@ export const MenuBar = ({
   // Right-to-left: Online/Offline (far right) · Sign out · (XX guests ▾)
   return (
     <div className={`slop-menubar ${className}`.trim()}>
-      <span className="slop-menubar__brand slop-menubar__item">
-        <img src="/logo-mark.png" alt="" className="slop-menubar__brand-icon" width={22} height={22} aria-hidden />
-        <span>{brand}</span>
-      </span>
+      <SlopMenu brand={brand} />
+      {/* Brand replaced by SlopMenu (the apple-menu equivalent). */}
       {menus.map(menu => (
         <Dropdown key={menu.label} menu={menu} />
       ))}
@@ -425,6 +423,132 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
         </div>
       ) : null}
       {showAgentModal ? <AgentTokenModal onClose={() => setShowAgentModal(false)} /> : null}
+    </span>
+  );
+}
+
+// "Apple-menu" equivalent: the slop.computer brand + a dropdown with the
+// session-wide actions. Currently just [ copy skill ] which mints an agent
+// token and copies the agent skill markdown to the clipboard so the user
+// can paste it into Claude Code / any local LLM with tool-use.
+function SlopMenu({ brand }: { brand: string }) {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const copySkill = async () => {
+    setStatus("copying");
+    try {
+      const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+      const tokenRes = await fetch(`${RELAY_HTTP}/v1/agent-token`, { credentials: "include", cache: "no-store" });
+      if (!tokenRes.ok) throw new Error(`token HTTP ${tokenRes.status}`);
+      const { token } = (await tokenRes.json()) as { token: string };
+      const skillRes = await fetch(`${RELAY_HTTP}/v1/skill?token=${encodeURIComponent(token)}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!skillRes.ok) throw new Error(`skill HTTP ${skillRes.status}`);
+      const md = await skillRes.text();
+      await navigator.clipboard.writeText(md);
+      setStatus("copied");
+      setTimeout(() => {
+        setStatus("idle");
+        setOpen(false);
+      }, 1200);
+    } catch {
+      setStatus("failed");
+      setTimeout(() => setStatus("idle"), 1500);
+    }
+  };
+
+  const itemStyle: React.CSSProperties = {
+    display: "flex",
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    padding: "5px 12px",
+    background: "transparent",
+    border: 0,
+    color: "var(--slop-text)",
+    font: "inherit",
+    cursor: "pointer",
+    borderRadius: 4,
+    letterSpacing: "0.04em",
+    textAlign: "left",
+  };
+
+  return (
+    <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="slop-menubar__brand slop-menubar__item"
+        style={{
+          color: "inherit",
+          font: "inherit",
+          letterSpacing: "inherit",
+          textTransform: "inherit",
+          cursor: "pointer",
+          margin: 0,
+          padding: 0,
+        }}
+      >
+        <img src="/logo-mark.png" alt="" className="slop-menubar__brand-icon" width={22} height={22} aria-hidden />
+        <span>{brand}</span>
+      </button>
+      {open ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            minWidth: 220,
+            background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,62,201,0.5)",
+            borderRadius: 8,
+            boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
+            padding: 4,
+            zIndex: 9100,
+            color: "var(--slop-text)",
+            textTransform: "none",
+          }}
+        >
+          <button
+            type="button"
+            onClick={copySkill}
+            disabled={status === "copying"}
+            style={itemStyle}
+            onMouseEnter={e => {
+              if (status === "copying") return;
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+              (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+              (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+            }}
+          >
+            {status === "copying"
+              ? "[ copying… ]"
+              : status === "copied"
+                ? "[ copied! ]"
+                : status === "failed"
+                  ? "[ failed — see console ]"
+                  : "[ copy skill ]"}
+          </button>
+        </div>
+      ) : null}
     </span>
   );
 }
