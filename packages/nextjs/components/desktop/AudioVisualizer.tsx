@@ -10,12 +10,14 @@ export type AudioVisualizerProps = {
   muted?: boolean;
 };
 
-// Layered visualizer: a small solid circle that breathes with RMS amplitude,
-// plus a waveform oscilloscope across the full window — both painted in the
-// peer's primary blockie color (band1) so it reads as their identity.
+// Layered visualizer using all three blockie palette colors so the window
+// reads as the peer's full identity:
+//   - waveform line (band1) — sweeps across the window
+//   - inner dot (band2) — solid fill at the center
+//   - halo / outer glow (band3) — wraps the dot, intensifies with amplitude
 //
 // All animation is ref-driven (no React re-renders at 60Hz). One AnalyserNode
-// drives both layers from the same time-domain buffer.
+// drives the whole thing from a single time-domain buffer.
 export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualizerProps) => {
   const circleRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -47,7 +49,9 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
     source.connect(analyser);
 
     const buf = new Uint8Array(analyser.fftSize);
-    const color = bands.band1;
+    const lineColor = bands.band1; // waveform
+    const dotColor = bands.band2; // inner circle fill
+    const haloColor = bands.band3; // glow around the dot
     let raf = 0;
 
     const loop = () => {
@@ -65,7 +69,8 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       if (circle) {
         circle.style.transform = `scale(${1 + amp * 0.6})`;
         circle.style.opacity = `${0.7 + amp * 0.3}`;
-        circle.style.boxShadow = `0 0 ${16 + amp * 60}px ${color}, 0 0 ${40 + amp * 100}px ${color}`;
+        // Inner glow tinted by dotColor (band2), outer halo by haloColor (band3).
+        circle.style.boxShadow = `0 0 ${16 + amp * 60}px ${dotColor}, 0 0 ${40 + amp * 100}px ${haloColor}`;
       }
 
       // ---- waveform: paint time-domain across the canvas ----
@@ -86,8 +91,8 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
             cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             cctx.clearRect(0, 0, cssW, cssH);
             cctx.lineWidth = 2;
-            cctx.strokeStyle = color;
-            cctx.shadowColor = color;
+            cctx.strokeStyle = lineColor;
+            cctx.shadowColor = lineColor;
             cctx.shadowBlur = 6;
             cctx.beginPath();
             const step = cssW / buf.length;
@@ -115,7 +120,7 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       }
       void ctx.close();
     };
-  }, [stream, bands.band1]);
+  }, [stream, bands.band1, bands.band2, bands.band3]);
 
   return (
     <div
@@ -145,8 +150,8 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
             width: "min(15%, 36px)",
             aspectRatio: "1",
             borderRadius: "50%",
-            background: bands.band1,
-            boxShadow: `0 0 16px ${bands.band1}, 0 0 40px ${bands.band1}`,
+            background: bands.band2,
+            boxShadow: `0 0 16px ${bands.band2}, 0 0 40px ${bands.band3}`,
             transition: "transform 60ms linear, opacity 60ms linear, box-shadow 60ms linear",
             willChange: "transform, opacity, box-shadow",
           }}
