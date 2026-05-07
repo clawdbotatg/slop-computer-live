@@ -407,14 +407,28 @@ const Desktop: NextPage = () => {
   const closeWindow = useCallback(
     (pub: Publication) => {
       if (pub.peerId !== mesh.myId) return;
-      const r = readResume();
-      delete r[pub.kind];
-      writeResume(r);
-      const local = streams.find(s => s.stream.id === pub.streamId);
-      if (local) stopStream(local.id);
-      else mesh.unpublish(pub.streamId);
+      // Route through media.stop when this kind is tracked in useLocalMedia
+      // so its activeIds get cleared — otherwise the Share menu keeps
+      // saying "Stop audio" after the user closed the window. Fall back
+      // to direct cleanup for publications that exist outside media's
+      // tracking (e.g. ghost pubs after a reload before resume).
+      const tracked =
+        (pub.kind === "audio" && media.activeAudio) ||
+        (pub.kind === "camera" && media.activeCamera) ||
+        (pub.kind === "screen" && media.activeScreen);
+      if (tracked) {
+        media.stop(pub.kind);
+      } else {
+        const local = streams.find(s => s.stream.id === pub.streamId);
+        if (local) stopStream(local.id);
+        else mesh.unpublish(pub.streamId);
+        const r = readResume();
+        delete r[pub.kind];
+        writeResume(r);
+      }
+      if (pub.kind === "screen") setWantScreenResume(false);
     },
-    [mesh, streams, stopStream],
+    [mesh, streams, stopStream, media, setWantScreenResume],
   );
 
   // Persist a default slot the first time we see a new publication.
