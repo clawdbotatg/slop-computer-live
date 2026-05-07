@@ -399,22 +399,23 @@ function cancelShutdown(tab: Tab) {
 }
 
 // ---- Watchdog ------------------------------------------------------------
-// Symptom we keep hitting: user gives input (scroll, click, keystroke), the
-// CDP screencast stops emitting frames even though the renderer is alive
-// and the page is responsive to subsequent navigation. Once it's wedged,
-// page.reload() doesn't unstick it.
+// CDP screencast occasionally wedges after input on certain pages — frames
+// stop emitting even though the renderer is alive. Empirically, neither
+// page.reload() nor stop+restart Page.startScreencast brings it back. The
+// only reliable cure is destroying the tab and creating a fresh one. The
+// watchdog does that automatically when it sees a wedged tab so the user
+// doesn't have to manually click reload.
 //
-// Recovery: every 4s, for each tab with a live subscriber, if the last
-// input was AFTER the last frame and >5s have passed since the last frame,
-// stop+restart Page.startScreencast. That's the lightest stick that
-// actually fixes wedged screencasts; if it doesn't restore frames within
-// another cycle, the next reload click escalates to destroy+recreate.
-//
-// The "input came after frame" gate prevents us from kicking legitimately
-// static pages (no input → no expected redraw → no frame is fine).
+// Gate: only fires when the user has given input after the last frame and
+// the screencast has been silent for 6s+. Static-page idle states (no
+// input, no expected redraw) are left alone. Cooldown of 12s after a
+// recreate so we don't loop.
 
 const WATCHDOG_INTERVAL_MS = 4000;
-const WATCHDOG_FRAME_STALENESS_MS = 5000;
+const WATCHDOG_FRAME_STALENESS_MS = 6000;
+const WATCHDOG_COOLDOWN_MS = 12_000;
+
+const lastWatchdogRecreateAt = new Map<string, number>();
 
 setInterval(() => {
   const now = Date.now();
@@ -423,27 +424,24 @@ setInterval(() => {
     if (tab.crashed) continue;
     const stale = now - tab.lastFrameAt;
     if (stale < WATCHDOG_FRAME_STALENESS_MS) continue;
-    // Only kick if input came after the last frame — proves the user
-    // expected a redraw that never arrived.
-    if (tab.lastInputAt <= tab.lastFrameAt) continue;
+    if (tab.lastInputAt <= tab.lastFrameAt) continue; // no input → no expected redraw
+    const lastRecreate = lastWatchdogRecreateAt.get(tab.id) ?? 0;
+    if (now - lastRecreate < WATCHDOG_COOLDOWN_MS) continue;
+    lastWatchdogRecreateAt.set(tab.id, now);
     app.log.warn(
       { id: tab.id, msSinceFrame: stale, msSinceInput: now - tab.lastInputAt },
-      "watchdog: wedged screencast — restarting",
+      "watchdog: wedged tab — destroy+recreate",
     );
+    const t = tab;
     void (async () => {
+      const url = t.url;
+      const oldSubs = [...t.subscribers];
+      await destroyTab(t.id);
       try {
-        await tab.cdp.send("Page.stopScreencast").catch(() => undefined);
-        await tab.cdp.send("Page.startScreencast", {
-          format: "jpeg",
-          quality: config.screencast.quality,
-          maxWidth: config.screencast.maxWidth,
-          maxHeight: config.screencast.maxHeight,
-          everyNthFrame: config.screencast.everyNthFrame,
-        });
-        // Optimistic — give the next watchdog cycle a clean slate.
-        tab.lastFrameAt = now;
+        const next = await createTab(t.id, url);
+        for (const ws of oldSubs) next.subscribers.add(ws);
       } catch (err) {
-        app.log.error({ id: tab.id, err: (err as Error).message }, "watchdog restart failed");
+        app.log.error({ id: t.id, err: (err as Error).message }, "watchdog recreate failed");
       }
     })();
   }
@@ -539,25 +537,14 @@ app.register(async function (fastify) {
             return;
           }
           case "reload": {
-            // The frontend's Reload button hits this. Three layers, in
-            // order from cheap to nuclear:
-            //   1. Restart the CDP screencast — fixes the actual bug we
-            //      keep hitting where frames stop emitting on a healthy
-            //      tab and page.reload() alone doesn't unstick them.
-            //   2. page.reload() — handles "page is fine but I want a
-            //      fresh load."
-            //   3. destroy + recreate the tab at the same URL — last
-            //      resort for a crashed/hung renderer.
+            // Always destroy + recreate. page.reload() with screencast
+            // stop/start doesn't actually unwedge a frozen screencast;
+            // making the user click reload twice is worse than just
+            // giving them a fresh tab on click one.
             const url = tab.url;
-            const isCrashed = tab.crashed;
-            const stale = Date.now() - tab.lastFrameAt > 10_000;
-            app.log.info(
-              { id: tab.id, url, crashed: isCrashed, stale, msSinceFrame: Date.now() - tab.lastFrameAt },
-              "reload requested",
-            );
             const t = tab;
-            const recreate = async () => {
-              app.log.warn({ id: t.id }, "reload escalating to destroy+recreate");
+            app.log.info({ id: t.id, url }, "reload — destroy+recreate");
+            void (async () => {
               const oldSubs = [...t.subscribers];
               await destroyTab(t.id);
               try {
@@ -565,32 +552,6 @@ app.register(async function (fastify) {
                 for (const ws of oldSubs) next.subscribers.add(ws);
               } catch (err) {
                 app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
-              }
-            };
-            // If the renderer is gone or the screencast hasn't emitted in
-            // 10s+ skip straight to recreate — page.reload() can't bring
-            // back a wedged screencast and just wastes time.
-            if (isCrashed || stale) {
-              void recreate();
-              return;
-            }
-            void (async () => {
-              try {
-                // Restart screencast. Calling startScreencast a second
-                // time replaces the existing one; stopping first is
-                // belt-and-suspenders against CDP edge cases.
-                await t.cdp.send("Page.stopScreencast").catch(() => undefined);
-                await t.page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
-                await t.cdp.send("Page.startScreencast", {
-                  format: "jpeg",
-                  quality: config.screencast.quality,
-                  maxWidth: config.screencast.maxWidth,
-                  maxHeight: config.screencast.maxHeight,
-                  everyNthFrame: config.screencast.everyNthFrame,
-                });
-              } catch (err) {
-                app.log.warn({ id: t.id, err: (err as Error).message }, "page.reload failed");
-                await recreate();
               }
             })();
             return;
