@@ -334,15 +334,26 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
 // --- Skill file: a markdown the user can drop into a local AI ---------------
 
 app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
-  const a = v1AuthFromReq(req);
-  if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  // Either embed a token the caller already minted (e.g. UI passes ?token=…)
-  // or mint a fresh one inline so curl-only flows can grab a complete file.
-  const token = typeof req.query.token === "string" && req.query.token ? req.query.token : createAgentSession(a.session).token;
+  // The user-flow we optimize for: copy the skill URL, paste it into a
+  // local agent, agent fetches it and is ready to go. So `?token=` here
+  // doubles as both the embedded token in the markdown AND the auth for
+  // this very request. Cookie/bearer still work too.
+  let auth: V1Auth | null = null;
+  const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
+  if (queryToken) {
+    const s = getSession(queryToken);
+    if (s) {
+      auth = { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+    }
+  }
+  if (!auth) auth = v1AuthFromReq(req);
+  if (!auth) return reply.code(401).send({ error: "unauthenticated" });
+  // Use the URL token verbatim if it was used for auth — that's what the
+  // agent now holds. Otherwise mint a fresh one for curl-only callers.
+  const token = queryToken && auth.session.token === queryToken ? queryToken : createAgentSession(auth.session).token;
   reply.header("content-type", "text/markdown; charset=utf-8");
   reply.header("cache-control", "no-store");
-  reply.header("content-disposition", `attachment; filename="slop-agent.md"`);
-  return skillMarkdown(token, a.isHost);
+  return skillMarkdown(token, auth.isHost);
 });
 
 function skillMarkdown(token: string, isHost: boolean): string {

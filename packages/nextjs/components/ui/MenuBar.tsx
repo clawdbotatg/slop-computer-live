@@ -452,13 +452,11 @@ function SlopMenu({ brand }: { brand: string }) {
       const tokenRes = await fetch(`${RELAY_HTTP}/v1/agent-token`, { credentials: "include", cache: "no-store" });
       if (!tokenRes.ok) throw new Error(`token HTTP ${tokenRes.status}`);
       const { token } = (await tokenRes.json()) as { token: string };
-      const skillRes = await fetch(`${RELAY_HTTP}/v1/skill?token=${encodeURIComponent(token)}`, {
-        credentials: "include",
-        cache: "no-store",
-      });
-      if (!skillRes.ok) throw new Error(`skill HTTP ${skillRes.status}`);
-      const md = await skillRes.text();
-      await navigator.clipboard.writeText(md);
+      // Copy a single URL (with the token as auth + embed) rather than the
+      // full markdown body. Way nicer for "follow this skill: <url>" agent
+      // prompts than pasting a multi-KB markdown file.
+      const url = `${RELAY_HTTP}/v1/skill?token=${encodeURIComponent(token)}`;
+      await navigator.clipboard.writeText(url);
       setStatus("copied");
       setTimeout(() => {
         setStatus("idle");
