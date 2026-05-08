@@ -8,6 +8,8 @@ export type AudioVisualizerProps = {
   bands: Bands;
   /** Mute the audio element on self-published streams to avoid feedback. */
   muted?: boolean;
+  /** Optional per-user avatar to render behind the visualizer. */
+  avatarUrl?: string | null;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -18,7 +20,7 @@ export type AudioVisualizerProps = {
 //
 // All animation is ref-driven (no React re-renders at 60Hz). One AnalyserNode
 // drives the whole thing from a single time-domain buffer.
-export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualizerProps) => {
+export const AudioVisualizer = ({ stream, bands, muted = false, avatarUrl = null }: AudioVisualizerProps) => {
   const circleRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -135,6 +137,25 @@ export const AudioVisualizer = ({ stream, bands, muted = false }: AudioVisualize
       }}
     >
       <audio ref={audioRef} autoPlay muted={muted} style={{ display: "none" }} />
+      {avatarUrl ? (
+        <img
+          src={avatarUrl}
+          alt=""
+          draggable={false}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            // Slight blur + dark tint so the visualizer reads on top.
+            filter: "blur(4px) brightness(0.55)",
+            transform: "scale(1.05)", // hide blur edges from cropping into the frame
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        />
+      ) : null}
       {/* Centering wrapper — the circle's own transform is the scale */}
       <div
         style={{

@@ -41,6 +41,13 @@ const app = Fastify({
   bodyLimit: 16 * 1024,
 });
 
+// Image uploads on /v1/avatars come in as raw image/* bytes — register a
+// passthrough parser so Fastify gives us the Buffer instead of trying to
+// parse JSON. Per-route bodyLimit overrides the global 16KB cap.
+app.addContentTypeParser(/^image\/(jpeg|png|webp)$/, { parseAs: "buffer" }, (_req, body, done) => {
+  done(null, body);
+});
+
 await app.register(cors, {
   origin: config.corsOrigins.includes("*") ? true : config.corsOrigins,
   credentials: true,
@@ -164,6 +171,7 @@ app.get("/v1/state", async (req, reply) => {
     slots: getSlots(PRIMARY_HOST_ADDR),
     browsers: listBrowsers(PRIMARY_HOST_ADDR),
     apps: readApps(),
+    avatars: listAvatarsSync(),
   };
 });
 
@@ -354,6 +362,123 @@ app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => 
   reply.header("content-type", "text/markdown; charset=utf-8");
   reply.header("cache-control", "no-store");
   return skillMarkdown(token, auth.isHost);
+});
+
+// =============================================================================
+// Avatars
+// -----------------------------------------------------------------------------
+// Per-user avatar images. Stored on disk keyed by lowercased address (SIWE
+// users) or slugified handle (password users). Re-upload overwrites — no
+// way for one user to fill the disk. Caps at 600KB on the wire (the
+// frontend downscales to ~300KB before uploading).
+//
+// On every successful upload we broadcast `{type:"avatar", ownerKey, url}`
+// so all peers update their UI immediately. The hello message also
+// includes the current set so a fresh tab gets everyone's avatars at once.
+// =============================================================================
+
+const AVATARS_DIR = process.env.AVATARS_DIR ?? "/var/lib/slop-relay/avatars";
+const AVATAR_PUBLIC_BASE = process.env.AVATAR_PUBLIC_BASE ?? "https://relay.slop.computer/avatars";
+const AVATAR_MAX_BYTES = 600 * 1024;
+const AVATAR_EXTS = ["jpg", "jpeg", "png", "webp"] as const;
+
+type AvatarOwnerKey = string;
+
+function ownerKeyFromSession(s: { address: string | null; handle: string | null }): AvatarOwnerKey | null {
+  if (s.address) return s.address.toLowerCase();
+  if (s.handle) {
+    const slug = s.handle.toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 32);
+    return slug ? `h_${slug}` : null;
+  }
+  return null;
+}
+
+function avatarPublicUrl(filename: string, version: number): string {
+  return `${AVATAR_PUBLIC_BASE}/${filename}?v=${version}`;
+}
+
+import { statSync as _statSync, readdirSync as _readdirSyncRaw, unlinkSync as _unlinkSync } from "node:fs";
+
+function listAvatarsSync(): Record<AvatarOwnerKey, string> {
+  const out: Record<string, string> = {};
+  let files: string[];
+  try {
+    files = _readdirSyncRaw(AVATARS_DIR);
+  } catch {
+    return out;
+  }
+  for (const f of files) {
+    const m = f.match(/^(.+)\.(jpg|jpeg|png|webp)$/i);
+    if (!m) continue;
+    const key = m[1]!;
+    let mtime = 0;
+    try {
+      mtime = _statSync(`${AVATARS_DIR}/${f}`).mtimeMs | 0;
+    } catch {
+      /* ignore */
+    }
+    out[key] = avatarPublicUrl(f, mtime);
+  }
+  return out;
+}
+
+app.post(
+  "/v1/avatars",
+  { bodyLimit: AVATAR_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const key = ownerKeyFromSession(a.session);
+    if (!key) return reply.code(400).send({ error: "no-identity-on-session" });
+
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply.code(400).send({ error: "empty-body", note: "send raw image bytes with image/jpeg, image/png, or image/webp" });
+    }
+    if (body.length > AVATAR_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
+
+    const ct = String(req.headers["content-type"] ?? "");
+    const ext: (typeof AVATAR_EXTS)[number] =
+      ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
+
+    await _mkdir(AVATARS_DIR, { recursive: true });
+    // Wipe any previous avatar for this key (different extension is OK).
+    try {
+      const existing = _readdirSyncRaw(AVATARS_DIR);
+      for (const f of existing) {
+        if (f.startsWith(`${key}.`)) _unlinkSync(`${AVATARS_DIR}/${f}`);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const filename = `${key}.${ext}`;
+    await _writeFile(`${AVATARS_DIR}/${filename}`, body);
+
+    const url = avatarPublicUrl(filename, Date.now());
+    broadcast({ type: "avatar", ownerKey: key, url });
+    return { ok: true, url, key };
+  },
+);
+
+app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, reply) => {
+  const filename = req.params.filename;
+  // Defense-in-depth: only serve files matching the strict shape we write.
+  if (!/^[a-z0-9_.-]+\.(jpg|jpeg|png|webp)$/i.test(filename) || filename.includes("..")) {
+    return reply.code(400).send({ error: "bad-name" });
+  }
+  let buf: Buffer;
+  try {
+    const fs = await import("node:fs/promises");
+    buf = await fs.readFile(`${AVATARS_DIR}/${filename}`);
+  } catch {
+    return reply.code(404).send({ error: "not-found" });
+  }
+  const ext = filename.split(".").pop()!.toLowerCase();
+  const ct = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+  reply.header("content-type", ct);
+  reply.header("cache-control", "public, max-age=300");
+  return reply.send(buf);
 });
 
 function skillMarkdown(token: string, isHost: boolean): string {
@@ -793,6 +918,7 @@ app.register(async function signalRoutes(fastify) {
       publications: listPublications(),
       slots: getSlots(PRIMARY_HOST_ADDR),
       browsers: listBrowsers(PRIMARY_HOST_ADDR),
+      avatars: listAvatarsSync(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

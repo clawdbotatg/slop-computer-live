@@ -143,6 +143,9 @@ export type PeerMeshState = {
   sendClick: (x: number, y: number) => void;
   // Shared browser windows.
   browsers: Record<string, Browser>;
+  // Per-user avatar URLs keyed by ownerKey (lowercased address or
+  // slugified handle). Same key Publication.ownerKey uses.
+  avatars: Record<string, string>;
   // Recent tx_request broadcasts (newest first, capped client-side).
   txRequests: TxRequest[];
   publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
@@ -167,6 +170,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -520,6 +524,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             for (const b of msg.browsers as Browser[]) next[b.id] = b;
             setBrowsers(next);
           }
+          if (msg.avatars && typeof msg.avatars === "object" && !Array.isArray(msg.avatars)) {
+            setAvatars({ ...(msg.avatars as Record<string, string>) });
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -645,6 +652,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "avatar" && typeof msg.ownerKey === "string" && typeof msg.url === "string") {
+          const k = msg.ownerKey as string;
+          const u = msg.url as string;
+          setAvatars(prev => ({ ...prev, [k]: u }));
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -728,6 +742,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     clicks,
     sendClick,
     browsers,
+    avatars,
     txRequests,
     publish,
     unpublish,

@@ -5,6 +5,7 @@ import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
+import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
@@ -657,7 +658,17 @@ const Desktop: NextPage = () => {
             >
               {stream ? (
                 pub.kind === "audio" ? (
-                  <AudioVisualizer stream={stream} bands={pubBands} muted={pub.peerId === mesh.myId} />
+                  <AudioDropZone
+                    isMine={pub.peerId === mesh.myId}
+                    onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
+                  >
+                    <AudioVisualizer
+                      stream={stream}
+                      bands={pubBands}
+                      muted={pub.peerId === mesh.myId}
+                      avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                    />
+                  </AudioDropZone>
                 ) : (
                   <video
                     autoPlay
