@@ -10,6 +10,7 @@ import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
+import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
@@ -671,15 +672,7 @@ const Desktop: NextPage = () => {
                     />
                   </AudioDropZone>
                 ) : (
-                  <video
-                    autoPlay
-                    playsInline
-                    muted={pub.peerId === mesh.myId}
-                    ref={el => {
-                      if (el && el.srcObject !== stream) el.srcObject = stream;
-                    }}
-                    style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
-                  />
+                  <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
                 )
               ) : (
                 <div

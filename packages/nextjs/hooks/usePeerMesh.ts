@@ -659,6 +659,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "avatar_removed" && typeof msg.ownerKey === "string") {
+          const k = msg.ownerKey as string;
+          setAvatars(prev => {
+            if (!(k in prev)) return prev;
+            const next = { ...prev };
+            delete next[k];
+            return next;
+          });
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",

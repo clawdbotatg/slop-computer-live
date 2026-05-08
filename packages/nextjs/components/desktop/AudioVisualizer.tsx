@@ -231,38 +231,87 @@ export const AudioVisualizer = ({
         />
       </div>
       {isMine ? (
-        <button
-          type="button"
-          onClick={() => setSelfMuted(m => !m)}
-          aria-label={selfMuted ? "unmute" : "mute"}
-          title={selfMuted ? "unmute" : "mute"}
+        <div
           style={{
             position: "absolute",
             top: 8,
             right: 8,
-            width: 32,
-            height: 32,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 0,
-            background: selfMuted ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
-            border: `1px solid ${selfMuted ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
-            color: "#fff",
-            cursor: "pointer",
+            gap: 6,
             zIndex: 5,
-            backdropFilter: "blur(4px)",
           }}
         >
-          {selfMuted ? <MicOffIcon /> : <MicIcon />}
-        </button>
+          {avatarUrl ? (
+            <button
+              type="button"
+              onClick={async () => {
+                const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+                try {
+                  await fetch(`${RELAY_HTTP}/v1/avatars`, { method: "DELETE", credentials: "include" });
+                } catch {
+                  /* no-op — broadcast won't fire, but a refresh will resync */
+                }
+              }}
+              aria-label="remove image"
+              title="remove image"
+              style={overlayBtnStyle(false)}
+            >
+              <TrashIcon />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setSelfMuted(m => !m)}
+            aria-label={selfMuted ? "unmute" : "mute"}
+            title={selfMuted ? "unmute" : "mute"}
+            style={overlayBtnStyle(selfMuted)}
+          >
+            {selfMuted ? <MicOffIcon /> : <MicIcon />}
+          </button>
+        </div>
       ) : null}
     </div>
   );
 };
 
+// Shared overlay-button styling — used for both the mute toggle and the
+// remove-image button on the audio window. `active` flips the styling to
+// the magenta "this is on" state used by the muted variant.
+const overlayBtnStyle = (active: boolean): React.CSSProperties => ({
+  width: 32,
+  height: 32,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  background: active ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
+  border: `1px solid ${active ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
+  color: "#fff",
+  cursor: "pointer",
+  backdropFilter: "blur(4px)",
+});
+
 // Mac OS 9-flavored monochrome icons. ~16px viewBox, drawn so they read
 // at 16px target size against either a dark or magenta background.
+const TrashIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M3 4 H 13" />
+    <path d="M6 4 V 2.5 H 10 V 4" />
+    <path d="M4.5 4 L 5 13.5 H 11 L 11.5 4" />
+    <line x1="6.5" y1="6.5" x2="6.5" y2="11.5" />
+    <line x1="9.5" y1="6.5" x2="9.5" y2="11.5" />
+  </svg>
+);
+
 const MicIcon = () => (
   <svg
     width="16"

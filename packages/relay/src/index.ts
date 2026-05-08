@@ -461,6 +461,27 @@ app.post(
   },
 );
 
+app.delete("/v1/avatars", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const key = ownerKeyFromSession(a.session);
+  if (!key) return reply.code(400).send({ error: "no-identity-on-session" });
+  let removed = false;
+  try {
+    const existing = _readdirSyncRaw(AVATARS_DIR);
+    for (const f of existing) {
+      if (f.startsWith(`${key}.`)) {
+        _unlinkSync(`${AVATARS_DIR}/${f}`);
+        removed = true;
+      }
+    }
+  } catch {
+    /* dir doesn't exist yet → nothing to remove */
+  }
+  if (removed) broadcast({ type: "avatar_removed", ownerKey: key });
+  return { ok: true, removed, key };
+});
+
 app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, reply) => {
   const filename = req.params.filename;
   // Defense-in-depth: only serve files matching the strict shape we write.
