@@ -15,6 +15,68 @@ export type UseLocalMedia = {
   error: string;
 };
 
+export type CameraResolution = "auto" | "480p" | "720p" | "1080p";
+
+// localStorage keys for device + resolution preferences. Read at every
+// start so the user's last choice carries across reloads, sessions, and
+// browsers (a fresh address gets browser defaults).
+export const MEDIA_PREF_KEYS = {
+  micId: "slop-pref-mic-id",
+  cameraId: "slop-pref-camera-id",
+  cameraRes: "slop-pref-camera-res",
+} as const;
+
+const readPref = (key: string): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const resolutionConstraints = (res: string | null): MediaTrackConstraints => {
+  switch (res) {
+    case "1080p":
+      return { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    case "720p":
+      return { width: { ideal: 1280 }, height: { ideal: 720 } };
+    case "480p":
+      return { width: { ideal: 640 }, height: { ideal: 480 } };
+    default:
+      return {};
+  }
+};
+
+// getUserMedia with retry: try the strict preferred-device constraint
+// first; if the device is gone (unplugged, switched profile) browser
+// throws OverconstrainedError — drop the deviceId and retry generic.
+const tryGetUserMedia = async (constraints: MediaStreamConstraints): Promise<MediaStream> => {
+  try {
+    return await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (err) {
+    const name = (err as { name?: string })?.name ?? "";
+    if (name !== "OverconstrainedError" && name !== "NotFoundError") throw err;
+    // Strip deviceId and retry. Keeps resolution / boolean flags.
+    const fallback: MediaStreamConstraints = {};
+    if (constraints.audio && typeof constraints.audio === "object") {
+      const a = { ...(constraints.audio as MediaTrackConstraints) };
+      delete (a as Record<string, unknown>).deviceId;
+      fallback.audio = Object.keys(a).length ? a : true;
+    } else if (constraints.audio) {
+      fallback.audio = constraints.audio;
+    }
+    if (constraints.video && typeof constraints.video === "object") {
+      const v = { ...(constraints.video as MediaTrackConstraints) };
+      delete (v as Record<string, unknown>).deviceId;
+      fallback.video = Object.keys(v).length ? v : true;
+    } else if (constraints.video) {
+      fallback.video = constraints.video;
+    }
+    return await navigator.mediaDevices.getUserMedia(fallback);
+  }
+};
+
 /**
  * Wrap getUserMedia / getDisplayMedia so the menubar's Share dropdown can
  * trigger camera + screen + audio capture without owning the React state.
@@ -63,7 +125,19 @@ export function useLocalMedia(
   );
 
   const startCamera = useCallback(
-    () => acquire("camera", () => navigator.mediaDevices.getUserMedia({ video: true, audio: true })),
+    () =>
+      acquire("camera", () => {
+        const cameraId = readPref(MEDIA_PREF_KEYS.cameraId);
+        const res = readPref(MEDIA_PREF_KEYS.cameraRes);
+        const video: MediaTrackConstraints = {
+          ...resolutionConstraints(res),
+          ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
+        };
+        // Keep audio bundled with the camera capture so existing call flows
+        // don't change. Audio publication is separate; users typically use
+        // one or the other.
+        return tryGetUserMedia({ video, audio: true });
+      }),
     [acquire],
   );
   const startScreen = useCallback(
@@ -71,7 +145,12 @@ export function useLocalMedia(
     [acquire],
   );
   const startAudio = useCallback(
-    () => acquire("audio", () => navigator.mediaDevices.getUserMedia({ video: false, audio: true })),
+    () =>
+      acquire("audio", () => {
+        const micId = readPref(MEDIA_PREF_KEYS.micId);
+        const audio: MediaTrackConstraints | true = micId ? { deviceId: { exact: micId } } : true;
+        return tryGetUserMedia({ video: false, audio });
+      }),
     [acquire],
   );
 

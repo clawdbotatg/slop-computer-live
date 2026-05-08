@@ -8,6 +8,7 @@ import { JoinCard } from "~~/components/JoinCard";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
+import { DeviceSettingsModal } from "~~/components/desktop/DeviceSettingsModal";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { VideoView } from "~~/components/desktop/VideoView";
@@ -142,6 +143,7 @@ const Desktop: NextPage = () => {
     setWantScreenResume(false);
   }, [media]);
 
+  const [showDevices, setShowDevices] = useState(false);
   const shareMenu = useMemo(
     () => ({
       label: "Share",
@@ -162,10 +164,27 @@ const Desktop: NextPage = () => {
           onClick: () =>
             media.activeScreen || wantScreenResume ? stopScreenAndPlaceholder() : void media.startScreen(),
         },
+        { divider: true, label: "" },
+        { label: "Devices…", onClick: () => setShowDevices(true) },
       ],
     }),
     [media, wantScreenResume, stopScreenAndPlaceholder],
   );
+
+  // After the user saves device prefs, hot-swap any active streams so the
+  // new mic / camera / resolution applies right now instead of "next time
+  // you start." Stopping + starting goes through the normal media flow,
+  // so the resume flag, mesh.unpublish, and mesh.publish all stay in sync.
+  const onDeviceSettingsSaved = useCallback(() => {
+    if (media.activeAudio) {
+      media.stop("audio");
+      void media.startAudio();
+    }
+    if (media.activeCamera) {
+      media.stop("camera");
+      void media.startCamera();
+    }
+  }, [media]);
 
   const meshOpenBrowser = mesh.openBrowser;
   const spawnBrowser = useCallback(
@@ -802,6 +821,10 @@ const Desktop: NextPage = () => {
         >
           <JoinCard />
         </div>
+      ) : null}
+
+      {showDevices ? (
+        <DeviceSettingsModal onClose={() => setShowDevices(false)} onSaved={onDeviceSettingsSaved} />
       ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop
