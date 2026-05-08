@@ -41,10 +41,11 @@ export const TitleBar = ({
   return (
     <div data-grab="true" className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
       {showDots && (
-        // data-grab="false" on the wrapper so hovering anywhere in the
-        // dots row (including the gaps between them) keeps the cursor a
-        // pointer instead of the titlebar's grab.
-        <div className="slop-titlebar__dots" data-grab="false">
+        // - data-grab="false" so the cursor stays a pointer over the row.
+        // - onMouseDown stopPropagation so react-rnd never sees the
+        //   mousedown and can't initiate a window drag from anywhere in
+        //   this region — including the gaps between the dots.
+        <div className="slop-titlebar__dots" data-grab="false" onMouseDown={e => e.stopPropagation()}>
           <Dot onClick={onClose} label="close" />
           <Dot onClick={onMinimize} label="minimize" />
           <Dot onClick={onZoom} label="zoom" />
