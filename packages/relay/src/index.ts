@@ -22,7 +22,7 @@ import {
   openBrowser as openSharedBrowser,
 } from "./browsers.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
-import { addPeer, broadcast, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
+import { addPeer, broadcast, findPeersBySessionToken, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import {
   SESSION_COOKIE,
   consumeNonce,
@@ -909,6 +909,27 @@ app.register(async function signalRoutes(fastify) {
       handle: session.handle,
       connectedAt: Date.now(),
     };
+
+    // Dedupe by session token. If this same session already has a peer
+    // (stale reconnect, duplicate tab) kick the old ones first so we
+    // never end up with two of the same user publishing the same kind
+    // — which renders as two windows stacked at the same slot.
+    for (const stale of findPeersBySessionToken(session.token)) {
+      const ended = clearPeerPublications(stale.id);
+      removePeer(stale.id);
+      for (const p of ended) {
+        broadcast({ type: "unpublished", peerId: stale.id, streamId: p.streamId });
+      }
+      broadcast({
+        type: "peer_leave",
+        peer: { id: stale.id, role: stale.role, address: stale.address, handle: stale.handle, connectedAt: stale.connectedAt },
+      });
+      try {
+        stale.ws.close(4409, "session-replaced");
+      } catch {
+        /* ignore */
+      }
+    }
 
     addPeer({ ...info, ws: socket, sessionToken: session.token });
     send(socket, {
