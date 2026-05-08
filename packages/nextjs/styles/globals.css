@@ -202,12 +202,12 @@
 .slop-titlebar__dots {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
 }
 
 .slop-titlebar__dot {
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: radial-gradient(circle at 30% 25%, #fff 0%, #ff5f57 80%);
   box-shadow:

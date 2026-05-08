@@ -41,7 +41,10 @@ export const TitleBar = ({
   return (
     <div data-grab="true" className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
       {showDots && (
-        <div className="slop-titlebar__dots">
+        // data-grab="false" on the wrapper so hovering anywhere in the
+        // dots row (including the gaps between them) keeps the cursor a
+        // pointer instead of the titlebar's grab.
+        <div className="slop-titlebar__dots" data-grab="false">
           <Dot onClick={onClose} label="close" />
           <Dot onClick={onMinimize} label="minimize" />
           <Dot onClick={onZoom} label="zoom" />
