@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Bands } from "~~/utils/blockieBands";
 
 export type AudioVisualizerProps = {
   stream: MediaStream;
   bands: Bands;
-  /** Mute the audio element on self-published streams to avoid feedback. */
+  /** Mute the *local playback* on self-published streams to avoid feedback. */
   muted?: boolean;
   /** Optional per-user avatar to render behind the visualizer. */
   avatarUrl?: string | null;
+  /** When true, show the mute toggle button (only the publisher should
+   *  see + control it). */
+  isMine?: boolean;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -20,10 +23,25 @@ export type AudioVisualizerProps = {
 //
 // All animation is ref-driven (no React re-renders at 60Hz). One AnalyserNode
 // drives the whole thing from a single time-domain buffer.
-export const AudioVisualizer = ({ stream, bands, muted = false, avatarUrl = null }: AudioVisualizerProps) => {
+export const AudioVisualizer = ({
+  stream,
+  bands,
+  muted = false,
+  avatarUrl = null,
+  isMine = false,
+}: AudioVisualizerProps) => {
   const circleRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  // Local mute toggle — flips track.enabled on the outgoing audio track(s)
+  // so peers receive silence (and the visualizer naturally flatlines).
+  // Doesn't unpublish — the stream stays alive for instant un-mute.
+  const [selfMuted, setSelfMuted] = useState(false);
+  useEffect(() => {
+    if (!isMine) return;
+    for (const t of stream.getAudioTracks()) t.enabled = !selfMuted;
+  }, [stream, selfMuted, isMine]);
 
   useEffect(() => {
     if (audioRef.current && audioRef.current.srcObject !== stream) {
@@ -212,8 +230,76 @@ export const AudioVisualizer = ({ stream, bands, muted = false, avatarUrl = null
           }}
         />
       </div>
+      {isMine ? (
+        <button
+          type="button"
+          onClick={() => setSelfMuted(m => !m)}
+          aria-label={selfMuted ? "unmute" : "mute"}
+          title={selfMuted ? "unmute" : "mute"}
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            width: 32,
+            height: 32,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            background: selfMuted ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
+            border: `1px solid ${selfMuted ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
+            color: "#fff",
+            cursor: "pointer",
+            zIndex: 5,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          {selfMuted ? <MicOffIcon /> : <MicIcon />}
+        </button>
+      ) : null}
     </div>
   );
 };
+
+// Mac OS 9-flavored monochrome icons. ~16px viewBox, drawn so they read
+// at 16px target size against either a dark or magenta background.
+const MicIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <rect x="6" y="2" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
+    <path d="M3.5 7.5 A 4.5 4.5 0 0 0 12.5 7.5" />
+    <line x1="8" y1="12" x2="8" y2="14.5" />
+    <line x1="5.5" y1="14.5" x2="10.5" y2="14.5" />
+  </svg>
+);
+
+const MicOffIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <rect x="6" y="2" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
+    <path d="M3.5 7.5 A 4.5 4.5 0 0 0 12.5 7.5" />
+    <line x1="8" y1="12" x2="8" y2="14.5" />
+    <line x1="5.5" y1="14.5" x2="10.5" y2="14.5" />
+    {/* slash */}
+    <line x1="2" y1="2" x2="14" y2="14" stroke="#000" strokeWidth="2.6" />
+    <line x1="2" y1="2" x2="14" y2="14" />
+  </svg>
+);
 
 export default AudioVisualizer;

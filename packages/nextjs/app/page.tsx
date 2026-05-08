@@ -666,6 +666,7 @@ const Desktop: NextPage = () => {
                       stream={stream}
                       bands={pubBands}
                       muted={pub.peerId === mesh.myId}
+                      isMine={pub.peerId === mesh.myId}
                       avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
                     />
                   </AudioDropZone>
