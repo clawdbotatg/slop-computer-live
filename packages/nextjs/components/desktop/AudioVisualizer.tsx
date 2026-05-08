@@ -126,6 +126,22 @@ export const AudioVisualizer = ({ stream, bands, muted = false, avatarUrl = null
     };
   }, [stream, bands.band1, bands.band2, bands.band3]);
 
+  // When an avatar is present the avatar gets the top ~80% of the window and
+  // the viz collapses into a thin strip at the bottom. Without an avatar the
+  // viz fills the whole window and is vertically centered.
+  const hasAvatar = !!avatarUrl;
+  const vizLayerStyle: React.CSSProperties = hasAvatar
+    ? {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: "22%",
+        // Subtle gradient mask so the line + dot pop against the photo.
+        background: "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.45) 100%)",
+      }
+    : { position: "absolute", inset: 0 };
+
   return (
     <div
       style={{
@@ -148,52 +164,54 @@ export const AudioVisualizer = ({ stream, bands, muted = false, avatarUrl = null
             width: "100%",
             height: "100%",
             objectFit: "cover",
-            // Slight blur + dark tint so the visualizer reads on top.
-            filter: "blur(4px) brightness(0.55)",
-            transform: "scale(1.05)", // hide blur edges from cropping into the frame
+            // Light touch — keep the photo readable, just shave a hint
+            // off the brightness so the visualizer's glow stays legible.
+            filter: "blur(0.5px) brightness(0.92)",
             pointerEvents: "none",
             userSelect: "none",
           }}
         />
       ) : null}
-      {/* Centering wrapper — the circle's own transform is the scale */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          pointerEvents: "none",
-        }}
-      >
+      <div style={vizLayerStyle}>
+        {/* Centering wrapper — the circle's own transform is the scale */}
         <div
-          ref={circleRef}
           style={{
-            width: "min(15%, 36px)",
-            aspectRatio: "1",
-            borderRadius: "50%",
-            background: bands.band2,
-            // Hard band3 ring + soft band2 glow — gives all three colors
-            // distinct visual roles even when band2 and band3 are HSL-close.
-            border: `3px solid ${bands.band3}`,
-            boxSizing: "border-box",
-            boxShadow: `0 0 16px ${bands.band2}`,
-            transition: "transform 60ms linear, opacity 60ms linear, box-shadow 60ms linear",
-            willChange: "transform, opacity, box-shadow",
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            ref={circleRef}
+            style={{
+              width: "min(15%, 36px)",
+              aspectRatio: "1",
+              borderRadius: "50%",
+              background: bands.band2,
+              // Hard band3 ring + soft band2 glow — gives all three colors
+              // distinct visual roles even when band2 and band3 are HSL-close.
+              border: `3px solid ${bands.band3}`,
+              boxSizing: "border-box",
+              boxShadow: `0 0 16px ${bands.band2}`,
+              transition: "transform 60ms linear, opacity 60ms linear, box-shadow 60ms linear",
+              willChange: "transform, opacity, box-shadow",
+            }}
+          />
+        </div>
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
           }}
         />
       </div>
-      <canvas
-        ref={canvasRef}
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          pointerEvents: "none",
-        }}
-      />
     </div>
   );
 };
