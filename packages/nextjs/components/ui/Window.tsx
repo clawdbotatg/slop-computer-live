@@ -163,6 +163,11 @@ export const Window = ({
       minWidth={minWidth}
       minHeight={minHeight}
       dragHandleClassName="slop-titlebar"
+      // Don't initiate a drag if mousedown originates inside the
+      // close/min/zoom dots row — even the gaps between them. Combined
+      // with data-grab='false' on the dots wrapper, the whole region
+      // behaves as click-only.
+      cancel=".slop-titlebar__dots"
       className="slop-window"
       style={{
         zIndex,
