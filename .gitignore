@@ -26,3 +26,6 @@ id_ed25519
 # Out-of-band tooling lives in ~/clawd/slop-scripts (its own repo).
 # Anything that lands here is local scratch and should not be committed.
 scripts/
+
+# Relay's local password file — generated at runtime, dev-only path.
+.slop-data/

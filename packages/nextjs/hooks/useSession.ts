@@ -18,9 +18,10 @@ export function notifySessionChanged() {
 }
 
 export type Session =
-  | { authenticated: false }
+  | { authenticated: false; invited: boolean }
   | {
       authenticated: true;
+      invited: boolean;
       role: "host" | "guest";
       address: string | null;
       handle: string | null;
@@ -35,7 +36,7 @@ export type UseSessionResult = {
 };
 
 export function useSession(): UseSessionResult {
-  const [session, setSession] = useState<Session>({ authenticated: false });
+  const [session, setSession] = useState<Session>({ authenticated: false, invited: false });
   const [loading, setLoading] = useState(true);
   const { disconnectAsync } = useDisconnect();
 
@@ -43,13 +44,13 @@ export function useSession(): UseSessionResult {
     try {
       const res = await fetch(`${RELAY_BASE}/auth/me`, { credentials: "include" });
       if (!res.ok) {
-        setSession({ authenticated: false });
+        setSession({ authenticated: false, invited: false });
         return;
       }
       const data = (await res.json()) as Session;
       setSession(data);
     } catch {
-      setSession({ authenticated: false });
+      setSession({ authenticated: false, invited: false });
     } finally {
       setLoading(false);
     }
@@ -83,7 +84,7 @@ export function useSession(): UseSessionResult {
         /* private mode / quota */
       }
     }
-    setSession({ authenticated: false });
+    setSession({ authenticated: false, invited: false });
     notifySessionChanged();
   }, [disconnectAsync]);
 

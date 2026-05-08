@@ -32,6 +32,8 @@ import {
   getSession,
   issueNonce,
 } from "./sessions.js";
+import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
+import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
@@ -696,6 +698,38 @@ curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
 `;
 }
 
+// --- Invite gate ------------------------------------------------------------
+//
+// A single global invite password that gates the sign-in screen. Visitors
+// hit POST /auth/invite with the password (typically pre-filled from a
+// `?invite=` query the host shared); on match we set a long-lived
+// `slop_invite` cookie carrying the password verbatim, and the SIWE +
+// passkey login endpoints check that cookie before issuing a session.
+//
+// Admins (addresses in ADMIN_ADDRESSES) bypass the invite check on SIWE
+// so the operator can sign in on a fresh deploy without having to know
+// the bootstrap password — once signed in they can read / regenerate
+// the password from the admin panel and share the invite link.
+
+const INVITE_COOKIE_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
+
+type InviteBody = { password?: unknown };
+
+app.post<{ Body: InviteBody }>("/auth/invite", async (req, reply) => {
+  const body = (req.body ?? {}) as InviteBody;
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!password) return reply.code(400).send({ error: "missing-password" });
+  if (password !== getInvitePassword()) return reply.code(401).send({ error: "bad-password" });
+  reply.setCookie(INVITE_COOKIE, password, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: INVITE_COOKIE_TTL_SECONDS,
+  });
+  return { ok: true };
+});
+
 // --- SIWE auth --------------------------------------------------------------
 
 app.get("/auth/siwe/nonce", async () => ({ nonce: issueNonce() }));
@@ -713,6 +747,12 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
   if (!consumeNonce(nonce)) return reply.code(401).send({ error: "Bad or expired nonce" });
   const check = await verifySiwe({ message, signature: signature as `0x${string}`, expectedNonce: nonce });
   if (!check.ok) return reply.code(401).send({ error: check.error });
+  // Admins bypass the invite gate so the operator can sign in on a fresh
+  // deploy and then share / regenerate the invite from the admin panel.
+  // Everyone else needs the slop_invite cookie set first.
+  if (!check.isAdmin && !isInvited(req.cookies[INVITE_COOKIE])) {
+    return reply.code(403).send({ error: "invite-required" });
+  }
   const session = createSession({
     role: check.isAdmin ? "host" : "guest",
     address: check.address,
@@ -726,6 +766,72 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
     maxAge: config.sessionTTLSeconds,
   });
   return { ok: true, role: session.role, address: session.address, isAdmin: check.isAdmin };
+});
+
+// --- Passkey auth -----------------------------------------------------------
+//
+// Browser hands us the WebAuthn assertion plus the recovered public key
+// (qx, qy). We:
+//   1. Consume the nonce from /auth/siwe/nonce (reused — same one-shot).
+//   2. Re-derive the message that the authenticator signed and verify
+//      the P-256 signature against the supplied pubkey.
+//   3. Use `keccak256(qx ‖ qy)[-20:]` as the user's address — same
+//      derivation slopwallet uses, so the identity is stable per
+//      passkey across devices.
+// Issues a normal slop_session cookie like SIWE / password do.
+
+type PasskeyBody = {
+  qx?: unknown;
+  qy?: unknown;
+  r?: unknown;
+  s?: unknown;
+  authenticatorData?: unknown;
+  clientDataJSON?: unknown;
+  nonce?: unknown;
+};
+
+app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
+  if (!isInvited(req.cookies[INVITE_COOKIE])) {
+    return reply.code(403).send({ error: "invite-required" });
+  }
+  const b = (req.body ?? {}) as PasskeyBody;
+  const sNonce = typeof b.nonce === "string" ? b.nonce : "";
+  if (!sNonce || !consumeNonce(sNonce)) return reply.code(401).send({ error: "bad-or-expired-nonce" });
+
+  let qx: Uint8Array, qy: Uint8Array, r: Uint8Array, s: Uint8Array;
+  let authData: Uint8Array, clientDataJSON: Uint8Array;
+  try {
+    qx = hexToBytes(String(b.qx ?? ""));
+    qy = hexToBytes(String(b.qy ?? ""));
+    r = hexToBytes(String(b.r ?? ""));
+    s = hexToBytes(String(b.s ?? ""));
+    authData = hexToBytes(String(b.authenticatorData ?? ""));
+    clientDataJSON = hexToBytes(String(b.clientDataJSON ?? ""));
+  } catch {
+    return reply.code(400).send({ error: "bad-hex" });
+  }
+
+  const expectedChallengeB64 = bytesToBase64Url(hexToBytes(sNonce));
+  const result = verifyPasskey({
+    qx,
+    qy,
+    r,
+    s,
+    authenticatorData: authData,
+    clientDataJSON,
+    expectedChallengeBase64Url: expectedChallengeB64,
+  });
+  if (!result.ok) return reply.code(401).send({ error: result.error });
+
+  const session = createSession({ role: "guest", address: result.address, handle: null });
+  reply.setCookie(SESSION_COOKIE, session.token, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: config.sessionTTLSeconds,
+  });
+  return { ok: true, role: "guest", address: result.address, isAdmin: false };
 });
 
 // --- Password auth (guest) --------------------------------------------------
@@ -764,9 +870,11 @@ app.post("/auth/logout", async (req, reply) => {
 app.get("/auth/me", async req => {
   const token = req.cookies[SESSION_COOKIE];
   const session = getSession(token);
-  if (!session) return { authenticated: false };
+  const invited = isInvited(req.cookies[INVITE_COOKIE]);
+  if (!session) return { authenticated: false, invited };
   return {
     authenticated: true,
+    invited,
     role: session.role,
     address: session.address,
     handle: session.handle,
@@ -822,6 +930,24 @@ function requireHost(req: { cookies: Record<string, string | undefined> }):
   }
   return { ok: true, address: session.address };
 }
+
+app.get("/admin/invite-password", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return { password: getInvitePassword() };
+});
+
+app.post("/admin/invite-password", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  // Regeneration invalidates every outstanding `slop_invite` cookie
+  // because the cookie value is checked verbatim against the current
+  // password — peers who'd already typed the old one stay logged in
+  // (their slop_session cookie is intact) but new joins need the
+  // updated link.
+  const password = regenerateInvitePassword();
+  return { password };
+});
 
 app.post("/admin/start", async (req, reply) => {
   const auth = requireHost(req);

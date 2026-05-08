@@ -2076,7 +2076,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@noble/curves@npm:^1.4.2, @noble/curves@npm:^1.9.1":
+"@noble/curves@npm:^1.4.2, @noble/curves@npm:^1.9.0, @noble/curves@npm:^1.9.1":
   version: 1.9.7
   resolution: "@noble/curves@npm:1.9.7"
   dependencies:
@@ -2991,6 +2991,8 @@ __metadata:
   resolution: "@slop/nextjs@workspace:packages/nextjs"
   dependencies:
     "@heroicons/react": "npm:^2.1.5"
+    "@noble/curves": "npm:^1.9.0"
+    "@noble/hashes": "npm:^1.5.0"
     "@rainbow-me/rainbowkit": "npm:2.2.9"
     "@react-native-async-storage/async-storage": "npm:^2.2.0"
     "@scaffold-ui/components": "npm:^0.1.8"
@@ -3035,6 +3037,8 @@ __metadata:
     "@fastify/cookie": "npm:^11.0.1"
     "@fastify/cors": "npm:^11.0.0"
     "@fastify/websocket": "npm:^11.0.0"
+    "@noble/curves": "npm:^1.9.0"
+    "@noble/hashes": "npm:^1.5.0"
     "@types/node": "npm:~18.19.50"
     "@types/ws": "npm:^8.5.10"
     dotenv: "npm:^17.0.0"

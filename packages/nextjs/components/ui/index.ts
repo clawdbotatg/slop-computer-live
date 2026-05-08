@@ -1,7 +1,6 @@
 export { BandFlag } from "./BandFlag";
 export { Bevel, bevelStyle } from "./Bevel";
 export { Button } from "./Button";
-export { AgentTokenModal } from "./AgentTokenModal";
 export { ClickRipple } from "./ClickRipple";
 export { Cursor } from "./Cursor";
 export { DesktopBackground } from "./DesktopBackground";

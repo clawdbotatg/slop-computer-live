@@ -94,15 +94,6 @@ const formatConnectedAt = (ts?: number) => {
   return `${Math.floor(m / 60)}h ago`;
 };
 
-const randomToken = () => {
-  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
-    const buf = new Uint8Array(6);
-    crypto.getRandomValues(buf);
-    return Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
-  }
-  return Math.random().toString(16).slice(2, 14);
-};
-
 const AdminPage: NextPage = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -123,10 +114,39 @@ const AdminPage: NextPage = () => {
       .catch(() => setAuth({ authenticated: false }));
   }, [mounted]);
 
+  // The single global invite password is stored on the relay (file-backed).
+  // Pull the current value once we're a host so the admin can read it,
+  // share it, or rotate it. Non-hosts get a 401 and we leave invite blank.
   useEffect(() => {
-    if (!mounted) setInvite(prev => prev || "");
-    else setInvite(prev => prev || randomToken());
-  }, [mounted]);
+    if (!mounted) return;
+    if (!auth.authenticated || auth.role !== "host") return;
+    let cancelled = false;
+    fetch(`${RELAY_BASE}/admin/invite-password`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data: { password?: string }) => {
+        if (!cancelled && typeof data.password === "string") setInvite(data.password);
+      })
+      .catch(() => {
+        /* leave blank — UI shows a regenerate prompt */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, auth]);
+
+  const regenerateInvite = async () => {
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/invite-password`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { password?: string };
+      if (typeof data.password === "string") setInvite(data.password);
+    } catch {
+      /* relay offline */
+    }
+  };
 
   const isHost = auth.authenticated && auth.role === "host";
 
@@ -174,7 +194,9 @@ const AdminPage: NextPage = () => {
 
   const inviteUrl = useMemo(() => {
     if (!mounted) return "";
-    const u = new URL("/join", window.location.origin);
+    // Root path — the desktop page picks `?invite=` up off the URL and
+    // pre-fills the password gate.
+    const u = new URL("/", window.location.origin);
     if (invite) u.searchParams.set("invite", invite);
     return u.toString();
   }, [invite, mounted]);
@@ -698,18 +720,22 @@ const AdminPage: NextPage = () => {
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Invite link</h2>
         <p style={{ color: "var(--slop-text-muted)" }}>
-          Anyone with this link plus the current GUEST_PASSWORD can join. Rotate the password between shows.
+          Anyone with this link can reach the sign-in screen and connect a wallet or passkey. Regenerate to invalidate
+          all outstanding invite cookies.
         </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-          <TextField
-            placeholder="invite token"
-            value={invite}
-            onChange={e => setInvite(e.target.value)}
-            style={{ minWidth: 220 }}
-          />
-          <Button onClick={() => setInvite(randomToken())}>Regenerate</Button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+          <TextField placeholder="(no password set)" value={invite} readOnly style={{ minWidth: 180 }} />
+          <Button onClick={regenerateInvite}>Regenerate</Button>
+          <Button
+            onClick={() => {
+              if (inviteUrl) void navigator.clipboard?.writeText(inviteUrl);
+            }}
+            disabled={!inviteUrl}
+          >
+            Copy link
+          </Button>
         </div>
-        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)" }}>
+        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)", wordBreak: "break-all" }}>
           <code>{inviteUrl}</code>
         </p>
       </Bevel>

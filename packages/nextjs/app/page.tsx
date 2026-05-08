@@ -5,6 +5,7 @@ import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
+import { PasswordGate } from "~~/components/PasswordGate";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
@@ -72,7 +73,22 @@ const writeResume = (state: ResumeState) => {
 };
 
 const Desktop: NextPage = () => {
-  const { session, loading } = useSession();
+  const { session, loading, refresh: refreshSession } = useSession();
+
+  // Pick up an invite from `?invite=…` for the password gate, then strip
+  // it from the URL so it doesn't linger or get linked-around. The gate
+  // also accepts manual entry, so this is just a convenience.
+  const [inviteFromUrl, setInviteFromUrl] = useState<string>("");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    const fromUrl = u.searchParams.get("invite");
+    if (fromUrl) {
+      setInviteFromUrl(fromUrl);
+      u.searchParams.delete("invite");
+      window.history.replaceState({}, "", u.toString());
+    }
+  }, []);
 
   const selfHint = useMemo(() => {
     if (!session.authenticated) return null;
@@ -927,7 +943,11 @@ const Desktop: NextPage = () => {
             justifyContent: "center",
           }}
         >
-          <JoinCard />
+          {session.invited ? (
+            <JoinCard />
+          ) : (
+            <PasswordGate defaultPassword={inviteFromUrl} onAccepted={() => void refreshSession()} />
+          )}
         </div>
       ) : null}
 
