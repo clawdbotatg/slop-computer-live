@@ -172,6 +172,7 @@ app.get("/v1/state", async (req, reply) => {
     browsers: listBrowsers(PRIMARY_HOST_ADDR),
     apps: readApps(),
     avatars: listAvatarsSync(),
+    hiddenAvatars: listHiddenOwnersSync(),
   };
 });
 
@@ -422,6 +423,25 @@ function listAvatarsSync(): Record<AvatarOwnerKey, string> {
   return out;
 }
 
+// Owners that have explicitly opted out of any avatar (including the
+// ENS fallback). Marker is a sibling `${key}.hidden` file in the same
+// directory. listAvatars / listHidden are independent reads — the
+// upload + hide flows keep them mutually exclusive.
+function listHiddenOwnersSync(): string[] {
+  let files: string[];
+  try {
+    files = _readdirSyncRaw(AVATARS_DIR);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const f of files) {
+    const m = f.match(/^(.+)\.hidden$/i);
+    if (m) out.push(m[1]!);
+  }
+  return out;
+}
+
 app.post(
   "/v1/avatars",
   { bodyLimit: AVATAR_MAX_BYTES },
@@ -442,7 +462,8 @@ app.post(
       ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
 
     await _mkdir(AVATARS_DIR, { recursive: true });
-    // Wipe any previous avatar for this key (different extension is OK).
+    // Wipe any previous avatar for this key (different extension is OK)
+    // AND any `.hidden` marker — uploading implicitly un-hides.
     try {
       const existing = _readdirSyncRaw(AVATARS_DIR);
       for (const f of existing) {
@@ -461,11 +482,42 @@ app.post(
   },
 );
 
+// Opt-out endpoint: drop any uploaded image AND write a `.hidden` marker
+// so peers know the user has explicitly chosen "no avatar at all". This
+// suppresses the client-side ENS fallback. Re-enabled by uploading a
+// new image (auto-clears the marker) or DELETE'ing the avatar entry
+// (clean slate — ENS fallback resumes if available).
+app.post("/v1/avatars/hide", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const key = ownerKeyFromSession(a.session);
+  if (!key) return reply.code(400).send({ error: "no-identity-on-session" });
+
+  await _mkdir(AVATARS_DIR, { recursive: true });
+  // Drop any image extensions belonging to this key — only the marker remains.
+  try {
+    const existing = _readdirSyncRaw(AVATARS_DIR);
+    for (const f of existing) {
+      if (f.startsWith(`${key}.`) && !f.endsWith(".hidden")) {
+        _unlinkSync(`${AVATARS_DIR}/${f}`);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  await _writeFile(`${AVATARS_DIR}/${key}.hidden`, "");
+
+  broadcast({ type: "avatar_hidden", ownerKey: key });
+  return { ok: true, hidden: true, key };
+});
+
 app.delete("/v1/avatars", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const key = ownerKeyFromSession(a.session);
   if (!key) return reply.code(400).send({ error: "no-identity-on-session" });
+  // Clean slate: remove any image AND any `.hidden` marker so the user
+  // returns to the default "no upload, ENS fallback if any" state.
   let removed = false;
   try {
     const existing = _readdirSyncRaw(AVATARS_DIR);
@@ -961,6 +1013,7 @@ app.register(async function signalRoutes(fastify) {
       slots: getSlots(PRIMARY_HOST_ADDR),
       browsers: listBrowsers(PRIMARY_HOST_ADDR),
       avatars: listAvatarsSync(),
+      hiddenAvatars: listHiddenOwnersSync(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

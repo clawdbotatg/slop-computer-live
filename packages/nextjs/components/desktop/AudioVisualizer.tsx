@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import type { Bands } from "~~/utils/blockieBands";
 
 export type AudioVisualizerProps = {
@@ -8,11 +9,23 @@ export type AudioVisualizerProps = {
   bands: Bands;
   /** Mute the *local playback* on self-published streams to avoid feedback. */
   muted?: boolean;
-  /** Optional per-user avatar to render behind the visualizer. */
+  /** Optional per-user avatar to render behind the visualizer. When this
+   *  is null/empty, the component falls back to the publisher's ENS
+   *  avatar (resolved from `address`) before giving up to a plain bg. */
   avatarUrl?: string | null;
+  /** Publisher's wallet address — used as the source for the ENS avatar
+   *  fallback when no avatar has been uploaded. */
+  address?: string | null;
+  /** True when the publisher has explicitly opted out of any avatar.
+   *  Suppresses both the upload preview AND the ENS fallback. */
+  hidden?: boolean;
   /** When true, show the mute toggle button (only the publisher should
    *  see + control it). */
   isMine?: boolean;
+  /** Optional. When provided, render a gear (settings) button next to the
+   *  mute toggle. Click handler should re-open the share dialog in edit
+   *  mode so the user can hot-swap mic / avatar without dropping the call. */
+  onSettings?: () => void;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -28,8 +41,13 @@ export const AudioVisualizer = ({
   bands,
   muted = false,
   avatarUrl = null,
+  address = null,
+  hidden = false,
   isMine = false,
+  onSettings,
 }: AudioVisualizerProps) => {
+  const ensAvatar = useEnsAvatarFromAddress(address);
+  const effectiveAvatar = hidden ? null : avatarUrl || ensAvatar;
   const circleRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -147,7 +165,7 @@ export const AudioVisualizer = ({
   // When an avatar is present the avatar gets the top ~80% of the window and
   // the viz collapses into a thin strip at the bottom. Without an avatar the
   // viz fills the whole window and is vertically centered.
-  const hasAvatar = !!avatarUrl;
+  const hasAvatar = !!effectiveAvatar;
   const vizLayerStyle: React.CSSProperties = hasAvatar
     ? {
         position: "absolute",
@@ -171,9 +189,9 @@ export const AudioVisualizer = ({
       }}
     >
       <audio ref={audioRef} autoPlay muted={muted} style={{ display: "none" }} />
-      {avatarUrl ? (
+      {effectiveAvatar ? (
         <img
-          src={avatarUrl}
+          src={effectiveAvatar}
           alt=""
           draggable={false}
           style={{
@@ -268,6 +286,17 @@ export const AudioVisualizer = ({
           >
             {selfMuted ? <MicOffIcon /> : <MicIcon />}
           </button>
+          {onSettings ? (
+            <button
+              type="button"
+              onClick={onSettings}
+              aria-label="audio settings"
+              title="audio settings"
+              style={overlayBtnStyle(false)}
+            >
+              <GearIcon />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -348,6 +377,26 @@ const MicOffIcon = () => (
     {/* slash */}
     <line x1="2" y1="2" x2="14" y2="14" stroke="#000" strokeWidth="2.6" />
     <line x1="2" y1="2" x2="14" y2="14" />
+  </svg>
+);
+
+const GearIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <line x1="2" y1="4" x2="14" y2="4" />
+    <line x1="2" y1="8" x2="14" y2="8" />
+    <line x1="2" y1="12" x2="14" y2="12" />
+    <circle cx="10" cy="4" r="1.7" fill="currentColor" stroke="none" />
+    <circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none" />
+    <circle cx="11" cy="12" r="1.7" fill="currentColor" stroke="none" />
   </svg>
 );
 

@@ -6,16 +6,18 @@ import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
 import { JoinCard } from "~~/components/JoinCard";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
+import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
-import { DeviceSettingsModal } from "~~/components/desktop/DeviceSettingsModal";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
+import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
+import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
-import { useLocalMedia } from "~~/hooks/useLocalMedia";
+import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
@@ -143,48 +145,140 @@ const Desktop: NextPage = () => {
     setWantScreenResume(false);
   }, [media]);
 
-  const [showDevices, setShowDevices] = useState(false);
+  // Audio + video share both use a pre-share dialog where the user picks
+  // a device and watches a live preview before committing. The same dialog
+  // is reused in "edit" mode (gear icon on the live window) — the parent
+  // hot-swaps the underlying track via mesh.replaceTrack so the publication
+  // never drops.
+  const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
+  const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
+
   const shareMenu = useMemo(
     () => ({
       label: "Share",
       items: [
         {
-          label: media.activeAudio ? "Stop audio" : "Audio",
-          onClick: () => (media.activeAudio ? media.stop("audio") : void media.startAudio()),
+          label: media.activeAudio ? "Stop audio" : "Audio…",
+          onClick: () => (media.activeAudio ? media.stop("audio") : setAudioDialog("create")),
         },
         {
-          label: media.activeCamera ? "Stop video" : "Video",
-          onClick: () => (media.activeCamera ? media.stop("camera") : void media.startCamera()),
+          label: media.activeCamera ? "Stop video" : "Video…",
+          onClick: () => (media.activeCamera ? media.stop("camera") : setVideoDialog("create")),
         },
         {
           // Treat the placeholder as "active" so the menu always offers a way
           // to dismiss it; clicking stops both the live stream (if any) and
           // any lingering placeholder.
-          label: media.activeScreen || wantScreenResume ? "Stop screen" : "Screen",
+          label: media.activeScreen || wantScreenResume ? "Stop screen" : "Screen…",
           onClick: () =>
             media.activeScreen || wantScreenResume ? stopScreenAndPlaceholder() : void media.startScreen(),
         },
-        { divider: true, label: "" },
-        { label: "Devices…", onClick: () => setShowDevices(true) },
       ],
     }),
     [media, wantScreenResume, stopScreenAndPlaceholder],
   );
 
-  // After the user saves device prefs, hot-swap any active streams so the
-  // new mic / camera / resolution applies right now instead of "next time
-  // you start." Stopping + starting goes through the normal media flow,
-  // so the resume flag, mesh.unpublish, and mesh.publish all stay in sync.
-  const onDeviceSettingsSaved = useCallback(() => {
-    if (media.activeAudio) {
-      media.stop("audio");
-      void media.startAudio();
-    }
-    if (media.activeCamera) {
-      media.stop("camera");
-      void media.startCamera();
-    }
-  }, [media]);
+  // Hot-swap the audio track on the active publication. Driven by the
+  // share dialog's edit mode — keeps the same publication / streamId so
+  // peers don't see a drop, just a brief mic crossover.
+  const swapAudioTrack = useCallback(
+    async (micId: string) => {
+      const localAudio = streamsRef.current.find(s => s.kind === "audio");
+      if (!localAudio) return;
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          audio: micId ? { deviceId: { exact: micId } } : true,
+          video: false,
+        });
+        const newTrack = newStream.getAudioTracks()[0];
+        if (!newTrack) return;
+        await mesh.replaceTrack(localAudio.id, "audio", newTrack);
+      } catch (err) {
+        console.warn("swapAudioTrack failed", err);
+      }
+    },
+    [mesh],
+  );
+
+  const swapVideoTrack = useCallback(
+    async (sel: VideoShareSubmit) => {
+      const localVideo = streamsRef.current.find(s => s.kind === "camera");
+      if (!localVideo) return;
+      try {
+        const constraints: MediaTrackConstraints = {
+          ...resolutionConstraints(sel.resolution),
+          ...(sel.cameraId ? { deviceId: { exact: sel.cameraId } } : {}),
+        };
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: constraints,
+          audio: false,
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        if (!newTrack) return;
+        await mesh.replaceTrack(localVideo.id, "video", newTrack);
+      } catch (err) {
+        console.warn("swapVideoTrack failed", err);
+      }
+    },
+    [mesh],
+  );
+
+  // Swap the audio track on the *camera* publication's bundled audio.
+  // Distinct from swapAudioTrack (which targets the standalone audio
+  // pub) because edits in the video dialog should affect the camera
+  // bundle, not necessarily the standalone audio.
+  const swapCameraAudioTrack = useCallback(
+    async (micId: string) => {
+      const localVideo = streamsRef.current.find(s => s.kind === "camera");
+      if (!localVideo) return;
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          audio: micId ? { deviceId: { exact: micId } } : true,
+          video: false,
+        });
+        const newTrack = newStream.getAudioTracks()[0];
+        if (!newTrack) return;
+        await mesh.replaceTrack(localVideo.id, "audio", newTrack);
+      } catch (err) {
+        console.warn("swapCameraAudioTrack failed", err);
+      }
+    },
+    [mesh],
+  );
+
+  const handleAudioSubmit = useCallback(
+    (_micId: string) => {
+      // localStorage is already updated by the dialog; useLocalMedia /
+      // swap helpers read it (or the value from arg) directly.
+      if (audioDialog === "edit") {
+        void swapAudioTrack(_micId);
+      } else {
+        void media.startAudio();
+      }
+    },
+    [audioDialog, media, swapAudioTrack],
+  );
+
+  const handleVideoSubmit = useCallback(
+    (sel: VideoShareSubmit) => {
+      if (videoDialog === "edit") {
+        // Camera publication bundles audio, so swap both tracks on the
+        // same stream — no separate audio publication is involved.
+        void swapVideoTrack(sel);
+        void swapCameraAudioTrack(sel.micId);
+        // If a standalone audio publication is also live (Share → Audio
+        // earlier in this session), keep it in sync with the dialog's
+        // mic pick too.
+        if (media.activeAudio) void swapAudioTrack(sel.micId);
+      } else {
+        // The camera bundle reads MEDIA_PREF_KEYS.micId at start time,
+        // and the dialog has already written it to localStorage by the
+        // time we get here, so the mic comes along for the ride.
+        void media.startCamera();
+      }
+    },
+    [videoDialog, media, swapVideoTrack, swapAudioTrack, swapCameraAudioTrack],
+  );
 
   const meshOpenBrowser = mesh.openBrowser;
   const spawnBrowser = useCallback(
@@ -351,6 +445,10 @@ const Desktop: NextPage = () => {
   // True when localStorage says we WERE screen-sharing, but we don't have
   // an active own screen publication yet (post-reload state).
   const myOwnerKey = session.authenticated ? ((session.address ?? session.handle)?.toLowerCase() ?? null) : null;
+  // Used as a fallback PFP when the user hasn't uploaded a custom one.
+  // Resolved on every desktop render; wagmi caches the underlying ENS
+  // queries so this is a no-network for everyone after the first lookup.
+  const myEnsAvatar = useEnsAvatarFromAddress(session.authenticated ? session.address : null);
   const hasOwnScreenPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "screen");
   useEffect(() => {
     setWantScreenResume(Boolean(readResume().screen) && !hasOwnScreenPub);
@@ -688,8 +786,18 @@ const Desktop: NextPage = () => {
                       muted={pub.peerId === mesh.myId}
                       isMine={pub.peerId === mesh.myId}
                       avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                      address={peer?.address ?? null}
+                      hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+                      onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
                     />
                   </AudioDropZone>
+                ) : pub.kind === "camera" ? (
+                  <VideoView
+                    stream={stream}
+                    muted={pub.peerId === mesh.myId}
+                    isMine={pub.peerId === mesh.myId}
+                    onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
+                  />
                 ) : (
                   <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
                 )
@@ -823,8 +931,19 @@ const Desktop: NextPage = () => {
         </div>
       ) : null}
 
-      {showDevices ? (
-        <DeviceSettingsModal onClose={() => setShowDevices(false)} onSaved={onDeviceSettingsSaved} />
+      {audioDialog ? (
+        <AudioShareDialog
+          mode={audioDialog}
+          avatarUrl={myOwnerKey ? (mesh.avatars[myOwnerKey] ?? null) : null}
+          ensAvatarUrl={myEnsAvatar}
+          hidden={myOwnerKey ? mesh.hiddenAvatars.has(myOwnerKey) : false}
+          onClose={() => setAudioDialog(null)}
+          onSubmit={handleAudioSubmit}
+        />
+      ) : null}
+
+      {videoDialog ? (
+        <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
       ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop

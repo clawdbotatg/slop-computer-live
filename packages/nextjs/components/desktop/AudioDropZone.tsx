@@ -80,8 +80,12 @@ export const AudioDropZone = ({ isMine, onFile, children }: AudioDropZoneProps) 
     }
   };
   const handleLeave = (e: React.DragEvent) => {
-    // Only clear when leaving the wrapper itself, not a child.
-    if (e.currentTarget === e.target) setHover(false);
+    // dragleave also fires when entering a child element. Use
+    // relatedTarget — the next element under the pointer — to
+    // distinguish "left the wrapper" from "moved onto a child".
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    setHover(false);
   };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();

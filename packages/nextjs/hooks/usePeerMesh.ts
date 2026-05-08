@@ -146,10 +146,17 @@ export type PeerMeshState = {
   // Per-user avatar URLs keyed by ownerKey (lowercased address or
   // slugified handle). Same key Publication.ownerKey uses.
   avatars: Record<string, string>;
+  // Owners that have explicitly opted out of any avatar (no upload,
+  // no ENS fallback). Render layer treats these as "show nothing".
+  hiddenAvatars: Set<string>;
   // Recent tx_request broadcasts (newest first, capped client-side).
   txRequests: TxRequest[];
   publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
   unpublish: (streamId: string) => void;
+  /** Hot-swap a single track on an already-published stream. Calls
+   *  RTCRtpSender.replaceTrack on every peer connection so the remote
+   *  side never loses the publication — the streamId stays stable. */
+  replaceTrack: (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => Promise<void>;
   updateSlot: (patch: Partial<SlotPosition> & { id: string }) => void;
   openBrowser: (id: string, url: string) => void;
   navigateBrowser: (id: string, url: string) => void;
@@ -171,6 +178,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
+  const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -342,6 +350,31 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     },
     [send],
   );
+
+  const replaceTrack = useCallback(async (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => {
+    const stream = localStreamsRef.current.get(streamId);
+    if (!stream) return;
+    // Swap the sender on every PC. Sender lookup is by track.kind on
+    // the *current* track — works because we only have one of each
+    // kind per pub (audio pubs are audio-only, video pubs are video-only).
+    for (const pc of peerConnectionsRef.current.values()) {
+      const sender = pc.getSenders().find(s => s.track?.kind === kind);
+      if (!sender) continue;
+      try {
+        await sender.replaceTrack(newTrack);
+      } catch (err) {
+        console.warn("[mesh] replaceTrack failed", err);
+      }
+    }
+    // Keep the local MediaStream object in sync so previews + analyzers
+    // bound to it pick up the new device immediately.
+    const oldTracks = kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks();
+    for (const t of oldTracks) {
+      stream.removeTrack(t);
+      t.stop();
+    }
+    stream.addTrack(newTrack);
+  }, []);
 
   const unpublish = useCallback(
     (streamId: string) => {
@@ -527,6 +560,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (msg.avatars && typeof msg.avatars === "object" && !Array.isArray(msg.avatars)) {
             setAvatars({ ...(msg.avatars as Record<string, string>) });
           }
+          if (Array.isArray(msg.hiddenAvatars)) {
+            setHiddenAvatars(new Set(msg.hiddenAvatars as string[]));
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -656,6 +692,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           const k = msg.ownerKey as string;
           const u = msg.url as string;
           setAvatars(prev => ({ ...prev, [k]: u }));
+          // Uploading implicitly clears the hidden marker.
+          setHiddenAvatars(prev => {
+            if (!prev.has(k)) return prev;
+            const next = new Set(prev);
+            next.delete(k);
+            return next;
+          });
           return;
         }
 
@@ -665,6 +708,30 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             if (!(k in prev)) return prev;
             const next = { ...prev };
             delete next[k];
+            return next;
+          });
+          // Clean slate also clears the hidden marker.
+          setHiddenAvatars(prev => {
+            if (!prev.has(k)) return prev;
+            const next = new Set(prev);
+            next.delete(k);
+            return next;
+          });
+          return;
+        }
+
+        if (msg.type === "avatar_hidden" && typeof msg.ownerKey === "string") {
+          const k = msg.ownerKey as string;
+          setAvatars(prev => {
+            if (!(k in prev)) return prev;
+            const next = { ...prev };
+            delete next[k];
+            return next;
+          });
+          setHiddenAvatars(prev => {
+            if (prev.has(k)) return prev;
+            const next = new Set(prev);
+            next.add(k);
             return next;
           });
           return;
@@ -754,9 +821,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     sendClick,
     browsers,
     avatars,
+    hiddenAvatars,
     txRequests,
     publish,
     unpublish,
+    replaceTrack,
     updateSlot,
     openBrowser,
     navigateBrowser,

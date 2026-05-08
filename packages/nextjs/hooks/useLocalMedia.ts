@@ -35,7 +35,7 @@ const readPref = (key: string): string | null => {
   }
 };
 
-const resolutionConstraints = (res: string | null): MediaTrackConstraints => {
+export const resolutionConstraints = (res: string | null): MediaTrackConstraints => {
   switch (res) {
     case "1080p":
       return { width: { ideal: 1920 }, height: { ideal: 1080 } };
@@ -129,14 +129,17 @@ export function useLocalMedia(
       acquire("camera", () => {
         const cameraId = readPref(MEDIA_PREF_KEYS.cameraId);
         const res = readPref(MEDIA_PREF_KEYS.cameraRes);
+        const micId = readPref(MEDIA_PREF_KEYS.micId);
         const video: MediaTrackConstraints = {
           ...resolutionConstraints(res),
           ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
         };
-        // Keep audio bundled with the camera capture so existing call flows
-        // don't change. Audio publication is separate; users typically use
-        // one or the other.
-        return tryGetUserMedia({ video, audio: true });
+        const audio: MediaTrackConstraints | true = micId ? { deviceId: { exact: micId } } : true;
+        // Camera bundles audio so peers hear the speaker through the same
+        // window they see them in (no separate audio publication needed).
+        // Share → Audio kicks off a standalone audio-only pub for the
+        // avatar / no-camera flow.
+        return tryGetUserMedia({ video, audio });
       }),
     [acquire],
   );
