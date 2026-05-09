@@ -969,6 +969,36 @@ const Desktop: NextPage = () => {
             </div>
           </Window>
         ) : null}
+
+        {/* Chat window — single instance, position is local-only (per-user
+            open/close + localStorage rect). Lives inside the desktop wrapper
+            so <Rnd bounds="parent"> binds to the same fixed-inset div the
+            other shared windows use; otherwise drag math drifts and the
+            window snaps to y=0 on release. */}
+        {chatOpen && session.authenticated ? (
+          <Window
+            title="Chat"
+            x={chatRect.x}
+            y={chatRect.y}
+            width={chatRect.width}
+            height={chatRect.height}
+            minWidth={240}
+            minHeight={220}
+            zIndex={50}
+            onClose={() => setChatOpen(false)}
+            onMove={({ x, y }) => saveChatRect({ ...chatRect, x, y })}
+            onResize={({ x, y, width, height }) => saveChatRect({ x, y, width, height })}
+            bodyStyle={{ padding: 0, overflow: "hidden" }}
+            containerInset={{ top: 38 }}
+          >
+            <ChatWindow
+              messages={mesh.chatMessages}
+              sendChat={mesh.sendChat}
+              myAddress={session.authenticated ? session.address : null}
+              myHandle={session.authenticated ? session.handle : null}
+            />
+          </Window>
+        ) : null}
       </div>
 
       {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
@@ -1010,31 +1040,6 @@ const Desktop: NextPage = () => {
 
       {videoDialog ? (
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
-      ) : null}
-
-      {chatOpen && session.authenticated ? (
-        <Window
-          title="Chat"
-          x={chatRect.x}
-          y={chatRect.y}
-          width={chatRect.width}
-          height={chatRect.height}
-          minWidth={240}
-          minHeight={220}
-          zIndex={50}
-          onClose={() => setChatOpen(false)}
-          onMove={({ x, y }) => saveChatRect({ ...chatRect, x, y })}
-          onResize={({ x, y, width, height }) => saveChatRect({ x, y, width, height })}
-          bodyStyle={{ padding: 0, overflow: "hidden" }}
-          containerInset={{ top: 38 }}
-        >
-          <ChatWindow
-            messages={mesh.chatMessages}
-            sendChat={mesh.sendChat}
-            myAddress={session.authenticated ? session.address : null}
-            myHandle={session.authenticated ? session.handle : null}
-          />
-        </Window>
       ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop
