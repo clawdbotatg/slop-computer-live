@@ -86,7 +86,13 @@ import { dirname as _dirname, resolve as _resolve } from "node:path";
 
 const APPS_PATH = process.env.APPS_PATH ?? "/var/lib/slop-relay/apps.json";
 
-type AppEntry = { id: string; label: string; icon: string; url?: string; kind?: "browser" | "chat" };
+type AppEntry = {
+  id: string;
+  label: string;
+  icon: string;
+  url?: string;
+  kind?: "browser" | "chat" | "audio" | "video" | "screen";
+};
 
 const DEFAULT_APPS: AppEntry[] = [
   {
@@ -100,6 +106,24 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Chat",
     icon: "/icons/chat.png",
     kind: "chat",
+  },
+  {
+    id: "audio",
+    label: "Audio",
+    icon: "/icons/mic.png",
+    kind: "audio",
+  },
+  {
+    id: "video",
+    label: "Video",
+    icon: "/icons/video.png",
+    kind: "video",
+  },
+  {
+    id: "screen",
+    label: "Screen",
+    icon: "/icons/screen-sharing.png",
+    kind: "screen",
   },
 ];
 

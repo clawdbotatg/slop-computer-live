@@ -38,8 +38,15 @@ const DEFAULT_STEP = 30;
 // that JSON on the box — no rebuild needed.
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 // `kind` selects which window type the icon spawns. Defaults to "browser"
-// for backwards compatibility with apps.json files written before chat existed.
-type AppEntry = { id: string; label: string; icon: string; url?: string; kind?: "browser" | "chat" };
+// for backwards compatibility with apps.json files written before
+// audio/video/screen/chat existed as first-class apps.
+type AppEntry = {
+  id: string;
+  label: string;
+  icon: string;
+  url?: string;
+  kind?: "browser" | "chat" | "audio" | "video" | "screen";
+};
 
 // Default cascade for icons whose slot hasn't been saved yet — single
 // column down the left edge, 110px apart vertically.
@@ -157,14 +164,6 @@ const Desktop: NextPage = () => {
   // a post-reload resume placeholder up.
   const [wantScreenResume, setWantScreenResume] = useState(false);
 
-  const stopScreenAndPlaceholder = useCallback(() => {
-    if (media.activeScreen) media.stop("screen");
-    const cur = readResume();
-    delete cur.screen;
-    writeResume(cur);
-    setWantScreenResume(false);
-  }, [media]);
-
   // Audio + video share both use a pre-share dialog where the user picks
   // a device and watches a live preview before committing. The same dialog
   // is reused in "edit" mode (gear icon on the live window) — the parent
@@ -190,31 +189,6 @@ const Desktop: NextPage = () => {
       /* ignore */
     }
   }, []);
-
-  const shareMenu = useMemo(
-    () => ({
-      label: "Share",
-      items: [
-        {
-          label: media.activeAudio ? "Stop audio" : "Audio…",
-          onClick: () => (media.activeAudio ? media.stop("audio") : setAudioDialog("create")),
-        },
-        {
-          label: media.activeCamera ? "Stop video" : "Video…",
-          onClick: () => (media.activeCamera ? media.stop("camera") : setVideoDialog("create")),
-        },
-        {
-          // Treat the placeholder as "active" so the menu always offers a way
-          // to dismiss it; clicking stops both the live stream (if any) and
-          // any lingering placeholder.
-          label: media.activeScreen || wantScreenResume ? "Stop screen" : "Screen…",
-          onClick: () =>
-            media.activeScreen || wantScreenResume ? stopScreenAndPlaceholder() : void media.startScreen(),
-        },
-      ],
-    }),
-    [media, wantScreenResume, stopScreenAndPlaceholder],
-  );
 
   // Hot-swap the audio track on the active publication. Driven by the
   // share dialog's edit mode — keeps the same publication / streamId so
@@ -752,7 +726,7 @@ const Desktop: NextPage = () => {
     <>
       <DesktopBackground />
       <MenuBar
-        menus={session.authenticated ? [fileMenu, editMenu, viewMenu, shareMenu] : [fileMenu, editMenu, viewMenu]}
+        menus={[fileMenu, editMenu, viewMenu]}
         peers={mesh.peers}
         myId={mesh.myId}
         meshConnected={mesh.connected}
@@ -794,8 +768,25 @@ const Desktop: NextPage = () => {
                   zIndex={1}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
                   onDoubleClick={() => {
-                    if (app.kind === "chat") setChatOpenPersisted(true);
-                    else if (app.url) spawnBrowser(app.url);
+                    switch (app.kind) {
+                      case "chat":
+                        setChatOpenPersisted(true);
+                        return;
+                      case "audio":
+                        // Already publishing? No-op — the existing window's
+                        // close button is how you stop. Keeps the icon
+                        // semantics consistent with the other apps.
+                        if (!media.activeAudio) setAudioDialog("create");
+                        return;
+                      case "video":
+                        if (!media.activeCamera) setVideoDialog("create");
+                        return;
+                      case "screen":
+                        if (!media.activeScreen && !wantScreenResume) void media.startScreen();
+                        return;
+                      default:
+                        if (app.url) spawnBrowser(app.url);
+                    }
                   }}
                 />
               );
