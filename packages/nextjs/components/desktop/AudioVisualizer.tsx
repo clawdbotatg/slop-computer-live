@@ -56,16 +56,36 @@ export const AudioVisualizer = ({
   // so peers receive silence (and the visualizer naturally flatlines).
   // Doesn't unpublish — the stream stays alive for instant un-mute.
   const [selfMuted, setSelfMuted] = useState(false);
-  useEffect(() => {
-    if (!isMine) return;
-    for (const t of stream.getAudioTracks()) t.enabled = !selfMuted;
-  }, [stream, selfMuted, isMine]);
 
   useEffect(() => {
     if (audioRef.current && audioRef.current.srcObject !== stream) {
       audioRef.current.srcObject = stream;
     }
   }, [stream]);
+
+  // Track-swap signal: usePeerMesh.replaceTrack swaps the underlying
+  // audio track on the same MediaStream reference (stop old, add new).
+  // A MediaStreamAudioSourceNode is bound to a track at construction —
+  // it does NOT follow add/removetrack on the parent stream — so the
+  // analyser would otherwise flatline forever after a mic change.
+  // Bump a counter on track add/remove so the analyser effect re-runs.
+  const [trackEpoch, setTrackEpoch] = useState(0);
+  useEffect(() => {
+    const bump = () => setTrackEpoch(n => n + 1);
+    stream.addEventListener("addtrack", bump);
+    stream.addEventListener("removetrack", bump);
+    return () => {
+      stream.removeEventListener("addtrack", bump);
+      stream.removeEventListener("removetrack", bump);
+    };
+  }, [stream]);
+
+  // Re-apply selfMuted whenever the track set changes — replaceTrack
+  // swaps in a fresh track that defaults to enabled.
+  useEffect(() => {
+    if (!isMine) return;
+    for (const t of stream.getAudioTracks()) t.enabled = !selfMuted;
+  }, [stream, trackEpoch, selfMuted, isMine]);
 
   useEffect(() => {
     type AudioContextCtor = new () => AudioContext;
@@ -160,7 +180,7 @@ export const AudioVisualizer = ({
       }
       void ctx.close();
     };
-  }, [stream, bands.band1, bands.band2, bands.band3]);
+  }, [stream, trackEpoch, bands.band1, bands.band2, bands.band3]);
 
   // When an avatar is present the avatar gets the top ~80% of the window and
   // the viz collapses into a thin strip at the bottom. Without an avatar the
