@@ -9,6 +9,7 @@ import { PasswordGate } from "~~/components/PasswordGate";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
@@ -35,7 +36,9 @@ const DEFAULT_STEP = 30;
 // /var/lib/slop-relay/apps.json on every request. To add a new app, edit
 // that JSON on the box — no rebuild needed.
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-type AppEntry = { id: string; label: string; icon: string; url: string };
+// `kind` selects which window type the icon spawns. Defaults to "browser"
+// for backwards compatibility with apps.json files written before chat existed.
+type AppEntry = { id: string; label: string; icon: string; url?: string; kind?: "browser" | "chat" };
 
 // Default cascade for icons whose slot hasn't been saved yet — single
 // column down the left edge, 110px apart vertically.
@@ -168,6 +171,34 @@ const Desktop: NextPage = () => {
   // never drops.
   const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
   const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
+
+  // Chat window — per-user local state. Open/close, position, and size
+  // all live in localStorage so the window comes back where you left it.
+  // Not synced via slots: each peer chooses whether to show chat.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatRect, setChatRect] = useState<{ x: number; y: number; width: number; height: number }>({
+    x: 80,
+    y: 80,
+    width: 360,
+    height: 420,
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("slop-chat-rect");
+      if (raw) setChatRect(JSON.parse(raw));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const saveChatRect = useCallback((r: { x: number; y: number; width: number; height: number }) => {
+    setChatRect(r);
+    try {
+      window.localStorage.setItem("slop-chat-rect", JSON.stringify(r));
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const shareMenu = useMemo(
     () => ({
@@ -771,7 +802,10 @@ const Desktop: NextPage = () => {
                   y={slot.y}
                   zIndex={1}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
-                  onDoubleClick={() => spawnBrowser(app.url)}
+                  onDoubleClick={() => {
+                    if (app.kind === "chat") setChatOpen(true);
+                    else if (app.url) spawnBrowser(app.url);
+                  }}
                 />
               );
             })
@@ -976,6 +1010,31 @@ const Desktop: NextPage = () => {
 
       {videoDialog ? (
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
+      ) : null}
+
+      {chatOpen && session.authenticated ? (
+        <Window
+          title="Chat"
+          x={chatRect.x}
+          y={chatRect.y}
+          width={chatRect.width}
+          height={chatRect.height}
+          minWidth={240}
+          minHeight={220}
+          zIndex={50}
+          onClose={() => setChatOpen(false)}
+          onMove={({ x, y }) => saveChatRect({ ...chatRect, x, y })}
+          onResize={({ x, y, width, height }) => saveChatRect({ x, y, width, height })}
+          bodyStyle={{ padding: 0, overflow: "hidden" }}
+          containerInset={{ top: 38 }}
+        >
+          <ChatWindow
+            messages={mesh.chatMessages}
+            sendChat={mesh.sendChat}
+            myAddress={session.authenticated ? session.address : null}
+            myHandle={session.authenticated ? session.handle : null}
+          />
+        </Window>
       ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop

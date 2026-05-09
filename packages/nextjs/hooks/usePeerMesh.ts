@@ -116,6 +116,17 @@ export type TxRequest = {
   receivedAt: number;
 };
 
+export type ChatMessage = {
+  id: string;
+  ts: number;
+  address: string | null;
+  handle: string | null;
+  text: string;
+  source: "live" | "spectator" | "agent";
+};
+
+const CHAT_HISTORY_CAP = 200;
+
 type SelfHint = {
   role: "host" | "guest";
   address: string | null;
@@ -151,6 +162,10 @@ export type PeerMeshState = {
   hiddenAvatars: Set<string>;
   // Recent tx_request broadcasts (newest first, capped client-side).
   txRequests: TxRequest[];
+  // Chat history (oldest first), bootstrapped from the WS hello payload
+  // and appended to as `chat` events stream in.
+  chatMessages: ChatMessage[];
+  sendChat: (text: string) => void;
   publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
   unpublish: (streamId: string) => void;
   /** Hot-swap a single track on an already-published stream. Calls
@@ -183,6 +198,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [bootstrapped, setBootstrapped] = useState(false);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -447,6 +463,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const sendChat = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      send({ type: "chat_send", text: trimmed.slice(0, 500) });
+    },
+    [send],
+  );
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -574,6 +599,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (Array.isArray(msg.hiddenAvatars)) {
             setHiddenAvatars(new Set(msg.hiddenAvatars as string[]));
+          }
+          if (Array.isArray(msg.chatHistory)) {
+            setChatMessages((msg.chatHistory as ChatMessage[]).slice(-CHAT_HISTORY_CAP));
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -749,6 +777,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "chat" && msg.msg && typeof (msg.msg as ChatMessage).id === "string") {
+          const cm = msg.msg as ChatMessage;
+          setChatMessages(prev => {
+            // Dedupe on id — a fast double-broadcast would otherwise
+            // double-render in the window.
+            if (prev.some(m => m.id === cm.id)) return prev;
+            const next = [...prev, cm];
+            return next.length > CHAT_HISTORY_CAP ? next.slice(-CHAT_HISTORY_CAP) : next;
+          });
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -835,6 +875,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     avatars,
     hiddenAvatars,
     txRequests,
+    chatMessages,
+    sendChat,
     publish,
     unpublish,
     replaceTrack,

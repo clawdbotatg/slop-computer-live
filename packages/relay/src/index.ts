@@ -24,6 +24,14 @@ import {
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { addPeer, broadcast, findPeersBySessionToken, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import {
+  MAX_TEXT_LEN as CHAT_MAX_TEXT,
+  type ChatMessage,
+  allow as allowChat,
+  append as appendChat,
+  recent as recentChat,
+  subscribe as subscribeChat,
+} from "./chat.js";
+import {
   SESSION_COOKIE,
   consumeNonce,
   createAgentSession,
@@ -78,7 +86,7 @@ import { dirname as _dirname, resolve as _resolve } from "node:path";
 
 const APPS_PATH = process.env.APPS_PATH ?? "/var/lib/slop-relay/apps.json";
 
-type AppEntry = { id: string; label: string; icon: string; url: string };
+type AppEntry = { id: string; label: string; icon: string; url?: string; kind?: "browser" | "chat" };
 
 const DEFAULT_APPS: AppEntry[] = [
   {
@@ -86,6 +94,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Browser",
     icon: "/icons/browser.png",
     url: "https://clawd-slop-landing-nextjs.vercel.app/",
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    icon: "/icons/chat.png",
+    kind: "chat",
   },
 ];
 
@@ -120,7 +134,7 @@ app.get("/apps", async (_req, reply) => {
 // scoped to the same identity as the requester's session, valid 7 days.
 // =============================================================================
 
-type V1Auth = { session: import("./sessions.js").Session; isHost: boolean };
+type V1Auth = { session: import("./sessions.js").Session; isHost: boolean; via: "bearer" | "cookie" };
 
 function v1AuthFromReq(req: {
   cookies: Record<string, string | undefined>;
@@ -131,12 +145,12 @@ function v1AuthFromReq(req: {
   if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
     const tok = authHeader.slice(7).trim();
     const s = getSession(tok);
-    if (s) return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+    if (s) return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "bearer" };
   }
   const cookieTok = req.cookies[SESSION_COOKIE];
   const s = getSession(cookieTok);
   if (!s) return null;
-  return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+  return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "cookie" };
 }
 
 const ICONS_DIR = process.env.ICONS_DIR ?? _resolve(process.cwd(), "../nextjs/public/icons");
@@ -342,6 +356,95 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
   return { ok: true };
 });
 
+// --- Chat -------------------------------------------------------------------
+// Three readers: live WS peers (broadcast inside the existing mesh socket),
+// SSE subscribers (slop.computer spectators), and the REST GET /v1/chat poll.
+// Single writer surface: append() in ./chat.js, called from POST /v1/chat
+// (cookie/bearer) and from the WS chat_send handler. Persistence is handled
+// inside chat.js (JSONL on disk, ring in memory).
+
+// Mirror every chat append onto the live peer mesh — the existing usePeerMesh
+// WS already opens a /signal connection for slot/avatar/presence, chat just
+// rides along on the same socket. Spectators (no WS) get the same payload via
+// SSE below.
+subscribeChat(msg => {
+  broadcast({ type: "chat", msg });
+});
+
+type ChatBody = { text?: unknown };
+
+app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const raw = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!raw.trim()) return reply.code(400).send({ error: "empty" });
+  if (raw.length > CHAT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
+  // Rate-limit by session token (covers both browser cookie and agent
+  // bearer — each is one chatty actor).
+  if (!allowChat(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
+  // Source classification: bearer = agent (skill flow), cookie = browser.
+  // Browser cookies that own a current WS peer are "live" desktop users;
+  // those without an active WS are "spectator" (slop.computer SIWE).
+  const inMesh = findPeersBySessionToken(a.session.token).length > 0;
+  const source: ChatMessage["source"] = a.via === "bearer" ? "agent" : inMesh ? "live" : "spectator";
+  const msg = appendChat({
+    address: a.session.address,
+    handle: a.session.handle,
+    text: raw,
+    source,
+  });
+  if (!msg) return reply.code(400).send({ error: "empty" });
+  return { ok: true, msg };
+});
+
+app.get("/v1/chat", async (_req, reply) => {
+  reply.header("cache-control", "no-store");
+  return { messages: recentChat() };
+});
+
+// SSE stream for slop.computer spectators (and anyone who'd rather not open
+// a WS). First write is the recent history as a single `init` event so the
+// client can paint scrollback before the live feed catches up.
+app.get("/v1/chat/stream", async (req, reply) => {
+  // We're hijacking the raw response to stream events, which bypasses the
+  // @fastify/cors plugin's outbound headers. Re-emit them by hand so
+  // EventSource (cross-origin from slop.computer) doesn't get blocked.
+  const origin = (req.headers.origin as string | undefined) ?? "";
+  const corsOrigins = config.corsOrigins;
+  const allowOrigin =
+    corsOrigins.includes("*") || corsOrigins.includes(origin) ? origin || "*" : "";
+  const sseHeaders: Record<string, string> = {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    // Required when the SSE response goes out through a reverse proxy that
+    // would otherwise buffer chunks (Caddy is fine but be explicit).
+    "x-accel-buffering": "no",
+  };
+  if (allowOrigin) {
+    sseHeaders["access-control-allow-origin"] = allowOrigin;
+    sseHeaders["access-control-allow-credentials"] = "true";
+    sseHeaders["vary"] = "Origin";
+  }
+  reply.raw.writeHead(200, sseHeaders);
+  const write = (event: string, data: unknown) => {
+    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  write("init", { messages: recentChat() });
+  const unsub = subscribeChat(msg => write("chat", msg));
+  // Heartbeat — some proxies drop idle connections after ~60s.
+  const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsub();
+    try {
+      reply.raw.end();
+    } catch {
+      /* already closed */
+    }
+  });
+});
+
 // --- Skill file: a markdown the user can drop into a local AI ---------------
 
 app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
@@ -354,7 +457,7 @@ app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => 
   if (queryToken) {
     const s = getSession(queryToken);
     if (s) {
-      auth = { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address) };
+      auth = { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "bearer" };
     }
   }
   if (!auth) auth = v1AuthFromReq(req);
@@ -621,6 +724,20 @@ Cursor positions persist on every peer's screen labelled with your
 identity; clicks render a colored ripple in your blockie's palette.
 Use these to "be present" — point at things, react, draw attention.
 Don't spam: < 30 cursor msgs/sec is plenty.
+
+### Chat (any scope)
+
+\`\`\`
+POST ${base}/v1/chat        { "text": "gm everyone" }
+GET  ${base}/v1/chat        # → { messages: [...] }, last 200
+GET  ${base}/v1/chat/stream # SSE: \`init\` then \`chat\` events
+\`\`\`
+
+Messages are stamped with your address/handle (server-side) and tagged
+\`source: "agent"\` for bearer-token posts. Cap is 500 chars per message,
+soft rate limit ~1/sec with a small burst. Use this to react, ask
+questions, or narrate what you're doing — chat is visible to live desktop
+users AND to spectators on slop.computer.
 
 ### Apps registry (host-only)
 
@@ -1140,6 +1257,7 @@ app.register(async function signalRoutes(fastify) {
       browsers: listBrowsers(PRIMARY_HOST_ADDR),
       avatars: listAvatarsSync(),
       hiddenAvatars: listHiddenOwnersSync(),
+      chatHistory: recentChat(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -1182,6 +1300,22 @@ app.register(async function signalRoutes(fastify) {
           // clicker's own screen at the same time it appears for everyone
           // else, otherwise click+ripple feel desynced.
           broadcast({ type: "click", from: peerId, x: msg.x, y: msg.y });
+          return;
+        }
+        case "chat_send": {
+          if (typeof msg.text !== "string" || !msg.text.trim()) return;
+          if (!allowChat(session.token)) {
+            return send(socket, { type: "error", error: "rate-limited" });
+          }
+          // Cookie-authed WS peer → "live". The chat subscriber relays
+          // this back to everyone (including the sender) via broadcast,
+          // so the local UI doesn't need an optimistic insert.
+          appendChat({
+            address: info.address,
+            handle: info.handle,
+            text: msg.text,
+            source: "live",
+          });
           return;
         }
         case "publish": {
