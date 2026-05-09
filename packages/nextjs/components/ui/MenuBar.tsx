@@ -131,7 +131,7 @@ function Dropdown({ menu }: { menu: Menu }) {
             position: "absolute",
             top: "calc(100% + 4px)",
             left: 0,
-            minWidth: 220,
+            minWidth: 260,
             background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
             backdropFilter: "blur(12px)",
             border: "1px solid rgba(255,62,201,0.5)",
@@ -191,9 +191,11 @@ function Dropdown({ menu }: { menu: Menu }) {
                     : "var(--slop-text)";
                 }}
               >
-                <span>{item.label}</span>
+                <span style={{ whiteSpace: "nowrap" }}>{item.label}</span>
                 {item.shortcut ? (
-                  <span style={{ marginLeft: 24, color: "var(--slop-text-muted)" }}>{item.shortcut}</span>
+                  <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>
+                    {item.shortcut}
+                  </span>
                 ) : null}
               </button>
             ),
@@ -486,7 +488,7 @@ function SlopMenu({ brand }: { brand: string }) {
             position: "absolute",
             top: "calc(100% + 4px)",
             left: 0,
-            minWidth: 220,
+            minWidth: 260,
             background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
             backdropFilter: "blur(12px)",
             border: "1px solid rgba(255,62,201,0.5)",
