@@ -208,7 +208,10 @@ const Desktop: NextPage = () => {
         });
         const newTrack = newStream.getAudioTracks()[0];
         if (!newTrack) return;
-        await mesh.replaceTrack(localAudio.id, "audio", newTrack);
+        const fresh = await mesh.replaceTrack(localAudio.id, "audio", newTrack);
+        if (fresh) {
+          setStreams(prev => prev.map(s => (s.id === localAudio.id ? { ...s, stream: fresh } : s)));
+        }
       } catch (err) {
         console.warn("swapAudioTrack failed", err);
       }
@@ -231,7 +234,10 @@ const Desktop: NextPage = () => {
         });
         const newTrack = newStream.getVideoTracks()[0];
         if (!newTrack) return;
-        await mesh.replaceTrack(localVideo.id, "video", newTrack);
+        const fresh = await mesh.replaceTrack(localVideo.id, "video", newTrack);
+        if (fresh) {
+          setStreams(prev => prev.map(s => (s.id === localVideo.id ? { ...s, stream: fresh } : s)));
+        }
       } catch (err) {
         console.warn("swapVideoTrack failed", err);
       }
@@ -254,7 +260,10 @@ const Desktop: NextPage = () => {
         });
         const newTrack = newStream.getAudioTracks()[0];
         if (!newTrack) return;
-        await mesh.replaceTrack(localVideo.id, "audio", newTrack);
+        const fresh = await mesh.replaceTrack(localVideo.id, "audio", newTrack);
+        if (fresh) {
+          setStreams(prev => prev.map(s => (s.id === localVideo.id ? { ...s, stream: fresh } : s)));
+        }
       } catch (err) {
         console.warn("swapCameraAudioTrack failed", err);
       }
@@ -508,7 +517,10 @@ const Desktop: NextPage = () => {
   const streamFor = useCallback(
     (pub: Publication): MediaStream | null => {
       if (pub.peerId === mesh.myId) {
-        const local = streams.find(s => s.stream.id === pub.streamId);
+        // Match on handle.id (stable publication streamId) — the
+        // underlying MediaStream's .id changes after a hot-swap because
+        // replaceTrack rebuilds it.
+        const local = streams.find(s => s.id === pub.streamId);
         return local?.stream ?? null;
       }
       return mesh.remoteStreams.get(pub.streamId) ?? null;
@@ -557,7 +569,7 @@ const Desktop: NextPage = () => {
       if (tracked) {
         media.stop(pub.kind);
       } else {
-        const local = streams.find(s => s.stream.id === pub.streamId);
+        const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
         else mesh.unpublish(pub.streamId);
         const r = readResume();

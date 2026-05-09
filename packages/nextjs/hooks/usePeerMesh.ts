@@ -155,8 +155,12 @@ export type PeerMeshState = {
   unpublish: (streamId: string) => void;
   /** Hot-swap a single track on an already-published stream. Calls
    *  RTCRtpSender.replaceTrack on every peer connection so the remote
-   *  side never loses the publication — the streamId stays stable. */
-  replaceTrack: (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => Promise<void>;
+   *  side never loses the publication — the streamId (the map key)
+   *  stays stable. Returns the FRESH local MediaStream so the caller
+   *  can re-render consumers (analysers / <video> elements) bound to
+   *  the old stream — MediaStream mutations don't fire add/removetrack
+   *  for developer-initiated calls, so we hand back a new object. */
+  replaceTrack: (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => Promise<MediaStream | null>;
   updateSlot: (patch: Partial<SlotPosition> & { id: string }) => void;
   openBrowser: (id: string, url: string) => void;
   navigateBrowser: (id: string, url: string) => void;
@@ -351,30 +355,38 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
-  const replaceTrack = useCallback(async (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => {
-    const stream = localStreamsRef.current.get(streamId);
-    if (!stream) return;
-    // Swap the sender on every PC. Sender lookup is by track.kind on
-    // the *current* track — works because we only have one of each
-    // kind per pub (audio pubs are audio-only, video pubs are video-only).
-    for (const pc of peerConnectionsRef.current.values()) {
-      const sender = pc.getSenders().find(s => s.track?.kind === kind);
-      if (!sender) continue;
-      try {
-        await sender.replaceTrack(newTrack);
-      } catch (err) {
-        console.warn("[mesh] replaceTrack failed", err);
+  const replaceTrack = useCallback(
+    async (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack): Promise<MediaStream | null> => {
+      const stream = localStreamsRef.current.get(streamId);
+      if (!stream) return null;
+      // Swap the sender on every PC. Sender lookup is by track.kind on
+      // the *current* track — works because we only have one of each
+      // kind per pub (audio pubs are audio-only, video pubs are video-only).
+      for (const pc of peerConnectionsRef.current.values()) {
+        const sender = pc.getSenders().find(s => s.track?.kind === kind);
+        if (!sender) continue;
+        try {
+          await sender.replaceTrack(newTrack);
+        } catch (err) {
+          console.warn("[mesh] replaceTrack failed", err);
+        }
       }
-    }
-    // Keep the local MediaStream object in sync so previews + analyzers
-    // bound to it pick up the new device immediately.
-    const oldTracks = kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks();
-    for (const t of oldTracks) {
-      stream.removeTrack(t);
-      t.stop();
-    }
-    stream.addTrack(newTrack);
-  }, []);
+      // Construct a brand-new MediaStream so React-side consumers re-bind:
+      // MediaStreamAudioSourceNode and HTMLMediaElement.srcObject latch onto
+      // a track at hookup time, and add/removetrack do NOT fire for
+      // dev-initiated mutations — handing back a new object is the only
+      // reliable signal.
+      const oldTracks = kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks();
+      const keepTracks = kind === "audio" ? stream.getVideoTracks() : stream.getAudioTracks();
+      const fresh = new MediaStream([...keepTracks, newTrack]);
+      for (const t of oldTracks) t.stop();
+      // Map key is the ORIGINAL publication streamId, not fresh.id — peers
+      // and the unpublish path both look up by the published id.
+      localStreamsRef.current.set(streamId, fresh);
+      return fresh;
+    },
+    [],
+  );
 
   const unpublish = useCallback(
     (streamId: string) => {
