@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Address } from "@scaffold-ui/components";
+import type { Address as AddressType } from "viem";
 import { Button } from "~~/components/ui";
 import type { ChatMessage } from "~~/hooks/usePeerMesh";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
@@ -135,7 +137,6 @@ const ChatRow = ({ msg, isMine }: { msg: ChatMessage; isMine: boolean }) => {
       }),
     [msg.address, msg.handle, msg.id],
   );
-  const display = msg.handle || (msg.address ? `${msg.address.slice(0, 6)}…${msg.address.slice(-4)}` : "anon");
   const sourceTag = msg.source === "agent" ? "AGENT" : msg.source === "spectator" ? "SPECTATOR" : null;
   return (
     <div
@@ -161,7 +162,7 @@ const ChatRow = ({ msg, isMine }: { msg: ChatMessage; isMine: boolean }) => {
         <div
           style={{
             display: "flex",
-            alignItems: "baseline",
+            alignItems: "center",
             gap: 6,
             fontSize: 11,
             color: bands.band1,
@@ -170,10 +171,12 @@ const ChatRow = ({ msg, isMine }: { msg: ChatMessage; isMine: boolean }) => {
             textTransform: "uppercase",
           }}
         >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {display}
-            {isMine ? " (you)" : ""}
-          </span>
+          {msg.address ? (
+            <Address address={msg.address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
+          ) : (
+            <span>{msg.handle ?? "anon"}</span>
+          )}
+          {isMine ? <span style={{ opacity: 0.7 }}>(you)</span> : null}
           {sourceTag ? (
             <span
               style={{
