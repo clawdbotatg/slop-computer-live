@@ -13,6 +13,7 @@ import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
+import { SlotWindow } from "~~/components/desktop/SlotWindow";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
@@ -172,37 +173,19 @@ const Desktop: NextPage = () => {
   const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
   const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
 
-  // Chat window — per-user local state. Open/close, position, and size
-  // all live in localStorage so the window comes back where you left it.
-  // Not synced via slots: each peer chooses whether to show chat.
+  // Chat window: open/close is per-user (localStorage), but the window's
+  // position lives in the shared mesh slot system — same path browsers
+  // and cameras use, so reload + drag + menubar-clamp all come for free.
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatRect, setChatRect] = useState<{ x: number; y: number; width: number; height: number }>({
-    x: 80,
-    y: 80,
-    width: 360,
-    height: 420,
-  });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem("slop-chat-rect");
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      // Defensively floor the y — earlier drag bug saved y=0 for some
-      // users, which puts the titlebar under the menubar (containerInset
-      // top = 38) and makes the window unreachable. Floor on load so a
-      // bad save is recovered next refresh.
-      const safeY = Math.max(38, Number(parsed.y) || 0);
-      setChatRect({ ...parsed, y: safeY });
-    } catch {
-      /* ignore */
-    }
+    if (window.localStorage.getItem("slop-chat-open") === "1") setChatOpen(true);
   }, []);
-  const saveChatRect = useCallback((r: { x: number; y: number; width: number; height: number }) => {
-    const safe = { ...r, y: Math.max(38, r.y) };
-    setChatRect(safe);
+  const setChatOpenPersisted = useCallback((open: boolean) => {
+    setChatOpen(open);
     try {
-      window.localStorage.setItem("slop-chat-rect", JSON.stringify(safe));
+      if (open) window.localStorage.setItem("slop-chat-open", "1");
+      else window.localStorage.removeItem("slop-chat-open");
     } catch {
       /* ignore */
     }
@@ -811,7 +794,7 @@ const Desktop: NextPage = () => {
                   zIndex={1}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
                   onDoubleClick={() => {
-                    if (app.kind === "chat") setChatOpen(true);
+                    if (app.kind === "chat") setChatOpenPersisted(true);
                     else if (app.url) spawnBrowser(app.url);
                   }}
                 />
@@ -978,26 +961,26 @@ const Desktop: NextPage = () => {
           </Window>
         ) : null}
 
-        {/* Chat window — single instance, position is local-only (per-user
-            open/close + localStorage rect). Lives inside the desktop wrapper
-            so <Rnd bounds="parent"> binds to the same fixed-inset div the
-            other shared windows use; otherwise drag math drifts and the
-            window snaps to y=0 on release. */}
+        {/* Chat window — open/close is per-user (localStorage), but
+            position is a shared mesh slot keyed by ownerKey so each user
+            has their own window that survives reload via the relay. */}
         {chatOpen && session.authenticated ? (
-          <Window
+          <SlotWindow
+            mesh={mesh}
+            slotId={`chat-${myOwnerKey ?? mesh.myId ?? "anon"}`}
+            defaultSlot={{
+              id: `chat-${myOwnerKey ?? mesh.myId ?? "anon"}`,
+              x: 80,
+              y: 80,
+              width: 360,
+              height: 420,
+              z: 50,
+            }}
             title="Chat"
-            x={chatRect.x}
-            y={chatRect.y}
-            width={chatRect.width}
-            height={chatRect.height}
             minWidth={240}
             minHeight={220}
-            zIndex={50}
-            onClose={() => setChatOpen(false)}
-            onMove={({ x, y }) => saveChatRect({ ...chatRect, x, y })}
-            onResize={({ x, y, width, height }) => saveChatRect({ x, y, width, height })}
+            onClose={() => setChatOpenPersisted(false)}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
-            containerInset={{ top: 38 }}
           >
             <ChatWindow
               messages={mesh.chatMessages}
@@ -1005,7 +988,7 @@ const Desktop: NextPage = () => {
               myAddress={session.authenticated ? session.address : null}
               myHandle={session.authenticated ? session.handle : null}
             />
-          </Window>
+          </SlotWindow>
         ) : null}
       </div>
 
