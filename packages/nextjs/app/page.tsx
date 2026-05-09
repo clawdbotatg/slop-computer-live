@@ -362,6 +362,18 @@ const Desktop: NextPage = () => {
     [],
   );
 
+  // Snap every desktop icon back to the default left-edge cascade. Iteration
+  // order is the apps catalog order so the layout is stable across runs.
+  const autoArrangeIcons = useCallback(() => {
+    apps.forEach((app, i) => {
+      mesh.updateSlot({
+        id: `icon-${app.id}`,
+        x: ICON_DEFAULT_X,
+        y: ICON_DEFAULT_Y0 + i * ICON_ROW_PITCH,
+      });
+    });
+  }, [apps, mesh]);
+
   const viewMenu = useMemo<Menu>(
     () => ({
       label: "View",
@@ -370,6 +382,7 @@ const Desktop: NextPage = () => {
         { label: "✓ Show Bands", disabled: true },
         { label: "  Show Grid", disabled: true },
         { divider: true, label: "" },
+        { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
         { label: "Tile Windows", disabled: true },
         { label: "Cascade Windows", disabled: true },
         { divider: true, label: "" },
@@ -383,7 +396,7 @@ const Desktop: NextPage = () => {
         },
       ],
     }),
-    [],
+    [autoArrangeIcons],
   );
 
   // ---- Slot clamp on viewport resize ------------------------------------
