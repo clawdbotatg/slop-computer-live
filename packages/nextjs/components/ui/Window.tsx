@@ -177,7 +177,13 @@ export const Window = ({
         // Only treat this as a manual move if something changed — otherwise
         // we'd nuke the saved restore-rect on every click of max/min.
         if (d.x === x && d.y === y) return;
-        onMove?.({ x: d.x, y: d.y });
+        // Clamp y so the titlebar can't slide under the menubar — the
+        // <Rnd bounds="parent"> constraint binds to the wrapper's
+        // bounding rect (which still spans 0..viewportH), so without
+        // this a fast drag past the top edge would pin the window
+        // behind the menubar with no way to grab it back.
+        const clampedY = Math.max(insets.top, d.y);
+        onMove?.({ x: d.x, y: clampedY });
         if (mode !== "normal") {
           setMode("normal");
           setSavedRect(null);
@@ -187,7 +193,8 @@ export const Window = ({
         const newW = ref.offsetWidth;
         const newH = ref.offsetHeight;
         if (position.x === x && position.y === y && newW === width && newH === height) return;
-        onResize?.({ x: position.x, y: position.y, width: newW, height: newH });
+        const clampedY = Math.max(insets.top, position.y);
+        onResize?.({ x: position.x, y: clampedY, width: newW, height: newH });
         if (mode !== "normal") {
           setMode("normal");
           setSavedRect(null);

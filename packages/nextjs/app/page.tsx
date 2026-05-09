@@ -186,15 +186,23 @@ const Desktop: NextPage = () => {
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem("slop-chat-rect");
-      if (raw) setChatRect(JSON.parse(raw));
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      // Defensively floor the y — earlier drag bug saved y=0 for some
+      // users, which puts the titlebar under the menubar (containerInset
+      // top = 38) and makes the window unreachable. Floor on load so a
+      // bad save is recovered next refresh.
+      const safeY = Math.max(38, Number(parsed.y) || 0);
+      setChatRect({ ...parsed, y: safeY });
     } catch {
       /* ignore */
     }
   }, []);
   const saveChatRect = useCallback((r: { x: number; y: number; width: number; height: number }) => {
-    setChatRect(r);
+    const safe = { ...r, y: Math.max(38, r.y) };
+    setChatRect(safe);
     try {
-      window.localStorage.setItem("slop-chat-rect", JSON.stringify(r));
+      window.localStorage.setItem("slop-chat-rect", JSON.stringify(safe));
     } catch {
       /* ignore */
     }
