@@ -133,6 +133,8 @@ export type MusicState = {
   position: number;
   /** Date.now() of the snapshot. Live position = position + (now - at)/1000 when playing. */
   at: number;
+  /** 0..1 master volume — shared across the mesh so all listeners are at the same loudness. */
+  volume: number;
 };
 
 const CHAT_HISTORY_CAP = 200;

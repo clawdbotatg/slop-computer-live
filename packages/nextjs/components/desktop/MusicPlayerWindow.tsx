@@ -19,6 +19,7 @@ type Track = { title: string; artist: string; src: string };
 
 const PLAYLIST_URL = "/music/playlist.json";
 const VOLUME_KEY = "slop-music-volume-v1";
+const MUTE_KEY = "slop-music-mute-v1";
 /** Tolerance, in seconds, between local audio.currentTime and the
  *  position predicted from the shared state before we force a seek.
  *  Keep this loose — re-seeking too aggressively makes the audio judder
@@ -43,11 +44,20 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.7);
   const [balance, setBalance] = useState(0);
   const [seeking, setSeeking] = useState(false);
   const [seekValue, setSeekValue] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Volume is shared via mesh.musicState.volume. We keep a local "draft"
+  // value for smooth slider feedback during a drag — the broadcast only
+  // fires on mouseup. localStorage seeds the initial value when the
+  // shared state is null (relay just restarted, no one playing).
+  const [volumeDraft, setVolumeDraft] = useState(0.7);
+  const [volumeDragging, setVolumeDragging] = useState(false);
+  // Per-user local mute. Doesn't touch the shared volume or playback —
+  // just silences this peer's <audio> element so they can step away
+  // without making everyone else stop. Persisted across reloads.
+  const [selfMuted, setSelfMuted] = useState(false);
   // Smooth display tick — re-render every 100ms while playing so the LCD
   // and seek thumb advance without us having to spam the network.
   const [displayPosition, setDisplayPosition] = useState(0);
@@ -57,19 +67,34 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const playing = !!ms?.playing;
   const index = ms?.index ?? 0;
 
-  // Restore the last-set volume on mount so the user's preference survives
-  // close/reopen.
+  // Seed the volume draft from localStorage so a fresh peer who joins
+  // when the mesh has no music state has a sensible slider position.
+  // Same idea for the per-user mute flag.
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(VOLUME_KEY);
       if (raw) {
         const parsed = parseFloat(raw);
-        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) setVolume(parsed);
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) setVolumeDraft(parsed);
       }
+      if (window.localStorage.getItem(MUTE_KEY) === "1") setSelfMuted(true);
     } catch {
       /* ignore */
     }
   }, []);
+
+  // Push the per-user mute into the live audio element + persist.
+  // audio.muted is independent of audio.volume — toggling this on
+  // silences playback without changing the shared loudness.
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = selfMuted;
+    try {
+      if (selfMuted) window.localStorage.setItem(MUTE_KEY, "1");
+      else window.localStorage.removeItem(MUTE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [selfMuted]);
 
   // Pull the playlist.json once. Errors surface in the LCD area; the rest
   // of the UI keeps working (transport buttons just no-op).
@@ -128,15 +153,33 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
   }, []);
 
-  // Push volume into the live element + persist.
+  // The slider's displayed value: while the user is mid-drag, that's
+  // their in-flight draft; otherwise it's whatever the mesh says
+  // everyone is currently listening at, falling back to the draft when
+  // no music state exists yet.
+  const sharedVolume = ms?.volume;
+  const shownVolume = volumeDragging ? volumeDraft : (sharedVolume ?? volumeDraft);
+
+  // Push the shown volume into the live audio element + persist locally
+  // (so a returning peer, joining when no music state is set, lands at
+  // the volume they last used).
   useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = volume;
+    if (audioRef.current) audioRef.current.volume = shownVolume;
     try {
-      window.localStorage.setItem(VOLUME_KEY, String(volume));
+      window.localStorage.setItem(VOLUME_KEY, String(shownVolume));
     } catch {
       /* ignore */
     }
-  }, [volume]);
+  }, [shownVolume]);
+
+  // When the mesh-shared volume changes (someone else dragged + released
+  // their slider), keep our local draft in sync so the slider thumb
+  // doesn't snap back to the old draft on the next mouseup.
+  useEffect(() => {
+    if (sharedVolume == null) return;
+    if (volumeDragging) return;
+    setVolumeDraft(sharedVolume);
+  }, [sharedVolume, volumeDragging]);
 
   // Push balance into the panner if the graph is up.
   useEffect(() => {
@@ -227,6 +270,9 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         playing: true,
         position: 0,
         at: Date.now(),
+        // Carry the current shared volume forward so this auto-advance
+        // doesn't reset everyone's loudness.
+        volume: mesh.musicState?.volume ?? shownVolume,
       });
     };
     const onErr = () => {
@@ -275,10 +321,11 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         playing: false,
         position: 0,
         at: Date.now(),
+        volume: shownVolume,
       };
       mesh.setMusicState({ ...fallback, ...cur, ...patch, at: patch.at ?? Date.now() });
     },
-    [mesh, current, index, setupGraph],
+    [mesh, current, index, setupGraph, shownVolume],
   );
 
   const togglePlay = useCallback(() => {
@@ -392,6 +439,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   return (
     <div
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         height: "100%",
@@ -405,11 +453,42 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           missing CORS headers can't stall the load. */}
       <audio ref={audioRef} preload="metadata" />
 
+      {/* Per-user local mute — overlaid in the top-right of the player
+          window, same idea as AudioVisualizer / camera's "your side"
+          mute button. Doesn't broadcast; only silences this peer's
+          <audio> element. Shared playback / volume continue normally. */}
+      <button
+        type="button"
+        onClick={() => setSelfMuted(m => !m)}
+        aria-label={selfMuted ? "unmute (local)" : "mute (local)"}
+        title={selfMuted ? "unmute (only affects you)" : "mute (only affects you)"}
+        style={{
+          position: "absolute",
+          top: 6,
+          right: 6,
+          zIndex: 10,
+          width: 26,
+          height: 26,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          background: selfMuted ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
+          border: `1px solid ${selfMuted ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
+          color: "#fff",
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        {selfMuted ? <SpeakerOffIcon /> : <SpeakerIcon />}
+      </button>
+
       {/* === Top LCD panel ============================================== */}
       <div
         style={{
           margin: 6,
-          padding: "6px 8px 4px",
+          // extra right padding reserves space for the absolute-positioned
+          // mute button so it doesn't sit on top of the "STEREO" text
+          padding: "6px 36px 4px 8px",
           background: "#000",
           borderTop: "1px solid #000",
           borderLeft: "1px solid #000",
@@ -540,8 +619,25 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             min={0}
             max={1}
             step={0.01}
-            value={volume}
-            onChange={e => setVolume(parseFloat(e.target.value))}
+            value={shownVolume}
+            // Smooth feedback while dragging — change the local audio
+            // immediately so the dragger hears their own change. No
+            // network traffic until they let go.
+            onChange={e => {
+              setVolumeDraft(parseFloat(e.target.value));
+            }}
+            onMouseDown={() => setVolumeDragging(true)}
+            onMouseUp={e => {
+              const v = parseFloat((e.target as HTMLInputElement).value);
+              setVolumeDragging(false);
+              if (Number.isFinite(v)) broadcast({ volume: v });
+            }}
+            // Touch support (mobile/tablet) — same handshake.
+            onTouchStart={() => setVolumeDragging(true)}
+            onTouchEnd={() => {
+              setVolumeDragging(false);
+              broadcast({ volume: volumeDraft });
+            }}
             aria-label="volume"
             className="slop-music-range"
             style={{ width: "100%" }}
@@ -810,5 +906,41 @@ const Marquee = ({ text, color }: { text: string; color: string }) => {
     </div>
   );
 };
+
+// Tiny speaker glyphs for the per-user mute button. ~14px viewBox so
+// they read at 14px target size against either dark or magenta.
+const SpeakerIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 14 14"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2 5 H 4 L 7 2.5 V 11.5 L 4 9 H 2 Z" fill="currentColor" stroke="none" />
+    <path d="M9 5 Q 10.5 7 9 9" />
+    <path d="M10.5 3.5 Q 13 7 10.5 10.5" />
+  </svg>
+);
+
+const SpeakerOffIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 14 14"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2 5 H 4 L 7 2.5 V 11.5 L 4 9 H 2 Z" fill="currentColor" stroke="none" />
+    <line x1="9" y1="4.5" x2="13" y2="9.5" />
+    <line x1="13" y1="4.5" x2="9" y2="9.5" />
+  </svg>
+);
 
 export default MusicPlayerWindow;

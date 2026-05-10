@@ -57,6 +57,8 @@ type MusicState = {
   position: number;
   /** Date.now() when this snapshot was captured */
   at: number;
+  /** 0..1 master volume — shared so peers stay in lockstep */
+  volume: number;
 };
 let musicState: MusicState | null = null;
 
@@ -1472,12 +1474,18 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.index !== "number" || typeof msg.position !== "number" || typeof msg.at !== "number") {
             return send(socket, { type: "error", error: "bad_music_state" });
           }
+          // Volume is optional in the wire format (older clients won't
+          // send it). Fall back to the existing snapshot's value or a
+          // sensible default — never leave it undefined, peers expect a
+          // number.
+          const incomingVolume = typeof msg.volume === "number" ? Math.max(0, Math.min(1, msg.volume)) : null;
           musicState = {
             src: typeof msg.src === "string" ? msg.src : null,
             index: msg.index,
             playing: !!msg.playing,
             position: msg.position,
             at: msg.at,
+            volume: incomingVolume ?? musicState?.volume ?? 0.7,
           };
           broadcast({ type: "music_state", state: musicState });
           return;
