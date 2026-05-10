@@ -43,6 +43,7 @@ import {
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
+import { closeWindow as closeSingletonWindow, listOpenWindows, openWindow as openSingletonWindow } from "./windows.js";
 
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
 
@@ -1296,6 +1297,7 @@ app.register(async function signalRoutes(fastify) {
       avatars: listAvatarsSync(),
       hiddenAvatars: listHiddenOwnersSync(),
       chatHistory: recentChat(),
+      openWindows: listOpenWindows(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -1422,6 +1424,28 @@ app.register(async function signalRoutes(fastify) {
           }
           const ok = closeSharedBrowser(PRIMARY_HOST_ADDR, msg.id);
           if (ok) broadcast({ type: "browser_closed", id: msg.id });
+          return;
+        }
+        case "window_open": {
+          // Singleton shared windows (music, future calculator/weather/etc).
+          // Toggling state is broadcast to every peer so the window appears
+          // for everyone, not just the opener. Distinct from browsers in
+          // that there's no per-instance data — just an "is open" bit.
+          if (typeof msg.id !== "string") {
+            return send(socket, { type: "error", error: "missing_id" });
+          }
+          if (openSingletonWindow(msg.id)) {
+            broadcast({ type: "window_opened", id: msg.id });
+          }
+          return;
+        }
+        case "window_close": {
+          if (typeof msg.id !== "string") {
+            return send(socket, { type: "error", error: "missing_id" });
+          }
+          if (closeSingletonWindow(msg.id)) {
+            broadcast({ type: "window_closed", id: msg.id });
+          }
           return;
         }
         case "tx_request": {

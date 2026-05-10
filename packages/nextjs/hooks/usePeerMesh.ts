@@ -180,6 +180,12 @@ export type PeerMeshState = {
   openBrowser: (id: string, url: string) => void;
   navigateBrowser: (id: string, url: string) => void;
   closeBrowser: (id: string) => void;
+  /** Singleton apps whose visibility is shared across the mesh — opened
+   *  by anyone, visible to everyone, closed by anyone. Compare to chat,
+   *  whose open/close is per-user (only messages are shared). */
+  openWindowIds: Set<string>;
+  openWindow: (id: string) => void;
+  closeWindow: (id: string) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -199,6 +205,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -456,6 +463,33 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  // Optimistic local toggle so the window pops in/out instantly; server
+  // rebroadcast confirms (and carries the change to other peers).
+  const openWindow = useCallback(
+    (id: string) => {
+      setOpenWindowIds(prev => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      send({ type: "window_open", id });
+    },
+    [send],
+  );
+  const closeWindow = useCallback(
+    (id: string) => {
+      setOpenWindowIds(prev => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      send({ type: "window_close", id });
+    },
+    [send],
+  );
+
   const sendClick = useCallback(
     (x: number, y: number) => {
       send({ type: "click", x, y });
@@ -603,6 +637,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (Array.isArray(msg.chatHistory)) {
             setChatMessages((msg.chatHistory as ChatMessage[]).slice(-CHAT_HISTORY_CAP));
           }
+          if (Array.isArray(msg.openWindows)) {
+            setOpenWindowIds(new Set((msg.openWindows as unknown[]).filter((s): s is string => typeof s === "string")));
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -723,6 +760,28 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             if (!prev[id]) return prev;
             const next = { ...prev };
             delete next[id];
+            return next;
+          });
+          return;
+        }
+
+        if (msg.type === "window_opened" && typeof msg.id === "string") {
+          const id = msg.id as string;
+          setOpenWindowIds(prev => {
+            if (prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.add(id);
+            return next;
+          });
+          return;
+        }
+
+        if (msg.type === "window_closed" && typeof msg.id === "string") {
+          const id = msg.id as string;
+          setOpenWindowIds(prev => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
             return next;
           });
           return;
@@ -884,6 +943,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     openBrowser,
     navigateBrowser,
     closeBrowser,
+    openWindowIds,
+    openWindow,
+    closeWindow,
     broadcastTxRequest,
   };
 }

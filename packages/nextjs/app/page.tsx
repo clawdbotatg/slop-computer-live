@@ -191,21 +191,10 @@ const Desktop: NextPage = () => {
     }
   }, []);
 
-  // Music player follows the same per-user open/close pattern as chat.
-  const [musicOpen, setMusicOpen] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.localStorage.getItem("slop-music-open") === "1") setMusicOpen(true);
-  }, []);
-  const setMusicOpenPersisted = useCallback((open: boolean) => {
-    setMusicOpen(open);
-    try {
-      if (open) window.localStorage.setItem("slop-music-open", "1");
-      else window.localStorage.removeItem("slop-music-open");
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  // Music player is a shared singleton — when anyone opens it, every
+  // connected peer sees it; when anyone closes it, it's gone for all.
+  // Compare to chat (per-user open/close, only messages are shared).
+  const musicOpen = mesh.openWindowIds.has("music");
 
   // Hot-swap the audio track on the active publication. Driven by the
   // share dialog's edit mode — keeps the same publication / streamId so
@@ -803,7 +792,7 @@ const Desktop: NextPage = () => {
                         setChatOpenPersisted(true);
                         return;
                       case "music":
-                        setMusicOpenPersisted(true);
+                        mesh.openWindow("music");
                         return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
@@ -1022,9 +1011,9 @@ const Desktop: NextPage = () => {
         {musicOpen && session.authenticated ? (
           <SlotWindow
             mesh={mesh}
-            slotId={`music-${myOwnerKey ?? mesh.myId ?? "anon"}`}
+            slotId="app-music"
             defaultSlot={{
-              id: `music-${myOwnerKey ?? mesh.myId ?? "anon"}`,
+              id: "app-music",
               x: 120,
               y: 120,
               width: 380,
@@ -1034,7 +1023,7 @@ const Desktop: NextPage = () => {
             title="WINAMP"
             minWidth={300}
             minHeight={300}
-            onClose={() => setMusicOpenPersisted(false)}
+            onClose={() => mesh.closeWindow("music")}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
           >
             <MusicPlayerWindow />
