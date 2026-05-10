@@ -988,7 +988,7 @@ const Desktop: NextPage = () => {
             <SharedAppWindow
               mesh={mesh}
               id="music"
-              title="WINAMP"
+              title="SLOPAMP"
               defaultSlot={{ x: 120, y: 120, width: 380, height: 440 }}
               minWidth={300}
               minHeight={300}
