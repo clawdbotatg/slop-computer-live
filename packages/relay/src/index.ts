@@ -1256,11 +1256,19 @@ app.register(async function signalRoutes(fastify) {
       connectedAt: Date.now(),
     };
 
-    // Dedupe by session token. If this same session already has a peer
-    // (stale reconnect, duplicate tab) kick the old ones first so we
-    // never end up with two of the same user publishing the same kind
-    // — which renders as two windows stacked at the same slot.
+    // Garbage-collect peers from this session whose socket is already
+    // dead (network drop, refresh in progress, etc.). We do NOT kick
+    // healthy peers — two live tabs of the same user (or two devices
+    // sharing a session cookie) must be able to coexist. The old code
+    // unconditionally kicked the existing peer, which produced an
+    // infinite reconnect loop: each new tab kicked the previous one,
+    // the kicked tab auto-reconnected and kicked back, ad nauseam.
+    // Symptom in the UI: icons flicker, peer cursors blink in and out.
     for (const stale of findPeersBySessionToken(session.token)) {
+      // ws is the `ws` library's WebSocket on the server side; readyState
+      // values: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED.
+      const stillAlive = (stale.ws as { readyState?: number }).readyState === 1;
+      if (stillAlive) continue;
       const ended = clearPeerPublications(stale.id);
       removePeer(stale.id);
       for (const p of ended) {
