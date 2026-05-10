@@ -22,16 +22,22 @@ export function useLocalCursor() {
     const resolve = (clientX: number, clientY: number): CursorKind => {
       const el = document.elementFromPoint(clientX, clientY);
       if (!el) return "pointer";
-      // Inputs / textareas / contenteditable
+      // Text-y inputs / textareas / contenteditable get the I-beam.
+      // INPUT is too broad to blanket — type=range / checkbox / radio /
+      // button shouldn't show a text cursor. Range becomes "grab" so it
+      // visibly reads as draggable.
       const tag = el.tagName;
+      const inputType = tag === "INPUT" ? ((el as HTMLInputElement).type || "text").toLowerCase() : "";
+      const TEXT_INPUT_TYPES = new Set(["text", "email", "password", "search", "url", "tel", "number"]);
       if (
-        tag === "INPUT" ||
+        (tag === "INPUT" && TEXT_INPUT_TYPES.has(inputType)) ||
         tag === "TEXTAREA" ||
         (el as HTMLElement).isContentEditable ||
-        el.closest("input, textarea, [contenteditable=true]")
+        el.closest("textarea, [contenteditable=true]")
       ) {
         return "text";
       }
+      if (tag === "INPUT" && inputType === "range") return "grab";
       // Walk up to the nearest cursor-marked ancestor. data-grab="false"
       // (e.g. close/min/zoom dots inside a draggable titlebar) wins because
       // it's closer in the DOM, so we return "pointer" for that subtree.

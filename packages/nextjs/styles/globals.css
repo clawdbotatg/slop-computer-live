@@ -546,7 +546,7 @@
   appearance: none;
   height: 12px;
   background: transparent;
-  cursor: pointer;
+  cursor: none;
 }
 
 .slop-music-range::-webkit-slider-runnable-track {
@@ -577,7 +577,7 @@
   border-right: 1px solid #000;
   border-bottom: 1px solid #000;
   box-shadow: 0 0 4px rgba(255, 62, 201, 0.4);
-  cursor: pointer;
+  cursor: none;
   border-radius: 0;
 }
 
@@ -591,7 +591,7 @@
   border-bottom: 1px solid #000;
   box-shadow: 0 0 4px rgba(255, 62, 201, 0.4);
   border-radius: 0;
-  cursor: pointer;
+  cursor: none;
 }
 
 /* Wider thumb on the seek bar — same look as Winamp's position slider. */
