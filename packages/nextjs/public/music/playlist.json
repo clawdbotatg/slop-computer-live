@@ -1,0 +1,10 @@
+{
+  "_credit": "All tracks by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).",
+  "tracks": [
+    { "title": "Cyborg Ninja",    "artist": "Kevin MacLeod", "src": "/music/cyborg-ninja.mp3" },
+    { "title": "Voltaic",         "artist": "Kevin MacLeod", "src": "/music/voltaic.mp3" },
+    { "title": "Cool Vibes",      "artist": "Kevin MacLeod", "src": "/music/cool-vibes.mp3" },
+    { "title": "Pinball Spring",  "artist": "Kevin MacLeod", "src": "/music/pinball-spring.mp3" },
+    { "title": "Dark Standoff",   "artist": "Kevin MacLeod", "src": "/music/dark-standoff.mp3" }
+  ]
+}

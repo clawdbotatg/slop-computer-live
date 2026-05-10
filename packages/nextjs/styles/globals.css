@@ -531,3 +531,81 @@
   background: var(--slop-base);
   pointer-events: none;
 }
+
+/* === Music player ====================================================
+   LCD marquee scroll + Winamp-style range thumb on the seek/volume
+   sliders. Only applied to inputs inside the music window. */
+
+@keyframes slop-music-marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.slop-music-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 12px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slop-music-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(180deg, #000 0%, #14091e 100%);
+  border-top: 1px solid #000;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0;
+}
+
+.slop-music-range::-moz-range-track {
+  height: 4px;
+  background: linear-gradient(180deg, #000 0%, #14091e 100%);
+  border-top: 1px solid #000;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0;
+}
+
+.slop-music-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 10px;
+  margin-top: -4px;
+  background: linear-gradient(180deg, #d8d8e8 0%, #6a6a8a 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.7);
+  border-left: 1px solid rgba(255, 255, 255, 0.7);
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
+  box-shadow: 0 0 4px rgba(255, 62, 201, 0.4);
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.slop-music-range::-moz-range-thumb {
+  width: 14px;
+  height: 10px;
+  background: linear-gradient(180deg, #d8d8e8 0%, #6a6a8a 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.7);
+  border-left: 1px solid rgba(255, 255, 255, 0.7);
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
+  box-shadow: 0 0 4px rgba(255, 62, 201, 0.4);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+/* Wider thumb on the seek bar — same look as Winamp's position slider. */
+.slop-music-range--seek::-webkit-slider-thumb {
+  width: 22px;
+  height: 8px;
+  margin-top: -3px;
+}
+.slop-music-range--seek::-moz-range-thumb {
+  width: 22px;
+  height: 8px;
+}
+
+.slop-music-range:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -11,6 +11,7 @@ import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
+import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlotWindow } from "~~/components/desktop/SlotWindow";
@@ -45,7 +46,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — single
@@ -185,6 +186,22 @@ const Desktop: NextPage = () => {
     try {
       if (open) window.localStorage.setItem("slop-chat-open", "1");
       else window.localStorage.removeItem("slop-chat-open");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Music player follows the same per-user open/close pattern as chat.
+  const [musicOpen, setMusicOpen] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.localStorage.getItem("slop-music-open") === "1") setMusicOpen(true);
+  }, []);
+  const setMusicOpenPersisted = useCallback((open: boolean) => {
+    setMusicOpen(open);
+    try {
+      if (open) window.localStorage.setItem("slop-music-open", "1");
+      else window.localStorage.removeItem("slop-music-open");
     } catch {
       /* ignore */
     }
@@ -785,6 +802,9 @@ const Desktop: NextPage = () => {
                       case "chat":
                         setChatOpenPersisted(true);
                         return;
+                      case "music":
+                        setMusicOpenPersisted(true);
+                        return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
                         // close button is how you stop. Keeps the icon
@@ -992,6 +1012,32 @@ const Desktop: NextPage = () => {
               myAddress={session.authenticated ? session.address : null}
               myHandle={session.authenticated ? session.handle : null}
             />
+          </SlotWindow>
+        ) : null}
+
+        {/* Music player — same per-user open/close as chat, with the
+            position shared via the mesh so layout survives reload. The
+            audio plays locally only (we don't pipe it through the mesh);
+            the listener controls their own playback. */}
+        {musicOpen && session.authenticated ? (
+          <SlotWindow
+            mesh={mesh}
+            slotId={`music-${myOwnerKey ?? mesh.myId ?? "anon"}`}
+            defaultSlot={{
+              id: `music-${myOwnerKey ?? mesh.myId ?? "anon"}`,
+              x: 120,
+              y: 120,
+              width: 380,
+              height: 440,
+              z: 50,
+            }}
+            title="WINAMP"
+            minWidth={300}
+            minHeight={300}
+            onClose={() => setMusicOpenPersisted(false)}
+            bodyStyle={{ padding: 0, overflow: "hidden" }}
+          >
+            <MusicPlayerWindow />
           </SlotWindow>
         ) : null}
       </div>

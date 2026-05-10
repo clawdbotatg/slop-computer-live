@@ -91,7 +91,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -124,6 +124,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Screen",
     icon: "/icons/screen-sharing.png",
     kind: "screen",
+  },
+  {
+    id: "music",
+    label: "Music",
+    icon: "/icons/music.png",
+    kind: "music",
   },
 ];
 
