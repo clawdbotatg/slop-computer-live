@@ -291,6 +291,11 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       a.removeEventListener("ended", onEnded);
       a.removeEventListener("error", onErr);
     };
+    // shownVolume isn't in deps on purpose — the captured value is only
+    // used as a fallback in `onEnded` if mesh.musicState.volume is also
+    // missing, so a stale read is harmless. Re-binding listeners on
+    // every volume tick would be wasteful.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks, current, index, mesh]);
 
   // Smooth UI tick — every 100ms while playing, recompute the displayed
