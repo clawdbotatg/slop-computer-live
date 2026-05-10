@@ -125,6 +125,16 @@ export type ChatMessage = {
   source: "live" | "spectator" | "agent";
 };
 
+export type MusicState = {
+  src: string | null;
+  index: number;
+  playing: boolean;
+  /** seconds into the track at the moment captured by `at` */
+  position: number;
+  /** Date.now() of the snapshot. Live position = position + (now - at)/1000 when playing. */
+  at: number;
+};
+
 const CHAT_HISTORY_CAP = 200;
 
 type SelfHint = {
@@ -181,11 +191,14 @@ export type PeerMeshState = {
   navigateBrowser: (id: string, url: string) => void;
   closeBrowser: (id: string) => void;
   /** Singleton apps whose visibility is shared across the mesh — opened
-   *  by anyone, visible to everyone, closed by anyone. Compare to chat,
-   *  whose open/close is per-user (only messages are shared). */
+   *  by anyone, visible to everyone, closed by anyone. */
   openWindowIds: Set<string>;
   openWindow: (id: string) => void;
   closeWindow: (id: string) => void;
+  /** Shared music-player state. Last writer wins. Position drift is
+   *  computed locally from `at` (Date.now() at capture). */
+  musicState: MusicState | null;
+  setMusicState: (state: MusicState) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -206,6 +219,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
+  const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -490,6 +504,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const setMusicState = useCallback(
+    (state: MusicState) => {
+      // Optimistic local apply so the local UI doesn't wait a round-trip
+      // for its own click — the server echo will (harmlessly) re-apply.
+      setMusicStateLocal(state);
+      send({ type: "music_state", ...state });
+    },
+    [send],
+  );
+
   const sendClick = useCallback(
     (x: number, y: number) => {
       send({ type: "click", x, y });
@@ -640,6 +664,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (Array.isArray(msg.openWindows)) {
             setOpenWindowIds(new Set((msg.openWindows as unknown[]).filter((s): s is string => typeof s === "string")));
           }
+          if (msg.musicState && typeof msg.musicState === "object") {
+            setMusicStateLocal(msg.musicState as MusicState);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -784,6 +811,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
             next.delete(id);
             return next;
           });
+          return;
+        }
+
+        if (msg.type === "music_state" && msg.state && typeof msg.state === "object") {
+          setMusicStateLocal(msg.state as MusicState);
           return;
         }
 
@@ -946,6 +978,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     openWindowIds,
     openWindow,
     closeWindow,
+    musicState,
+    setMusicState,
     broadcastTxRequest,
   };
 }

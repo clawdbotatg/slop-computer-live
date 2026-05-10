@@ -45,6 +45,21 @@ import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import { closeWindow as closeSingletonWindow, listOpenWindows, openWindow as openSingletonWindow } from "./windows.js";
 
+// Shared music-player state — singleton across the mesh. When any peer
+// presses play/pause/seek/next, they push a snapshot here; we rebroadcast
+// it so every other peer can keep their local <audio> in lockstep. Not
+// persisted; transient session state, lost on relay restart.
+type MusicState = {
+  src: string | null;
+  index: number;
+  playing: boolean;
+  /** seconds into the track at `at` */
+  position: number;
+  /** Date.now() when this snapshot was captured */
+  at: number;
+};
+let musicState: MusicState | null = null;
+
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
 
 const app = Fastify({
@@ -1298,6 +1313,7 @@ app.register(async function signalRoutes(fastify) {
       hiddenAvatars: listHiddenOwnersSync(),
       chatHistory: recentChat(),
       openWindows: listOpenWindows(),
+      musicState,
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -1446,6 +1462,24 @@ app.register(async function signalRoutes(fastify) {
           if (closeSingletonWindow(msg.id)) {
             broadcast({ type: "window_closed", id: msg.id });
           }
+          return;
+        }
+        case "music_state": {
+          // Replace the shared music snapshot and fan it out. We trust
+          // the sender's clock for `at` — peers compute drift locally
+          // (Date.now() - at). Drift on the order of seconds is fine
+          // for a podcast-bumper player; we're not building a metronome.
+          if (typeof msg.index !== "number" || typeof msg.position !== "number" || typeof msg.at !== "number") {
+            return send(socket, { type: "error", error: "bad_music_state" });
+          }
+          musicState = {
+            src: typeof msg.src === "string" ? msg.src : null,
+            index: msg.index,
+            playing: !!msg.playing,
+            position: msg.position,
+            at: msg.at,
+          };
+          broadcast({ type: "music_state", state: musicState });
           return;
         }
         case "tx_request": {

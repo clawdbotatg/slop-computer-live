@@ -1,19 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
 
-// Music player window body — designed to live inside a <SlotWindow>. The
-// parent supplies the titlebar / drag / resize chrome; this component owns
-// the <audio> element, playlist state, spectrum visualizer, and transport
-// controls. Aesthetic: classic Winamp 2.x main-window — big amber LCD time
-// digits, lime track marquee, kbps/kHz/STEREO info, green→amber→magenta
-// spectrum, tight pixel transport buttons, horizontal volume + balance,
-// playlist as a separate beveled panel below.
+// Music player window body — designed to live inside a <SharedAppWindow>.
+// Aesthetic: classic Winamp 2.x main-window — big amber LCD time digits,
+// lime track marquee, kbps/kHz/STEREO info, lime→amber→magenta spectrum,
+// tight pixel transport buttons, horizontal volume + balance, playlist
+// as a separate beveled panel below.
+//
+// Multiplayer: the *playback* state (which track, playing/paused, where
+// in the track) lives in mesh.musicState so every peer hears the same
+// thing. Per-user state stays local: volume, balance, the visualiser
+// graph (we don't pipe audio through the mesh — each peer plays the
+// same MP3 from their own browser).
 
 type Track = { title: string; artist: string; src: string };
 
 const PLAYLIST_URL = "/music/playlist.json";
 const VOLUME_KEY = "slop-music-volume-v1";
+/** Tolerance, in seconds, between local audio.currentTime and the
+ *  position predicted from the shared state before we force a seek.
+ *  Keep this loose — re-seeking too aggressively makes the audio judder
+ *  every time the network burps. */
+const SYNC_TOLERANCE_SEC = 1.5;
 
 const fmtTime = (s: number): string => {
   if (!Number.isFinite(s) || s < 0) return "00:00";
@@ -22,18 +32,30 @@ const fmtTime = (s: number): string => {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 };
 
-export const MusicPlayerWindow = () => {
+/** Where in the track should we be RIGHT NOW given the shared snapshot? */
+const livePosition = (state: MusicState | null): number => {
+  if (!state) return 0;
+  if (!state.playing) return state.position;
+  return state.position + Math.max(0, (Date.now() - state.at) / 1000);
+};
+
+export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [index, setIndex] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.7);
   const [balance, setBalance] = useState(0);
   const [seeking, setSeeking] = useState(false);
   const [seekValue, setSeekValue] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Smooth display tick — re-render every 100ms while playing so the LCD
+  // and seek thumb advance without us having to spam the network.
+  const [displayPosition, setDisplayPosition] = useState(0);
+
+  // Derived: current track + play state come straight from the mesh.
+  const ms = mesh.musicState;
+  const playing = !!ms?.playing;
+  const index = ms?.index ?? 0;
 
   // Restore the last-set volume on mount so the user's preference survives
   // close/reopen.
@@ -74,10 +96,9 @@ export const MusicPlayerWindow = () => {
 
   // ---- Web Audio graph -------------------------------------------------
   // analyser for the spectrum, plus a stereo panner for the BAL slider.
-  // Built lazily *inside the user gesture* (togglePlay) — Chrome's
-  // autoplay policy keeps a context created outside a gesture in the
-  // "suspended" state, which silently swallows all audio routed through
-  // it. That's the bug that made playback look dead in v1.
+  // Built lazily *inside the user gesture* (any transport click) — Chrome
+  // keeps a context created outside a gesture in the "suspended" state,
+  // which silently swallows all audio routed through it.
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
@@ -96,8 +117,6 @@ export const MusicPlayerWindow = () => {
       analyser.fftSize = 128;
       analyser.smoothingTimeConstant = 0.78;
       const panner = ctx.createStereoPanner();
-      // src → panner → analyser → destination. Analyser is a pass-through
-      // so audio still hits the speakers; panner gives BAL a real effect.
       src.connect(panner);
       panner.connect(analyser);
       analyser.connect(ctx.destination);
@@ -105,14 +124,11 @@ export const MusicPlayerWindow = () => {
       analyserRef.current = analyser;
       pannerRef.current = panner;
     } catch (err) {
-      // createMediaElementSource throws if called twice on the same
-      // element. Not fatal — playback still works through the default
-      // route, we just lose the visualizer + balance.
       console.warn("music graph init failed", err);
     }
   }, []);
 
-  // Push volume into the live element AND persist.
+  // Push volume into the live element + persist.
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
     try {
@@ -128,117 +144,189 @@ export const MusicPlayerWindow = () => {
     if (p) p.pan.value = Math.max(-1, Math.min(1, balance));
   }, [balance]);
 
-  // Manage src + state imperatively. Setting src declaratively in JSX
-  // would re-mount the audio element on every track switch, which kills
-  // the MediaElementSourceNode (Web Audio refuses to attach twice).
+  // ---- The single source of truth: mesh.musicState ---------------------
+  // Whenever the shared snapshot changes (or the audio element is replaced),
+  // bring our local <audio> in line:
+  //   - load the right track
+  //   - jump to the predicted position if we've drifted too far
+  //   - play / pause to match the shared `playing` flag
   useEffect(() => {
     const a = audioRef.current;
-    if (!a) return;
-    if (!current) {
-      a.removeAttribute("src");
-      setPosition(0);
-      setDuration(0);
-      return;
+    if (!a || !current) return;
+
+    // Source mismatch → load the correct track. Setting `src` cancels any
+    // in-flight load so this is safe to call repeatedly with the same value.
+    if (!a.src.endsWith(current.src)) {
+      a.src = current.src;
+      a.load();
     }
-    a.src = current.src;
-    a.load();
-    if (playing) {
-      // Resume / kick the context — switching tracks while playing.
+
+    const target = livePosition(ms);
+    if (Math.abs(a.currentTime - target) > SYNC_TOLERANCE_SEC && Number.isFinite(target)) {
+      try {
+        a.currentTime = target;
+      } catch {
+        /* readyState too low — the loadeddata listener below will retry */
+      }
+    }
+
+    if (playing && a.paused) {
       audioCtxRef.current?.resume().catch(() => undefined);
       a.play().catch(err => {
-        setPlaying(false);
-        setError(`can't autoplay: ${(err as Error).message}`);
+        // First time round we may be outside a user gesture (e.g. another
+        // peer pressed play before we ever interacted). Surface a hint
+        // and stay paused locally; the next click on play will work
+        // because Chrome counts that as a gesture.
+        setError(`tap play to join — ${(err as Error).message}`);
       });
+    } else if (!playing && !a.paused) {
+      a.pause();
     }
+    // Re-run whenever the snapshot changes meaningfully OR the current
+    // track src flips. We DON'T depend on `livePosition` itself — we
+    // re-sync on snapshot edges and trust the audio element to drift
+    // smoothly between them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.src]);
+  }, [ms?.src, ms?.index, ms?.playing, ms?.position, ms?.at, current?.src]);
 
-  // Lifecycle event listeners.
+  // Lifecycle event listeners — drive *local* state (duration, error)
+  // and broadcast on track-end so all peers advance together.
+  const lastEndedRef = useRef<{ src: string; at: number } | null>(null);
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    const onTime = () => {
-      if (!seeking) setPosition(a.currentTime);
-    };
     const onMeta = () => setDuration(a.duration || 0);
+    const onLoaded = () => {
+      // After a fresh load, snap to the shared target position once
+      // metadata is available (in case the earlier setCurrentTime in the
+      // sync effect was rejected for readyState reasons).
+      const target = livePosition(mesh.musicState);
+      if (Math.abs(a.currentTime - target) > SYNC_TOLERANCE_SEC && Number.isFinite(target)) {
+        try {
+          a.currentTime = target;
+        } catch {
+          /* still not seekable, give up — playback will start from 0 */
+        }
+      }
+    };
     const onEnded = () => {
-      setIndex(i => (tracks.length > 0 ? (i + 1) % tracks.length : 0));
+      // Multiple peers fire `ended` at roughly the same wall-clock time,
+      // and they all compute the same next-index payload — so a flurry
+      // of identical music_state messages lands at the relay and fans
+      // back out. Last-write-wins is harmless when the writes match.
+      // Dedupe per-track-per-second locally so we don't double-broadcast
+      // if the audio element fires ended twice (some browsers do).
+      if (tracks.length === 0) return;
+      const stamp = lastEndedRef.current;
+      if (current && stamp && stamp.src === current.src && Date.now() - stamp.at < 1000) return;
+      if (current) lastEndedRef.current = { src: current.src, at: Date.now() };
+      const nextIndex = (index + 1) % tracks.length;
+      mesh.setMusicState({
+        src: tracks[nextIndex]?.src ?? null,
+        index: nextIndex,
+        playing: true,
+        position: 0,
+        at: Date.now(),
+      });
     };
     const onErr = () => {
-      const msg = a.error?.message || "unknown error";
-      setError(`playback error on "${current?.title ?? "?"}": ${msg}`);
-      setPlaying(false);
+      const m = a.error?.message || "unknown error";
+      setError(`playback error on "${current?.title ?? "?"}": ${m}`);
     };
-    a.addEventListener("timeupdate", onTime);
     a.addEventListener("loadedmetadata", onMeta);
     a.addEventListener("durationchange", onMeta);
+    a.addEventListener("loadeddata", onLoaded);
     a.addEventListener("ended", onEnded);
     a.addEventListener("error", onErr);
     return () => {
-      a.removeEventListener("timeupdate", onTime);
       a.removeEventListener("loadedmetadata", onMeta);
       a.removeEventListener("durationchange", onMeta);
+      a.removeEventListener("loadeddata", onLoaded);
       a.removeEventListener("ended", onEnded);
       a.removeEventListener("error", onErr);
     };
-  }, [tracks.length, current?.title, seeking]);
+  }, [tracks, current, index, mesh]);
+
+  // Smooth UI tick — every 100ms while playing, recompute the displayed
+  // position. Doesn't touch the network; just re-renders the LCD/seek.
+  useEffect(() => {
+    if (!playing) {
+      setDisplayPosition(ms?.position ?? 0);
+      return;
+    }
+    const tick = () => setDisplayPosition(livePosition(mesh.musicState));
+    tick();
+    const id = window.setInterval(tick, 100);
+    return () => window.clearInterval(id);
+  }, [playing, ms?.position, ms?.at, ms?.src, mesh]);
+
+  // ---- Transport actions: every click broadcasts a new snapshot ------
+  // None of these touch the audio element directly. The mesh-sync effect
+  // above is the single place that decides what the audio plays.
+  const broadcast = useCallback(
+    (patch: Partial<MusicState>) => {
+      setupGraph();
+      audioCtxRef.current?.resume().catch(() => undefined);
+      setError(null);
+      const cur = mesh.musicState;
+      const fallback: MusicState = {
+        src: current?.src ?? null,
+        index,
+        playing: false,
+        position: 0,
+        at: Date.now(),
+      };
+      mesh.setMusicState({ ...fallback, ...cur, ...patch, at: patch.at ?? Date.now() });
+    },
+    [mesh, current, index, setupGraph],
+  );
 
   const togglePlay = useCallback(() => {
+    if (!current) return;
     const a = audioRef.current;
-    if (!a || !current) return;
-    setError(null);
-    // Build the Web Audio graph + resume the context inside this user
-    // gesture so the autoplay policy doesn't keep us suspended.
-    setupGraph();
-    audioCtxRef.current?.resume().catch(() => undefined);
-    if (a.paused) {
-      a.play()
-        .then(() => setPlaying(true))
-        .catch(err => setError(`play failed: ${(err as Error).message}`));
-    } else {
-      a.pause();
-      setPlaying(false);
-    }
-  }, [current, setupGraph]);
+    const at = livePosition(mesh.musicState);
+    broadcast({
+      src: current.src,
+      index,
+      playing: !playing,
+      // Capture a fresh position from the local audio element if we have
+      // one, otherwise from the shared snapshot. Either is "now".
+      position: a && Number.isFinite(a.currentTime) ? a.currentTime : at,
+    });
+  }, [broadcast, current, index, playing, mesh]);
 
   const stop = useCallback(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    a.pause();
-    a.currentTime = 0;
-    setPlaying(false);
-    setPosition(0);
-  }, []);
+    if (!current) return;
+    broadcast({ src: current.src, index, playing: false, position: 0 });
+  }, [broadcast, current, index]);
 
   const next = useCallback(() => {
     if (tracks.length === 0) return;
-    setIndex(i => (i + 1) % tracks.length);
-  }, [tracks.length]);
+    const i = (index + 1) % tracks.length;
+    broadcast({ src: tracks[i]?.src ?? null, index: i, playing, position: 0 });
+  }, [broadcast, tracks, index, playing]);
 
   const prev = useCallback(() => {
     if (tracks.length === 0) return;
     // > 3s into the track? rewind. Else jump to previous. (Winamp default.)
     const a = audioRef.current;
-    if (a && a.currentTime > 3) {
-      a.currentTime = 0;
-      setPosition(0);
+    if (a && a.currentTime > 3 && current) {
+      broadcast({ src: current.src, index, playing, position: 0 });
       return;
     }
-    setIndex(i => (i - 1 + tracks.length) % tracks.length);
-  }, [tracks.length]);
+    const i = (index - 1 + tracks.length) % tracks.length;
+    broadcast({ src: tracks[i]?.src ?? null, index: i, playing, position: 0 });
+  }, [broadcast, tracks, index, playing, current]);
 
   const playIndex = useCallback(
     (i: number) => {
-      setupGraph();
-      audioCtxRef.current?.resume().catch(() => undefined);
-      setIndex(i);
-      setPlaying(true);
-      setError(null);
+      if (tracks.length === 0) return;
+      broadcast({ src: tracks[i]?.src ?? null, index: i, playing: true, position: 0 });
     },
-    [setupGraph],
+    [broadcast, tracks],
   );
 
-  // RAF spectrum loop. Renders to canvas in-place; no React re-renders.
+  // ---- RAF spectrum loop. Renders to canvas in-place; no React re-renders.
   useEffect(() => {
     let raf = 0;
     const loop = () => {
@@ -264,8 +352,6 @@ export const MusicPlayerWindow = () => {
           const used = Math.min(bins - start, 19); // Winamp main viz is ~19 bars
           const totalGap = (used + 1) * dpr;
           const barW = (W - totalGap) / used;
-          // Draw bars in the classic Winamp gradient: lime at the bottom
-          // climbing through amber to magenta at the peak.
           for (let i = 0; i < used; i++) {
             const v = (data[i + start] ?? 0) / 255;
             const segments = Math.max(1, Math.floor(v * 14));
@@ -294,16 +380,13 @@ export const MusicPlayerWindow = () => {
     };
   }, []);
 
-  // Track meta line — what we know about the current track. We don't
-  // probe the file, just show the playlist.json metadata; the bitrate /
-  // sample-rate are placeholders that still read like a Winamp readout.
   const lcdTrackText = useMemo(() => {
     if (error) return error;
     if (!current) return tracks.length === 0 ? "loading playlist…" : "no track";
     return `${index + 1}. ${current.artist} - ${current.title}  (${fmtTime(duration)})`;
   }, [current, error, tracks.length, index, duration]);
 
-  const shownPosition = seeking ? seekValue : position;
+  const shownPosition = seeking ? seekValue : displayPosition;
   const seekMax = duration > 0 ? duration : 1;
 
   return (
@@ -318,9 +401,8 @@ export const MusicPlayerWindow = () => {
         userSelect: "none",
       }}
     >
-      {/* Same-origin source — no crossOrigin attribute, since the dev
-          server doesn't emit CORS headers and the visualizer doesn't need
-          it for local playback. */}
+      {/* Same-origin source — no crossOrigin attribute so the dev server's
+          missing CORS headers can't stall the load. */}
       <audio ref={audioRef} preload="metadata" />
 
       {/* === Top LCD panel ============================================== */}
@@ -339,7 +421,6 @@ export const MusicPlayerWindow = () => {
           alignItems: "center",
         }}
       >
-        {/* Big amber LCD time digits, like Winamp's clock readout. */}
         <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 78 }}>
           <div
             style={{
@@ -367,7 +448,6 @@ export const MusicPlayerWindow = () => {
           </div>
         </div>
 
-        {/* Right column: spectrum on top, info row + marquee below. */}
         <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
           <div
             style={{
@@ -409,16 +489,16 @@ export const MusicPlayerWindow = () => {
           value={shownPosition}
           onChange={e => setSeekValue(parseFloat(e.target.value))}
           onMouseDown={() => {
-            setSeekValue(position);
+            setSeekValue(displayPosition);
             setSeeking(true);
           }}
           onMouseUp={e => {
             const v = parseFloat((e.target as HTMLInputElement).value);
-            if (audioRef.current && Number.isFinite(v)) {
-              audioRef.current.currentTime = v;
-              setPosition(v);
-            }
             setSeeking(false);
+            if (!current || !Number.isFinite(v)) return;
+            // Broadcast the seek; the sync effect re-positions every peer
+            // (including us) and resumes playback if we were playing.
+            broadcast({ src: current.src, index, playing, position: v });
           }}
           disabled={!current || duration === 0}
           aria-label="seek"
@@ -529,8 +609,8 @@ export const MusicPlayerWindow = () => {
                 <div
                   key={t.src}
                   onDoubleClick={() => playIndex(i)}
-                  onClick={() => setIndex(i)}
-                  title={`double-click to play • ${t.src}`}
+                  onClick={() => playIndex(i)}
+                  title={`click to play • ${t.src}`}
                   style={{
                     display: "grid",
                     gridTemplateColumns: "26px 1fr auto",
@@ -538,7 +618,6 @@ export const MusicPlayerWindow = () => {
                     gap: 6,
                     padding: "2px 8px",
                     fontSize: 10,
-                    cursor: "pointer",
                     background: active
                       ? "linear-gradient(180deg, rgba(255,62,201,0.35) 0%, rgba(124,77,255,0.25) 100%)"
                       : i % 2 === 0
@@ -586,9 +665,6 @@ export const MusicPlayerWindow = () => {
 };
 
 // --- Transport button -------------------------------------------------
-// Pixel-perfect tiny chrome key. Renders a glyph composed of CSS shapes
-// (no fonts) so the prev/next/play/stop icons read as real pixel art at
-// any zoom. Accent variant lights the play button up in magenta.
 type Icon = "prev" | "play" | "pause" | "stop" | "next";
 
 const TBtn = ({
@@ -631,9 +707,6 @@ const TBtn = ({
   </button>
 );
 
-// Tiny pixel-style transport glyphs rendered as CSS — no font dependency,
-// always crisp. Each icon is a flex row of two halves (skip-back/skip-fwd)
-// or a triangle / two bars / a square.
 const Glyph = ({ icon, accent }: { icon: Icon; accent: boolean }) => {
   const fg = accent ? "#fff" : "var(--slop-lime, #bcff5b)";
   switch (icon) {
@@ -695,8 +768,6 @@ const Glyph = ({ icon, accent }: { icon: Icon; accent: boolean }) => {
 };
 
 // --- Marquee ----------------------------------------------------------
-// CSS scroller that only animates when text overflows its container.
-// Re-measures on text or container resize so swapping tracks recomputes.
 const Marquee = ({ text, color }: { text: string; color: string }) => {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const innerRef = useRef<HTMLDivElement | null>(null);

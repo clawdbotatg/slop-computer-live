@@ -13,8 +13,8 @@ import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
-import { SlotWindow } from "~~/components/desktop/SlotWindow";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
@@ -173,28 +173,17 @@ const Desktop: NextPage = () => {
   const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
   const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
 
-  // Chat window: open/close is per-user (localStorage), but the window's
-  // position lives in the shared mesh slot system — same path browsers
-  // and cameras use, so reload + drag + menubar-clamp all come for free.
-  const [chatOpen, setChatOpen] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.localStorage.getItem("slop-chat-open") === "1") setChatOpen(true);
-  }, []);
-  const setChatOpenPersisted = useCallback((open: boolean) => {
-    setChatOpen(open);
-    try {
-      if (open) window.localStorage.setItem("slop-chat-open", "1");
-      else window.localStorage.removeItem("slop-chat-open");
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  // Music player is a shared singleton — when anyone opens it, every
-  // connected peer sees it; when anyone closes it, it's gone for all.
-  // Compare to chat (per-user open/close, only messages are shared).
-  const musicOpen = mesh.openWindowIds.has("music");
+  // === Adding a new desktop app ===
+  // 1. Add an entry to DEFAULT_APPS in packages/relay/src/index.ts (or
+  //    the live apps.json on the box) with a new `kind`.
+  // 2. In the icon double-click switch below, call mesh.openWindow(<id>).
+  // 3. Render <SharedAppWindow mesh={mesh} id="<id>" title="…"
+  //      defaultSlot={…}><YourComponent /></SharedAppWindow>
+  //    in the windows section near the bottom of this file.
+  // That's all — open/close visibility, position, and the close button
+  // are all shared across the mesh automatically. Don't hand-roll local
+  // open state or a per-user slot id; that's how chat used to look and
+  // why music spent a day being invisible to other players.
 
   // Hot-swap the audio track on the active publication. Driven by the
   // share dialog's edit mode — keeps the same publication / streamId so
@@ -789,7 +778,7 @@ const Desktop: NextPage = () => {
                   onDoubleClick={() => {
                     switch (app.kind) {
                       case "chat":
-                        setChatOpenPersisted(true);
+                        mesh.openWindow("chat");
                         return;
                       case "music":
                         mesh.openWindow("music");
@@ -974,60 +963,39 @@ const Desktop: NextPage = () => {
           </Window>
         ) : null}
 
-        {/* Chat window — open/close is per-user (localStorage), but
-            position is a shared mesh slot keyed by ownerKey so each user
-            has their own window that survives reload via the relay. */}
-        {chatOpen && session.authenticated ? (
-          <SlotWindow
-            mesh={mesh}
-            slotId={`chat-${myOwnerKey ?? mesh.myId ?? "anon"}`}
-            defaultSlot={{
-              id: `chat-${myOwnerKey ?? mesh.myId ?? "anon"}`,
-              x: 80,
-              y: 80,
-              width: 360,
-              height: 420,
-              z: 50,
-            }}
-            title="Chat"
-            minWidth={240}
-            minHeight={220}
-            onClose={() => setChatOpenPersisted(false)}
-            bodyStyle={{ padding: 0, overflow: "hidden" }}
-          >
-            <ChatWindow
-              messages={mesh.chatMessages}
-              sendChat={mesh.sendChat}
-              myAddress={session.authenticated ? session.address : null}
-              myHandle={session.authenticated ? session.handle : null}
-            />
-          </SlotWindow>
-        ) : null}
-
-        {/* Music player — same per-user open/close as chat, with the
-            position shared via the mesh so layout survives reload. The
-            audio plays locally only (we don't pipe it through the mesh);
-            the listener controls their own playback. */}
-        {musicOpen && session.authenticated ? (
-          <SlotWindow
-            mesh={mesh}
-            slotId="app-music"
-            defaultSlot={{
-              id: "app-music",
-              x: 120,
-              y: 120,
-              width: 380,
-              height: 440,
-              z: 50,
-            }}
-            title="WINAMP"
-            minWidth={300}
-            minHeight={300}
-            onClose={() => mesh.closeWindow("music")}
-            bodyStyle={{ padding: 0, overflow: "hidden" }}
-          >
-            <MusicPlayerWindow />
-          </SlotWindow>
+        {/* === Singleton app windows ============================ */}
+        {/* Each <SharedAppWindow> renders if the shared mesh state
+            says its id is open — visibility, position, and the close
+            button are all synchronized across peers. Drop new apps in
+            here following the same pattern. */}
+        {session.authenticated ? (
+          <>
+            <SharedAppWindow
+              mesh={mesh}
+              id="chat"
+              title="Chat"
+              defaultSlot={{ x: 80, y: 80, width: 360, height: 420 }}
+              minWidth={240}
+              minHeight={220}
+            >
+              <ChatWindow
+                messages={mesh.chatMessages}
+                sendChat={mesh.sendChat}
+                myAddress={session.address}
+                myHandle={session.handle}
+              />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="music"
+              title="WINAMP"
+              defaultSlot={{ x: 120, y: 120, width: 380, height: 440 }}
+              minWidth={300}
+              minHeight={300}
+            >
+              <MusicPlayerWindow mesh={mesh} />
+            </SharedAppWindow>
+          </>
         ) : null}
       </div>
 

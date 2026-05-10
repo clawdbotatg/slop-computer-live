@@ -74,7 +74,13 @@ export const SlotWindow = ({
         if (slot.z >= maxZ) return;
         mesh.updateSlot({ id: slotId, z: maxZ + 1 });
       }}
-      onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
+      // Pass the full geometry on every move, not just x/y. Otherwise
+      // mesh.updateSlot's optimistic merge falls back to its generic
+      // 360×260 defaults when a slot is being created for the first
+      // time (i.e. user opens a window and immediately drags it before
+      // the slot has been persisted) — making the window snap-shrink
+      // mid-drag.
+      onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: slot.width, height: slot.height })}
       onResize={({ x, y, width, height }) => mesh.updateSlot({ id: slotId, x, y, width, height })}
       containerInset={{ top: menubarInset }}
     >
