@@ -161,7 +161,7 @@ const DEFAULT_APPS: AppEntry[] = [
   {
     id: "chess",
     label: "Chess",
-    icon: "/icons/d20.png",
+    icon: "/icons/chess.png",
     kind: "chess",
   },
 ];
