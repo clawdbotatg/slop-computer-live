@@ -43,10 +43,10 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "BANKR_API_KEY",
   },
   {
-    id: "venice-glm-4.5",
-    label: "GLM 4.5 (Venice) 🤖",
+    id: "venice-uncensored",
+    label: "Venice Uncensored 🤖",
     baseURL: "https://api.venice.ai/api/v1",
-    model: "glm-4.5",
+    model: "venice-uncensored",
     envVar: "VENICE_API_KEY",
   },
 ];
