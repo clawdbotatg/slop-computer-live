@@ -23,6 +23,11 @@ export type AIPlayerConfig = {
   model: string;
   /** Name of the env var that holds the bearer token for this provider. */
   envVar: string;
+  /** How the provider expects the key. "bearer" = standard
+   *  OpenAI-style `Authorization: Bearer <key>`. "x-api-key" =
+   *  Cloudflare/Bankr-style `X-API-Key: <key>`. Defaults to bearer
+   *  since the vast majority of OpenAI-compatible endpoints want that. */
+  authStyle?: "bearer" | "x-api-key";
   /** Optional extra system-prompt fragment, appended to the standard
    *  chess instructions. Useful for "play aggressively" personas. */
   systemPromptExtra?: string;
@@ -38,9 +43,13 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   {
     id: "bankr-minimax-m2.7",
     label: "MiniMax M2.7 (Bankr) 🤖",
-    baseURL: "https://api.bankr.com/v1",
+    // Bankr's "OpenClaw" LLM gateway — OpenAI-compatible response
+    // shape but uses an X-API-Key header instead of bearer auth.
+    // Catalog: https://llm.bankr.bot/v1/models
+    baseURL: "https://llm.bankr.bot/v1",
     model: "minimax-m2.7",
     envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
   },
   {
     id: "venice-uncensored",

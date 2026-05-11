@@ -172,12 +172,17 @@ async function askForMove(
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 30_000);
     try {
+      // Most providers want `Authorization: Bearer …`; Bankr's OpenClaw
+      // wants `X-API-Key: …`. Pick based on the registry config.
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (ai.authStyle === "x-api-key") {
+        headers["x-api-key"] = ai.apiKey;
+      } else {
+        headers.authorization = `Bearer ${ai.apiKey}`;
+      }
       res = await fetch(url, {
         method: "POST",
-        headers: {
-          authorization: `Bearer ${ai.apiKey}`,
-          "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
