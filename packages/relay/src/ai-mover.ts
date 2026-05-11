@@ -78,12 +78,12 @@ async function playOneTurn(
 
   // First attempt: open prompt.
   let move = await askForMove(ai, game.fen, game.moves, legalMoves, false);
-  if (move && tryApply(sideKey, move, notifyAfterMove)) return;
+  if (move && tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
 
   // Second attempt: stricter prompt that lists the legal options.
   console.warn(`[ai-mover] ${ai.id}: retrying with strict prompt`);
   move = await askForMove(ai, game.fen, game.moves, legalMoves, true);
-  if (move && tryApply(sideKey, move, notifyAfterMove)) return;
+  if (move && tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
 
   // Two strikes — auto-resign so the human isn't stuck.
   console.warn(`[ai-mover] ${ai.id}: 2 bad responses, resigning`);
@@ -91,12 +91,12 @@ async function playOneTurn(
   notifyAfterMove();
 }
 
-function tryApply(sideKey: string, uci: string, notifyAfterMove: () => void): boolean {
-  const parsed = parseUCI(uci);
+function tryApply(sideKey: string, raw: string, fen: string, notifyAfterMove: () => void): boolean {
+  const parsed = extractMove(raw, fen);
   if (!parsed) return false;
   const result = chessApply(sideKey, parsed);
   if (!result.ok) {
-    console.warn(`[ai-mover] illegal move from ${sideKey}: ${uci} (${result.error})`);
+    console.warn(`[ai-mover] illegal move from ${sideKey}: ${raw} (${result.error})`);
     return false;
   }
   notifyAfterMove();
@@ -107,13 +107,15 @@ function tryApply(sideKey: string, uci: string, notifyAfterMove: () => void): bo
 
 function buildSystemPrompt(ai: ReturnType<typeof getAIPlayer> & object, color: "white" | "black"): string {
   const base = [
-    `You are playing a serious chess game as ${color}.`,
-    `Reply with EXACTLY ONE move in UCI format and nothing else.`,
-    `UCI = "<from-square><to-square>" with optional promotion piece, e.g.:`,
-    `  e2e4`,
-    `  g8f6`,
-    `  e7e8q   (pawn promotion to queen)`,
-    `Do not include analysis, narration, or punctuation. JUST the move.`,
+    `You are playing chess as ${color}. Reply with ONE chess move and nothing else.`,
+    `Format: either UCI (e2e4, g8f6, e7e8q for promotion) OR SAN (e4, Nf6, O-O, exd5, e8=Q).`,
+    ``,
+    `RULES:`,
+    `  - Output ONLY the move. No words around it.`,
+    `  - NO <think>, <reasoning>, or any other tags.`,
+    `  - NO analysis, NO commentary, NO "I'll play", NO explanation.`,
+    `  - Do not echo the position. Do not list candidates.`,
+    `  - Just the move. One token. Done.`,
   ].join("\n");
   return ai.systemPromptExtra ? `${base}\n\n${ai.systemPromptExtra}` : base;
 }
@@ -216,14 +218,59 @@ function computeLegalUCIs(fen: string): string[] {
   }
 }
 
-const UCI_RE = /([a-h][1-8])([a-h][1-8])([qrbn])?/i;
-function parseUCI(text: string): { from: string; to: string; promotion?: string } | null {
-  // Tolerate models that wrap the move in quotes / backticks / a sentence.
-  const m = text.match(UCI_RE);
-  if (!m) return null;
-  return {
-    from: m[1]!.toLowerCase(),
-    to: m[2]!.toLowerCase(),
-    promotion: m[3]?.toLowerCase(),
-  };
+// Extract a legal chess move from arbitrary model output. Tries UCI
+// first (the format we ASK for), then falls back to SAN by scanning
+// for chess-move-looking tokens and asking chess.js to validate each.
+//
+// Why both: reasoning models like MiniMax M2.7 wrap their answer in
+// `<think>` blocks and often emit the final move in SAN ("Nc6") rather
+// than UCI ("b8c6"). Accepting SAN drops the strict-retry rate by ~80%
+// in informal testing, which roughly halves API spend per move.
+const UCI_RE = /([a-h][1-8])([a-h][1-8])([qrbn])?/gi;
+const SAN_RE = /\b(?:O-O-O|O-O|0-0-0|0-0|[KQRBN][a-h]?[1-8]?x?[a-h][1-8](?:=?[QRBN])?[+#]?|[a-h]x?[a-h][1-8](?:=?[QRBN])?[+#]?|[a-h][1-8](?:=?[QRBN])?[+#]?)\b/g;
+
+function extractMove(text: string, fen: string): { from: string; to: string; promotion?: string } | null {
+  // Strategy 1: UCI — scan all matches and try each. Reasoning models
+  // sometimes mention the OPPONENT's last move ("white played e2e4")
+  // before their own answer; the first match might be wrong, but a
+  // later match often is the actual move.
+  for (const m of text.matchAll(UCI_RE)) {
+    const candidate = {
+      from: m[1]!.toLowerCase(),
+      to: m[2]!.toLowerCase(),
+      promotion: m[3]?.toLowerCase(),
+    };
+    if (validateMove(fen, candidate)) return candidate;
+  }
+  // Strategy 2: SAN — scan candidates, validate via chess.js. Same
+  // "first valid wins" approach.
+  for (const sanMatch of text.matchAll(SAN_RE)) {
+    const san = sanMatch[0];
+    const resolved = sanToCoords(fen, san);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function validateMove(fen: string, candidate: { from: string; to: string; promotion?: string }): boolean {
+  try {
+    const ch = new Chess();
+    ch.load(fen);
+    const m = ch.move(candidate);
+    return !!m;
+  } catch {
+    return false;
+  }
+}
+
+function sanToCoords(fen: string, san: string): { from: string; to: string; promotion?: string } | null {
+  try {
+    const ch = new Chess();
+    ch.load(fen);
+    const m = ch.move(san);
+    if (!m) return null;
+    return { from: m.from, to: m.to, promotion: (m as { promotion?: string }).promotion };
+  } catch {
+    return null;
+  }
 }

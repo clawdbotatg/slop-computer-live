@@ -159,6 +159,11 @@ export type ChessGame = {
   status: ChessGameStatus;
   startedAt: number;
   endedAt?: number;
+  /** Date.now() when the current side started thinking. Drives the
+   *  live "this turn" counter under each player's name. */
+  turnStartedAt: number;
+  /** Wall-clock ms each completed move took, parallel to `moves`. */
+  moveTimings: number[];
 };
 
 export type ChessResult = {

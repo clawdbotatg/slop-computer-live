@@ -40,6 +40,14 @@ export type ChessGame = {
   status: ChessGameStatus;
   startedAt: number;
   endedAt?: number;
+  /** Date.now() when the current side started thinking. Jumps to
+   *  Date.now() on every applyMove (== when the OTHER side now gets
+   *  to think). Used by clients to render a live "thinking Xs"
+   *  counter under each player's name. */
+  turnStartedAt: number;
+  /** Wall-clock ms each completed move took, parallel to `moves`.
+   *  Index 0 is white's first move, 1 is black's response, etc. */
+  moveTimings: number[];
 };
 
 export type ChessResult = {
@@ -63,7 +71,13 @@ let history: ChessResult[] = [];
   try {
     const raw = readFileSync(CHESS_PATH, "utf8");
     const parsed = JSON.parse(raw) as { current?: ChessGame | null; history?: ChessResult[] };
-    if (parsed.current && typeof parsed.current === "object") current = parsed.current;
+    if (parsed.current && typeof parsed.current === "object") {
+      current = parsed.current;
+      // Backfill fields added after this game was saved so the type
+      // contract holds. Historical move timings are unknown.
+      if (typeof current.turnStartedAt !== "number") current.turnStartedAt = current.startedAt;
+      if (!Array.isArray(current.moveTimings)) current.moveTimings = [];
+    }
     if (Array.isArray(parsed.history)) history = parsed.history.slice(0, HISTORY_CAP);
   } catch {
     /* fresh start, no file on disk yet */
@@ -103,6 +117,7 @@ export type CreateGameArgs = {
 export function createGame(args: CreateGameArgs): { ok: true; game: ChessGame } | { ok: false; error: string } {
   if (current && current.status === "active") return { ok: false, error: "game_already_active" };
   if (!args.whiteKey || !args.blackKey) return { ok: false, error: "missing_player" };
+  const now = Date.now();
   const game: ChessGame = {
     whiteKey: args.whiteKey,
     blackKey: args.blackKey,
@@ -111,7 +126,9 @@ export function createGame(args: CreateGameArgs): { ok: true; game: ChessGame } 
     fen: new Chess().fen(),
     moves: [],
     status: "active",
-    startedAt: Date.now(),
+    startedAt: now,
+    turnStartedAt: now,
+    moveTimings: [],
   };
   current = game;
   scheduleSave();
@@ -135,8 +152,13 @@ export function applyMove(callerKey: string, args: MoveArgs): MoveOutcome {
     return { ok: false, error: "illegal_move" };
   }
   if (!move) return { ok: false, error: "illegal_move" };
+  const now = Date.now();
+  const thinkMs = Math.max(0, now - current.turnStartedAt);
   current.fen = ch.fen();
   current.moves.push(move.san);
+  current.moveTimings.push(thinkMs);
+  // The OTHER side now begins thinking — reset the timer.
+  current.turnStartedAt = now;
 
   let ended = false;
   if (ch.isCheckmate()) {

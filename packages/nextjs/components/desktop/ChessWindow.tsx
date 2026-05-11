@@ -382,6 +382,11 @@ const ActiveOrEnded = ({
         />
       </div>
 
+      {/* Per-side think-time counters: cumulative total + this turn
+          in parens. Side-to-move's numbers tick live; the other
+          side's are static (their last completed move). */}
+      <ThinkTimeRow game={game} whiteToMove={whiteToMove} blackToMove={blackToMove} />
+
       {/* Board */}
       <div
         style={{
@@ -659,6 +664,88 @@ const CoordLabel = ({ pos, children }: { pos: "bottomRight" | "topLeft"; childre
 // MOVE pops with a colored fill, border, glow, and a pulsing dot;
 // the other side fades back. Overrides cleanly read at a glance.
 // =====================================================================
+
+// Per-side timing row. Format: "total (this turn)" — e.g. "12.4s (4.2s)".
+// Side-to-move's numbers tick live (re-render every 200ms); the other
+// side's are static (their last completed move time).
+const ThinkTimeRow = ({
+  game,
+  whiteToMove,
+  blackToMove,
+}: {
+  game: ChessGame;
+  whiteToMove: boolean;
+  blackToMove: boolean;
+}) => {
+  // Re-render at 5Hz so the live counters tick. Cheap — a single
+  // setState on a small component, no canvas / DOM recomputes
+  // beyond the two text spans.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (game.status !== "active") return;
+    const id = window.setInterval(() => setTick(t => t + 1), 200);
+    return () => window.clearInterval(id);
+  }, [game.status]);
+
+  const timings = game.moveTimings ?? [];
+  // Even indices = white moves (0, 2, 4 …). Odd = black.
+  let whiteTotal = 0;
+  let blackTotal = 0;
+  let whiteLast = 0;
+  let blackLast = 0;
+  for (let i = 0; i < timings.length; i++) {
+    const t = timings[i] ?? 0;
+    if (i % 2 === 0) {
+      whiteTotal += t;
+      whiteLast = t;
+    } else {
+      blackTotal += t;
+      blackLast = t;
+    }
+  }
+
+  const liveTurn = game.status === "active" ? Math.max(0, Date.now() - (game.turnStartedAt ?? game.startedAt)) : 0;
+  const whiteThisTurn = whiteToMove ? liveTurn : whiteLast;
+  const blackThisTurn = blackToMove ? liveTurn : blackLast;
+  const whiteTotalLive = whiteToMove ? whiteTotal + liveTurn : whiteTotal;
+  const blackTotalLive = blackToMove ? blackTotal + liveTurn : blackTotal;
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr auto 1fr",
+        alignItems: "center",
+        gap: 6,
+        padding: "0 4px",
+        fontSize: 9,
+        color: "var(--slop-text-muted)",
+        letterSpacing: "0.04em",
+      }}
+    >
+      <span style={{ color: whiteToMove ? "#3fcfff" : undefined }}>
+        {fmtThink(whiteTotalLive)} <span style={{ opacity: 0.7 }}>({fmtThink(whiteThisTurn)})</span>
+      </span>
+      <span />
+      <span style={{ color: blackToMove ? "#ff3ec9" : undefined, textAlign: "right" }}>
+        {fmtThink(blackTotalLive)} <span style={{ opacity: 0.7 }}>({fmtThink(blackThisTurn)})</span>
+      </span>
+    </div>
+  );
+};
+
+const fmtThink = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const totalSec = Math.floor(s);
+  const m = Math.floor(totalSec / 60);
+  const remSec = totalSec % 60;
+  if (m < 60) return `${m}m ${remSec}s`;
+  const h = Math.floor(m / 60);
+  const remMin = m % 60;
+  return `${h}h ${remMin}m`;
+};
 
 const PlayerChip = ({
   color,
