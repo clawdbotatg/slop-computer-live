@@ -252,6 +252,10 @@ app.get("/v1/state", async (req, reply) => {
     apps: readApps(),
     avatars: listAvatarsSync(),
     hiddenAvatars: listHiddenOwnersSync(),
+    openWindowIds: listOpenWindows(),
+    musicState,
+    chessGame: chessGetCurrentGame(),
+    chessHistory: chessGetHistory(),
   };
 });
 
@@ -722,6 +726,160 @@ app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, repl
   return reply.send(buf);
 });
 
+// =============================================================================
+// /v1/chess — agent surface for the chess game
+// -----------------------------------------------------------------------------
+// Mirrors the WS handlers, with the same server-authoritative validation.
+// Lets a BYO-AI flow play moves on a player's behalf: sign in as the human,
+// mint an agent token, then have the model POST /v1/chess/move using the
+// human's identity. Server enforces side-to-move so the agent can ONLY
+// move for the player it represents.
+// =============================================================================
+
+app.get("/v1/chess", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { game: chessGetCurrentGame(), history: chessGetHistory() };
+});
+
+type ChessCreateBody = { whiteKey?: unknown; blackKey?: unknown; whiteLabel?: unknown; blackLabel?: unknown };
+app.post<{ Body: ChessCreateBody }>("/v1/chess/create", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const b = (req.body ?? {}) as ChessCreateBody;
+  if (typeof b.whiteKey !== "string" || typeof b.blackKey !== "string") {
+    return reply.code(400).send({ error: "missing-player" });
+  }
+  const result = chessCreateGame({
+    whiteKey: b.whiteKey,
+    blackKey: b.blackKey,
+    whiteLabel: typeof b.whiteLabel === "string" ? b.whiteLabel : b.whiteKey,
+    blackLabel: typeof b.blackLabel === "string" ? b.blackLabel : b.blackKey,
+  });
+  if (!result.ok) return reply.code(409).send({ error: result.error });
+  broadcast({ type: "chess_state", game: result.game });
+  return { ok: true, game: result.game };
+});
+
+type ChessMoveBody = { from?: unknown; to?: unknown; promotion?: unknown };
+app.post<{ Body: ChessMoveBody }>("/v1/chess/move", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const b = (req.body ?? {}) as ChessMoveBody;
+  if (typeof b.from !== "string" || typeof b.to !== "string") {
+    return reply.code(400).send({ error: "missing-from-or-to" });
+  }
+  // Use the SAME ownerKey scheme the chess client + WS handler use:
+  // raw lowercased address ?? raw lowercased handle. Don't reuse the
+  // avatar helper here (it slugifies handles with a `h_` prefix) or
+  // moves submitted via REST will fail "not_your_turn" against keys
+  // stored from the WS / client side.
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const result = chessApplyMove(callerKey, {
+    from: b.from,
+    to: b.to,
+    promotion: typeof b.promotion === "string" ? b.promotion : undefined,
+  });
+  if (!result.ok) {
+    const code = result.error === "not_your_turn" || result.error === "illegal_move" ? 403 : 409;
+    return reply.code(code).send({ error: result.error });
+  }
+  broadcast({ type: "chess_state", game: result.game });
+  if (result.ended) broadcast({ type: "chess_history", history: chessGetHistory() });
+  return { ok: true, game: result.game, ended: result.ended };
+});
+
+app.post("/v1/chess/resign", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const result = chessResign(callerKey);
+  if (!result.ok) return reply.code(409).send({ error: result.error });
+  broadcast({ type: "chess_state", game: result.game });
+  broadcast({ type: "chess_history", history: chessGetHistory() });
+  return { ok: true, game: result.game };
+});
+
+app.post("/v1/chess/close", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const result = chessClearGame();
+  if (!result.ok) return reply.code(409).send({ error: result.error });
+  broadcast({ type: "chess_state", game: null });
+  return { ok: true };
+});
+
+// =============================================================================
+// /v1/music — agent surface for the slopamp player
+// -----------------------------------------------------------------------------
+// Volume + playback are a single shared snapshot. POSTing here is the
+// same as the music_state WS message: replace the snapshot, fan out.
+// Volume omitted = preserve the existing value.
+// =============================================================================
+
+app.get("/v1/music", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { state: musicState };
+});
+
+type MusicStateBody = {
+  src?: unknown;
+  index?: unknown;
+  playing?: unknown;
+  position?: unknown;
+  at?: unknown;
+  volume?: unknown;
+};
+app.post<{ Body: MusicStateBody }>("/v1/music/state", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const b = (req.body ?? {}) as MusicStateBody;
+  if (typeof b.index !== "number" || typeof b.position !== "number") {
+    return reply.code(400).send({ error: "bad-state" });
+  }
+  const incomingVolume = typeof b.volume === "number" ? Math.max(0, Math.min(1, b.volume)) : null;
+  musicState = {
+    src: typeof b.src === "string" ? b.src : null,
+    index: b.index,
+    playing: !!b.playing,
+    position: b.position,
+    at: typeof b.at === "number" ? b.at : Date.now(),
+    volume: incomingVolume ?? musicState?.volume ?? 0.7,
+  };
+  broadcast({ type: "music_state", state: musicState });
+  return { ok: true, state: musicState };
+});
+
+// =============================================================================
+// /v1/windows — open / close shared singleton app windows
+// -----------------------------------------------------------------------------
+// Same model as the music window or chess window: anyone can open or
+// close any singleton id. Visibility broadcasts to every peer.
+// =============================================================================
+
+type OpenWindowBody = { id?: unknown };
+app.post<{ Body: OpenWindowBody }>("/v1/windows", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) return reply.code(400).send({ error: "missing-id" });
+  if (openSingletonWindow(id)) broadcast({ type: "window_opened", id });
+  return { ok: true, id };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const id = req.params.id;
+  if (closeSingletonWindow(id)) broadcast({ type: "window_closed", id });
+  return { ok: true, id };
+});
+
 function skillMarkdown(token: string, isHost: boolean): string {
   const base = "https://relay.slop.computer";
   const auth = `Authorization: Bearer ${token}`;
@@ -752,7 +910,7 @@ into shared chats.${hostOnlyNote}
 
 ### Read (any scope)
 
-- \`GET ${base}/v1/state\` — full snapshot: \`{ you, peers, publications, slots, browsers, apps }\`.
+- \`GET ${base}/v1/state\` — full snapshot: \`{ you, peers, publications, slots, browsers, apps, openWindowIds, musicState, chessGame, chessHistory }\`.
 - \`GET ${base}/v1/icons\` — \`{ icons: [{ name, url }] }\` available to use as app/icon paths.
 - \`GET ${base}/v1/apps\` — current app catalog.
 
@@ -812,6 +970,101 @@ DELETE ${base}/v1/apps/:id
 Persists to \`apps.json\` on the relay. New page loads see the new icon.
 \`icon\` can be a relative path served by Next.js (call \`GET /v1/icons\`
 to list options) or any absolute https URL.
+
+### Singleton app windows (any scope)
+
+The desktop has a few "singleton" apps whose visibility is shared
+across all peers — chat, slopamp (music), chess. Anyone can open or
+close them; everyone sees the change.
+
+\`\`\`
+POST   ${base}/v1/windows         { "id": "chess" }   # opens for all
+DELETE ${base}/v1/windows/chess                       # closes for all
+\`\`\`
+
+Known ids: \`chat\`, \`music\`, \`chess\`. \`GET ${base}/v1/state\` includes
+\`openWindowIds\` so you know what's currently up.
+
+### Music (slopamp) (any scope)
+
+Playback is one shared snapshot — track src + index, playing/paused,
+position-at-timestamp, and master volume. Anyone can mutate it; all
+peers' \`<audio>\` elements re-sync. Per-peer mute is local-only and
+isn't exposed here (intentional — mute is "I don't want to hear it",
+not a global decision).
+
+\`\`\`
+GET  ${base}/v1/music                        # → { state }
+POST ${base}/v1/music/state {
+  "src": "/music/cyborg-ninja.mp3",
+  "index": 0,
+  "playing": true,
+  "position": 0,
+  "at": 1730000000000,
+  "volume": 0.7
+}
+\`\`\`
+
+Useful patterns: pause = same snapshot with \`playing:false\`. Skip to
+the next track = bump \`index\`, set \`position:0\`. Volume change = same
+fields, just a different \`volume\`. \`at\` should be roughly \`Date.now()\`
+when you build the snapshot — peers compute the live head as
+\`position + (Date.now() - at)/1000\` while playing. Omitting \`at\`
+defaults to "now". Playlist lives at
+\`https://live.slop.computer/music/playlist.json\` — read it to find
+valid \`src\` values.
+
+### Chess (any scope)
+
+Server-authoritative singleton chess game (chess.js validates every
+move). Players are addressed by **ownerKey** = lowercased wallet
+address ?? lowercased handle. Same scheme the WS clients use.
+
+**Read state:**
+
+\`\`\`
+GET ${base}/v1/chess
+# → { game: { whiteKey, blackKey, fen, moves, status, ... } | null,
+#     history: [ { winner, status, ... }, ... ] }
+\`\`\`
+
+**Start a game (no game in progress):**
+
+\`\`\`
+POST ${base}/v1/chess/create {
+  "whiteKey": "0x123...",
+  "blackKey": "alice",
+  "whiteLabel": "vitalik.eth",
+  "blackLabel": "alice"
+}
+\`\`\`
+
+**Make a move (you must be the side to move):**
+
+\`\`\`
+POST ${base}/v1/chess/move { "from": "e2", "to": "e4" }
+# pawn promotion → include "promotion": "q" | "r" | "b" | "n"
+\`\`\`
+
+The server checks: it's an active game, your session's ownerKey ==
+the side-to-move's ownerKey, and the move is legal per chess.js. On
+success it broadcasts the new state. 403 = not your turn / illegal
+move; 409 = no active game; 400 = bad input.
+
+**Resign / clear:**
+
+\`\`\`
+POST ${base}/v1/chess/resign   # caller's side resigns
+POST ${base}/v1/chess/close    # clears a finished game so the
+                               # lobby reopens for a new one
+\`\`\`
+
+**Agent-as-player:** if a human signed in via SIWE/passkey + minted
+an agent token, the token inherits their ownerKey — so an agent can
+play moves on behalf of that human (and ONLY that human). This is
+the supported "BYO-AI" path: the human picks the agent as a player
+in the lobby, the agent watches \`GET /v1/chess\` for its turn and
+posts back. Don't poll faster than 1Hz.
 
 ## Recipes
 
