@@ -57,9 +57,10 @@ export const AudioVisualizer = ({
   // the suspended state (analyser → silent input → flat visualizer).
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // Local mute toggle — flips track.enabled on the outgoing audio track(s)
-  // so peers receive silence (and the visualizer naturally flatlines).
-  // Doesn't unpublish — the stream stays alive for instant un-mute.
+  // For *my* publication: mute = flip track.enabled so peers hear silence.
+  // For *someone else's* publication: mute = my local <audio> element
+  // is muted via the JSX prop below — their stream is unchanged; only I
+  // stop hearing it. Two mechanisms, single UI affordance.
   const [selfMuted, setSelfMuted] = useState(false);
   useEffect(() => {
     if (!isMine) return;
@@ -212,7 +213,10 @@ export const AudioVisualizer = ({
         overflow: "hidden",
       }}
     >
-      <audio ref={audioRef} autoPlay muted={muted} style={{ display: "none" }} />
+      {/* `muted` prop = self-published feedback prevention. `selfMuted`
+          on a remote stream = "I don't want to hear this peer." Either
+          one mutes the local element. */}
+      <audio ref={audioRef} autoPlay muted={muted || (!isMine && selfMuted)} style={{ display: "none" }} />
       {effectiveAvatar ? (
         <img
           src={effectiveAvatar}
@@ -272,6 +276,33 @@ export const AudioVisualizer = ({
           }}
         />
       </div>
+      {/* Remote-stream-only: per-user "mute on my side" speaker. Same
+          affordance the music player uses, applied to other peers'
+          mics so a single user can step out without making everyone
+          else go silent. */}
+      {!isMine ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            display: "flex",
+            gap: 6,
+            zIndex: 5,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setSelfMuted(m => !m)}
+            aria-label={selfMuted ? "unmute (local)" : "mute (local)"}
+            title={selfMuted ? "unmute (only on your side)" : "mute (only on your side)"}
+            style={overlayBtnStyle(selfMuted)}
+          >
+            {selfMuted ? <SpeakerOffIcon /> : <SpeakerIcon />}
+          </button>
+        </div>
+      ) : null}
+
       {isMine ? (
         <div
           style={{
@@ -421,6 +452,41 @@ const GearIcon = () => (
     <circle cx="10" cy="4" r="1.7" fill="currentColor" stroke="none" />
     <circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none" />
     <circle cx="11" cy="12" r="1.7" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+// Per-user "mute on my side" speaker — same glyph the music player uses.
+const SpeakerIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2.5 6 H 4.5 L 7.5 3 V 13 L 4.5 10 H 2.5 Z" fill="currentColor" stroke="none" />
+    <path d="M9.5 6 Q 11 8 9.5 10" />
+    <path d="M11 4.5 Q 13.5 8 11 11.5" />
+  </svg>
+);
+
+const SpeakerOffIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2.5 6 H 4.5 L 7.5 3 V 13 L 4.5 10 H 2.5 Z" fill="currentColor" stroke="none" />
+    <line x1="9.5" y1="5.5" x2="14" y2="10.5" />
+    <line x1="14" y1="5.5" x2="9.5" y2="10.5" />
   </svg>
 );
 

@@ -13,6 +13,7 @@ import {
   getSlots,
   listPublications,
   publish as publishStream,
+  findPublicationOwner,
   unpublish as unpublishStream,
 } from "./desktop.js";
 import {
@@ -1401,11 +1402,17 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "unpublish": {
+          // Any authenticated peer can close any publication — same
+          // collaborative model as slot moves and shared windows. We
+          // look up the actual owner by streamId so the broadcast
+          // carries the right peerId (which is what every client uses
+          // to remove the publication from its own state).
           if (typeof msg.streamId !== "string") {
             return send(socket, { type: "error", error: "missing_streamId" });
           }
-          const ok = unpublishStream(peerId, msg.streamId);
-          if (ok) broadcast({ type: "unpublished", peerId, streamId: msg.streamId });
+          const ownerId = findPublicationOwner(msg.streamId) ?? peerId;
+          const ok = unpublishStream(ownerId, msg.streamId);
+          if (ok) broadcast({ type: "unpublished", peerId: ownerId, streamId: msg.streamId });
           return;
         }
         case "slot_update": {

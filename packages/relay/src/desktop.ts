@@ -140,6 +140,16 @@ export function unpublish(peerId: string, streamId: string): boolean {
   return true;
 }
 
+/** Find which peer owns this publication, regardless of who's asking.
+ *  Used by the close-anyone path so any authenticated peer can ask the
+ *  relay to drop someone else's window. */
+export function findPublicationOwner(streamId: string): string | null {
+  for (const [peerId, list] of publicationsByPeer) {
+    if (list.some(p => p.streamId === streamId)) return peerId;
+  }
+  return null;
+}
+
 export function clearPeerPublications(peerId: string): Publication[] {
   const list = publicationsByPeer.get(peerId) ?? [];
   publicationsByPeer.delete(peerId);

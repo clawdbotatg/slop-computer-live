@@ -24,6 +24,10 @@ export type VideoViewProps = {
 export const VideoView = ({ stream, muted = false, isMine = false, onSettings }: VideoViewProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [paused, setPaused] = useState(false);
+  // Per-user "mute on my side" for remote streams. Doesn't touch the
+  // upstream — only my local <video> element goes silent. Same model
+  // as the music player + AudioVisualizer.
+  const [selfMuted, setSelfMuted] = useState(false);
 
   useEffect(() => {
     if (!isMine) return;
@@ -52,9 +56,34 @@ export const VideoView = ({ stream, muted = false, isMine = false, onSettings }:
         }}
         autoPlay
         playsInline
-        muted={muted}
+        // Self-publication is always muted (echo prevention). For
+        // remote, the per-user `selfMuted` toggle silences this peer's
+        // local playback only — the upstream stream is unchanged.
+        muted={muted || (!isMine && selfMuted)}
         style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
       />
+      {!isMine ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            display: "flex",
+            gap: 6,
+            zIndex: 5,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setSelfMuted(m => !m)}
+            aria-label={selfMuted ? "unmute (local)" : "mute (local)"}
+            title={selfMuted ? "unmute (only on your side)" : "mute (only on your side)"}
+            style={overlayBtnStyle(selfMuted)}
+          >
+            {selfMuted ? <SpeakerOffIcon /> : <SpeakerIcon />}
+          </button>
+        </div>
+      ) : null}
       {isMine ? (
         <div
           style={{
@@ -179,6 +208,42 @@ const GearIcon = () => (
     <circle cx="10" cy="4" r="1.7" fill="currentColor" stroke="none" />
     <circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none" />
     <circle cx="11" cy="12" r="1.7" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+// Per-user "mute on my side" speaker — same glyph the music player +
+// AudioVisualizer use, kept inline so each window stays self-contained.
+const SpeakerIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2.5 6 H 4.5 L 7.5 3 V 13 L 4.5 10 H 2.5 Z" fill="currentColor" stroke="none" />
+    <path d="M9.5 6 Q 11 8 9.5 10" />
+    <path d="M11 4.5 Q 13.5 8 11 11.5" />
+  </svg>
+);
+
+const SpeakerOffIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <path d="M2.5 6 H 4.5 L 7.5 3 V 13 L 4.5 10 H 2.5 Z" fill="currentColor" stroke="none" />
+    <line x1="9.5" y1="5.5" x2="14" y2="10.5" />
+    <line x1="14" y1="5.5" x2="9.5" y2="10.5" />
   </svg>
 );
 

@@ -557,17 +557,23 @@ const Desktop: NextPage = () => {
     [mesh],
   );
 
-  // Closing a window means: stop publishing if it's mine. Otherwise no-op.
-  // Synchronously clear the auto-resume flag here so reloads don't re-acquire
-  // a stream the user explicitly closed.
+  // Any authenticated peer can close any publication window. When the
+  // pub is mine, we run the full local cleanup (stop hardware, clear
+  // useLocalMedia activeIds, drop the auto-resume flag). When it's
+  // someone else's, we just send the unpublish to the relay — it'll
+  // broadcast `unpublished`, my reconcile effect below will clean up
+  // for the actual publisher (so their camera light goes off etc.).
   const closeWindow = useCallback(
     (pub: Publication) => {
-      if (pub.peerId !== mesh.myId) return;
-      // Route through media.stop when this kind is tracked in useLocalMedia
-      // so its activeIds get cleared — otherwise the Share menu keeps
-      // saying "Stop audio" after the user closed the window. Fall back
-      // to direct cleanup for publications that exist outside media's
-      // tracking (e.g. ghost pubs after a reload before resume).
+      if (pub.peerId !== mesh.myId) {
+        mesh.unpublish(pub.streamId);
+        return;
+      }
+      // Mine. Route through media.stop when this kind is tracked in
+      // useLocalMedia so its activeIds get cleared — otherwise the
+      // Share menu keeps saying "Stop audio" after the user closed
+      // the window. Fall back to direct cleanup for publications that
+      // exist outside media's tracking (ghost pubs after reload).
       const tracked =
         (pub.kind === "audio" && media.activeAudio) ||
         (pub.kind === "camera" && media.activeCamera) ||
@@ -586,6 +592,30 @@ const Desktop: NextPage = () => {
     },
     [mesh, streams, stopStream, media, setWantScreenResume],
   );
+
+  // Reconcile: when one of MY local streams is no longer in the mesh's
+  // publication list (because someone else closed my window), tear it
+  // down locally too — stop the hardware, clear useLocalMedia state,
+  // drop the resume flag. Self-initiated close already cleans up
+  // *before* the broadcast removes the pub, so this branch only fires
+  // for force-close from another peer. Safe to run idempotently — the
+  // cleanup helpers no-op when their target is already gone.
+  useEffect(() => {
+    if (!mesh.connected || !mesh.bootstrapped || !mesh.myId) return;
+    const myPubStreamIds = new Set(mesh.publications.filter(p => p.peerId === mesh.myId).map(p => p.streamId));
+    for (const s of streamsRef.current) {
+      if (myPubStreamIds.has(s.id)) continue;
+      const tracked =
+        (s.kind === "audio" && media.activeAudio) ||
+        (s.kind === "camera" && media.activeCamera) ||
+        (s.kind === "screen" && media.activeScreen);
+      if (tracked) media.stop(s.kind);
+      else stopStream(s.id);
+      const r = readResume();
+      delete r[s.kind];
+      writeResume(r);
+    }
+  }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
 
   // Persist a default slot the first time we see a new publication.
   // Any peer can do this — the relay broadcasts the slot back to everyone.
@@ -832,7 +862,7 @@ const Desktop: NextPage = () => {
               height={slot.height}
               zIndex={slot.z}
               onFocus={() => focusSlot(slotId)}
-              onClose={pub.peerId === mesh.myId ? () => closeWindow(pub) : undefined}
+              onClose={() => closeWindow(pub)}
               onMove={({ x, y }) => moveSlot(slotId, x, y)}
               onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}

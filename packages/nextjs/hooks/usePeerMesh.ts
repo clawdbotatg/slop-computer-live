@@ -429,17 +429,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
 
   const unpublish = useCallback(
     (streamId: string) => {
+      // Local tracks + peer-connection senders only need teardown when
+      // WE own the stream. For a force-close on someone else's pub we
+      // fall through to just the WS message — the relay will broadcast
+      // `unpublished`, the publisher's reconcile effect will stop their
+      // hardware, every peer (including us) drops the pub from state.
       const stream = localStreamsRef.current.get(streamId);
-      if (!stream) return;
-      localStreamsRef.current.delete(streamId);
-      const tracks = new Set(stream.getTracks());
-      for (const pc of peerConnectionsRef.current.values()) {
-        for (const sender of pc.getSenders()) {
-          if (sender.track && tracks.has(sender.track)) {
-            try {
-              pc.removeTrack(sender);
-            } catch {
-              /* ignore */
+      if (stream) {
+        localStreamsRef.current.delete(streamId);
+        const tracks = new Set(stream.getTracks());
+        for (const pc of peerConnectionsRef.current.values()) {
+          for (const sender of pc.getSenders()) {
+            if (sender.track && tracks.has(sender.track)) {
+              try {
+                pc.removeTrack(sender);
+              } catch {
+                /* ignore */
+              }
             }
           }
         }
