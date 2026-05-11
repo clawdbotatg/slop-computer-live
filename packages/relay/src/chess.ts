@@ -190,9 +190,29 @@ export function applyMove(callerKey: string, args: MoveArgs): MoveOutcome {
 
 export function resign(callerKey: string): { ok: true; game: ChessGame } | { ok: false; error: string } {
   if (!current || current.status !== "active") return { ok: false, error: "no_active_game" };
-  if (callerKey === current.whiteKey) current.status = "white_resigned";
-  else if (callerKey === current.blackKey) current.status = "black_resigned";
-  else return { ok: false, error: "not_a_player" };
+  // Self-play edge case: when whiteKey === blackKey (an AI playing
+  // itself, mostly for testing) the naive "if caller===white" check
+  // always marks the resignation as "white_resigned" regardless of
+  // whose actual turn was stuck. Use the FEN's side-to-move to
+  // disambiguate when the keys collide.
+  if (current.whiteKey === current.blackKey) {
+    if (callerKey !== current.whiteKey) return { ok: false, error: "not_a_player" };
+    let side: "white" | "black" = "white";
+    try {
+      const ch = new Chess();
+      ch.load(current.fen);
+      side = ch.turn() === "w" ? "white" : "black";
+    } catch {
+      /* fall through with default */
+    }
+    current.status = side === "white" ? "white_resigned" : "black_resigned";
+  } else if (callerKey === current.whiteKey) {
+    current.status = "white_resigned";
+  } else if (callerKey === current.blackKey) {
+    current.status = "black_resigned";
+  } else {
+    return { ok: false, error: "not_a_player" };
+  }
   current.endedAt = Date.now();
   archive();
   scheduleSave();

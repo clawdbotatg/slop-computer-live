@@ -168,7 +168,12 @@ async function askForMove(
       { role: "system" as const, content: buildSystemPrompt(ai, color) },
       { role: "user" as const, content: buildUserPrompt(fen, history, legal, strict) },
     ],
-    max_tokens: ai.maxTokens ?? 256,
+    // Reasoning models (Kimi K2, MiniMax M2.7) emit hundreds of tokens
+    // of internal reasoning before producing the answer. 256 was way
+    // too tight — Kimi was hitting the cap mid-reasoning so content
+    // came back empty. 2048 leaves plenty of room and the cost is
+    // negligible (we only pay for what's used, capped at this).
+    max_tokens: ai.maxTokens ?? 2048,
     temperature: strict ? 0 : 0.4,
   };
 
@@ -206,10 +211,33 @@ async function askForMove(
     return null;
   }
   const data = (await res.json().catch(() => null)) as
-    | { choices?: { message?: { content?: string } }[] }
+    | {
+        choices?: {
+          message?: { content?: string; reasoning_content?: string };
+          finish_reason?: string;
+        }[];
+      }
     | null;
-  const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
-  return text || null;
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content?.trim() ?? "";
+  const reasoning = choice?.message?.reasoning_content?.trim() ?? "";
+  const finishReason = choice?.finish_reason ?? "?";
+
+  // Reasoning models (Kimi K2.6, sometimes MiniMax M2.7) split output:
+  // `content` holds the final answer, `reasoning_content` holds the
+  // chain of thought. If the model hit max_tokens mid-reasoning,
+  // `content` comes back empty — fall back to reasoning_content, since
+  // extractMove can fish a UCI / SAN token out of the reasoning text
+  // (the model usually states the chosen move there in passing).
+  if (!content && !reasoning) {
+    console.warn(`[ai-mover] ${ai.id}: empty response (finish_reason=${finishReason})`);
+    return null;
+  }
+  if (!content) {
+    console.warn(`[ai-mover] ${ai.id}: content empty (finish=${finishReason}), falling back to reasoning_content`);
+    return reasoning;
+  }
+  return content;
 }
 
 // ---- UCI helpers -----------------------------------------------------
