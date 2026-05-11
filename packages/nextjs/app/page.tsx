@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import type { Address as AddressType } from "viem";
+import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
 import { PasswordGate } from "~~/components/PasswordGate";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
@@ -24,6 +25,7 @@ import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
+import { useUserGesture } from "~~/hooks/useUserGesture";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 export const dynamic = "force-dynamic";
@@ -729,6 +731,13 @@ const Desktop: NextPage = () => {
   );
 
   const localCursor = useLocalCursor();
+  // Browsers won't autoplay <audio src="…"> until the tab has registered
+  // a user gesture this page-load. The sign-in click counts; a reload
+  // with a still-valid cookie does not. If we have a session but no
+  // gesture yet, surface the EntryGate so the user produces one — then
+  // the global "slop:activated" event lets MusicPlayerWindow (and any
+  // future autoplay-blocked component) retry their .play() call.
+  const { gestured, trip: tripGesture } = useUserGesture();
 
   return (
     <>
@@ -1022,6 +1031,29 @@ const Desktop: NextPage = () => {
           ) : (
             <PasswordGate defaultPassword={inviteFromUrl} onAccepted={() => void refreshSession()} />
           )}
+        </div>
+      ) : null}
+
+      {/* Second-layer gate: authenticated but no user gesture yet
+          this page-load. Forces a tap so audio/AudioContext start.
+          Sign-in flow trips the gesture incidentally (the click on
+          Continue / Use Passkey), so this only appears on reload-
+          with-valid-session. */}
+      {!loading && session.authenticated && !gestured ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            background: "rgba(8,4,18,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <EntryGate onEnter={tripGesture} />
         </div>
       ) : null}
 

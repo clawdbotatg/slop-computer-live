@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 
 // Music player window body — designed to live inside a <SharedAppWindow>.
 // Aesthetic: classic Winamp 2.x main-window — big amber LCD time digits,
@@ -448,6 +449,26 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       audioCtxRef.current?.close().catch(() => undefined);
     };
   }, []);
+
+  // The page-level EntryGate fires `slop:activated` exactly once when
+  // the user first interacts. That's our cue to retry whatever the
+  // autoplay policy refused — resume the AudioContext and call
+  // audio.play() if mesh state says we should be playing. Without
+  // this, a reload-into-active-music leaves the local <audio> stuck
+  // paused even though the rest of the mesh is mid-track.
+  useEffect(() => {
+    const onActivated = () => {
+      const a = audioRef.current;
+      if (!a) return;
+      setupGraph();
+      audioCtxRef.current?.resume().catch(() => undefined);
+      if (mesh.musicState?.playing && a.paused) {
+        a.play().catch(err => setError(`play failed: ${(err as Error).message}`));
+      }
+    };
+    window.addEventListener(ACTIVATED_EVENT, onActivated);
+    return () => window.removeEventListener(ACTIVATED_EVENT, onActivated);
+  }, [mesh, setupGraph]);
 
   const lcdTrackText = useMemo(() => {
     if (error) return error;
