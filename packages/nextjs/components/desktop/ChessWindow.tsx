@@ -484,39 +484,36 @@ const ActiveOrEnded = ({
           {myTurn ? <span style={{ color: "var(--slop-lime, #bcff5b)", marginLeft: 8 }}>(YOU)</span> : null}
         </span>
         <div style={{ display: "flex", gap: 6 }}>
-          {/* Active-game controls are PLAYER-ONLY. Observers see no
-              buttons during an active game — they shouldn't be able
-              to interrupt or end someone else's match. The "stuck
-              game" rescue path is to ask one of the players to
-              resign, or have the host clear it via SSH / the /v1
-              endpoint. */}
+          {/* Resign records a loss + appends history — only the actual
+              players can do that for themselves. */}
           {game.status === "active" && isPlayer ? (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  if (confirm("Resign the game?")) mesh.chessResign();
-                }}
-                className="slop-button"
-                style={{ padding: "4px 12px", fontSize: 11 }}
-              >
-                Resign
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (confirm("Abort this game? No result will be recorded.")) mesh.chessCloseGame();
-                }}
-                className="slop-button"
-                style={{ padding: "4px 12px", fontSize: 11 }}
-              >
-                Abort
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm("Resign the game?")) mesh.chessResign();
+              }}
+              className="slop-button"
+              style={{ padding: "4px 12px", fontSize: 11 }}
+            >
+              Resign
+            </button>
           ) : null}
-          {/* Once a game has ENDED, any peer can clear the slot to
-              re-open the lobby for the next match. */}
-          {game.status !== "active" ? (
+          {/* Abort wipes the slot without recording a result. Any
+              authenticated peer can do it — covers AI-vs-AI games
+              that never end, two players who walked away, or the
+              wrong people getting picked at game-start. */}
+          {game.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm("Abort this game? No result will be recorded.")) mesh.chessCloseGame();
+              }}
+              className="slop-button"
+              style={{ padding: "4px 12px", fontSize: 11 }}
+            >
+              Abort
+            </button>
+          ) : (
             <button
               type="button"
               onClick={() => mesh.chessCloseGame()}
@@ -525,7 +522,7 @@ const ActiveOrEnded = ({
             >
               New Game
             </button>
-          ) : null}
+          )}
         </div>
       </div>
     </div>
