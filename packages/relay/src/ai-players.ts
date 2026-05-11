@@ -108,7 +108,17 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
-  // ---- Venice — different lab + can be unhinged --------------------
+  // ---- Venice -----------------------------------------------------
+  // Venice tags zai-org-glm-4.7 with `most_intelligent` + `default` in
+  // their own model catalog. Reasoning model, cheap ($0.55/$2.65), and
+  // it's not Sonnet/Opus (Anthropic is already covered via Bankr).
+  {
+    id: "venice-glm-4.7",
+    label: "GLM 4.7 (Venice) 🤖",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "zai-org-glm-4.7",
+    envVar: "VENICE_API_KEY",
+  },
   {
     id: "venice-uncensored",
     label: "Venice Uncensored 🤖",
