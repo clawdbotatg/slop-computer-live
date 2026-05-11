@@ -52,7 +52,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // ---- Bankr — flagship reasoners ---------------------------------
   {
     id: "bankr-claude-opus-4.7",
-    label: "Claude Opus 4.7 🤖",
+    label: "Claude Opus 4.7 (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "claude-opus-4.7",
     envVar: "BANKR_API_KEY",
@@ -60,7 +60,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-gpt-5.5",
-    label: "GPT 5.5 🤖",
+    label: "GPT 5.5 (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "gpt-5.5",
     envVar: "BANKR_API_KEY",
@@ -68,7 +68,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-gemini-3.1-pro",
-    label: "Gemini 3.1 Pro 🤖",
+    label: "Gemini 3.1 Pro (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "gemini-3.1-pro",
     envVar: "BANKR_API_KEY",
@@ -76,7 +76,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-grok-4.20",
-    label: "Grok 4.20 🤖",
+    label: "Grok 4.20 (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "grok-4.20",
     envVar: "BANKR_API_KEY",
@@ -85,7 +85,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // ---- Bankr — already-proven Ruy-Lopez-grade ---------------------
   {
     id: "bankr-kimi-k2.6",
-    label: "Kimi K2.6 🤖",
+    label: "Kimi K2.6 (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "kimi-k2.6",
     envVar: "BANKR_API_KEY",
@@ -93,7 +93,7 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-deepseek-v4-pro",
-    label: "DeepSeek V4 Pro 🤖",
+    label: "DeepSeek V4 Pro (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "deepseek-v4-pro",
     envVar: "BANKR_API_KEY",
@@ -102,16 +102,33 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // ---- Bankr — cheap & quick (good for lots of test games) --------
   {
     id: "bankr-gpt-5-mini",
-    label: "GPT 5-mini 🤖",
+    label: "GPT 5-mini (Bankr) 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "gpt-5-mini",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
+  // ---- Venice — Anthropic via Venice's gateway --------------------
+  // Same models Bankr exposes, slightly more expensive ($6/$30 vs
+  // $5/$25 for Opus 4.7), kept for the comparison + so Venice users
+  // can pit two providers' "Claude Opus" against each other.
+  {
+    id: "venice-claude-opus-4.7",
+    label: "Claude Opus 4.7 (Venice) 🤖",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "claude-opus-4-7",
+    envVar: "VENICE_API_KEY",
+  },
+  {
+    id: "venice-claude-sonnet-4.6",
+    label: "Claude Sonnet 4.6 (Venice) 🤖",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "claude-sonnet-4-6",
+    envVar: "VENICE_API_KEY",
+  },
   // ---- Venice -----------------------------------------------------
   // Venice tags zai-org-glm-4.7 with `most_intelligent` + `default` in
-  // their own model catalog. Reasoning model, cheap ($0.55/$2.65), and
-  // it's not Sonnet/Opus (Anthropic is already covered via Bankr).
+  // their own model catalog. Reasoning model, cheap ($0.55/$2.65).
   {
     id: "venice-glm-4.7",
     label: "GLM 4.7 (Venice) 🤖",
