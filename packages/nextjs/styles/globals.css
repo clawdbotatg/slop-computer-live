@@ -589,6 +589,17 @@
   100% { transform: translateX(-50%); }
 }
 
+/* Pulsing dot next to the chess player whose turn it is. Subtle —
+   we want a rhythm cue, not a strobe. */
+@keyframes slop-chess-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.7); }
+}
+.slop-chess-pulse {
+  display: inline-block;
+  animation: slop-chess-pulse 1.4s ease-in-out infinite;
+}
+
 .slop-music-range {
   -webkit-appearance: none;
   appearance: none;

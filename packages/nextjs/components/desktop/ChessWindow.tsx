@@ -258,12 +258,18 @@ const ActiveOrEnded = ({
   const files = flipped ? ["h", "g", "f", "e", "d", "c", "b", "a"] : ["a", "b", "c", "d", "e", "f", "g", "h"];
 
   const [selected, setSelected] = useState<string | null>(null);
+  // Held when a move triggers a pawn promotion — we don't fire the
+  // mesh.chessMove call until the user has picked which piece. While
+  // this is non-null, the picker overlay is rendered on top of the
+  // board and click-on-square is suppressed.
+  const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(null);
 
-  // Drop the selection any time the position changes (server moved on)
-  // so we don't keep highlighting a square that might no longer hold
-  // our piece.
+  // Drop the selection + any open picker any time the position changes
+  // (server moved on) so we don't keep highlighting a stale square or
+  // hold a picker for a move that no longer applies.
   useEffect(() => {
     setSelected(null);
+    setPendingPromotion(null);
   }, [game.fen]);
 
   const legalMoves = useMemo(() => {
@@ -300,12 +306,18 @@ const ActiveOrEnded = ({
     if (game.status !== "active") return;
     if (!isPlayer) return; // observers can't move
     if (!myTurn) return;
+    if (pendingPromotion) return; // picker takes priority — pick or cancel first
     if (selected) {
       const m = legalMoves.find(x => x.to === square);
       if (m) {
-        // Auto-promote to queen for now. A real picker can come later;
-        // 95% of promotions are queen anyway.
-        mesh.chessMove(selected, square, m.promotion ? "q" : undefined);
+        if (m.promotion) {
+          // Hold the move open while the user picks a piece. We don't
+          // call mesh.chessMove yet — the picker's button does that.
+          setPendingPromotion({ from: selected, to: square });
+          setSelected(null);
+          return;
+        }
+        mesh.chessMove(selected, square);
         setSelected(null);
         return;
       }
@@ -325,19 +337,27 @@ const ActiveOrEnded = ({
     }
   };
 
+  const whiteToMove = game.status === "active" && turn === "w";
+  const blackToMove = game.status === "active" && turn === "b";
+  const inCheck = game.status === "active" && chess.inCheck();
+  const turnColor = turn === "w" ? "#3fcfff" : "#ff3ec9";
+  const turnGlow = turn === "w" ? "rgba(63,207,255,0.6)" : "rgba(255,62,201,0.6)";
+
   const statusText = useMemo(() => {
     if (game.status === "active") {
-      if (chess.inCheck()) {
-        return `${turn === "w" ? game.whiteLabel : game.blackLabel} — IN CHECK`;
-      }
-      return `${turn === "w" ? game.whiteLabel : game.blackLabel}'s move`;
+      const sideLabel = turn === "w" ? game.whiteLabel : game.blackLabel;
+      if (inCheck) return `${sideLabel} — IN CHECK`;
+      return `${sideLabel} to move`;
     }
     return endStatusText(game);
-  }, [game, chess, turn]);
+  }, [game, turn, inCheck]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 8, gap: 8 }}>
-      {/* Status / header */}
+      {/* Player banner — the side TO MOVE pops with a colored
+          background, border, glow, and a pulsing dot. The other
+          side fades back. Strong, instant "whose turn is it" cue
+          even before you read the status line. */}
       <div
         style={{
           display: "grid",
@@ -348,21 +368,15 @@ const ActiveOrEnded = ({
           letterSpacing: "0.06em",
         }}
       >
-        <span style={{ color: "#3fcfff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          ♔ {game.whiteLabel}
-        </span>
+        <PlayerChip color="white" label={game.whiteLabel} active={whiteToMove} inCheck={inCheck && turn === "w"} />
         <span style={{ color: "var(--slop-text-muted)" }}>vs</span>
-        <span
-          style={{
-            color: "#ff3ec9",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            textAlign: "right",
-          }}
-        >
-          {game.blackLabel} ♚
-        </span>
+        <PlayerChip
+          color="black"
+          label={game.blackLabel}
+          active={blackToMove}
+          inCheck={inCheck && turn === "b"}
+          alignRight
+        />
       </div>
 
       {/* Board */}
@@ -379,6 +393,7 @@ const ActiveOrEnded = ({
           style={{
             // CSS aspect-ratio keeps the board square as the window resizes;
             // the min(...) clamps to whichever dimension is the bottleneck.
+            position: "relative",
             aspectRatio: "1 / 1",
             width: "min(100%, calc(100% * 1))",
             maxWidth: "100%",
@@ -386,8 +401,16 @@ const ActiveOrEnded = ({
             display: "grid",
             gridTemplateColumns: "repeat(8, 1fr)",
             gridTemplateRows: "repeat(8, 1fr)",
-            border: "2px solid rgba(255, 62, 201, 0.6)",
-            boxShadow: "0 0 18px rgba(255, 62, 201, 0.35)",
+            // Border colored by side-to-move: cyan when white's
+            // turn, magenta when black's. Glows brighter on your
+            // own turn to reinforce "go" vs "wait".
+            border: `2px solid ${turnColor}`,
+            boxShadow: `0 0 ${myTurn ? 24 : 12}px ${turnGlow}`,
+            // If I'm a player and it's NOT my turn, dim the board so
+            // a glance is enough to know I can't move. Observers see
+            // the board at full opacity always.
+            opacity: isPlayer && !myTurn && game.status === "active" ? 0.55 : 1,
+            transition: "opacity 200ms ease, box-shadow 200ms ease, border-color 200ms ease",
           }}
         >
           {ranks.map((rank, rIdx) =>
@@ -419,21 +442,44 @@ const ActiveOrEnded = ({
               );
             }),
           )}
+
+          {pendingPromotion ? (
+            <PromotionPicker
+              color={turn}
+              onPick={piece => {
+                mesh.chessMove(pendingPromotion.from, pendingPromotion.to, piece);
+                setPendingPromotion(null);
+              }}
+              onCancel={() => setPendingPromotion(null)}
+            />
+          ) : null}
         </div>
       </div>
 
-      {/* Status bar + actions */}
+      {/* Status bar + actions. The status text takes the to-move
+          color so it visually agrees with the player chip + board
+          border above. Bold + bigger for an unmissable read. */}
       <div
         style={{
           display: "grid",
           gridTemplateColumns: "1fr auto",
           alignItems: "center",
           gap: 8,
-          fontSize: 11,
-          letterSpacing: "0.06em",
+          fontSize: 13,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
         }}
       >
-        <span style={{ color: myTurn ? "var(--slop-lime, #bcff5b)" : "var(--slop-text-muted)" }}>{statusText}</span>
+        <span
+          style={{
+            color: game.status === "active" ? turnColor : "var(--slop-text-muted)",
+            textShadow: game.status === "active" ? `0 0 6px ${turnGlow}` : "none",
+            fontWeight: 600,
+          }}
+        >
+          {statusText}
+          {myTurn ? <span style={{ color: "var(--slop-lime, #bcff5b)", marginLeft: 8 }}>(YOU)</span> : null}
+        </span>
         {game.status === "active" && isPlayer ? (
           <button
             type="button"
@@ -585,6 +631,194 @@ const CoordLabel = ({ pos, children }: { pos: "bottomRight" | "topLeft"; childre
     {children}
   </span>
 );
+
+// =====================================================================
+// Player chip — header banner per player. The chip for the side TO
+// MOVE pops with a colored fill, border, glow, and a pulsing dot;
+// the other side fades back. Overrides cleanly read at a glance.
+// =====================================================================
+
+const PlayerChip = ({
+  color,
+  label,
+  active,
+  inCheck,
+  alignRight = false,
+}: {
+  color: "white" | "black";
+  label: string;
+  active: boolean;
+  inCheck: boolean;
+  alignRight?: boolean;
+}) => {
+  const accent = color === "white" ? "#3fcfff" : "#ff3ec9";
+  const accentSoft = color === "white" ? "rgba(63,207,255,0.18)" : "rgba(255,62,201,0.22)";
+  const accentGlow = color === "white" ? "rgba(63,207,255,0.7)" : "rgba(255,62,201,0.7)";
+  const king = color === "white" ? "♔" : "♚";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 8px",
+        fontSize: 11,
+        letterSpacing: "0.06em",
+        color: active ? "#fff" : accent,
+        background: active ? accentSoft : "transparent",
+        border: `1px solid ${active ? accent : "transparent"}`,
+        boxShadow: active ? `0 0 10px ${accentGlow}` : "none",
+        textShadow: active ? `0 0 6px ${accentGlow}` : "none",
+        fontWeight: active ? 600 : 400,
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+        textOverflow: "ellipsis",
+        justifySelf: alignRight ? "end" : "start",
+        flexDirection: alignRight ? "row-reverse" : "row",
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 14, lineHeight: 1 }}>
+        {king}
+      </span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+      {active ? (
+        <span
+          aria-hidden
+          className="slop-chess-pulse"
+          style={{
+            width: 6,
+            height: 6,
+            background: accent,
+            boxShadow: `0 0 6px ${accent}`,
+          }}
+        />
+      ) : null}
+      {inCheck ? (
+        <span
+          style={{
+            fontSize: 9,
+            padding: "1px 4px",
+            background: "var(--slop-red, #ff5577)",
+            color: "#fff",
+            letterSpacing: "0.08em",
+            marginLeft: 2,
+          }}
+        >
+          CHK
+        </span>
+      ) : null}
+    </span>
+  );
+};
+
+// =====================================================================
+// Promotion picker — overlaid on the board when a pawn move would
+// promote. Renders the four legal piece choices in the moving side's
+// color; click to commit, click the X (or anywhere outside) to cancel.
+// =====================================================================
+
+const PROMOTION_CHOICES: { piece: "q" | "r" | "b" | "n"; label: string }[] = [
+  { piece: "q", label: "queen" },
+  { piece: "r", label: "rook" },
+  { piece: "b", label: "bishop" },
+  { piece: "n", label: "knight" },
+];
+
+const PromotionPicker = ({
+  color,
+  onPick,
+  onCancel,
+}: {
+  color: "w" | "b";
+  onPick: (piece: "q" | "r" | "b" | "n") => void;
+  onCancel: () => void;
+}) => {
+  const isWhite = color === "w";
+  const glow = isWhite ? "rgba(63, 207, 255, 0.85)" : "rgba(255, 62, 201, 0.85)";
+  const ink = isWhite ? "#e0f4ff" : "#1a0a1a";
+  return (
+    <>
+      {/* Click-outside scrim — covers the whole board. Clicking anywhere
+          off the picker dismisses without moving. */}
+      <div
+        onClick={onCancel}
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "rgba(0,0,0,0.55)",
+          backdropFilter: "blur(2px)",
+          zIndex: 5,
+        }}
+      />
+      <div
+        // Centered inside the board. Use grid 1×4 so the pieces line up
+        // in a single row regardless of board size.
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, -50%)",
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 4,
+          padding: 8,
+          background: "linear-gradient(180deg, #1a1140 0%, #06030d 100%)",
+          border: "2px solid var(--slop-magenta, #ff3ec9)",
+          boxShadow: "0 0 24px rgba(255, 62, 201, 0.6)",
+          zIndex: 6,
+          minWidth: "60%",
+        }}
+      >
+        {PROMOTION_CHOICES.map(c => {
+          const glyph = PIECE_GLYPH[isWhite ? c.piece.toUpperCase() : c.piece];
+          return (
+            <button
+              key={c.piece}
+              type="button"
+              onClick={() => onPick(c.piece)}
+              aria-label={`promote to ${c.label}`}
+              title={c.label}
+              style={{
+                aspectRatio: "1 / 1",
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255, 62, 201, 0.4)",
+                color: ink,
+                fontSize: "clamp(22px, 5vw, 40px)",
+                lineHeight: 1,
+                padding: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textShadow: `0 0 8px ${glow}, 0 1px 0 rgba(0,0,0,0.6)`,
+                borderRadius: 0,
+              }}
+            >
+              {glyph}
+            </button>
+          );
+        })}
+      </div>
+      {/* Tiny "promote to:" label above the row, plus an X cancel pin
+          in the corner. Both purely cosmetic. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, calc(-50% - 56px))",
+          fontSize: 10,
+          letterSpacing: "0.12em",
+          color: "var(--slop-text-muted)",
+          textTransform: "uppercase",
+          zIndex: 7,
+          pointerEvents: "none",
+        }}
+      >
+        Promote to
+      </div>
+    </>
+  );
+};
 
 // =====================================================================
 // Helpers
