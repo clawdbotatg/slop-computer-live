@@ -45,6 +45,14 @@ import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword }
 import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import { closeWindow as closeSingletonWindow, listOpenWindows, openWindow as openSingletonWindow } from "./windows.js";
+import {
+  applyMove as chessApplyMove,
+  clearGame as chessClearGame,
+  createGame as chessCreateGame,
+  getCurrentGame as chessGetCurrentGame,
+  getHistory as chessGetHistory,
+  resign as chessResign,
+} from "./chess.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -110,7 +118,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -149,6 +157,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Music",
     icon: "/icons/music.png",
     kind: "music",
+  },
+  {
+    id: "chess",
+    label: "Chess",
+    icon: "/icons/d20.png",
+    kind: "chess",
   },
 ];
 
@@ -1321,6 +1335,8 @@ app.register(async function signalRoutes(fastify) {
       chatHistory: recentChat(),
       openWindows: listOpenWindows(),
       musicState,
+      chessGame: chessGetCurrentGame(),
+      chessHistory: chessGetHistory(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -1499,6 +1515,60 @@ app.register(async function signalRoutes(fastify) {
             volume: incomingVolume ?? musicState?.volume ?? 0.7,
           };
           broadcast({ type: "music_state", state: musicState });
+          return;
+        }
+        case "chess_create_game": {
+          // Anyone in the room can spin up a game between any two
+          // players (including self vs self for testing). The keys
+          // are stable ownerKeys — usually a lowercased wallet
+          // address, fall back to handle, fall back to peerId.
+          if (typeof msg.whiteKey !== "string" || typeof msg.blackKey !== "string") {
+            return send(socket, { type: "error", error: "bad_chess_create" });
+          }
+          const result = chessCreateGame({
+            whiteKey: msg.whiteKey,
+            blackKey: msg.blackKey,
+            whiteLabel: typeof msg.whiteLabel === "string" ? msg.whiteLabel : msg.whiteKey,
+            blackLabel: typeof msg.blackLabel === "string" ? msg.blackLabel : msg.blackKey,
+          });
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          broadcast({ type: "chess_state", game: result.game });
+          return;
+        }
+        case "chess_move": {
+          // The caller's ownerKey decides which side they're allowed
+          // to move for. Server validates against chess.js — clients
+          // can't fake a legal move.
+          if (typeof msg.from !== "string" || typeof msg.to !== "string") {
+            return send(socket, { type: "error", error: "bad_chess_move" });
+          }
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const result = chessApplyMove(callerKey, {
+            from: msg.from,
+            to: msg.to,
+            promotion: typeof msg.promotion === "string" ? msg.promotion : undefined,
+          });
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          broadcast({ type: "chess_state", game: result.game });
+          if (result.ended) {
+            broadcast({ type: "chess_history", history: chessGetHistory() });
+          }
+          return;
+        }
+        case "chess_resign": {
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const result = chessResign(callerKey);
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          broadcast({ type: "chess_state", game: result.game });
+          broadcast({ type: "chess_history", history: chessGetHistory() });
+          return;
+        }
+        case "chess_close_game": {
+          // Any peer can clear out a finished game so the lobby
+          // reopens. Refused on an active game — use resign for that.
+          const result = chessClearGame();
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          broadcast({ type: "chess_state", game: null });
           return;
         }
         case "tx_request": {

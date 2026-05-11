@@ -137,6 +137,41 @@ export type MusicState = {
   volume: number;
 };
 
+// Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
+export type ChessGameStatus =
+  | "active"
+  | "white_won"
+  | "black_won"
+  | "draw_stalemate"
+  | "draw_threefold"
+  | "draw_insufficient"
+  | "draw_other"
+  | "white_resigned"
+  | "black_resigned";
+
+export type ChessGame = {
+  whiteKey: string;
+  blackKey: string;
+  whiteLabel: string;
+  blackLabel: string;
+  fen: string;
+  moves: string[];
+  status: ChessGameStatus;
+  startedAt: number;
+  endedAt?: number;
+};
+
+export type ChessResult = {
+  whiteKey: string;
+  blackKey: string;
+  whiteLabel: string;
+  blackLabel: string;
+  status: Exclude<ChessGameStatus, "active">;
+  startedAt: number;
+  endedAt: number;
+  moveCount: number;
+};
+
 const CHAT_HISTORY_CAP = 200;
 
 type SelfHint = {
@@ -201,6 +236,13 @@ export type PeerMeshState = {
    *  computed locally from `at` (Date.now() at capture). */
   musicState: MusicState | null;
   setMusicState: (state: MusicState) => void;
+  /** Server-authoritative chess game (singleton) + recent results. */
+  chessGame: ChessGame | null;
+  chessHistory: ChessResult[];
+  chessCreate: (args: { whiteKey: string; blackKey: string; whiteLabel: string; blackLabel: string }) => void;
+  chessMove: (from: string, to: string, promotion?: string) => void;
+  chessResign: () => void;
+  chessCloseGame: () => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -222,6 +264,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
+  const [chessGame, setChessGame] = useState<ChessGame | null>(null);
+  const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -522,6 +566,29 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  // ---- Chess action helpers --------------------------------------
+  // No optimistic state update here — the relay owns the truth, and
+  // a rejected move (illegal, not-your-turn) should NOT briefly show
+  // a fake board state. We wait for the server's chess_state echo.
+  const chessCreate = useCallback(
+    (args: { whiteKey: string; blackKey: string; whiteLabel: string; blackLabel: string }) => {
+      send({ type: "chess_create_game", ...args });
+    },
+    [send],
+  );
+  const chessMove = useCallback(
+    (from: string, to: string, promotion?: string) => {
+      send({ type: "chess_move", from, to, promotion });
+    },
+    [send],
+  );
+  const chessResign = useCallback(() => {
+    send({ type: "chess_resign" });
+  }, [send]);
+  const chessCloseGame = useCallback(() => {
+    send({ type: "chess_close_game" });
+  }, [send]);
+
   const sendClick = useCallback(
     (x: number, y: number) => {
       send({ type: "click", x, y });
@@ -675,6 +742,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (msg.musicState && typeof msg.musicState === "object") {
             setMusicStateLocal(msg.musicState as MusicState);
           }
+          if (msg.chessGame === null || (msg.chessGame && typeof msg.chessGame === "object")) {
+            setChessGame((msg.chessGame ?? null) as ChessGame | null);
+          }
+          if (Array.isArray(msg.chessHistory)) {
+            setChessHistory(msg.chessHistory as ChessResult[]);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -824,6 +897,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
 
         if (msg.type === "music_state" && msg.state && typeof msg.state === "object") {
           setMusicStateLocal(msg.state as MusicState);
+          return;
+        }
+
+        if (msg.type === "chess_state") {
+          // game may be null (lobby reopened) or an object
+          setChessGame((msg.game ?? null) as ChessGame | null);
+          return;
+        }
+
+        if (msg.type === "chess_history" && Array.isArray(msg.history)) {
+          setChessHistory(msg.history as ChessResult[]);
           return;
         }
 
@@ -988,6 +1072,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     closeWindow,
     musicState,
     setMusicState,
+    chessGame,
+    chessHistory,
+    chessCreate,
+    chessMove,
+    chessResign,
+    chessCloseGame,
     broadcastTxRequest,
   };
 }

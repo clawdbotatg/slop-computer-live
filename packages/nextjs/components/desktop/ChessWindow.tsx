@@ -1,0 +1,660 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { Chess } from "chess.js";
+import type { ChessGame, ChessResult, Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
+
+// Multiplayer chess. Singleton across the mesh — there's only one game
+// at a time, and the relay owns the truth. This component is just a
+// view + input surface: it renders the board from `mesh.chessGame.fen`,
+// and every user action (move, resign, create, close) goes through
+// `mesh.chessMove(...)` etc. and waits for the server's echo.
+//
+// Visual orientation: if my ownerKey == the black player's, the board
+// flips so black sits at the bottom. Everyone else (white player +
+// audience) sees white at the bottom.
+//
+// Move input model: click your piece → legal-move targets light up →
+// click a target. Click anywhere illegal to cancel. Pawn promotion
+// silently defaults to queen for now (matches the relay's fallback).
+
+type Props = {
+  mesh: PeerMeshState;
+  /** My stable ownerKey (lowercased address ?? handle ?? peerId). */
+  myOwnerKey: string | null;
+  /** Display label captured at game start (ENS, handle, or shortened address). */
+  myLabel: string | null;
+};
+
+export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
+  const game = mesh.chessGame;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: "linear-gradient(180deg, #0a0820 0%, #06030d 100%)",
+        color: "var(--slop-text)",
+        fontFamily: "var(--slop-font-display)",
+      }}
+    >
+      {game ? (
+        <ActiveOrEnded mesh={mesh} game={game} myOwnerKey={myOwnerKey} />
+      ) : (
+        <Lobby mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+      )}
+    </div>
+  );
+};
+
+// =====================================================================
+// Lobby: no active game. Shows create-game form + recent history.
+// =====================================================================
+
+const Lobby = ({
+  mesh,
+  myOwnerKey,
+  myLabel,
+}: {
+  mesh: PeerMeshState;
+  myOwnerKey: string | null;
+  myLabel: string | null;
+}) => {
+  // Build a "selectable identities" list = every connected peer plus me.
+  // Dedupe by ownerKey so a peer whose own peerId differs from their
+  // wallet address doesn't show up twice.
+  const options = useMemo(() => buildOptions(mesh.peers, myOwnerKey, myLabel), [mesh.peers, myOwnerKey, myLabel]);
+  const [whiteKey, setWhiteKey] = useState<string>("");
+  const [blackKey, setBlackKey] = useState<string>("");
+
+  // Default selections: me as white, anyone else as black if available.
+  useEffect(() => {
+    if (!whiteKey && myOwnerKey) setWhiteKey(myOwnerKey);
+    if (!blackKey) {
+      const other = options.find(o => o.key !== myOwnerKey);
+      if (other) setBlackKey(other.key);
+    }
+  }, [options, myOwnerKey, whiteKey, blackKey]);
+
+  const canStart = whiteKey && blackKey;
+  const start = () => {
+    if (!canStart) return;
+    const white = options.find(o => o.key === whiteKey);
+    const black = options.find(o => o.key === blackKey);
+    mesh.chessCreate({
+      whiteKey,
+      blackKey,
+      whiteLabel: white?.label ?? whiteKey,
+      blackLabel: black?.label ?? blackKey,
+    });
+  };
+
+  return (
+    <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
+      <h2
+        style={{
+          margin: 0,
+          fontSize: 14,
+          letterSpacing: "0.12em",
+          color: "var(--slop-magenta, #ff3ec9)",
+          textTransform: "uppercase",
+        }}
+      >
+        New Game
+      </h2>
+
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
+        <span style={{ color: "var(--slop-cyan, #3fcfff)", letterSpacing: "0.08em" }}>WHITE</span>
+        <PlayerSelect value={whiteKey} options={options} onChange={setWhiteKey} />
+        <span style={{ color: "var(--slop-magenta, #ff3ec9)", letterSpacing: "0.08em" }}>BLACK</span>
+        <PlayerSelect value={blackKey} options={options} onChange={setBlackKey} />
+      </div>
+
+      <button
+        type="button"
+        onClick={start}
+        disabled={!canStart}
+        className="slop-button slop-button--primary"
+        style={{ alignSelf: "flex-start", padding: "6px 18px", opacity: canStart ? 1 : 0.45 }}
+      >
+        Start Game
+      </button>
+
+      <div
+        style={{
+          marginTop: 6,
+          paddingTop: 10,
+          borderTop: "1px solid rgba(255, 62, 201, 0.25)",
+        }}
+      >
+        <h3
+          style={{
+            margin: 0,
+            fontSize: 11,
+            letterSpacing: "0.14em",
+            color: "var(--slop-text-muted)",
+            textTransform: "uppercase",
+          }}
+        >
+          Recent Results ({mesh.chessHistory.length})
+        </h3>
+        {mesh.chessHistory.length === 0 ? (
+          <p style={{ marginTop: 8, fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
+            no games played yet
+          </p>
+        ) : (
+          <div
+            style={{
+              marginTop: 8,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              maxHeight: 200,
+              overflowY: "auto",
+            }}
+          >
+            {mesh.chessHistory.slice(0, 12).map((r, i) => (
+              <ResultRow key={`${r.startedAt}-${i}`} result={r} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const PlayerSelect = ({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: { key: string; label: string }[];
+  onChange: (v: string) => void;
+}) => (
+  <select
+    value={value}
+    onChange={e => onChange(e.target.value)}
+    style={{
+      background: "#06030d",
+      color: "var(--slop-text)",
+      border: "1px solid rgba(255, 62, 201, 0.4)",
+      fontFamily: "var(--slop-font-display)",
+      fontSize: 12,
+      padding: "4px 8px",
+      borderRadius: 0,
+    }}
+  >
+    <option value="">— pick a player —</option>
+    {options.map(o => (
+      <option key={o.key} value={o.key}>
+        {o.label}
+      </option>
+    ))}
+  </select>
+);
+
+const ResultRow = ({ result }: { result: ChessResult }) => {
+  const winner = winnerLabel(result);
+  const winColor = winner === result.whiteLabel ? "#3fcfff" : winner === result.blackLabel ? "#ff3ec9" : "#bcff5b";
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr auto",
+        alignItems: "center",
+        fontSize: 11,
+        padding: "3px 6px",
+        background: "rgba(255,255,255,0.02)",
+        border: "1px solid rgba(255,255,255,0.05)",
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ color: "#3fcfff" }}>{result.whiteLabel}</span>
+        <span style={{ color: "var(--slop-text-muted)" }}> vs </span>
+        <span style={{ color: "#ff3ec9" }}>{result.blackLabel}</span>
+      </span>
+      <span style={{ color: winColor, letterSpacing: "0.06em", marginLeft: 8 }}>{winner}</span>
+    </div>
+  );
+};
+
+// =====================================================================
+// Active + ended game: board + status + actions.
+// =====================================================================
+
+const ActiveOrEnded = ({
+  mesh,
+  game,
+  myOwnerKey,
+}: {
+  mesh: PeerMeshState;
+  game: ChessGame;
+  myOwnerKey: string | null;
+}) => {
+  // chess.js is the source of truth for legal moves + side-to-move +
+  // king-in-check rendering. We construct a fresh instance from the
+  // FEN every render — chess.js is cheap (no async, no I/O).
+  const chess = useMemo(() => {
+    const ch = new Chess();
+    try {
+      ch.load(game.fen);
+    } catch {
+      /* should never happen — relay validates before broadcasting */
+    }
+    return ch;
+  }, [game.fen]);
+
+  const board = chess.board();
+  const turn = chess.turn(); // "w" | "b"
+  const isWhitePlayer = myOwnerKey != null && myOwnerKey === game.whiteKey;
+  const isBlackPlayer = myOwnerKey != null && myOwnerKey === game.blackKey;
+  const isPlayer = isWhitePlayer || isBlackPlayer;
+  const myTurn = game.status === "active" && ((turn === "w" && isWhitePlayer) || (turn === "b" && isBlackPlayer));
+
+  const flipped = isBlackPlayer;
+  const ranks = flipped ? ["1", "2", "3", "4", "5", "6", "7", "8"] : ["8", "7", "6", "5", "4", "3", "2", "1"];
+  const files = flipped ? ["h", "g", "f", "e", "d", "c", "b", "a"] : ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // Drop the selection any time the position changes (server moved on)
+  // so we don't keep highlighting a square that might no longer hold
+  // our piece.
+  useEffect(() => {
+    setSelected(null);
+  }, [game.fen]);
+
+  const legalMoves = useMemo(() => {
+    if (!selected) return [] as { to: string; promotion?: string }[];
+    try {
+      return chess.moves({ square: selected as never, verbose: true }) as { to: string; promotion?: string }[];
+    } catch {
+      return [];
+    }
+  }, [selected, chess]);
+  const legalTargets = useMemo(() => new Set(legalMoves.map(m => m.to)), [legalMoves]);
+
+  // The king-in-check square: paint it red so the player can see why
+  // their move was rejected, or that they need to respond.
+  const checkSquare = useMemo(() => {
+    if (game.status !== "active" || !chess.inCheck()) return null;
+    const target = chess.turn(); // side in check is side to move
+    for (let r = 0; r < 8; r++) {
+      const row = board[r];
+      if (!row) continue;
+      for (let f = 0; f < 8; f++) {
+        const sq = row[f];
+        if (sq && sq.type === "k" && sq.color === target) {
+          const file = "abcdefgh"[f]!;
+          const rank = String(8 - r);
+          return `${file}${rank}`;
+        }
+      }
+    }
+    return null;
+  }, [chess, board, game.status]);
+
+  const onSquareClick = (square: string) => {
+    if (game.status !== "active") return;
+    if (!isPlayer) return; // observers can't move
+    if (!myTurn) return;
+    if (selected) {
+      const m = legalMoves.find(x => x.to === square);
+      if (m) {
+        // Auto-promote to queen for now. A real picker can come later;
+        // 95% of promotions are queen anyway.
+        mesh.chessMove(selected, square, m.promotion ? "q" : undefined);
+        setSelected(null);
+        return;
+      }
+      // Click on another piece of mine? Switch selection.
+      const piece = chess.get(square as never);
+      if (piece && ((piece.color === "w" && isWhitePlayer) || (piece.color === "b" && isBlackPlayer))) {
+        setSelected(square);
+        return;
+      }
+      setSelected(null);
+      return;
+    }
+    const piece = chess.get(square as never);
+    if (!piece) return;
+    if ((piece.color === "w" && isWhitePlayer) || (piece.color === "b" && isBlackPlayer)) {
+      setSelected(square);
+    }
+  };
+
+  const statusText = useMemo(() => {
+    if (game.status === "active") {
+      if (chess.inCheck()) {
+        return `${turn === "w" ? game.whiteLabel : game.blackLabel} — IN CHECK`;
+      }
+      return `${turn === "w" ? game.whiteLabel : game.blackLabel}'s move`;
+    }
+    return endStatusText(game);
+  }, [game, chess, turn]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 8, gap: 8 }}>
+      {/* Status / header */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto 1fr",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 11,
+          letterSpacing: "0.06em",
+        }}
+      >
+        <span style={{ color: "#3fcfff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          ♔ {game.whiteLabel}
+        </span>
+        <span style={{ color: "var(--slop-text-muted)" }}>vs</span>
+        <span
+          style={{
+            color: "#ff3ec9",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            textAlign: "right",
+          }}
+        >
+          {game.blackLabel} ♚
+        </span>
+      </div>
+
+      {/* Board */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <div
+          style={{
+            // CSS aspect-ratio keeps the board square as the window resizes;
+            // the min(...) clamps to whichever dimension is the bottleneck.
+            aspectRatio: "1 / 1",
+            width: "min(100%, calc(100% * 1))",
+            maxWidth: "100%",
+            maxHeight: "100%",
+            display: "grid",
+            gridTemplateColumns: "repeat(8, 1fr)",
+            gridTemplateRows: "repeat(8, 1fr)",
+            border: "2px solid rgba(255, 62, 201, 0.6)",
+            boxShadow: "0 0 18px rgba(255, 62, 201, 0.35)",
+          }}
+        >
+          {ranks.map((rank, rIdx) =>
+            files.map((file, fIdx) => {
+              const square = `${file}${rank}`;
+              // chess.js board is [rank 8 → rank 1], so we have to look up by file/rank.
+              // For each square, find which board row/col it corresponds to.
+              const rankIdx = 8 - parseInt(rank, 10);
+              const fileIdx = "abcdefgh".indexOf(file);
+              const cell = board[rankIdx]?.[fileIdx] ?? null;
+              const dark = (rIdx + fIdx) % 2 === 1;
+              const isSelected = selected === square;
+              const isLegal = legalTargets.has(square);
+              const isCheck = checkSquare === square;
+              return (
+                <Square
+                  key={square}
+                  square={square}
+                  cell={cell}
+                  dark={dark}
+                  isSelected={isSelected}
+                  isLegal={isLegal}
+                  isCheck={isCheck}
+                  clickable={myTurn && game.status === "active"}
+                  showFileLabel={rIdx === 7}
+                  showRankLabel={fIdx === 0}
+                  onClick={onSquareClick}
+                />
+              );
+            }),
+          )}
+        </div>
+      </div>
+
+      {/* Status bar + actions */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 11,
+          letterSpacing: "0.06em",
+        }}
+      >
+        <span style={{ color: myTurn ? "var(--slop-lime, #bcff5b)" : "var(--slop-text-muted)" }}>{statusText}</span>
+        {game.status === "active" && isPlayer ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (confirm("Resign the game?")) mesh.chessResign();
+            }}
+            className="slop-button"
+            style={{ padding: "4px 12px", fontSize: 11 }}
+          >
+            Resign
+          </button>
+        ) : null}
+        {game.status !== "active" ? (
+          <button
+            type="button"
+            onClick={() => mesh.chessCloseGame()}
+            className="slop-button slop-button--primary"
+            style={{ padding: "4px 12px", fontSize: 11 }}
+          >
+            New Game
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+const Square = ({
+  square,
+  cell,
+  dark,
+  isSelected,
+  isLegal,
+  isCheck,
+  clickable,
+  showFileLabel,
+  showRankLabel,
+  onClick,
+}: {
+  square: string;
+  cell: { type: string; color: "w" | "b" } | null;
+  dark: boolean;
+  isSelected: boolean;
+  isLegal: boolean;
+  isCheck: boolean;
+  clickable: boolean;
+  showFileLabel: boolean;
+  showRankLabel: boolean;
+  onClick: (square: string) => void;
+}) => {
+  const base = dark ? "#1a1140" : "#2a1f5a";
+  const bg = isCheck
+    ? "rgba(255, 85, 119, 0.55)"
+    : isSelected
+      ? "rgba(255, 62, 201, 0.55)"
+      : isLegal
+        ? "rgba(63, 207, 255, 0.18)"
+        : base;
+  const glyph = cell ? PIECE_GLYPH[cell.color === "w" ? cell.type.toUpperCase() : cell.type] : "";
+  const isWhitePiece = cell?.color === "w";
+  return (
+    <div
+      onClick={() => onClick(square)}
+      style={{
+        position: "relative",
+        background: bg,
+        border: isSelected ? "1px solid var(--slop-magenta, #ff3ec9)" : "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        userSelect: "none",
+      }}
+    >
+      {/* Legal-move dot for empty target squares; a thin ring for captures */}
+      {isLegal && !cell ? (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            width: "30%",
+            height: "30%",
+            borderRadius: "50%",
+            background: "rgba(63, 207, 255, 0.6)",
+            boxShadow: "0 0 6px rgba(63, 207, 255, 0.5)",
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
+      {isLegal && cell ? (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: "8%",
+            borderRadius: "50%",
+            border: "2px solid rgba(63, 207, 255, 0.55)",
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
+
+      {/* Piece glyph */}
+      {glyph ? (
+        <span
+          style={{
+            fontSize: "clamp(18px, 6vw, 38px)",
+            lineHeight: 1,
+            color: isWhitePiece ? "#e0f4ff" : "#1a0a1a",
+            textShadow: isWhitePiece
+              ? "0 0 8px rgba(63, 207, 255, 0.85), 0 1px 0 rgba(0,0,0,0.6)"
+              : "0 0 8px rgba(255, 62, 201, 0.85), 0 1px 0 rgba(255,255,255,0.2)",
+            pointerEvents: "none",
+          }}
+        >
+          {glyph}
+        </span>
+      ) : null}
+
+      {/* Coordinate labels along edges */}
+      {showFileLabel ? <CoordLabel pos="bottomRight">{square[0]}</CoordLabel> : null}
+      {showRankLabel ? <CoordLabel pos="topLeft">{square[1]}</CoordLabel> : null}
+
+      {/* Hover hint */}
+      {clickable ? (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
+    </div>
+  );
+};
+
+const CoordLabel = ({ pos, children }: { pos: "bottomRight" | "topLeft"; children: string }) => (
+  <span
+    style={{
+      position: "absolute",
+      [pos === "bottomRight" ? "bottom" : "top"]: 1,
+      [pos === "bottomRight" ? "right" : "left"]: 3,
+      fontSize: 8,
+      color: "rgba(255, 255, 255, 0.35)",
+      pointerEvents: "none",
+    }}
+  >
+    {children}
+  </span>
+);
+
+// =====================================================================
+// Helpers
+// =====================================================================
+
+const PIECE_GLYPH: Record<string, string> = {
+  P: "♙",
+  R: "♖",
+  N: "♘",
+  B: "♗",
+  Q: "♕",
+  K: "♔",
+  p: "♟",
+  r: "♜",
+  n: "♞",
+  b: "♝",
+  q: "♛",
+  k: "♚",
+};
+
+const peerKey = (p: Peer) => (p.address ?? p.handle ?? p.id).toLowerCase();
+const peerLabel = (p: Peer) =>
+  p.handle ?? (p.address ? `${p.address.slice(0, 6)}…${p.address.slice(-4)}` : p.id.slice(0, 6));
+
+function buildOptions(peers: Peer[], myKey: string | null, myLabel: string | null) {
+  const map = new Map<string, { key: string; label: string }>();
+  // Me first if known.
+  if (myKey) map.set(myKey, { key: myKey, label: myLabel ?? myKey });
+  for (const p of peers) {
+    const k = peerKey(p);
+    if (map.has(k)) continue;
+    map.set(k, { key: k, label: peerLabel(p) });
+  }
+  return [...map.values()];
+}
+
+function winnerLabel(r: ChessResult): string {
+  switch (r.status) {
+    case "white_won":
+    case "black_resigned":
+      return r.whiteLabel;
+    case "black_won":
+    case "white_resigned":
+      return r.blackLabel;
+    default:
+      return "draw";
+  }
+}
+
+function endStatusText(g: ChessGame): string {
+  switch (g.status) {
+    case "white_won":
+      return `${g.whiteLabel} wins by checkmate`;
+    case "black_won":
+      return `${g.blackLabel} wins by checkmate`;
+    case "white_resigned":
+      return `${g.whiteLabel} resigned — ${g.blackLabel} wins`;
+    case "black_resigned":
+      return `${g.blackLabel} resigned — ${g.whiteLabel} wins`;
+    case "draw_stalemate":
+      return "draw by stalemate";
+    case "draw_threefold":
+      return "draw by threefold repetition";
+    case "draw_insufficient":
+      return "draw — insufficient material";
+    case "draw_other":
+      return "draw";
+    default:
+      return "";
+  }
+}
+
+export default ChessWindow;
