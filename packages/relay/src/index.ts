@@ -1284,8 +1284,12 @@ app.register(async function signalRoutes(fastify) {
     // Symptom in the UI: icons flicker, peer cursors blink in and out.
     for (const stale of findPeersBySessionToken(session.token)) {
       // ws is the `ws` library's WebSocket on the server side; readyState
-      // values: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED.
-      const stillAlive = (stale.ws as { readyState?: number }).readyState === 1;
+      // values: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED. Treat both
+      // CONNECTING and OPEN as "alive" — a peer that's still in the WS
+      // upgrade handshake on a slow link shouldn't get GC'd by a
+      // sibling tab whose own handshake just completed.
+      const rs = (stale.ws as { readyState?: number }).readyState;
+      const stillAlive = rs === 0 || rs === 1;
       if (stillAlive) continue;
       const ended = clearPeerPublications(stale.id);
       removePeer(stale.id);

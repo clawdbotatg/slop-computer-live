@@ -546,7 +546,10 @@
   appearance: none;
   height: 12px;
   background: transparent;
-  cursor: none;
+  /* No `cursor:` here — the global `*` rule already forces `cursor: none`
+     on every element. The thumb pseudo-elements below DO need it
+     repeated, because vendor pseudo-elements like
+     `::-webkit-slider-thumb` aren't matched by the universal selector. */
 }
 
 .slop-music-range::-webkit-slider-runnable-track {
@@ -607,5 +610,7 @@
 
 .slop-music-range:disabled {
   opacity: 0.5;
-  cursor: not-allowed;
+  /* Don't put `cursor: not-allowed` here — same reason as above, the
+     global rule keeps the system cursor hidden; the custom cursor
+     handles "this is interactive" cues. */
 }

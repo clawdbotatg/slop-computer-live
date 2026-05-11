@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Custom event dispatched once, on first user gesture this page-load.
  *  Audio components can listen for this to retry audio.play() and
@@ -20,34 +20,34 @@ export const ACTIVATED_EVENT = "slop:activated";
  */
 export function useUserGesture() {
   const [gestured, setGestured] = useState(false);
+  // A ref guards against double-fire when the Enter button is clicked:
+  // the capture-phase pointerdown listener AND the React onClick (which
+  // calls our manual trip()) both run from the same physical click,
+  // and `gestured` state hasn't applied yet between them.
+  const firedRef = useRef(false);
+
+  const fire = useCallback(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    setGestured(true);
+    // Tell anyone listening (the music player, future media apps) to
+    // retry whatever they had pending. Fired exactly once.
+    window.dispatchEvent(new Event(ACTIVATED_EVENT));
+  }, []);
 
   useEffect(() => {
-    if (gestured) return;
-    const trip = () => {
-      setGestured(true);
-      // Tell anyone listening (the music player, future media apps) to
-      // retry whatever they had pending. Fired exactly once.
-      window.dispatchEvent(new Event(ACTIVATED_EVENT));
-    };
+    if (firedRef.current) return;
     // Capture-phase so we trip even if a child handler stops propagation.
-    window.addEventListener("pointerdown", trip, { capture: true, once: true });
-    window.addEventListener("keydown", trip, { capture: true, once: true });
-    window.addEventListener("touchstart", trip, { capture: true, once: true });
+    const opts = { capture: true, once: true } as AddEventListenerOptions;
+    window.addEventListener("pointerdown", fire, opts);
+    window.addEventListener("keydown", fire, opts);
+    window.addEventListener("touchstart", fire, opts);
     return () => {
-      window.removeEventListener("pointerdown", trip, { capture: true } as EventListenerOptions);
-      window.removeEventListener("keydown", trip, { capture: true } as EventListenerOptions);
-      window.removeEventListener("touchstart", trip, { capture: true } as EventListenerOptions);
+      window.removeEventListener("pointerdown", fire, { capture: true } as EventListenerOptions);
+      window.removeEventListener("keydown", fire, { capture: true } as EventListenerOptions);
+      window.removeEventListener("touchstart", fire, { capture: true } as EventListenerOptions);
     };
-  }, [gestured]);
+  }, [fire]);
 
-  // Manual trip — useful for the Enter overlay's button (the click itself
-  // would also flip the flag via the listener, but firing here keeps the
-  // intent obvious in the call site).
-  const trip = useCallback(() => {
-    if (gestured) return;
-    setGestured(true);
-    window.dispatchEvent(new Event(ACTIVATED_EVENT));
-  }, [gestured]);
-
-  return { gestured, trip };
+  return { gestured, trip: fire };
 }

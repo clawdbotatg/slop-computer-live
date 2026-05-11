@@ -34,11 +34,20 @@ const fmtTime = (s: number): string => {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 };
 
-/** Where in the track should we be RIGHT NOW given the shared snapshot? */
+/** Where in the track should we be RIGHT NOW given the shared snapshot?
+ *  Defensive clamp: if a snapshot says playing but `at` is hours stale
+ *  (relay restart, paused tab that never sent an update, future
+ *  persistence work that misbehaves), don't try to seek to "position
+ *  3 hours" — that just locks every peer at end-of-file. Cap the
+ *  forward extrapolation at 10 minutes; older than that, treat as if
+ *  playback is paused at the snapshot position. */
+const MAX_FORWARD_EXTRAPOLATION_SEC = 600;
 const livePosition = (state: MusicState | null): number => {
   if (!state) return 0;
   if (!state.playing) return state.position;
-  return state.position + Math.max(0, (Date.now() - state.at) / 1000);
+  const elapsed = Math.max(0, (Date.now() - state.at) / 1000);
+  if (elapsed > MAX_FORWARD_EXTRAPOLATION_SEC) return state.position;
+  return state.position + elapsed;
 };
 
 export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
@@ -235,16 +244,34 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
   // Lifecycle event listeners — drive *local* state (duration, error)
   // and broadcast on track-end so all peers advance together.
+  //
+  // We pull the live values for `mesh`, `tracks`, `index`, `current`,
+  // and `shownVolume` through refs so this effect re-binds the audio
+  // listeners ONLY when the audio element itself changes (i.e. never
+  // after mount). Without the refs, `mesh` is a fresh object every
+  // render of the parent — re-binding all five listeners every paint
+  // wastes work and opens a tiny window where an `ended` event could
+  // be missed during the unbind/rebind.
   const lastEndedRef = useRef<{ src: string; at: number } | null>(null);
+  const meshRef = useRef(mesh);
+  meshRef.current = mesh;
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const shownVolumeRef = useRef(shownVolume);
+  shownVolumeRef.current = shownVolume;
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
     const onMeta = () => setDuration(a.duration || 0);
     const onLoaded = () => {
       // After a fresh load, snap to the shared target position once
-      // metadata is available (in case the earlier setCurrentTime in the
-      // sync effect was rejected for readyState reasons).
-      const target = livePosition(mesh.musicState);
+      // metadata is available (in case the earlier setCurrentTime in
+      // the sync effect was rejected for readyState reasons).
+      const target = livePosition(meshRef.current.musicState);
       if (Math.abs(a.currentTime - target) > SYNC_TOLERANCE_SEC && Number.isFinite(target)) {
         try {
           a.currentTime = target;
@@ -260,25 +287,26 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       // back out. Last-write-wins is harmless when the writes match.
       // Dedupe per-track-per-second locally so we don't double-broadcast
       // if the audio element fires ended twice (some browsers do).
-      if (tracks.length === 0) return;
+      const trks = tracksRef.current;
+      const cur = currentRef.current;
+      const idx = indexRef.current;
+      if (trks.length === 0) return;
       const stamp = lastEndedRef.current;
-      if (current && stamp && stamp.src === current.src && Date.now() - stamp.at < 1000) return;
-      if (current) lastEndedRef.current = { src: current.src, at: Date.now() };
-      const nextIndex = (index + 1) % tracks.length;
-      mesh.setMusicState({
-        src: tracks[nextIndex]?.src ?? null,
+      if (cur && stamp && stamp.src === cur.src && Date.now() - stamp.at < 1000) return;
+      if (cur) lastEndedRef.current = { src: cur.src, at: Date.now() };
+      const nextIndex = (idx + 1) % trks.length;
+      meshRef.current.setMusicState({
+        src: trks[nextIndex]?.src ?? null,
         index: nextIndex,
         playing: true,
         position: 0,
         at: Date.now(),
-        // Carry the current shared volume forward so this auto-advance
-        // doesn't reset everyone's loudness.
-        volume: mesh.musicState?.volume ?? shownVolume,
+        volume: meshRef.current.musicState?.volume ?? shownVolumeRef.current,
       });
     };
     const onErr = () => {
       const m = a.error?.message || "unknown error";
-      setError(`playback error on "${current?.title ?? "?"}": ${m}`);
+      setError(`playback error on "${currentRef.current?.title ?? "?"}": ${m}`);
     };
     a.addEventListener("loadedmetadata", onMeta);
     a.addEventListener("durationchange", onMeta);
@@ -292,12 +320,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       a.removeEventListener("ended", onEnded);
       a.removeEventListener("error", onErr);
     };
-    // shownVolume isn't in deps on purpose — the captured value is only
-    // used as a fallback in `onEnded` if mesh.musicState.volume is also
-    // missing, so a stale read is harmless. Re-binding listeners on
-    // every volume tick would be wasteful.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks, current, index, mesh]);
+  }, []);
 
   // Smooth UI tick — every 100ms while playing, recompute the displayed
   // position. Doesn't touch the network; just re-renders the LCD/seek.
@@ -675,11 +698,15 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
               setVolumeDragging(false);
               if (Number.isFinite(v)) broadcast({ volume: v });
             }}
-            // Touch support (mobile/tablet) — same handshake.
+            // Touch support (mobile/tablet) — same handshake. Pull the
+            // value from the input itself, not the captured volumeDraft
+            // closure, so a fast drag whose final setVolumeDraft hasn't
+            // been committed yet still broadcasts the correct value.
             onTouchStart={() => setVolumeDragging(true)}
-            onTouchEnd={() => {
+            onTouchEnd={e => {
               setVolumeDragging(false);
-              broadcast({ volume: volumeDraft });
+              const v = parseFloat((e.target as HTMLInputElement).value);
+              if (Number.isFinite(v)) broadcast({ volume: v });
             }}
             aria-label="volume"
             className="slop-music-range"
