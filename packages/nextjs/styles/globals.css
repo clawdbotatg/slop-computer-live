@@ -151,7 +151,9 @@
   background: var(--slop-panel-glass);
   color: var(--slop-text);
   border: 1px solid rgba(255, 62, 201, 0.5);
-  border-radius: 12px;
+  /* Square corners to match the rest of the chrome — same shape
+     language as the titlebar buttons and the menubar. */
+  border-radius: 0;
   backdrop-filter: blur(20px);
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.7),
@@ -177,10 +179,16 @@
   font-weight: 400;
   letter-spacing: 0.08em;
   font-size: 16px;
-  padding: 5px 12px;
+  /* No left padding — the chrome buttons hit the corner. Right padding
+     keeps the title text off the edge. Vertical padding gone too: the
+     buttons size themselves to the bar via align-self: stretch. */
+  padding: 0 12px 0 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: stretch;
+  /* No gap — the dots block stretches edge-to-edge to the title text. */
+  gap: 0;
+  /* Explicit min-height so an empty titlebar still has the right shape. */
+  min-height: 28px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.25);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
@@ -199,29 +207,69 @@
   color: #000;
 }
 
-.slop-titlebar__dots {
+.slop-titlebar__title {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-right: 8px;
+  padding-left: 10px;
+}
+
+/* Buttons hug the left edge, stretch to the full titlebar height,
+   and butt up against each other (no gap). Square corners, hard
+   bevels — same shape language as the rest of the chrome. */
+.slop-titlebar__dots {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
 }
 
 .slop-titlebar__dot {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 30% 25%, #fff 0%, #ff5f57 80%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 28px;
+  font-family: var(--slop-font-display);
+  font-size: 18px;
+  line-height: 1;
+  color: rgba(0, 0, 0, 0.78);
+  /* Crisp inner bevel (top + left light, right + bottom dark) — flat
+     fill replaces the old radial-gradient ball. Right border acts as
+     the divider between buttons. */
+  border-right: 1px solid rgba(0, 0, 0, 0.45);
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.6),
-    inset 0 1px 0 #fff;
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 1px 0 0 rgba(255, 255, 255, 0.25),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.18);
+  background: #ff5f57;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+  user-select: none;
 }
 
-.slop-titlebar__dot:nth-child(2) {
-  background: radial-gradient(circle at 30% 25%, #fff 0%, #febc2e 80%);
+.slop-titlebar__dot--minimize {
+  background: #febc2e;
+}
+.slop-titlebar__dot--zoom {
+  background: #28c840;
 }
 
-.slop-titlebar__dot:nth-child(3) {
-  background: radial-gradient(circle at 30% 25%, #fff 0%, #28c840 80%);
+.slop-titlebar__dot:hover {
+  filter: brightness(1.12);
+}
+.slop-titlebar__dot:active {
+  filter: brightness(0.9);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.25),
+    inset 1px 0 0 rgba(0, 0, 0, 0.2),
+    inset -1px -1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* When the parent didn't pass a handler the button is still rendered
+   for visual symmetry but reads as inert. */
+.slop-titlebar__dot--disabled {
+  filter: grayscale(0.7) brightness(0.85);
+}
+.slop-titlebar__dot--disabled:hover {
+  filter: grayscale(0.7) brightness(0.85);
 }
 
 /* Cursor name tags: strip the copy-icon button + block-explorer link styling
@@ -251,7 +299,7 @@
   font-size: 16px;
   padding: 5px 16px;
   border: 1px solid rgba(124, 77, 255, 0.6);
-  border-radius: 9999px;
+  border-radius: 0;
   cursor: pointer;
   text-decoration: none;
   user-select: none;
@@ -301,7 +349,7 @@
   letter-spacing: 0.04em;
   padding: 5px 10px;
   border: 1px solid rgba(255, 62, 201, 0.4);
-  border-radius: 6px;
+  border-radius: 0;
   outline: none;
   box-shadow: inset 0 0 10px rgba(255, 62, 201, 0.15);
 }
@@ -510,9 +558,9 @@
   border: 1px solid rgba(255, 62, 201, 0.25);
 }
 
-/* keep daisyui buttons rounded to match */
+/* Square daisyui buttons to match the rest of the chrome. */
 .btn {
-  border-radius: 9999px !important;
+  border-radius: 0 !important;
   box-shadow: none;
 }
 

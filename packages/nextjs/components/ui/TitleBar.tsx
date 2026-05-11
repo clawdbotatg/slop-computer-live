@@ -11,20 +11,40 @@ interface TitleBarProps {
   className?: string;
 }
 
-const Dot = ({ onClick, label }: { onClick?: () => void; label?: string }) => {
-  if (!onClick) return <span className="slop-titlebar__dot" aria-hidden data-grab="false" />;
+type DotKind = "close" | "minimize" | "zoom";
+
+// Glyph rendered inside each titlebar button. Unicode characters keep
+// the bundle tiny and scale crisply at any zoom; the font size in CSS
+// handles the visual weight. Don't swap to SVGs unless you also need
+// per-button styling beyond what CSS can express.
+const DOT_GLYPH: Record<DotKind, string> = {
+  close: "✕",
+  minimize: "–",
+  zoom: "+",
+};
+
+const Dot = ({ kind, onClick, label }: { kind: DotKind; onClick?: () => void; label?: string }) => {
+  const cls = `slop-titlebar__dot slop-titlebar__dot--${kind}${onClick ? "" : " slop-titlebar__dot--disabled"}`;
+  if (!onClick) {
+    return (
+      <span className={cls} aria-hidden data-grab="false">
+        {DOT_GLYPH[kind]}
+      </span>
+    );
+  }
   return (
     <span
-      className="slop-titlebar__dot"
+      className={cls}
       role="button"
       aria-label={label}
       data-grab="false"
-      style={{ cursor: "pointer" }}
       onClick={e => {
         e.stopPropagation();
         onClick();
       }}
-    />
+    >
+      {DOT_GLYPH[kind]}
+    </span>
   );
 };
 
@@ -45,12 +65,12 @@ export const TitleBar = ({
         // (We've tried other approaches to also stop the drag itself
         // from this region — none worked without side effects.)
         <div className="slop-titlebar__dots" data-grab="false">
-          <Dot onClick={onClose} label="close" />
-          <Dot onClick={onMinimize} label="minimize" />
-          <Dot onClick={onZoom} label="zoom" />
+          <Dot kind="close" onClick={onClose} label="close" />
+          <Dot kind="minimize" onClick={onMinimize} label="minimize" />
+          <Dot kind="zoom" onClick={onZoom} label="zoom" />
         </div>
       )}
-      <div className="flex-1 truncate">{title}</div>
+      <div className="slop-titlebar__title flex-1 truncate">{title}</div>
       {right && <div className="flex items-center gap-2">{right}</div>}
     </div>
   );
