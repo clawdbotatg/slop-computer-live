@@ -1788,6 +1788,18 @@ app
     app.log.info(
       `slop-relay listening on http://${config.host}:${config.port} — admins=${config.adminAddresses.length} guestPwd=${config.guestPassword ? "set" : "unset"}`,
     );
+    // If a game was persisted with AI-to-move and the relay restarted
+    // mid-think (rare, but happened during the AI-vs-AI debug), kick
+    // off a fresh tick. Without this, the game would sit forever
+    // because nothing else triggers a broadcastChessState until a
+    // human interacts.
+    const resumed = chessGetCurrentGame();
+    if (resumed && resumed.status === "active") {
+      // Triggering broadcastChessState handles broadcast + version
+      // bump + maybeMoveAI scheduling. Safe to call on an unchanged
+      // state — peers just re-receive the snapshot they already have.
+      broadcastChessState(resumed);
+    }
   })
   .catch(err => {
     app.log.error(err);
