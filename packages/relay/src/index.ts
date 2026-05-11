@@ -104,19 +104,26 @@ function bumpChessVersion(): void {
 // in case the new turn belongs to a server-side AI player. Use this
 // instead of calling broadcast({type:"chess_state"}) directly so we
 // never forget either side effect.
+//
+// AI-vs-AI relies on the recursion at the bottom: when an AI's move
+// applies, `notifyAfterMove` calls broadcastChessState again with
+// the new state, which itself bumps the version + schedules another
+// maybeMoveAI tick. Each recursive call yields via setImmediate so
+// the stack never grows. Bounded by inFlight + lastVersionHandled
+// inside maybeMoveAI — no infinite loop possible.
 function broadcastChessState(game: import("./chess.js").ChessGame | null): void {
   broadcast({ type: "chess_state", game });
   bumpChessVersion();
-  // Fire-and-forget — the AI mover serializes itself and re-runs
-  // recursively if its own move switches turn back to another AI
-  // (AI-vs-AI keeps stepping through bumpChessVersion → broadcast).
   setImmediate(() => {
     maybeMoveAI(chessStateVersion, () => {
-      // After the AI's move applies, the chess module updates state;
-      // we broadcast + re-bump here so peers see the move.
+      // After the AI's move applies, re-enter broadcastChessState so
+      // (a) peers see the move and (b) the next side gets nudged. The
+      // previous version of this callback only broadcast inline and
+      // forgot the nudge — fine for human-vs-AI (the human's next move
+      // re-enters via the WS handler) but AI-vs-AI got stuck because
+      // nobody scheduled the next side's tick.
       const next = chessGetCurrentGame();
-      broadcast({ type: "chess_state", game: next });
-      bumpChessVersion();
+      broadcastChessState(next);
       if (next && next.status !== "active") {
         broadcast({ type: "chess_history", history: chessGetHistory() });
       }
