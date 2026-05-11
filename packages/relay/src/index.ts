@@ -71,6 +71,40 @@ type MusicState = {
 };
 let musicState: MusicState | null = null;
 
+// Chess "state version" — bumped every time the chess game changes
+// (create/move/resign/abort). Lets long-pollers wait cheaply for the
+// next change without us needing to keep diffs of the game itself.
+let chessStateVersion = 0;
+type ChessWaiter = { wake: () => void; cleanup: () => void };
+const chessWaiters: ChessWaiter[] = [];
+
+function bumpChessVersion(): void {
+  chessStateVersion++;
+  // Splice + iterate so wake handlers can't accidentally double-resolve
+  // by pushing themselves back into the queue.
+  const woke = chessWaiters.splice(0);
+  for (const w of woke) {
+    try {
+      w.cleanup();
+    } catch {
+      /* ignore */
+    }
+    try {
+      w.wake();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// Single broadcast helper for chess state changes — also bumps the
+// version counter so long-pollers wake up. Use this instead of calling
+// broadcast({type:"chess_state"}) directly so we never forget the bump.
+function broadcastChessState(game: import("./chess.js").ChessGame | null): void {
+  broadcast({ type: "chess_state", game });
+  bumpChessVersion();
+}
+
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
 
 const app = Fastify({
@@ -244,6 +278,10 @@ app.get("/v1/state", async (req, reply) => {
       handle: a.session.handle,
       role: a.session.role,
       isHost: a.isHost,
+      // Stable identity key — same value the chess server compares
+      // against `whiteKey` / `blackKey` to enforce side-to-move. Saves
+      // agents from having to derive it themselves.
+      ownerKey: (a.session.address ?? a.session.handle ?? "").toLowerCase() || null,
     },
     peers: listPeers(),
     publications: listPublications(),
@@ -736,11 +774,83 @@ app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, repl
 // move for the player it represents.
 // =============================================================================
 
+/** Build the response payload for /v1/chess and /v1/chess/wait. Includes
+ *  derived fields the agent loop needs (toMove, yourTurn) so callers
+ *  don't have to parse FEN to figure out whose turn it is. */
+function buildChessPayload(callerKey: string | null) {
+  const game = chessGetCurrentGame();
+  let toMove: "white" | "black" | null = null;
+  let yourTurn = false;
+  if (game && game.status === "active") {
+    // FEN's second whitespace-separated field is "w" or "b".
+    const fenTurn = game.fen.split(" ")[1];
+    toMove = fenTurn === "w" ? "white" : "black";
+    const sideKey = toMove === "white" ? game.whiteKey : game.blackKey;
+    yourTurn = !!callerKey && callerKey === sideKey;
+  }
+  return {
+    version: chessStateVersion,
+    game,
+    toMove,
+    yourTurn,
+    history: chessGetHistory(),
+  };
+}
+
 app.get("/v1/chess", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { game: chessGetCurrentGame(), history: chessGetHistory() };
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
+  return buildChessPayload(callerKey);
+});
+
+/** Long-poll the chess game. Pass `?since=<version>` (the `version`
+ *  field from a previous /v1/chess response). If `chessStateVersion`
+ *  is already greater, returns immediately. Otherwise blocks up to
+ *  `?timeout=<sec>` seconds (default 25, max 60) waiting for the next
+ *  change, then returns the current snapshot regardless.
+ *
+ *  Lets an agent's autonomous-play loop wait cheaply for the opponent
+ *  to move without polling on a fixed cadence. Wakes on every state
+ *  change: create / move / resign / abort / close. */
+app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/chess/wait", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
+  const since = Number(req.query?.since ?? 0);
+  const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
+
+  if (!Number.isFinite(since) || chessStateVersion > since) {
+    return buildChessPayload(callerKey);
+  }
+
+  return await new Promise<unknown>(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(buildChessPayload(callerKey));
+    };
+    const timer = setTimeout(finish, timeoutSec * 1000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      const idx = chessWaiters.findIndex(x => x === entry);
+      if (idx >= 0) chessWaiters.splice(idx, 1);
+      try {
+        reply.raw.off("close", finish);
+      } catch {
+        /* ignore */
+      }
+    };
+    const entry: ChessWaiter = { wake: finish, cleanup };
+    chessWaiters.push(entry);
+    // Client closed the request mid-wait → drop them so we don't
+    // try to resolve a dead reply.
+    reply.raw.on("close", finish);
+  });
 });
 
 type ChessCreateBody = { whiteKey?: unknown; blackKey?: unknown; whiteLabel?: unknown; blackLabel?: unknown };
@@ -758,7 +868,7 @@ app.post<{ Body: ChessCreateBody }>("/v1/chess/create", async (req, reply) => {
     blackLabel: typeof b.blackLabel === "string" ? b.blackLabel : b.blackKey,
   });
   if (!result.ok) return reply.code(409).send({ error: result.error });
-  broadcast({ type: "chess_state", game: result.game });
+  broadcastChessState(result.game);
   return { ok: true, game: result.game };
 });
 
@@ -786,7 +896,7 @@ app.post<{ Body: ChessMoveBody }>("/v1/chess/move", async (req, reply) => {
     const code = result.error === "not_your_turn" || result.error === "illegal_move" ? 403 : 409;
     return reply.code(code).send({ error: result.error });
   }
-  broadcast({ type: "chess_state", game: result.game });
+  broadcastChessState(result.game);
   if (result.ended) broadcast({ type: "chess_history", history: chessGetHistory() });
   return { ok: true, game: result.game, ended: result.ended };
 });
@@ -798,7 +908,7 @@ app.post("/v1/chess/resign", async (req, reply) => {
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
   const result = chessResign(callerKey);
   if (!result.ok) return reply.code(409).send({ error: result.error });
-  broadcast({ type: "chess_state", game: result.game });
+  broadcastChessState(result.game);
   broadcast({ type: "chess_history", history: chessGetHistory() });
   return { ok: true, game: result.game };
 });
@@ -807,7 +917,7 @@ app.post("/v1/chess/close", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const result = chessClearGame();
-  broadcast({ type: "chess_state", game: null });
+  broadcastChessState(null);
   return { ok: true, aborted: result.aborted };
 });
 
@@ -1023,9 +1133,27 @@ address ?? lowercased handle. Same scheme the WS clients use.
 
 \`\`\`
 GET ${base}/v1/chess
-# → { game: { whiteKey, blackKey, fen, moves, status, ... } | null,
-#     history: [ { winner, status, ... }, ... ] }
+# → {
+#     version: 17,                 # bumps on every state change
+#     game: { whiteKey, blackKey, fen, moves, status, ... } | null,
+#     toMove: "white" | "black" | null,
+#     yourTurn: true | false,      # derived from your bearer token
+#     history: [ { winner, status, ... }, ... ]
+#   }
 \`\`\`
+
+**Long-poll the next change (cheap waiting):**
+
+\`\`\`
+GET ${base}/v1/chess/wait?since=<version>&timeout=25
+\`\`\`
+
+Returns immediately if \`chessStateVersion > since\`. Otherwise blocks
+up to \`timeout\` seconds (default 25, max 60) waiting for the next
+create / move / resign / abort, then returns the same shape as
+\`/v1/chess\`. Use this in your autonomous-play loop instead of
+polling on a fixed cadence — wakes you ~instantly when the opponent
+moves, costs nothing while you wait.
 
 **Start a game (no game in progress):**
 
@@ -1063,7 +1191,45 @@ an agent token, the token inherits their ownerKey — so an agent can
 play moves on behalf of that human (and ONLY that human). This is
 the supported "BYO-AI" path: the human picks the agent as a player
 in the lobby, the agent watches \`GET /v1/chess\` for its turn and
-posts back. Don't poll faster than 1Hz.
+posts back.
+
+### Autonomous play loop
+
+Recommended pattern: **long-poll, don't poll on a clock**.
+
+\`\`\`bash
+# Confirm you're a player in this game
+state=$(curl -s -H "${auth}" ${base}/v1/chess)
+echo "$state" | jq '.game.whiteKey, .game.blackKey'
+me=$(curl -s -H "${auth}" ${base}/v1/state | jq -r '.you.ownerKey')
+
+version=$(echo "$state" | jq -r '.version')
+while true; do
+  # Block until the next change (or 25s timeout — re-poll either way).
+  resp=$(curl -s -H "${auth}" "${base}/v1/chess/wait?since=$version&timeout=25")
+  version=$(echo "$resp" | jq -r '.version')
+  status=$(echo "$resp" | jq -r '.game.status // "none"')
+  yourTurn=$(echo "$resp" | jq -r '.yourTurn')
+
+  # Game is over — exit the loop.
+  if [ "$status" != "active" ]; then break; fi
+
+  # Not your turn yet — loop and long-poll again.
+  if [ "$yourTurn" != "true" ]; then continue; fi
+
+  # Pick a move from the FEN (your engine / reasoning) and submit.
+  # The server validates legality + side-to-move; on rejection, replan.
+  curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
+    ${base}/v1/chess/move -d '{"from":"e2","to":"e4"}'
+done
+\`\`\`
+
+Stop conditions: \`game.status != "active"\` (resigned, checkmate, draw,
+abort), or \`game === null\` (lobby cleared). Don't move when
+\`yourTurn === false\` — the server will reject with 403 anyway, but
+no point spending tokens on it. If your move 403s with
+\`illegal_move\`, the position changed under you (race with the
+opponent) — re-read \`/v1/chess\` and replan.
 
 ## Recipes
 
@@ -1784,7 +1950,7 @@ app.register(async function signalRoutes(fastify) {
             blackLabel: typeof msg.blackLabel === "string" ? msg.blackLabel : msg.blackKey,
           });
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcast({ type: "chess_state", game: result.game });
+          broadcastChessState(result.game);
           return;
         }
         case "chess_move": {
@@ -1801,7 +1967,7 @@ app.register(async function signalRoutes(fastify) {
             promotion: typeof msg.promotion === "string" ? msg.promotion : undefined,
           });
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcast({ type: "chess_state", game: result.game });
+          broadcastChessState(result.game);
           if (result.ended) {
             broadcast({ type: "chess_history", history: chessGetHistory() });
           }
@@ -1811,7 +1977,7 @@ app.register(async function signalRoutes(fastify) {
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
           const result = chessResign(callerKey);
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcast({ type: "chess_state", game: result.game });
+          broadcastChessState(result.game);
           broadcast({ type: "chess_history", history: chessGetHistory() });
           return;
         }
@@ -1821,7 +1987,7 @@ app.register(async function signalRoutes(fastify) {
           // nothing appended to history). Same any-peer-can-close model
           // as the rest of the singleton windows.
           chessClearGame();
-          broadcast({ type: "chess_state", game: null });
+          broadcastChessState(null);
           return;
         }
         case "tx_request": {
