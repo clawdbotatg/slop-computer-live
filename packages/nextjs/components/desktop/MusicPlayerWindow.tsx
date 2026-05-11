@@ -320,15 +320,32 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       audioCtxRef.current?.resume().catch(() => undefined);
       setError(null);
       const cur = mesh.musicState;
+      const now = Date.now();
+      // The shared snapshot encodes "at moment T, position was P".
+      // Whenever we re-broadcast, `at` jumps to `now`, so `position`
+      // MUST also jump forward by however long it's been playing —
+      // otherwise volume-only updates (which keep cur.position) make
+      // peers compute "play head is at the OLD position" and the audio
+      // visibly rewinds. Compute the live head once and let callers
+      // override only when they really mean to (seek, stop, track-jump).
+      const livePos = livePosition(cur);
       const fallback: MusicState = {
         src: current?.src ?? null,
         index,
         playing: false,
-        position: 0,
-        at: Date.now(),
+        position: livePos,
+        at: now,
         volume: shownVolume,
       };
-      mesh.setMusicState({ ...fallback, ...cur, ...patch, at: patch.at ?? Date.now() });
+      mesh.setMusicState({
+        ...fallback,
+        ...cur,
+        ...patch,
+        // patch.position wins (caller is intentionally seeking); else
+        // use the live head, never the stale cur.position.
+        position: patch.position ?? livePos,
+        at: patch.at ?? now,
+      });
     },
     [mesh, current, index, setupGraph, shownVolume],
   );
