@@ -177,13 +177,16 @@ export function resign(callerKey: string): { ok: true; game: ChessGame } | { ok:
   return { ok: true, game: current };
 }
 
-/** Wipe the current game so the lobby reopens. Only valid for finished
- *  games — refuses to clear an active one (use resign instead). */
-export function clearGame(): { ok: true } | { ok: false; error: string } {
-  if (current && current.status === "active") return { ok: false, error: "game_still_active" };
+/** Wipe the current game so the lobby reopens. Works whether the game
+ *  is finished OR still active — an active game being cleared is an
+ *  "abort" (no winner recorded, nothing appended to history). The
+ *  alternative (refusing to clear active games) leaves us stuck when
+ *  both players walk away without resigning. */
+export function clearGame(): { ok: true; aborted: boolean } {
+  const wasActive = !!current && current.status === "active";
   current = null;
   scheduleSave();
-  return { ok: true };
+  return { ok: true, aborted: wasActive };
 }
 
 function archive() {

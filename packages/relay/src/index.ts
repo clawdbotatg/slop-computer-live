@@ -807,9 +807,8 @@ app.post("/v1/chess/close", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const result = chessClearGame();
-  if (!result.ok) return reply.code(409).send({ error: result.error });
   broadcast({ type: "chess_state", game: null });
-  return { ok: true };
+  return { ok: true, aborted: result.aborted };
 });
 
 // =============================================================================
@@ -1817,10 +1816,11 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "chess_close_game": {
-          // Any peer can clear out a finished game so the lobby
-          // reopens. Refused on an active game — use resign for that.
-          const result = chessClearGame();
-          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          // Any peer can clear the chess slot — finished or active.
+          // Clearing an active game is an "abort" (no winner recorded,
+          // nothing appended to history). Same any-peer-can-close model
+          // as the rest of the singleton windows.
+          chessClearGame();
           broadcast({ type: "chess_state", game: null });
           return;
         }

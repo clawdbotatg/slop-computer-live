@@ -480,28 +480,46 @@ const ActiveOrEnded = ({
           {statusText}
           {myTurn ? <span style={{ color: "var(--slop-lime, #bcff5b)", marginLeft: 8 }}>(YOU)</span> : null}
         </span>
-        {game.status === "active" && isPlayer ? (
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm("Resign the game?")) mesh.chessResign();
-            }}
-            className="slop-button"
-            style={{ padding: "4px 12px", fontSize: 11 }}
-          >
-            Resign
-          </button>
-        ) : null}
-        {game.status !== "active" ? (
-          <button
-            type="button"
-            onClick={() => mesh.chessCloseGame()}
-            className="slop-button slop-button--primary"
-            style={{ padding: "4px 12px", fontSize: 11 }}
-          >
-            New Game
-          </button>
-        ) : null}
+        <div style={{ display: "flex", gap: 6 }}>
+          {/* Players get Resign (records a loss + appends history). */}
+          {game.status === "active" && isPlayer ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm("Resign the game?")) mesh.chessResign();
+              }}
+              className="slop-button"
+              style={{ padding: "4px 12px", fontSize: 11 }}
+            >
+              Resign
+            </button>
+          ) : null}
+          {/* Abort wipes the game without recording a result — covers
+              "both players walked away" and "wrong players selected"
+              cases. Visible to anyone in the room (same any-peer-can-
+              close model the desktop uses elsewhere). */}
+          {game.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm("Abort this game? No result will be recorded.")) mesh.chessCloseGame();
+              }}
+              className="slop-button"
+              style={{ padding: "4px 12px", fontSize: 11 }}
+            >
+              Abort
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => mesh.chessCloseGame()}
+              className="slop-button slop-button--primary"
+              style={{ padding: "4px 12px", fontSize: 11 }}
+            >
+              New Game
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
