@@ -172,6 +172,16 @@ export type ChessResult = {
   moveCount: number;
 };
 
+/** Server-side AI player available as a chess opponent. The lobby
+ *  shows these alongside the live human peers in the player picker.
+ *  The relay is responsible for actually playing their moves. */
+export type AIPlayer = {
+  id: string;
+  label: string;
+  ownerKey: string; // "ai:<id>"
+  model: string;
+};
+
 const CHAT_HISTORY_CAP = 200;
 
 type SelfHint = {
@@ -239,6 +249,9 @@ export type PeerMeshState = {
   /** Server-authoritative chess game (singleton) + recent results. */
   chessGame: ChessGame | null;
   chessHistory: ChessResult[];
+  /** Server-side AI players available as opponents. Empty if no
+   *  provider keys are configured on the relay. */
+  aiPlayers: AIPlayer[];
   chessCreate: (args: { whiteKey: string; blackKey: string; whiteLabel: string; blackLabel: string }) => void;
   chessMove: (from: string, to: string, promotion?: string) => void;
   chessResign: () => void;
@@ -266,6 +279,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
+  const [aiPlayers, setAiPlayers] = useState<AIPlayer[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -748,6 +762,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (Array.isArray(msg.chessHistory)) {
             setChessHistory(msg.chessHistory as ChessResult[]);
           }
+          if (Array.isArray(msg.aiPlayers)) {
+            setAiPlayers(msg.aiPlayers as AIPlayer[]);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1074,6 +1091,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     setMusicState,
     chessGame,
     chessHistory,
+    aiPlayers,
     chessCreate,
     chessMove,
     chessResign,

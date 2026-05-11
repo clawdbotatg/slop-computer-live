@@ -61,10 +61,13 @@ const Lobby = ({
   myOwnerKey: string | null;
   myLabel: string | null;
 }) => {
-  // Build a "selectable identities" list = every connected peer plus me.
-  // Dedupe by ownerKey so a peer whose own peerId differs from their
-  // wallet address doesn't show up twice.
-  const options = useMemo(() => buildOptions(mesh.peers, myOwnerKey, myLabel), [mesh.peers, myOwnerKey, myLabel]);
+  // Build a "selectable identities" list = every connected peer + me +
+  // every server-side AI player. Dedupe by ownerKey so a peer whose
+  // peerId differs from their wallet address doesn't show twice.
+  const options = useMemo(
+    () => buildOptions(mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers),
+    [mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers],
+  );
   const [whiteKey, setWhiteKey] = useState<string>("");
   const [blackKey, setBlackKey] = useState<string>("");
 
@@ -861,14 +864,25 @@ const peerKey = (p: Peer) => (p.address ?? p.handle ?? p.id).toLowerCase();
 const peerLabel = (p: Peer) =>
   p.handle ?? (p.address ? `${p.address.slice(0, 6)}…${p.address.slice(-4)}` : p.id.slice(0, 6));
 
-function buildOptions(peers: Peer[], myKey: string | null, myLabel: string | null) {
+function buildOptions(
+  peers: Peer[],
+  myKey: string | null,
+  myLabel: string | null,
+  aiPlayers: { ownerKey: string; label: string }[] = [],
+) {
   const map = new Map<string, { key: string; label: string }>();
-  // Me first if known.
+  // Me first if known, then other connected humans.
   if (myKey) map.set(myKey, { key: myKey, label: myLabel ?? myKey });
   for (const p of peers) {
     const k = peerKey(p);
     if (map.has(k)) continue;
     map.set(k, { key: k, label: peerLabel(p) });
+  }
+  // Then the server-side AI roster — labels already carry a 🤖 marker
+  // in the registry config, so the dropdown reads them as obviously bot.
+  for (const ai of aiPlayers) {
+    if (map.has(ai.ownerKey)) continue;
+    map.set(ai.ownerKey, { key: ai.ownerKey, label: ai.label });
   }
   return [...map.values()];
 }

@@ -53,6 +53,8 @@ import {
   getHistory as chessGetHistory,
   resign as chessResign,
 } from "./chess.js";
+import { listAvailableAIPlayers } from "./ai-players.js";
+import { maybeMoveAI } from "./ai-mover.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -98,11 +100,28 @@ function bumpChessVersion(): void {
 }
 
 // Single broadcast helper for chess state changes — also bumps the
-// version counter so long-pollers wake up. Use this instead of calling
-// broadcast({type:"chess_state"}) directly so we never forget the bump.
+// version counter so long-pollers wake up, AND nudges the AI mover
+// in case the new turn belongs to a server-side AI player. Use this
+// instead of calling broadcast({type:"chess_state"}) directly so we
+// never forget either side effect.
 function broadcastChessState(game: import("./chess.js").ChessGame | null): void {
   broadcast({ type: "chess_state", game });
   bumpChessVersion();
+  // Fire-and-forget — the AI mover serializes itself and re-runs
+  // recursively if its own move switches turn back to another AI
+  // (AI-vs-AI keeps stepping through bumpChessVersion → broadcast).
+  setImmediate(() => {
+    maybeMoveAI(chessStateVersion, () => {
+      // After the AI's move applies, the chess module updates state;
+      // we broadcast + re-bump here so peers see the move.
+      const next = chessGetCurrentGame();
+      broadcast({ type: "chess_state", game: next });
+      bumpChessVersion();
+      if (next && next.status !== "active") {
+        broadcast({ type: "chess_history", history: chessGetHistory() });
+      }
+    }).catch(err => console.error("[ai-mover] tick failed:", err));
+  });
 }
 
 const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
@@ -294,7 +313,16 @@ app.get("/v1/state", async (req, reply) => {
     musicState,
     chessGame: chessGetCurrentGame(),
     chessHistory: chessGetHistory(),
+    aiPlayers: listAvailableAIPlayers(),
   };
+});
+
+app.get("/v1/ai-players", async (req, reply) => {
+  // No keys exposed — listAvailableAIPlayers strips them.
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { aiPlayers: listAvailableAIPlayers() };
 });
 
 // --- Read: list available icon PNGs -----------------------------------------
@@ -1755,6 +1783,7 @@ app.register(async function signalRoutes(fastify) {
       musicState,
       chessGame: chessGetCurrentGame(),
       chessHistory: chessGetHistory(),
+      aiPlayers: listAvailableAIPlayers(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

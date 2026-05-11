@@ -1,0 +1,89 @@
+// Registry of server-side AI chess opponents.
+//
+// Each entry describes an OpenAI-compatible chat-completions endpoint.
+// The actual API key is read from the env var named here — keys live
+// in the relay's .env (gitignored) and are NEVER returned by the
+// /v1/ai-players endpoint or included in any broadcast.
+//
+// To add a player: append an entry below. To take one offline: leave
+// the entry but unset its env var (the registry filter hides any
+// player whose key isn't present).
+
+export type AIPlayerConfig = {
+  /** Stable id, kebab-case. The chess game stores this player as
+   *  ownerKey = `ai:${id}`. Don't change after games have been played
+   *  or history rows will orphan. */
+  id: string;
+  /** Display label shown in the lobby dropdown. */
+  label: string;
+  /** Base URL of the OpenAI-compatible API (no trailing slash). The
+   *  relay POSTs to `${baseURL}/chat/completions`. */
+  baseURL: string;
+  /** Model name as the provider expects it. */
+  model: string;
+  /** Name of the env var that holds the bearer token for this provider. */
+  envVar: string;
+  /** Optional extra system-prompt fragment, appended to the standard
+   *  chess instructions. Useful for "play aggressively" personas. */
+  systemPromptExtra?: string;
+  /** Hard cap on tokens per move response. We only need ~5 chars but
+   *  some models pad with reasoning. 256 is plenty. */
+  maxTokens?: number;
+};
+
+// IMPORTANT: when you add a real provider here, update this list AND
+// add the matching key to packages/relay/.env. Code-only entries with
+// no key set are silently hidden — clients won't see them in the lobby.
+const AI_PLAYERS: AIPlayerConfig[] = [
+  {
+    id: "bankr-minimax-m2.7",
+    label: "MiniMax M2.7 (Bankr) 🤖",
+    baseURL: "https://api.bankr.com/v1",
+    model: "minimax-m2.7",
+    envVar: "BANKR_API_KEY",
+  },
+  {
+    id: "venice-glm-4.5",
+    label: "GLM 4.5 (Venice) 🤖",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "glm-4.5",
+    envVar: "VENICE_API_KEY",
+  },
+];
+
+const PREFIX = "ai:";
+
+/** Public-facing entry — apiKey + envVar omitted. Safe for /v1
+ *  responses + WS broadcasts. */
+export type PublicAIPlayer = {
+  id: string;
+  label: string;
+  ownerKey: string;
+  model: string;
+};
+
+export function listAvailableAIPlayers(): PublicAIPlayer[] {
+  return AI_PLAYERS.filter(p => !!process.env[p.envVar]).map(p => ({
+    id: p.id,
+    label: p.label,
+    ownerKey: `${PREFIX}${p.id}`,
+    model: p.model,
+  }));
+}
+
+export function isAIKey(ownerKey: string | null | undefined): boolean {
+  return typeof ownerKey === "string" && ownerKey.startsWith(PREFIX);
+}
+
+/** Resolve an ownerKey (e.g. "ai:bankr-minimax-m2.7") to its config +
+ *  live API key. Returns null if the key isn't an AI, the id is
+ *  unknown, or the env var is unset (key was rotated out). */
+export function getAIPlayer(ownerKey: string): (AIPlayerConfig & { apiKey: string }) | null {
+  if (!isAIKey(ownerKey)) return null;
+  const id = ownerKey.slice(PREFIX.length);
+  const cfg = AI_PLAYERS.find(p => p.id === id);
+  if (!cfg) return null;
+  const apiKey = process.env[cfg.envVar];
+  if (!apiKey) return null;
+  return { ...cfg, apiKey };
+}
