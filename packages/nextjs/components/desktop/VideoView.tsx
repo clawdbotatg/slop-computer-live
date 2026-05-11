@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 
 export type VideoViewProps = {
   stream: MediaStream;
@@ -28,6 +29,19 @@ export const VideoView = ({ stream, muted = false, isMine = false, onSettings }:
     if (!isMine) return;
     for (const t of stream.getVideoTracks()) t.enabled = !paused;
   }, [stream, paused, isMine]);
+
+  // Reload-without-gesture can leave an unmuted <video> paused (Chrome's
+  // autoplay policy occasionally bites WebRTC streams too). The page
+  // EntryGate fires slop:activated on the first user click; retry play
+  // in the same gesture so the remote camera/screen wakes up.
+  useEffect(() => {
+    const onActivated = () => {
+      const v = videoRef.current;
+      if (v && v.paused) v.play().catch(() => undefined);
+    };
+    window.addEventListener(ACTIVATED_EVENT, onActivated);
+    return () => window.removeEventListener(ACTIVATED_EVENT, onActivated);
+  }, []);
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative", background: "#000" }}>

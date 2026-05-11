@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
+import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import type { Bands } from "~~/utils/blockieBands";
 
 export type AudioVisualizerProps = {
@@ -51,6 +52,10 @@ export const AudioVisualizer = ({
   const circleRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  // Held outside the analyser useEffect so the slop:activated listener
+  // below can resume() it after a reload-without-gesture leaves it in
+  // the suspended state (analyser → silent input → flat visualizer).
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Local mute toggle — flips track.enabled on the outgoing audio track(s)
   // so peers receive silence (and the visualizer naturally flatlines).
@@ -73,11 +78,13 @@ export const AudioVisualizer = ({
       window.AudioContext ?? (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext;
     if (!Ctor) return;
     const ctx = new Ctor();
+    audioCtxRef.current = ctx;
     let source: MediaStreamAudioSourceNode;
     try {
       source = ctx.createMediaStreamSource(stream);
     } catch {
       void ctx.close();
+      audioCtxRef.current = null;
       return;
     }
     const analyser = ctx.createAnalyser();
@@ -159,8 +166,25 @@ export const AudioVisualizer = ({
         /* ignore */
       }
       void ctx.close();
+      if (audioCtxRef.current === ctx) audioCtxRef.current = null;
     };
   }, [stream, bands.band1, bands.band2, bands.band3]);
+
+  // Reload-without-gesture lands here with a suspended AudioContext
+  // (analyser sees silence → flat visualizer) and possibly a paused
+  // <audio> element (Chrome may reject autoPlay even on srcObject
+  // streams without user activation). The page-level EntryGate fires
+  // slop:activated on the user's first click; resume the context and
+  // kick the audio in the same gesture so playback + viz wake up.
+  useEffect(() => {
+    const onActivated = () => {
+      audioCtxRef.current?.resume().catch(() => undefined);
+      const a = audioRef.current;
+      if (a && a.paused) a.play().catch(() => undefined);
+    };
+    window.addEventListener(ACTIVATED_EVENT, onActivated);
+    return () => window.removeEventListener(ACTIVATED_EVENT, onActivated);
+  }, []);
 
   // When an avatar is present the avatar gets the top ~80% of the window and
   // the viz collapses into a thin strip at the bottom. Without an avatar the
