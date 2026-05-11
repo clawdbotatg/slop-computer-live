@@ -39,26 +39,76 @@ export type AIPlayerConfig = {
 // IMPORTANT: when you add a real provider here, update this list AND
 // add the matching key to packages/relay/.env. Code-only entries with
 // no key set are silently hidden — clients won't see them in the lobby.
+//
+// All Bankr entries route through their OpenClaw LLM gateway
+// (https://llm.bankr.bot/v1) — OpenAI-compatible response shape with
+// an X-API-Key header. Full catalog + pricing:
+//   curl https://llm.bankr.bot/v1/models -H "X-API-Key: $BANKR_API_KEY"
+//
+// Curated for chess: prefer reasoning models that have shown they can
+// stay through 30+ moves without coughing up unparseable nonsense.
+// MiniMax M2.7 was dropped — chronically resigned 1-4 moves in.
 const AI_PLAYERS: AIPlayerConfig[] = [
+  // ---- Bankr — flagship reasoners ---------------------------------
   {
-    id: "bankr-minimax-m2.7",
-    label: "MiniMax M2.7 (Bankr) 🤖",
-    // Bankr's "OpenClaw" LLM gateway — OpenAI-compatible response
-    // shape but uses an X-API-Key header instead of bearer auth.
-    // Catalog: https://llm.bankr.bot/v1/models
+    id: "bankr-claude-opus-4.7",
+    label: "Claude Opus 4.7 🤖",
     baseURL: "https://llm.bankr.bot/v1",
-    model: "minimax-m2.7",
+    model: "claude-opus-4.7",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
   {
+    id: "bankr-gpt-5.5",
+    label: "GPT 5.5 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gpt-5.5",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-gemini-3.1-pro",
+    label: "Gemini 3.1 Pro 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gemini-3.1-pro",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-grok-4.20",
+    label: "Grok 4.20 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "grok-4.20",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  // ---- Bankr — already-proven Ruy-Lopez-grade ---------------------
+  {
     id: "bankr-kimi-k2.6",
-    label: "Kimi K2.6 (Bankr) 🤖",
+    label: "Kimi K2.6 🤖",
     baseURL: "https://llm.bankr.bot/v1",
     model: "kimi-k2.6",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
+  {
+    id: "bankr-deepseek-v4-pro",
+    label: "DeepSeek V4 Pro 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "deepseek-v4-pro",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  // ---- Bankr — cheap & quick (good for lots of test games) --------
+  {
+    id: "bankr-gpt-5-mini",
+    label: "GPT 5-mini 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gpt-5-mini",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  // ---- Venice — different lab + can be unhinged --------------------
   {
     id: "venice-uncensored",
     label: "Venice Uncensored 🤖",
