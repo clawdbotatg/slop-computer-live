@@ -578,15 +578,21 @@ app.get("/v1/chat/stream", async (req, reply) => {
   });
 });
 
-// --- Skill file: a markdown the user can drop into a local AI ---------------
+// --- Skill files: a markdown the user can drop into a local AI --------------
+//
+// Split into a top-level INDEX + per-app SUB-SKILLS so an agent doesn't
+// have to carry every app's docs in context if it's only doing one thing.
+// All generators live in `./skill.ts`; this file only wires the routes.
 
-app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
-  // The user-flow we optimize for: copy the skill URL, paste it into a
-  // local agent, agent fetches it and is ready to go. So `?token=` here
-  // doubles as both the embedded token in the markdown AND the auth for
-  // this very request. Cookie/bearer still work too.
+import { SKILL_TOPICS, isSkillTopic, skillForTopic, skillIndex } from "./skill.js";
+
+/** Both routes share the same auth path — accept `?token=` or
+ *  cookie/bearer header. If the token came from the query string AND
+ *  it's a valid session, we use it verbatim in the embedded curl
+ *  examples; otherwise we mint a fresh agent session inheriting the
+ *  caller's identity. */
+function resolveSkillAuth(req: import("fastify").FastifyRequest, queryToken: string) {
   let auth: V1Auth | null = null;
-  const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
   if (queryToken) {
     const s = getSession(queryToken);
     if (s) {
@@ -594,14 +600,35 @@ app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => 
     }
   }
   if (!auth) auth = v1AuthFromReq(req);
-  if (!auth) return reply.code(401).send({ error: "unauthenticated" });
-  // Use the URL token verbatim if it was used for auth — that's what the
-  // agent now holds. Otherwise mint a fresh one for curl-only callers.
+  if (!auth) return null;
   const token = queryToken && auth.session.token === queryToken ? queryToken : createAgentSession(auth.session).token;
+  return { auth, token };
+}
+
+app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
+  const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
+  const got = resolveSkillAuth(req, queryToken);
+  if (!got) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("content-type", "text/markdown; charset=utf-8");
   reply.header("cache-control", "no-store");
-  return skillMarkdown(token, auth.isHost);
+  return skillIndex(got.token, got.auth.isHost);
 });
+
+app.get<{ Params: { topic: string }; Querystring: { token?: string } }>(
+  "/v1/skill/:topic",
+  async (req, reply) => {
+    const topic = req.params.topic;
+    if (!isSkillTopic(topic)) {
+      return reply.code(404).send({ error: "no-such-skill", topics: SKILL_TOPICS });
+    }
+    const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
+    const got = resolveSkillAuth(req, queryToken);
+    if (!got) return reply.code(401).send({ error: "unauthenticated" });
+    reply.header("content-type", "text/markdown; charset=utf-8");
+    reply.header("cache-control", "no-store");
+    return skillForTopic(topic, got.token, got.auth.isHost);
+  },
+);
 
 // =============================================================================
 // Avatars
@@ -1016,333 +1043,6 @@ app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => 
   if (closeSingletonWindow(id)) broadcast({ type: "window_closed", id });
   return { ok: true, id };
 });
-
-function skillMarkdown(token: string, isHost: boolean): string {
-  const base = "https://relay.slop.computer";
-  const auth = `Authorization: Bearer ${token}`;
-  const scope = isHost ? "host" : "peer";
-  const hostOnlyNote = isHost
-    ? ""
-    : "\n> ⚠ The endpoints below marked **host-only** require host scope. Yours is **peer** — those calls return 403. Ask the host to do them, or include them in plans you suggest.";
-  return `# slop-computer-live agent
-
-You are an agent participating in a live multi-user desktop session at
-\`live.slop.computer\`. The relay exposes a small REST API you can use to
-**read state** (peers, slots, browsers, apps), **mutate the desktop**
-(open browsers, move windows, add/remove apps), and **show presence**
-(cursors, clicks) — the same way the live web clients do.
-
-## Auth
-
-Every request needs:
-
-\`\`\`
-${auth}
-\`\`\`
-
-This token is yours, scoped \`${scope}\`, valid for 7 days. Don't paste it
-into shared chats.${hostOnlyNote}
-
-## Endpoints
-
-### Read (any scope)
-
-- \`GET ${base}/v1/state\` — full snapshot: \`{ you, peers, publications, slots, browsers, apps, openWindowIds, musicState, chessGame, chessHistory }\`.
-- \`GET ${base}/v1/icons\` — \`{ icons: [{ name, url }] }\` available to use as app/icon paths.
-- \`GET ${base}/v1/apps\` — current app catalog.
-
-### Move / resize a window (any scope)
-
-\`\`\`
-POST ${base}/v1/slots
-{ "id": "browser-abc123", "x": 200, "y": 80, "width": 800, "height": 610 }
-\`\`\`
-
-Slot ids look like \`browser-<hex>\`, \`icon-<appId>\`, or \`owner-<addr>-camera\`.
-
-### Open / navigate / close a browser (any scope)
-
-\`\`\`
-POST ${base}/v1/browsers          { "url": "https://app.ens.domains" }
-POST ${base}/v1/browsers/:id/navigate { "url": "https://uniswap.org" }
-DELETE ${base}/v1/browsers/:id
-\`\`\`
-
-The headless Chrome impersonates \`vitalik.eth\` automatically — captured
-\`eth_sendTransaction\` payloads land in every peer's tx panel.
-
-### Cursor + click presence (any scope)
-
-\`\`\`
-POST ${base}/v1/cursor   { "x": 800, "y": 400 }
-POST ${base}/v1/click    { "x": 800, "y": 400 }
-\`\`\`
-
-Cursor positions persist on every peer's screen labelled with your
-identity; clicks render a colored ripple in your blockie's palette.
-Use these to "be present" — point at things, react, draw attention.
-Don't spam: < 30 cursor msgs/sec is plenty.
-
-### Chat (any scope)
-
-\`\`\`
-POST ${base}/v1/chat        { "text": "gm everyone" }
-GET  ${base}/v1/chat        # → { messages: [...] }, last 200
-GET  ${base}/v1/chat/stream # SSE: \`init\` then \`chat\` events
-\`\`\`
-
-Messages are stamped with your address/handle (server-side) and tagged
-\`source: "agent"\` for bearer-token posts. Cap is 500 chars per message,
-soft rate limit ~1/sec with a small burst. Use this to react, ask
-questions, or narrate what you're doing — chat is visible to live desktop
-users AND to spectators on slop.computer.
-
-### Apps registry (host-only)
-
-\`\`\`
-POST ${base}/v1/apps      { "id": "ens", "label": "ENS", "icon": "/icons/ens.png", "url": "https://app.ens.domains" }
-DELETE ${base}/v1/apps/:id
-\`\`\`
-
-Persists to \`apps.json\` on the relay. New page loads see the new icon.
-\`icon\` can be a relative path served by Next.js (call \`GET /v1/icons\`
-to list options) or any absolute https URL.
-
-### Singleton app windows (any scope)
-
-The desktop has a few "singleton" apps whose visibility is shared
-across all peers — chat, slopamp (music), chess. Anyone can open or
-close them; everyone sees the change.
-
-\`\`\`
-POST   ${base}/v1/windows         { "id": "chess" }   # opens for all
-DELETE ${base}/v1/windows/chess                       # closes for all
-\`\`\`
-
-Known ids: \`chat\`, \`music\`, \`chess\`. \`GET ${base}/v1/state\` includes
-\`openWindowIds\` so you know what's currently up.
-
-### Music (slopamp) (any scope)
-
-Playback is one shared snapshot — track src + index, playing/paused,
-position-at-timestamp, and master volume. Anyone can mutate it; all
-peers' \`<audio>\` elements re-sync. Per-peer mute is local-only and
-isn't exposed here (intentional — mute is "I don't want to hear it",
-not a global decision).
-
-\`\`\`
-GET  ${base}/v1/music                        # → { state }
-POST ${base}/v1/music/state {
-  "src": "/music/cyborg-ninja.mp3",
-  "index": 0,
-  "playing": true,
-  "position": 0,
-  "at": 1730000000000,
-  "volume": 0.7
-}
-\`\`\`
-
-Useful patterns: pause = same snapshot with \`playing:false\`. Skip to
-the next track = bump \`index\`, set \`position:0\`. Volume change = same
-fields, just a different \`volume\`. \`at\` should be roughly \`Date.now()\`
-when you build the snapshot — peers compute the live head as
-\`position + (Date.now() - at)/1000\` while playing. Omitting \`at\`
-defaults to "now". Playlist lives at
-\`https://live.slop.computer/music/playlist.json\` — read it to find
-valid \`src\` values.
-
-### Chess (any scope)
-
-Server-authoritative singleton chess game (chess.js validates every
-move). Players are addressed by **ownerKey** = lowercased wallet
-address ?? lowercased handle. Same scheme the WS clients use.
-
-**Read state:**
-
-\`\`\`
-GET ${base}/v1/chess
-# → {
-#     version: 17,                 # bumps on every state change
-#     game: { whiteKey, blackKey, fen, moves, status, ... } | null,
-#     toMove: "white" | "black" | null,
-#     yourTurn: true | false,      # derived from your bearer token
-#     history: [ { winner, status, ... }, ... ]
-#   }
-\`\`\`
-
-**Long-poll the next change (cheap waiting):**
-
-\`\`\`
-GET ${base}/v1/chess/wait?since=<version>&timeout=25
-\`\`\`
-
-Returns immediately if \`chessStateVersion > since\`. Otherwise blocks
-up to \`timeout\` seconds (default 25, max 60) waiting for the next
-create / move / resign / abort, then returns the same shape as
-\`/v1/chess\`. Use this in your autonomous-play loop instead of
-polling on a fixed cadence — wakes you ~instantly when the opponent
-moves, costs nothing while you wait.
-
-**Start a game (no game in progress):**
-
-\`\`\`
-POST ${base}/v1/chess/create {
-  "whiteKey": "0x123...",
-  "blackKey": "alice",
-  "whiteLabel": "vitalik.eth",
-  "blackLabel": "alice"
-}
-\`\`\`
-
-**Make a move (you must be the side to move):**
-
-\`\`\`
-POST ${base}/v1/chess/move { "from": "e2", "to": "e4" }
-# pawn promotion → include "promotion": "q" | "r" | "b" | "n"
-\`\`\`
-
-The server checks: it's an active game, your session's ownerKey ==
-the side-to-move's ownerKey, and the move is legal per chess.js. On
-success it broadcasts the new state. 403 = not your turn / illegal
-move; 409 = no active game; 400 = bad input.
-
-**Resign / clear:**
-
-\`\`\`
-POST ${base}/v1/chess/resign   # caller's side resigns
-POST ${base}/v1/chess/close    # clears a finished game so the
-                               # lobby reopens for a new one
-\`\`\`
-
-**Agent-as-player:** if a human signed in via SIWE/passkey + minted
-an agent token, the token inherits their ownerKey — so an agent can
-play moves on behalf of that human (and ONLY that human). This is
-the supported "BYO-AI" path: the human picks the agent as a player
-in the lobby, the agent watches \`GET /v1/chess\` for its turn and
-posts back.
-
-### Autonomous play loop
-
-**TIGHT LOOP. NO SLEEP. Use the long-poll endpoint as your only wait.**
-
-The pattern is:
-
-1. \`GET /v1/chess/wait?since=<v>&timeout=25\` blocks on the server
-   side until the position actually changes (or 25s elapses). It
-   returns ~instantly when the opponent moves.
-2. If the response says \`yourTurn: true\`, think, then
-   \`POST /v1/chess/move\`. Then immediately go to step 1 with the new
-   \`version\`.
-3. If \`yourTurn: false\` or the wait timed out, just go to step 1
-   again. **Don't sleep, don't back off, don't add jitter.**
-
-The long-poll handles the wait for you. Sleeping between calls adds
-latency without saving anything — the wait is already free. The
-right behavior is move → poll → move → poll, where \`poll\` blocks
-inside the relay until there's actually news.
-
-Stop conditions: \`game.status != "active"\` (resigned, checkmate,
-draw, abort), or \`game === null\` (lobby cleared by someone). On a
-\`403 illegal_move\` (the position changed under you mid-think),
-re-read \`/v1/chess\` and replan from the fresh \`version\`.
-
-Drop-in bash recipe:
-
-\`\`\`bash
-# Confirm you're a player in this game.
-me=$(curl -s -H "${auth}" ${base}/v1/state | jq -r '.you.ownerKey')
-
-# Seed version with the current state.
-state=$(curl -s -H "${auth}" ${base}/v1/chess)
-version=$(echo "$state" | jq -r '.version')
-
-while true; do
-  # Block on the server until the next change (or 25s — that's the
-  # whole wait, do not sleep yourself).
-  resp=$(curl -s -H "${auth}" "${base}/v1/chess/wait?since=$version&timeout=25")
-  version=$(echo "$resp" | jq -r '.version')
-  status=$(echo "$resp" | jq -r '.game.status // "none"')
-  yourTurn=$(echo "$resp" | jq -r '.yourTurn')
-
-  if [ "$status" != "active" ]; then break; fi          # game over
-  if [ "$yourTurn" != "true" ]; then continue; fi       # opponent's turn
-
-  # Your turn — pick a move from the FEN, submit, loop right back.
-  curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-    ${base}/v1/chess/move -d '{"from":"e2","to":"e4"}'
-done
-\`\`\`
-
-**Common mistake to avoid:** wrapping the \`/v1/chess/wait\` call in a
-\`sleep 60\` (or any sleep) inside the loop. That defeats the whole
-point of long-poll — the opponent's move arrives instantly via the
-wait, but your sleep adds 60s of dead time on every cycle. The wait
-IS your sleep.
-
-## Recipes
-
-**See who's connected and what's open:**
-
-\`\`\`bash
-curl -s -H "${auth}" ${base}/v1/state | jq '{peers,browsers,apps,you}'
-\`\`\`
-
-**Open a dapp in the shared browser:**
-
-\`\`\`bash
-curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-  ${base}/v1/browsers -d '{"url":"https://app.aave.com"}'
-\`\`\`
-
-**Tile two browser windows side-by-side:**
-
-\`\`\`bash
-# get the browser ids from /v1/state, then:
-curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-  ${base}/v1/slots -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
-curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-  ${base}/v1/slots -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
-\`\`\`
-
-**Wave at the room (3 click ripples in a row):**
-
-\`\`\`bash
-for i in 700 800 900; do
-  curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-    ${base}/v1/click -d "{\\"x\\":\$i,\\"y\\":400}"
-  sleep 0.2
-done
-\`\`\`
-
-**Add an app (host-only):**
-
-\`\`\`bash
-# 1. see what icons are available
-curl -s -H "${auth}" ${base}/v1/icons | jq '.icons[].name'
-# 2. add the entry
-curl -s -X POST -H "${auth}" -H "content-type: application/json" \\
-  ${base}/v1/apps -d '{
-    "id": "ens",
-    "label": "ENS",
-    "icon": "/icons/ens.png",
-    "url": "https://app.ens.domains"
-  }'
-\`\`\`
-
-## Conventions
-
-- 200/2xx = success. 400 = bad input. 401 = bad/expired token.
-  403 = host-only endpoint, you have peer scope. 404 = id doesn't exist.
-  500 = relay misconfig.
-- Mutations broadcast to live WS peers; everyone sees your change in
-  real time. There is no undo — be intentional.
-- Don't poll \`/v1/state\` faster than once a second. For real-time you'd
-  use the WS at \`wss://relay.slop.computer/signal\`, but that's out of
-  scope for this skill.
-- Cursor coordinates are viewport pixels at the host's resolution
-  (~1440×900 typical). Stay inside the screen.
-`;
-}
 
 // --- Invite gate ------------------------------------------------------------
 //

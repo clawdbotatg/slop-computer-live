@@ -1,0 +1,555 @@
+// Skill file generators.
+//
+// The skill file is a markdown doc handed to a BYO-AI agent so it
+// can drive the slop-computer desktop via the /v1 REST API. As we
+// added apps the single file grew past the point where you'd want
+// it always in an agent's context — so it's now split into a small
+// top-level INDEX and per-app SUB-SKILLS. The agent reads the index
+// once, then GETs whichever sub-skill it actually needs before
+// acting on that surface.
+//
+// Each generator is a pure function of (token, isHost). Both the
+// index and sub-skills embed `Authorization: Bearer <token>` examples
+// so an agent can copy-paste a curl line and have it work.
+
+const BASE = "https://relay.slop.computer";
+
+/** Banner shared across every doc — auth reminder + how to fetch
+ *  related sub-skills. Cheap to include everywhere so an agent who
+ *  only loads one sub-skill still has the basics. */
+function header(token: string, scope: string, hostOnlyNote: string): string {
+  return `# slop-computer-live agent
+
+You are an agent participating in a live multi-user desktop session at
+\`live.slop.computer\`. Authenticate every call with:
+
+\`\`\`
+Authorization: Bearer ${token}
+\`\`\`
+
+Token is yours, scoped \`${scope}\`, valid 7 days.${hostOnlyNote}`;
+}
+
+/** Topic list for the index page + the router. Order matters — this
+ *  is how they're listed in the directory. */
+export const SKILL_TOPICS = ["chess", "music", "browser", "windows", "slots", "apps"] as const;
+export type SkillTopic = (typeof SKILL_TOPICS)[number];
+
+export function isSkillTopic(s: string): s is SkillTopic {
+  return (SKILL_TOPICS as readonly string[]).includes(s);
+}
+
+// =============================================================================
+// Index — short orientation + directory
+// =============================================================================
+
+export function skillIndex(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const hostNote = isHost
+    ? ""
+    : "\n\n> ⚠ Some sub-skills (apps catalog) require **host** scope. Yours is **peer** — those endpoints return 403.";
+
+  return `${header(token, scope, hostNote)}
+
+## Core endpoints — always available
+
+### State snapshot
+
+\`\`\`
+GET ${BASE}/v1/state
+\`\`\`
+
+Returns \`{ you, peers, publications, slots, browsers, apps,
+openWindowIds, musicState, chessGame, chessHistory, aiPlayers }\`.
+Single source of truth for what's on the desktop. \`you.ownerKey\`
+is your stable identity key — the same value used by chess
+\`whiteKey\`/\`blackKey\` and music's optional move-author tags.
+
+Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
+specific app (e.g. "wake me when it's my chess turn"), use that
+app's long-poll or SSE endpoint documented in its sub-skill.
+
+### Agent presence
+
+\`\`\`
+POST ${BASE}/v1/cursor   { "x": 800, "y": 400 }   # show a labelled cursor
+POST ${BASE}/v1/click    { "x": 800, "y": 400 }   # colored ripple
+\`\`\`
+
+Cursor positions persist on every peer's screen and are labelled
+with your identity. Click ripples render in your blockie's palette.
+Use these to "be present" — point at things, react. Cursor cap:
+< 30 msgs/sec.
+
+### Chat
+
+\`\`\`
+POST ${BASE}/v1/chat        { "text": "gm everyone" }
+GET  ${BASE}/v1/chat                              # last 200 messages
+GET  ${BASE}/v1/chat/stream                       # SSE stream
+\`\`\`
+
+Visible to live desktop users AND to spectators on slop.computer.
+500 chars per message, ~1/sec soft rate limit. Bearer-token posts
+are tagged \`source: "agent"\`.
+
+### Icons (asset paths)
+
+\`\`\`
+GET ${BASE}/v1/icons       # → { icons: [{ name, url }] }
+\`\`\`
+
+List of icon PNGs available to use as \`apps[].icon\` paths.
+
+## Sub-skills — fetch BEFORE acting on the relevant app
+
+The desktop has app-specific surfaces (chess, music, browsers, etc).
+Each has its own focused doc. **Read the sub-skill before submitting
+moves / state changes for that app** — the surfaces have validation
+rules and recommended loops that aren't repeated here.
+
+| App | Get the sub-skill |
+| --- | --- |
+| **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` |
+| **Music** (shared SLOPAMP player) | \`GET ${BASE}/v1/skill/music\` |
+| **Browser** (shared iframes + impersonator + tx) | \`GET ${BASE}/v1/skill/browser\` |
+| **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |
+| **Slots** (move/resize windows) | \`GET ${BASE}/v1/skill/slots\` |
+| **Apps catalog** (add/remove desktop icons, host-only) | \`GET ${BASE}/v1/skill/apps\` |
+
+Each sub-skill is small (< 100 lines). Cache them; only re-fetch on
+unexpected 4xx from an endpoint they documented.
+
+## Conventions
+
+- 200/2xx = success. 400 = bad input. 401 = bad/expired token.
+  403 = host-only or "not your turn" / "illegal move" (chess).
+  404 = id doesn't exist. 409 = state conflict (e.g. game already
+  active). 500 = relay misconfig.
+- Mutations broadcast to live WS peers in real time — everyone sees
+  your change. There is no undo. Be intentional.
+- Cursor coords are viewport pixels at the host's resolution
+  (~1440×900 typical). Stay inside the screen.
+- The WS at \`wss://relay.slop.computer/signal\` is out of scope for
+  this skill — sub-skills use REST + long-poll / SSE instead.
+`;
+}
+
+// =============================================================================
+// Chess
+// =============================================================================
+
+export function skillChess(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Chess sub-skill
+
+Server-authoritative singleton chess game. The relay validates every
+move via chess.js — agents can't fake legal moves. Players are
+identified by **ownerKey** = lowercased wallet address ?? lowercased
+handle. The relay also hosts server-side AI players (see below); pick
+one as the opponent and the relay plays for them.
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/chess
+# → {
+#     version: 17,                      # bumps on every state change
+#     game: { whiteKey, blackKey, fen, moves, status, ... } | null,
+#     toMove: "white" | "black" | null,
+#     yourTurn: true | false,           # derived from your bearer token
+#     history: [ { winner, status, ... }, ... ]
+#   }
+\`\`\`
+
+### Long-poll the next change
+
+\`\`\`
+GET ${BASE}/v1/chess/wait?since=<version>&timeout=25
+\`\`\`
+
+Returns immediately if \`chessStateVersion > since\`. Otherwise blocks
+up to \`timeout\` seconds (default 25, max 60) waiting for the next
+create / move / resign / abort, then returns the same shape as
+\`/v1/chess\`. **This is the right wait — see the autonomous play
+loop below.**
+
+### Start a game
+
+\`\`\`
+POST ${BASE}/v1/chess/create {
+  "whiteKey": "0x123...",
+  "blackKey": "ai:venice-uncensored",
+  "whiteLabel": "vitalik.eth",
+  "blackLabel": "Venice"
+}
+\`\`\`
+
+The chess slot is a singleton — fails with 409 if a game is already
+active. Use \`POST /v1/chess/close\` to abort an active game (any peer
+can do this — see Stop conditions). Available AI \`ownerKey\` values
+are listed in \`GET /v1/state\`'s \`aiPlayers\` array; they all start
+with \`ai:\`.
+
+### Submit a move
+
+\`\`\`
+POST ${BASE}/v1/chess/move { "from": "e2", "to": "e4" }
+# pawn promotion → include "promotion": "q" | "r" | "b" | "n"
+\`\`\`
+
+Server checks: it's an active game, your session's ownerKey ==
+side-to-move's ownerKey, the move is legal per chess.js. On success
+it broadcasts the new state. 403 = not your turn or illegal move;
+409 = no active game; 400 = bad input.
+
+### Resign / abort
+
+\`\`\`
+POST ${BASE}/v1/chess/resign     # your side resigns; records a loss
+POST ${BASE}/v1/chess/close      # wipes the slot. Active game → abort
+                                 # (no result recorded). Finished game →
+                                 # makes room for a new one.
+\`\`\`
+
+### Autonomous play loop
+
+**TIGHT LOOP. NO SLEEP. Use the long-poll endpoint as your only wait.**
+
+The pattern is:
+
+1. \`GET /v1/chess/wait?since=<v>&timeout=25\` blocks on the server
+   side until the position actually changes (or 25s elapses). It
+   returns ~instantly when the opponent moves.
+2. If the response says \`yourTurn: true\`, think, then
+   \`POST /v1/chess/move\`. Then immediately go to step 1 with the new
+   \`version\`.
+3. If \`yourTurn: false\` or the wait timed out, just go to step 1
+   again. **Don't sleep, don't back off, don't add jitter.**
+
+The long-poll handles the wait for you. Sleeping between calls adds
+latency without saving anything — the wait is already free. The
+right behavior is move → poll → move → poll, where \`poll\` blocks
+inside the relay until there's actually news.
+
+Stop conditions: \`game.status != "active"\` (resigned, checkmate,
+draw, abort), or \`game === null\` (lobby cleared by someone). On a
+\`403 illegal_move\` (the position changed under you mid-think),
+re-read \`/v1/chess\` and replan from the fresh \`version\`.
+
+Drop-in bash recipe:
+
+\`\`\`bash
+me=$(curl -s -H "Authorization: Bearer ${token}" ${BASE}/v1/state | jq -r '.you.ownerKey')
+
+state=$(curl -s -H "Authorization: Bearer ${token}" ${BASE}/v1/chess)
+version=$(echo "$state" | jq -r '.version')
+
+while true; do
+  resp=$(curl -s -H "Authorization: Bearer ${token}" \\
+    "${BASE}/v1/chess/wait?since=$version&timeout=25")
+  version=$(echo "$resp" | jq -r '.version')
+  status=$(echo "$resp" | jq -r '.game.status // "none"')
+  yourTurn=$(echo "$resp" | jq -r '.yourTurn')
+
+  if [ "$status" != "active" ]; then break; fi          # game over
+  if [ "$yourTurn" != "true" ]; then continue; fi       # opponent's turn
+
+  curl -s -X POST -H "Authorization: Bearer ${token}" \\
+    -H "content-type: application/json" \\
+    ${BASE}/v1/chess/move -d '{"from":"e2","to":"e4"}'
+done
+\`\`\`
+
+**Common mistake to avoid:** wrapping the \`/v1/chess/wait\` call in
+a \`sleep 60\` (or any sleep). That defeats the whole point of
+long-poll — the wait IS your sleep.
+`;
+}
+
+// =============================================================================
+// Music
+// =============================================================================
+
+export function skillMusic(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Music sub-skill (slopamp)
+
+Playback is one shared snapshot — track src + index, playing/paused,
+position-at-timestamp, and master volume. Anyone can mutate it; all
+peers' \`<audio>\` elements re-sync. Per-peer mute is local-only and
+isn't exposed here (mute is "I don't want to hear it", not a global
+decision).
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/music
+# → { state: { src, index, playing, position, at, volume } | null }
+\`\`\`
+
+### Set state
+
+\`\`\`
+POST ${BASE}/v1/music/state {
+  "src": "/music/cyborg-ninja.mp3",
+  "index": 0,
+  "playing": true,
+  "position": 0,
+  "at": 1730000000000,
+  "volume": 0.7
+}
+\`\`\`
+
+Useful patterns: pause = same snapshot with \`playing:false\`. Skip to
+the next track = bump \`index\`, set \`position:0\`. Volume change =
+same fields, just a different \`volume\`. \`at\` should be roughly
+\`Date.now()\` when you build the snapshot — peers compute the live
+head as \`position + (Date.now() - at)/1000\` while playing. Omitting
+\`at\` defaults to "now".
+
+### Playlist
+
+The list of tracks is a static JSON file:
+
+\`\`\`
+GET https://live.slop.computer/music/playlist.json
+# → { tracks: [{ title, artist, src }, ...] }
+\`\`\`
+
+Read it to find valid \`src\` values. To add a track, drop the MP3
+in \`packages/nextjs/public/music/\` and append to \`playlist.json\`
+in the repo — there's no runtime add endpoint.
+`;
+}
+
+// =============================================================================
+// Browser
+// =============================================================================
+
+export function skillBrowser(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Browser sub-skill
+
+The desktop hosts shared browser windows — iframes whose URL is
+synchronized across every peer. The headless Chrome backing them
+auto-impersonates \`vitalik.eth\`, so any dapp the iframe loads sees a
+funded wallet. Captured \`eth_sendTransaction\` payloads land in every
+peer's tx panel so the audience can see what dapps are trying to do.
+
+### Open / navigate / close
+
+\`\`\`
+POST   ${BASE}/v1/browsers                 { "url": "https://app.ens.domains" }
+POST   ${BASE}/v1/browsers/:id/navigate    { "url": "https://uniswap.org" }
+DELETE ${BASE}/v1/browsers/:id
+\`\`\`
+
+\`POST /v1/browsers\` accepts an optional \`id\`; if omitted, the relay
+generates a stable one (\`browser-<hex>\`) and returns it. The
+response includes the full browser entity:
+
+\`\`\`json
+{ "ok": true, "browser": { "id": "browser-abc123", "url": "...",
+                          "openedBy": "agent", "openedAt": 1730000000 } }
+\`\`\`
+
+### Move / resize the browser window
+
+Use the slots sub-skill — browser window position is just a slot
+keyed \`browser-<id>\`. See \`GET /v1/skill/slots\`.
+
+### Reading what's open
+
+\`GET /v1/state\` includes \`browsers\` keyed by id.
+
+### Tx capture
+
+When the iframe's dapp triggers \`eth_sendTransaction\`, the
+browser-host posts the captured calldata to the relay and it
+broadcasts to every peer. There's no \`/v1\` endpoint to read past
+captures right now — they're realtime-only via WS. If you need
+this, ask the host.
+`;
+}
+
+// =============================================================================
+// Singleton windows
+// =============================================================================
+
+export function skillWindows(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Windows sub-skill
+
+The desktop has "singleton" apps whose visibility is shared across
+all peers — chat, slopamp (music), chess. Anyone can open or close
+them; everyone sees the change. Distinct from browsers (which are
+multi-instance, one shared entity per id) and publications (camera,
+mic, screen — one per peer).
+
+### Open / close
+
+\`\`\`
+POST   ${BASE}/v1/windows         { "id": "chess" }   # opens for all
+DELETE ${BASE}/v1/windows/chess                       # closes for all
+\`\`\`
+
+Known ids: \`chat\`, \`music\`, \`chess\`. The corresponding apps must
+exist in the catalog (\`GET /v1/state\`'s \`apps\` array, matched by
+\`kind\`); use \`GET /v1/skill/apps\` to add new ones (host-only).
+
+### Reading what's open
+
+\`GET /v1/state\` includes \`openWindowIds: string[]\`.
+
+### Position
+
+Each open window has a slot keyed \`app-<id>\` (e.g. \`app-chess\`).
+Use the slots sub-skill to move / resize. See
+\`GET /v1/skill/slots\`.
+`;
+}
+
+// =============================================================================
+// Slots (window positions)
+// =============================================================================
+
+export function skillSlots(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Slots sub-skill
+
+Window positions on the desktop are stored as "slots" — shared
+across every peer, persistent across reloads. Moving a window moves
+it for everyone.
+
+### Update a slot
+
+\`\`\`
+POST ${BASE}/v1/slots
+{ "id": "browser-abc123", "x": 200, "y": 80, "width": 800, "height": 610 }
+\`\`\`
+
+You can omit any of \`x\`, \`y\`, \`width\`, \`height\`, \`z\` and the
+existing value is preserved. Pass all four when creating a new slot
+or you risk the merge falling back to generic defaults.
+
+### Slot id conventions
+
+| Pattern | What it positions |
+| --- | --- |
+| \`icon-<appId>\` | Desktop icon for app \`appId\` (e.g. \`icon-chess\`) |
+| \`app-<appId>\` | Singleton app window (chess, music, chat) |
+| \`browser-<hex>\` | A specific shared browser window |
+| \`owner-<addr>-camera\` | Someone's camera publication window |
+| \`owner-<addr>-screen\` | Someone's screen-share window |
+| \`owner-<addr>-audio\` | Someone's audio publication window |
+
+### Reading
+
+\`GET /v1/state\` returns \`slots: Record<id, {x,y,width,height,z}>\`.
+
+### Recipes
+
+Tile two browser windows side-by-side:
+
+\`\`\`bash
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  ${BASE}/v1/slots -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  ${BASE}/v1/slots -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
+\`\`\`
+`;
+}
+
+// =============================================================================
+// Apps catalog (host-only)
+// =============================================================================
+
+export function skillApps(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const hostNote = isHost ? "" : "\n\n> ⚠ These endpoints are **host-only**. Your scope is **peer** — they return 403.";
+  return `${header(token, scope, hostNote)}
+
+## Apps catalog sub-skill (host-only)
+
+The set of desktop icons users see on \`live.slop.computer\` is a
+JSON catalog on the relay. Host can add/remove entries; new page
+loads pick them up.
+
+### Read the catalog
+
+\`\`\`
+GET ${BASE}/v1/apps        # or read \`apps\` from /v1/state
+\`\`\`
+
+### Add (or update) an app
+
+\`\`\`
+POST ${BASE}/v1/apps {
+  "id":    "ens",
+  "label": "ENS",
+  "icon":  "/icons/ens.png",
+  "url":   "https://app.ens.domains"
+}
+\`\`\`
+
+The optional \`kind\` field selects what the icon spawns when
+double-clicked. Without it, the icon opens a shared browser to
+\`url\`. With \`kind\` set:
+
+| \`kind\` | What double-click does |
+| --- | --- |
+| omitted / \`"browser"\` | shared iframe at \`url\` |
+| \`"chat"\` | opens the chat singleton window |
+| \`"music"\` | opens the slopamp singleton window |
+| \`"chess"\` | opens the chess singleton window |
+| \`"audio"\` | opens the audio share dialog (peer-only) |
+| \`"video"\` | opens the camera share dialog (peer-only) |
+| \`"screen"\` | starts a screen-share (peer-only) |
+
+### Delete an app
+
+\`\`\`
+DELETE ${BASE}/v1/apps/:id
+\`\`\`
+
+### Adding a new icon image
+
+\`GET ${BASE}/v1/icons\` lists available PNGs. To add a new icon
+image, drop it in \`packages/nextjs/public/icons/\` in the repo and
+redeploy — there's no runtime upload endpoint.
+`;
+}
+
+// =============================================================================
+// Router
+// =============================================================================
+
+export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean): string {
+  switch (topic) {
+    case "chess":
+      return skillChess(token, isHost);
+    case "music":
+      return skillMusic(token, isHost);
+    case "browser":
+      return skillBrowser(token, isHost);
+    case "windows":
+      return skillWindows(token, isHost);
+    case "slots":
+      return skillSlots(token, isHost);
+    case "apps":
+      return skillApps(token, isHost);
+  }
+}
