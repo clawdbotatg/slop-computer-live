@@ -52,6 +52,14 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     authStyle: "x-api-key",
   },
   {
+    id: "bankr-kimi-k2.6",
+    label: "Kimi K2.6 (Bankr) 🤖",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "kimi-k2.6",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
     id: "venice-uncensored",
     label: "Venice Uncensored 🤖",
     baseURL: "https://api.venice.ai/api/v1",

@@ -93,10 +93,16 @@ async function playOneTurn(
 
 function tryApply(sideKey: string, raw: string, fen: string, notifyAfterMove: () => void): boolean {
   const parsed = extractMove(raw, fen);
-  if (!parsed) return false;
+  if (!parsed) {
+    // Log the truncated raw response so we can diagnose models that
+    // chronically fail. 240 chars fits one log line + a normal prompt
+    // window without flooding the journal.
+    console.warn(`[ai-mover] couldn't extract a legal move from ${sideKey}; raw=${JSON.stringify(raw.slice(0, 240))}`);
+    return false;
+  }
   const result = chessApply(sideKey, parsed);
   if (!result.ok) {
-    console.warn(`[ai-mover] illegal move from ${sideKey}: ${raw} (${result.error})`);
+    console.warn(`[ai-mover] illegal move from ${sideKey}: ${raw.slice(0, 80)} → ${JSON.stringify(parsed)} (${result.error})`);
     return false;
   }
   notifyAfterMove();
