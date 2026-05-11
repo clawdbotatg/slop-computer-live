@@ -596,15 +596,25 @@ const Desktop: NextPage = () => {
   // Reconcile: when one of MY local streams is no longer in the mesh's
   // publication list (because someone else closed my window), tear it
   // down locally too — stop the hardware, clear useLocalMedia state,
-  // drop the resume flag. Self-initiated close already cleans up
-  // *before* the broadcast removes the pub, so this branch only fires
-  // for force-close from another peer. Safe to run idempotently — the
-  // cleanup helpers no-op when their target is already gone.
+  // drop the resume flag.
+  //
+  // CRITICAL: only react to "was-present, now-absent" transitions, NOT
+  // to "absent-this-render". `mesh.publish` is fire-and-forget — it
+  // doesn't optimistically insert into mesh.publications, so for a
+  // brief window after the user clicks "share audio" the local
+  // streams[] has the new stream but mesh.publications hasn't caught
+  // up yet. A naive "missing pub → cleanup" check would tear down the
+  // stream the user just created; the share would silently nuke
+  // itself. The prevPubIds ref tracks the previous render's set so we
+  // only fire on real removals.
+  const prevMyPubIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!mesh.connected || !mesh.bootstrapped || !mesh.myId) return;
     const myPubStreamIds = new Set(mesh.publications.filter(p => p.peerId === mesh.myId).map(p => p.streamId));
-    for (const s of streamsRef.current) {
-      if (myPubStreamIds.has(s.id)) continue;
+    for (const id of prevMyPubIdsRef.current) {
+      if (myPubStreamIds.has(id)) continue;
+      const s = streamsRef.current.find(x => x.id === id);
+      if (!s) continue;
       const tracked =
         (s.kind === "audio" && media.activeAudio) ||
         (s.kind === "camera" && media.activeCamera) ||
@@ -615,6 +625,7 @@ const Desktop: NextPage = () => {
       delete r[s.kind];
       writeResume(r);
     }
+    prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
 
   // Persist a default slot the first time we see a new publication.
