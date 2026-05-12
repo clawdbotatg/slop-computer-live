@@ -117,21 +117,61 @@ type CountdownState =
 
 type Tab = "time" | "timer" | "countdown";
 
+// --- persistence ------------------------------------------------------------
+
+// Survive reloads: tab, zone pick, stopwatch + countdown phases, and the input
+// draft. The `startedAt`/`endAt` fields are wall-clock `Date.now()` values, so
+// a running countdown picks up at exactly the right `remaining` on reload.
+const STORAGE_KEY = "slop:clock:state:v1";
+
+type PersistedState = {
+  tab: Tab;
+  selectedZone: string;
+  stopwatch: StopwatchState;
+  countdownInput: string;
+  countdown: CountdownState;
+};
+
+function loadPersisted(): Partial<PersistedState> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Partial<PersistedState>;
+  } catch {
+    return {};
+  }
+}
+
 // --- component --------------------------------------------------------------
 
 export const ClockWindow = () => {
   const [now, setNow] = useState(() => Date.now());
-  const [tab, setTab] = useState<Tab>("time");
-  const [selectedZone, setSelectedZone] = useState<string>("local");
-  const [stopwatch, setStopwatch] = useState<StopwatchState>({ phase: "idle" });
-  const [countdownInput, setCountdownInput] = useState("10:00");
-  const [countdown, setCountdown] = useState<CountdownState>({ phase: "idle" });
+  const persistedRef = useRef<Partial<PersistedState> | null>(null);
+  if (persistedRef.current === null) persistedRef.current = loadPersisted();
+  const persisted = persistedRef.current;
+  const [tab, setTab] = useState<Tab>(persisted.tab ?? "time");
+  const [selectedZone, setSelectedZone] = useState<string>(persisted.selectedZone ?? "local");
+  const [stopwatch, setStopwatch] = useState<StopwatchState>(persisted.stopwatch ?? { phase: "idle" });
+  const [countdownInput, setCountdownInput] = useState(persisted.countdownInput ?? "10:00");
+  const [countdown, setCountdown] = useState<CountdownState>(persisted.countdown ?? { phase: "idle" });
   const finishedRef = useRef(false);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
+
+  // Save on every meaningful state change. Cheap — single JSON blob, small.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const payload: PersistedState = { tab, selectedZone, stopwatch, countdownInput, countdown };
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      /* quota / disabled storage — ignore */
+    }
+  }, [tab, selectedZone, stopwatch, countdownInput, countdown]);
 
   // Auto-finish countdown.
   useEffect(() => {
@@ -433,6 +473,29 @@ const CountdownPanel = ({
   const isPaused = state.phase === "paused";
   const isDone = state.phase === "done";
 
+  // Scale the big number to fill the window. Measure the wrapping flex area, then
+  // pick a font size constrained by both width (digit count) and available height
+  // (reserving space for the input/presets when idle).
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0]?.contentRect;
+      if (r) setStageSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const display = formatHMS(remaining);
+  const reservedH = state.phase === "idle" ? 130 : 28; // status label + (input + presets when idle)
+  const availH = Math.max(0, stageSize.h - reservedH);
+  // ~0.6em per char is a decent approximation for bold tabular digits + colons.
+  const byWidth = stageSize.w > 0 ? (stageSize.w * 0.92) / (display.length * 0.6) : 44;
+  const byHeight = availH > 0 ? availH * 0.9 : 44;
+  const numberFontSize = Math.max(28, Math.min(byWidth, byHeight, 320));
+
   const startFrom = (secs: number) => {
     if (secs <= 0) return;
     onChange({ phase: "running", totalSecs: secs, endAt: Date.now() + secs * 1000 });
@@ -455,8 +518,10 @@ const CountdownPanel = ({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div
+        ref={stageRef}
         style={{
           flex: 1,
+          minHeight: 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -479,16 +544,17 @@ const CountdownPanel = ({
         <div
           aria-live="polite"
           style={{
-            fontSize: 44,
+            fontSize: numberFontSize,
             fontWeight: 800,
             lineHeight: 1,
             fontVariantNumeric: "tabular-nums",
             color: isDone ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-text)",
             transform: isDone ? `scale(${1 + ((now / 400) % 1 > 0.5 ? 0.04 : 0)})` : "none",
             transition: "transform 0.15s",
+            whiteSpace: "nowrap",
           }}
         >
-          {formatHMS(remaining)}
+          {display}
         </div>
 
         {state.phase === "idle" ? (
