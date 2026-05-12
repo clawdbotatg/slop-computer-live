@@ -126,9 +126,12 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "claude-sonnet-4-6",
     envVar: "VENICE_API_KEY",
   },
-  // ---- Venice -----------------------------------------------------
-  // Venice tags zai-org-glm-4.7 with `most_intelligent` + `default` in
-  // their own model catalog. Reasoning model, cheap ($0.55/$2.65).
+  // ---- Venice — non-Claude picks ----------------------------------
+  // Both of these are flagged by Venice itself in `model_spec.traits`:
+  //   zai-org-glm-4.7              → `most_intelligent`, `default`
+  //   qwen3-235b-a22b-thinking…    → `default_reasoning`
+  // Trust Venice's own labels — they know which of theirs play best.
+  // Dropped venice-uncensored: chatty role-play model, terrible at chess.
   {
     id: "venice-glm-4.7",
     label: "GLM 4.7 (Venice) 🤖",
@@ -137,10 +140,10 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "VENICE_API_KEY",
   },
   {
-    id: "venice-uncensored",
-    label: "Venice Uncensored 🤖",
+    id: "venice-qwen3-thinking",
+    label: "Qwen 3 235B Thinking (Venice) 🤖",
     baseURL: "https://api.venice.ai/api/v1",
-    model: "venice-uncensored",
+    model: "qwen3-235b-a22b-thinking-2507",
     envVar: "VENICE_API_KEY",
   },
 ];
