@@ -178,7 +178,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -223,6 +223,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Chess",
     icon: "/icons/chess.png",
     kind: "chess",
+  },
+  {
+    id: "qr",
+    label: "QR",
+    icon: "/icons/qr.svg",
+    kind: "qr",
   },
 ];
 

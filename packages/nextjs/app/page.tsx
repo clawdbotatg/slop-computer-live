@@ -15,6 +15,7 @@ import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
@@ -49,7 +50,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — single
@@ -837,6 +838,9 @@ const Desktop: NextPage = () => {
                       case "chess":
                         mesh.openWindow("chess");
                         return;
+                      case "qr":
+                        mesh.openWindow("qr");
+                        return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
                         // close button is how you stop. Keeps the icon
@@ -1058,6 +1062,16 @@ const Desktop: NextPage = () => {
               minHeight={420}
             >
               <ChessWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="qr"
+              title="QR"
+              defaultSlot={{ x: 200, y: 100, width: 360, height: 480 }}
+              minWidth={280}
+              minHeight={360}
+            >
+              <QrCodeWindow />
             </SharedAppWindow>
           </>
         ) : null}
