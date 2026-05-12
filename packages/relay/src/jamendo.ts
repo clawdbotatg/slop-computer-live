@@ -276,14 +276,24 @@ export async function setCurrentGenre(genre: string | null): Promise<{ genre: st
     return { genre: null };
   }
   if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
-  // Ensure the playlist exists (and is fresh-ish) before flipping the
-  // pointer so the next reader doesn't see "current=rock, playlist=empty".
-  await refreshGenre(genre);
+  // Flip the pointer + broadcast IMMEDIATELY so every peer's UI shows
+  // the new genre as selected (with a "loading…" placeholder) within
+  // milliseconds. Then kick off the refresh in the background — the
+  // playlist endpoint joins the same in-flight promise so the first
+  // client to hit it gets the freshly-downloaded list. Cold downloads
+  // can take ~30s, but the user never sees an unresponsive UI.
   if (state.currentGenre !== genre) {
     state.currentGenre = genre;
     saveState(state);
     emit(genre);
   }
+  // Kick off the refresh. We DON'T await it — the POST returns
+  // immediately so the client doesn't sit on a 30s connection. The
+  // background promise records errors via console.warn; the playlist
+  // endpoint a peer hits will await the same in-flight promise.
+  refreshGenre(genre).catch(err => {
+    console.warn(`[jamendo] background refresh failed for ${genre}:`, (err as Error).message);
+  });
   return { genre };
 }
 

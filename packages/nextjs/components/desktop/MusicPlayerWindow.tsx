@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LoadingBar } from "~~/components/ui";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 
@@ -24,7 +25,6 @@ type Track = { title: string; artist: string; src: string };
 // so the relay can serve it and the mesh state can store it without
 // host coupling.
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-const PLAYLIST_URL = `${RELAY_HTTP}/music/playlist.json`;
 const audioUrl = (src: string): string => (src.startsWith("/") ? `${RELAY_HTTP}${src}` : src);
 const VOLUME_KEY = "slop-music-volume-v1";
 const MUTE_KEY = "slop-music-mute-v1";
@@ -113,20 +113,24 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
   }, [selfMuted]);
 
-  // Pull the playlist whenever the shared genre changes. Genre-mode
-  // hits the relay's lazy-refresh endpoint (downloads new trending
-  // tracks on cache miss) — the first switch to a cold genre can take
-  // ~30s while it pulls ~20 MP3s server-side. The status text in the
-  // LCD reflects that. Genre = null = the legacy /music playlist (the
-  // Kevin MacLeod set), which we hide by default but keep around for
-  // revert safety.
+  // Pull the playlist whenever the shared genre changes. The legacy
+  // Kevin MacLeod set is HIDDEN by default — no genre = empty
+  // playlist with a "pick a genre" prompt. The legacy /music
+  // playlist endpoint still exists on the relay as a revert escape
+  // hatch, but isn't shown by this component.
   const activeGenre = mesh.musicGenre;
   useEffect(() => {
     let cancelled = false;
-    setError(null);
-    const url = activeGenre ? `${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist` : PLAYLIST_URL;
-    setError(activeGenre ? `loading ${activeGenre}…` : null);
-    fetch(url, { cache: "no-store", credentials: "include" })
+    if (!activeGenre) {
+      setTracks([]);
+      setError("pick a genre");
+      return;
+    }
+    setError(`loading ${activeGenre}…`);
+    fetch(`${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist`, {
+      cache: "no-store",
+      credentials: "include",
+    })
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { tracks?: unknown }) => {
         if (cancelled) return;
@@ -824,15 +828,41 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {tracks.length === 0 ? (
+            // Three empty-states:
+            //   1. Active genre + no tracks yet → indeterminate
+            //      LoadingBar (matches the browser's URL-bar loader).
+            //   2. No active genre → "pick a genre" prompt.
+            //   3. Active genre but the fetch errored → the error text.
+            // The `error` state holds "loading <genre>…" while the
+            // fetch is in flight, so we use it to discriminate states
+            // (1) and (3): if it starts with "loading", show the
+            // animated bar.
             <div
               style={{
                 padding: 16,
                 fontSize: 10,
                 color: "var(--slop-text-muted)",
                 textAlign: "center",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 10,
               }}
             >
-              {error ?? "loading…"}
+              {activeGenre && error?.startsWith("loading") ? (
+                <>
+                  <LoadingBar
+                    cells={14}
+                    caption={`FETCHING ${activeGenre.toUpperCase()}`}
+                    style={{ fontSize: 11, color: "var(--slop-lime, #bcff5b)" }}
+                  />
+                  <span style={{ fontSize: 9, color: "var(--slop-text-muted)" }}>
+                    pulling trending tracks from jamendo (~30s)
+                  </span>
+                </>
+              ) : (
+                <span>{error ?? "loading…"}</span>
+              )}
             </div>
           ) : (
             tracks.map((t, i) => {
