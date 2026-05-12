@@ -12,6 +12,7 @@ import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
+import { ClockWindow } from "~~/components/desktop/ClockWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
@@ -53,7 +54,19 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes" | "gas";
+  kind?:
+    | "browser"
+    | "chat"
+    | "audio"
+    | "video"
+    | "screen"
+    | "music"
+    | "chess"
+    | "qr"
+    | "todo"
+    | "notes"
+    | "gas"
+    | "clock";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -863,6 +876,9 @@ const Desktop: NextPage = () => {
                       case "gas":
                         mesh.openWindow("gas");
                         return;
+                      case "clock":
+                        mesh.openWindow("clock");
+                        return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
                         // close button is how you stop. Keeps the icon
@@ -1124,6 +1140,16 @@ const Desktop: NextPage = () => {
               minHeight={320}
             >
               <GasWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="clock"
+              title="CLOCK"
+              defaultSlot={{ x: 360, y: 180, width: 320, height: 380 }}
+              minWidth={260}
+              minHeight={320}
+            >
+              <ClockWindow />
             </SharedAppWindow>
           </>
         ) : null}

@@ -12,6 +12,43 @@ import type { Browser, TxRequest } from "~~/hooks/usePeerMesh";
 export const IMPERSONATED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" as AddressType;
 
 const BROWSER_HOST_URL = process.env.NEXT_PUBLIC_BROWSER_HOST_URL ?? "ws://localhost:8090";
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+
+// Detect ENS names in the URL bar. We accept:
+//   "clawdbotatg.eth"
+//   "clawdbotatg.eth/some/path"
+//   "https://clawdbotatg.eth"
+//   "vitalik.eth.link" → NOT an ENS name (forwards to a real domain)
+// Subdomains like "foo.bar.eth" also qualify. Trailing slash on the host
+// is allowed.
+const ENS_HOST_RE = /^([a-z0-9-]+(?:\.[a-z0-9-]+)*\.eth)(\/.*)?$/i;
+
+function extractEnsTarget(raw: string): { name: string; pathSuffix: string } | null {
+  const trimmed = raw.trim().replace(/^https?:\/\//, "");
+  const m = ENS_HOST_RE.exec(trimmed);
+  if (!m) return null;
+  return { name: m[1].toLowerCase(), pathSuffix: m[2] ?? "" };
+}
+
+// Hit the relay's ENS resolver. Returns the navigable gateway URL on
+// success, or null if there's no contenthash / the codec is unsupported
+// / the relay errored. Caller falls back to the normal HTTPS path.
+async function resolveEnsName(name: string, pathSuffix: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${RELAY_HTTP}/v1/ens/resolve?name=${encodeURIComponent(name)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { ok?: boolean; gateway?: string };
+    if (!data.ok || !data.gateway) return null;
+    // pathSuffix already starts with "/" (or is empty). The gateway URL
+    // ends with a trailing slash; concatenate without doubling.
+    if (!pathSuffix) return data.gateway;
+    return data.gateway.replace(/\/$/, "") + pathSuffix;
+  } catch {
+    return null;
+  }
+}
 
 // Server viewport — must match VIEWPORT_WIDTH / VIEWPORT_HEIGHT on the host.
 // Inputs are sent in *server* coordinates so we scale client → server before
@@ -157,9 +194,22 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
     ws.send(JSON.stringify({ type: "navigate", url: browser.url }));
   }, [browser.url, connState]);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canControl) return;
+    // ENS short-circuit: if the typed value looks like a `.eth` name,
+    // resolve the contenthash via the relay and navigate to the IPFS
+    // gateway URL — skips eth.link / eth.limo entirely.
+    const ens = extractEnsTarget(draft);
+    if (ens) {
+      const gateway = await resolveEnsName(ens.name, ens.pathSuffix);
+      if (gateway) {
+        onNavigate(gateway);
+        return;
+      }
+      // Fall through to normal handling (which will likely 404, but
+      // gives the user a visible error).
+    }
     const next = normaliseUrl(draft);
     onNavigate(next);
   };

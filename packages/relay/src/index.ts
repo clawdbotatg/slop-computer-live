@@ -73,6 +73,7 @@ import {
   update as noteUpdate,
 } from "./notes.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
+import { resolveEns } from "./ens.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -196,7 +197,19 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes" | "gas";
+  kind?:
+    | "browser"
+    | "chat"
+    | "audio"
+    | "video"
+    | "screen"
+    | "music"
+    | "chess"
+    | "qr"
+    | "todo"
+    | "notes"
+    | "gas"
+    | "clock";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -265,6 +278,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Gas",
     icon: "/icons/gas.png",
     kind: "gas",
+  },
+  {
+    id: "clock",
+    label: "Clock",
+    icon: "/icons/clock.png",
+    kind: "clock",
   },
 ];
 
@@ -363,6 +382,9 @@ app.get("/v1/state", async (req, reply) => {
     chessGame: chessGetCurrentGame(),
     chessHistory: chessGetHistory(),
     aiPlayers: listAvailableAIPlayers(),
+    todos: todoList(),
+    notes: noteList(),
+    gasState: getGasState(),
   };
 });
 
@@ -1109,6 +1131,126 @@ app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => 
   const id = req.params.id;
   if (closeSingletonWindow(id)) broadcast({ type: "window_closed", id });
   return { ok: true, id };
+});
+
+// --- Todo REST surface ------------------------------------------------------
+// Mirrors the WS handlers below; mutations broadcast to live peers via the
+// shared subscribeTodos broadcaster, so REST writers and WS writers feel the
+// same to spectators.
+
+type TodoTextBody = { text?: unknown };
+type TodoReorderBody = { ids?: unknown };
+
+app.get("/v1/todos", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { items: todoList() };
+});
+
+app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!text.trim()) return reply.code(400).send({ error: "empty" });
+  const item = todoAdd({ address: a.session.address, handle: a.session.handle, text });
+  if (!item) return reply.code(400).send({ error: "empty" });
+  return { ok: true, item };
+});
+
+app.post<{ Params: { id: string } }>("/v1/todos/:id/toggle", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!todoToggle(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.post<{ Params: { id: string }; Body: TodoTextBody }>("/v1/todos/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!text.trim()) return reply.code(400).send({ error: "empty" });
+  if (!todoUpdate(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/todos/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!todoRemove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.post("/v1/todos/clear-done", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  todoClearDone();
+  return { ok: true };
+});
+
+app.post<{ Body: TodoReorderBody }>("/v1/todos/reorder", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
+  const ids = req.body.ids.filter((s: unknown): s is string => typeof s === "string");
+  todoReorder(ids);
+  return { ok: true };
+});
+
+// --- Notes REST surface -----------------------------------------------------
+
+type NoteTextBody = { text?: unknown };
+
+app.get("/v1/notes", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { items: noteList() };
+});
+
+app.post<{ Body: NoteTextBody }>("/v1/notes", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const note = noteCreate({ address: a.session.address, handle: a.session.handle, text });
+  if (!note) return reply.code(400).send({ error: "create-failed" });
+  return { ok: true, note };
+});
+
+app.post<{ Params: { id: string }; Body: NoteTextBody }>("/v1/notes/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!noteUpdate(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/notes/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!noteRemove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+// --- Gas REST surface (read-only) -------------------------------------------
+
+app.get("/v1/gas", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { state: getGasState() };
+});
+
+// --- ENS resolution (read-only, no auth gate) -------------------------------
+// Read-only public lookup — anyone hitting the slop-computer browser can use
+// it without holding a v1 bearer token. Cached for 10min on the relay so a
+// retyped name doesn't re-hammer Alchemy.
+
+app.get<{ Querystring: { name?: string } }>("/v1/ens/resolve", async (req, reply) => {
+  reply.header("cache-control", "no-store");
+  const name = typeof req.query.name === "string" ? req.query.name : "";
+  if (!name) return reply.code(400).send({ ok: false, error: "missing-name" });
+  return await resolveEns(name);
 });
 
 // --- Invite gate ------------------------------------------------------------

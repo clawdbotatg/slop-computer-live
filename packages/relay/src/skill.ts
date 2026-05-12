@@ -32,7 +32,17 @@ Token is yours, scoped \`${scope}\`, valid 7 days.${hostOnlyNote}`;
 
 /** Topic list for the index page + the router. Order matters — this
  *  is how they're listed in the directory. */
-export const SKILL_TOPICS = ["chess", "music", "browser", "windows", "slots", "apps"] as const;
+export const SKILL_TOPICS = [
+  "chess",
+  "music",
+  "browser",
+  "windows",
+  "slots",
+  "apps",
+  "todo",
+  "notes",
+  "gas",
+] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
 
 export function isSkillTopic(s: string): s is SkillTopic {
@@ -116,6 +126,9 @@ rules and recommended loops that aren't repeated here.
 | **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |
 | **Slots** (move/resize windows) | \`GET ${BASE}/v1/skill/slots\` |
 | **Apps catalog** (add/remove desktop icons, host-only) | \`GET ${BASE}/v1/skill/apps\` |
+| **Todo** (shared todo list — add/toggle/edit/reorder) | \`GET ${BASE}/v1/skill/todo\` |
+| **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |
+| **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` |
 
 Each sub-skill is small (< 100 lines). Cache them; only re-fetch on
 unexpected 4xx from an endpoint they documented.
@@ -376,6 +389,28 @@ browser-host posts the captured calldata to the relay and it
 broadcasts to every peer. There's no \`/v1\` endpoint to read past
 captures right now — they're realtime-only via WS. If you need
 this, ask the host.
+
+### ENS contenthash resolution
+
+\`\`\`
+GET ${BASE}/v1/ens/resolve?name=clawdbotatg.eth
+# → { ok: true, name, protocol: "ipfs"|"ipns"|"swarm",
+#     value, gateway: "https://dweb.link/ipfs/<cid>/" }
+# → { ok: false, error: "no-contenthash" | ... }
+\`\`\`
+
+Resolves an ENS name's contenthash record directly via Alchemy and
+decodes it (IPFS CIDv0/CIDv1, IPNS, Swarm) into a ready-to-load
+gateway URL on \`dweb.link\` (or \`api.gateway.ethswarm.org\` for
+Swarm). No \`eth.link\` / \`eth.limo\` indirection. Cached on the relay
+for 10 minutes.
+
+The slop-computer browser URL bar uses this transparently: typing
+\`foo.eth\` (or \`foo.eth/some/path\`) auto-resolves before navigation.
+Agents can hit the endpoint directly when they want to point a shared
+browser at a \`.eth\` site without manually constructing IPFS URLs.
+
+No auth required — read-only public lookup.
 `;
 }
 
@@ -402,9 +437,10 @@ POST   ${BASE}/v1/windows         { "id": "chess" }   # opens for all
 DELETE ${BASE}/v1/windows/chess                       # closes for all
 \`\`\`
 
-Known ids: \`chat\`, \`music\`, \`chess\`. The corresponding apps must
-exist in the catalog (\`GET /v1/state\`'s \`apps\` array, matched by
-\`kind\`); use \`GET /v1/skill/apps\` to add new ones (host-only).
+Known ids: \`chat\`, \`music\`, \`chess\`, \`qr\`, \`todo\`, \`notes\`, \`gas\`,
+\`clock\`. The corresponding apps must exist in the catalog
+(\`GET /v1/state\`'s \`apps\` array, matched by \`kind\`); use
+\`GET /v1/skill/apps\` to add new ones (host-only).
 
 ### Reading what's open
 
@@ -518,6 +554,11 @@ double-clicked. Without it, the icon opens a shared browser to
 | \`"audio"\` | opens the audio share dialog (peer-only) |
 | \`"video"\` | opens the camera share dialog (peer-only) |
 | \`"screen"\` | starts a screen-share (peer-only) |
+| \`"qr"\` | opens the QR generator (per-user content, shared window) |
+| \`"todo"\` | opens the shared todo list |
+| \`"notes"\` | opens the shared notes app |
+| \`"gas"\` | opens the Ethereum gas tracker |
+| \`"clock"\` | opens the clock + countdown timer (local per-user) |
 
 ### Delete an app
 
@@ -530,6 +571,167 @@ DELETE ${BASE}/v1/apps/:id
 \`GET ${BASE}/v1/icons\` lists available PNGs. To add a new icon
 image, drop it in \`packages/nextjs/public/icons/\` in the repo and
 redeploy — there's no runtime upload endpoint.
+`;
+}
+
+// =============================================================================
+// Todo
+// =============================================================================
+
+export function skillTodo(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Todo sub-skill
+
+Shared todo list. All peers see the same items; anyone (humans or
+agents) can add, toggle, edit, delete, reorder, or clear-done. The
+relay persists the list as JSON on disk (\`/var/lib/slop-relay/todos.json\`),
+capped at 200 items / 500 chars per item.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/todos
+# → { items: [{ id, ts, address, handle, text, done }, ...] }
+\`\`\`
+
+Also embedded in \`GET /v1/state\` under \`todos\`.
+
+### Add an item
+
+\`\`\`
+POST ${BASE}/v1/todos { "text": "buy milk" }
+# → { ok: true, item: { id, ts, address, handle, text, done } }
+\`\`\`
+
+### Toggle done
+
+\`\`\`
+POST ${BASE}/v1/todos/:id/toggle
+\`\`\`
+
+### Update text
+
+\`\`\`
+POST ${BASE}/v1/todos/:id { "text": "buy oat milk" }
+\`\`\`
+
+### Delete
+
+\`\`\`
+DELETE ${BASE}/v1/todos/:id
+\`\`\`
+
+### Clear all completed items
+
+\`\`\`
+POST ${BASE}/v1/todos/clear-done
+\`\`\`
+
+### Reorder
+
+\`\`\`
+POST ${BASE}/v1/todos/reorder { "ids": ["abc", "def", "ghi", ...] }
+\`\`\`
+
+Pass the full id list in the desired order. Unknown ids are ignored;
+ids you leave out are appended at the end (defensive against a race
+with concurrent adds). The order broadcast is what every peer renders.
+`;
+}
+
+// =============================================================================
+// Notes
+// =============================================================================
+
+export function skillNotes(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Notes sub-skill
+
+Shared free-form notes. All peers see all notes; anyone can create /
+edit / delete any note. Persisted as JSON on disk
+(\`/var/lib/slop-relay/notes.json\`), capped at 200 notes / 10k chars
+per note.
+
+The first line of a note's text doubles as its title in the sidebar.
+No separate title field — keep the first line short and put body
+underneath.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/notes
+# → { items: [{ id, createdTs, updatedTs, address, handle, text }, ...] }
+\`\`\`
+
+Also embedded in \`GET /v1/state\` under \`notes\`.
+
+### Create
+
+\`\`\`
+POST ${BASE}/v1/notes { "text": "Title line\\nBody body body" }
+# → { ok: true, note: { id, createdTs, updatedTs, ..., text } }
+\`\`\`
+
+Empty text is allowed (creates a blank note).
+
+### Update text
+
+\`\`\`
+POST ${BASE}/v1/notes/:id { "text": "new full body" }
+\`\`\`
+
+This replaces the entire note text; there's no append / patch endpoint.
+\`updatedTs\` is bumped server-side.
+
+### Delete
+
+\`\`\`
+DELETE ${BASE}/v1/notes/:id
+\`\`\`
+`;
+}
+
+// =============================================================================
+// Gas
+// =============================================================================
+
+export function skillGas(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Gas sub-skill (read-only)
+
+Ethereum gas tracker. The relay polls Alchemy
+(\`eth_feeHistory\`, 5 blocks, 10/50/90th-percentile priority fees) and
+the Chainlink mainnet ETH/USD oracle every ~12s and exposes the latest
+snapshot. There's no mutate surface — agents read this to decide when
+to broadcast a "gas is low" note or to size out a hypothetical tx
+cost.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/gas
+# → { state: { baseFeeGwei, slowGwei, mediumGwei, fastGwei,
+#              ethUsd, updatedAt } | null }
+\`\`\`
+
+\`updatedAt\` is ms epoch. Snapshot may be \`null\` for ~12s after the
+relay restarts (first poll hasn't landed yet).
+
+\`slowGwei\` / \`mediumGwei\` / \`fastGwei\` already include the next
+block's predicted base fee — they're the all-in gwei prices, not just
+priority tips. So a 21k-gas ETH send at "medium" costs:
+
+\`\`\`
+mediumGwei × 21000 × 1e-9 × ethUsd  (USD)
+\`\`\`
+
+Also embedded in \`GET /v1/state\` under \`gasState\`.
 `;
 }
 
@@ -551,5 +753,11 @@ export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean)
       return skillSlots(token, isHost);
     case "apps":
       return skillApps(token, isHost);
+    case "todo":
+      return skillTodo(token, isHost);
+    case "notes":
+      return skillNotes(token, isHost);
+    case "gas":
+      return skillGas(token, isHost);
   }
 }
