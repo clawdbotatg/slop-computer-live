@@ -15,9 +15,11 @@ import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
+import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
@@ -50,14 +52,26 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes";
 };
 
-// Default cascade for icons whose slot hasn't been saved yet — single
-// column down the left edge, 110px apart vertically.
+// Default cascade for icons whose slot hasn't been saved yet — 6 icons
+// stack vertically down the left edge, then wrap to a new column 100px
+// to the right.
 const ICON_DEFAULT_X = 24;
 const ICON_DEFAULT_Y0 = 60;
 const ICON_ROW_PITCH = 110;
+const ICON_COL_PITCH = 100;
+const ICONS_PER_COL = 6;
+
+function defaultIconPosition(i: number): { x: number; y: number } {
+  const col = Math.floor(i / ICONS_PER_COL);
+  const row = i % ICONS_PER_COL;
+  return {
+    x: ICON_DEFAULT_X + col * ICON_COL_PITCH,
+    y: ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH,
+  };
+}
 
 // Slot id keyed by stable owner identity (wallet address or handle) so the
 // layout survives a reload — peerIds are ephemeral and would otherwise reset
@@ -365,11 +379,8 @@ const Desktop: NextPage = () => {
   // order is the apps catalog order so the layout is stable across runs.
   const autoArrangeIcons = useCallback(() => {
     apps.forEach((app, i) => {
-      mesh.updateSlot({
-        id: `icon-${app.id}`,
-        x: ICON_DEFAULT_X,
-        y: ICON_DEFAULT_Y0 + i * ICON_ROW_PITCH,
-      });
+      const { x, y } = defaultIconPosition(i);
+      mesh.updateSlot({ id: `icon-${app.id}`, x, y });
     });
   }, [apps, mesh]);
 
@@ -810,10 +821,11 @@ const Desktop: NextPage = () => {
         {session.authenticated && mesh.bootstrapped
           ? apps.map((app, i) => {
               const slotId = `icon-${app.id}`;
+              const fallback = defaultIconPosition(i);
               const slot = mesh.slots[slotId] ?? {
                 id: slotId,
-                x: ICON_DEFAULT_X,
-                y: ICON_DEFAULT_Y0 + i * ICON_ROW_PITCH,
+                x: fallback.x,
+                y: fallback.y,
                 width: 88,
                 height: 110,
                 z: 1,
@@ -840,6 +852,12 @@ const Desktop: NextPage = () => {
                         return;
                       case "qr":
                         mesh.openWindow("qr");
+                        return;
+                      case "todo":
+                        mesh.openWindow("todo");
+                        return;
+                      case "notes":
+                        mesh.openWindow("notes");
                         return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
@@ -1072,6 +1090,26 @@ const Desktop: NextPage = () => {
               minHeight={360}
             >
               <QrCodeWindow />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="todo"
+              title="TODO"
+              defaultSlot={{ x: 240, y: 120, width: 360, height: 460 }}
+              minWidth={260}
+              minHeight={300}
+            >
+              <TodoWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="notes"
+              title="NOTES"
+              defaultSlot={{ x: 280, y: 140, width: 520, height: 420 }}
+              minWidth={360}
+              minHeight={300}
+            >
+              <NotesWindow mesh={mesh} />
             </SharedAppWindow>
           </>
         ) : null}

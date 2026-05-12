@@ -125,6 +125,28 @@ export type ChatMessage = {
   source: "live" | "spectator" | "agent";
 };
 
+/** Shared todo list item — server-authoritative, mirrors
+ *  `packages/relay/src/todos.ts`. */
+export type TodoItem = {
+  id: string;
+  ts: number;
+  address: string | null;
+  handle: string | null;
+  text: string;
+  done: boolean;
+};
+
+/** Shared note — server-authoritative, mirrors
+ *  `packages/relay/src/notes.ts`. */
+export type Note = {
+  id: string;
+  createdTs: number;
+  updatedTs: number;
+  address: string | null;
+  handle: string | null;
+  text: string;
+};
+
 export type MusicState = {
   src: string | null;
   index: number;
@@ -261,6 +283,18 @@ export type PeerMeshState = {
   chessMove: (from: string, to: string, promotion?: string) => void;
   chessResign: () => void;
   chessCloseGame: () => void;
+  /** Shared todo list. Full-state replace from server on every change. */
+  todos: TodoItem[];
+  todoAdd: (text: string) => void;
+  todoToggle: (id: string) => void;
+  todoUpdate: (id: string, text: string) => void;
+  todoDelete: (id: string) => void;
+  todoClearDone: () => void;
+  /** Shared notes. Full-state replace from server on every change. */
+  notes: Note[];
+  noteCreate: (text: string) => void;
+  noteUpdate: (id: string, text: string) => void;
+  noteDelete: (id: string) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -280,6 +314,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -624,6 +660,57 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const todoAdd = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      send({ type: "todo_add", text: trimmed.slice(0, 500) });
+    },
+    [send],
+  );
+  const todoToggle = useCallback(
+    (id: string) => {
+      send({ type: "todo_toggle", id });
+    },
+    [send],
+  );
+  const todoUpdate = useCallback(
+    (id: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      send({ type: "todo_update", id, text: trimmed.slice(0, 500) });
+    },
+    [send],
+  );
+  const todoDelete = useCallback(
+    (id: string) => {
+      send({ type: "todo_delete", id });
+    },
+    [send],
+  );
+  const todoClearDone = useCallback(() => {
+    send({ type: "todo_clear_done" });
+  }, [send]);
+
+  const noteCreate = useCallback(
+    (text: string) => {
+      send({ type: "note_create", text: text.slice(0, 10_000) });
+    },
+    [send],
+  );
+  const noteUpdate = useCallback(
+    (id: string, text: string) => {
+      send({ type: "note_update", id, text: text.slice(0, 10_000) });
+    },
+    [send],
+  );
+  const noteDelete = useCallback(
+    (id: string) => {
+      send({ type: "note_delete", id });
+    },
+    [send],
+  );
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -769,6 +856,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (Array.isArray(msg.aiPlayers)) {
             setAiPlayers(msg.aiPlayers as AIPlayer[]);
+          }
+          if (Array.isArray(msg.todos)) {
+            setTodos(msg.todos as TodoItem[]);
+          }
+          if (Array.isArray(msg.notes)) {
+            setNotes(msg.notes as Note[]);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -994,6 +1087,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "todos" && Array.isArray(msg.items)) {
+          setTodos(msg.items as TodoItem[]);
+          return;
+        }
+
+        if (msg.type === "notes" && Array.isArray(msg.items)) {
+          setNotes(msg.items as Note[]);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1101,6 +1204,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     chessMove,
     chessResign,
     chessCloseGame,
+    todos,
+    todoAdd,
+    todoToggle,
+    todoUpdate,
+    todoDelete,
+    todoClearDone,
+    notes,
+    noteCreate,
+    noteUpdate,
+    noteDelete,
     broadcastTxRequest,
   };
 }

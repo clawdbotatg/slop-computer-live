@@ -55,6 +55,22 @@ import {
 } from "./chess.js";
 import { listAvailableAIPlayers } from "./ai-players.js";
 import { maybeMoveAI } from "./ai-mover.js";
+import {
+  add as todoAdd,
+  clearDone as todoClearDone,
+  list as todoList,
+  remove as todoRemove,
+  subscribe as subscribeTodos,
+  toggle as todoToggle,
+  update as todoUpdate,
+} from "./todos.js";
+import {
+  create as noteCreate,
+  list as noteList,
+  remove as noteRemove,
+  subscribe as subscribeNotes,
+  update as noteUpdate,
+} from "./notes.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -178,7 +194,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -229,6 +245,18 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "QR",
     icon: "/icons/qr.png",
     kind: "qr",
+  },
+  {
+    id: "todo",
+    label: "Todo",
+    icon: "/icons/todo.png",
+    kind: "todo",
+  },
+  {
+    id: "notes",
+    label: "Notes",
+    icon: "/icons/notes.png",
+    kind: "notes",
   },
 ];
 
@@ -515,6 +543,17 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
 // SSE below.
 subscribeChat(msg => {
   broadcast({ type: "chat", msg });
+});
+
+// Todo + notes: full-list broadcast on every mutation. The list is small
+// (capped at 200 items each), the change semantics include mutate+delete,
+// and full-state broadcast keeps reducer logic out of every client. If
+// the lists grow much larger we can switch to incremental events.
+subscribeTodos(items => {
+  broadcast({ type: "todos", items });
+});
+subscribeNotes(items => {
+  broadcast({ type: "notes", items });
 });
 
 type ChatBody = { text?: unknown };
@@ -1517,6 +1556,8 @@ app.register(async function signalRoutes(fastify) {
       chessGame: chessGetCurrentGame(),
       chessHistory: chessGetHistory(),
       aiPlayers: listAvailableAIPlayers(),
+      todos: todoList(),
+      notes: noteList(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -1575,6 +1616,53 @@ app.register(async function signalRoutes(fastify) {
             text: msg.text,
             source: "live",
           });
+          return;
+        }
+        case "todo_add": {
+          if (typeof msg.text !== "string" || !msg.text.trim()) return;
+          todoAdd({
+            address: info.address,
+            handle: info.handle,
+            text: msg.text,
+          });
+          return;
+        }
+        case "todo_toggle": {
+          if (typeof msg.id !== "string") return;
+          todoToggle(msg.id);
+          return;
+        }
+        case "todo_update": {
+          if (typeof msg.id !== "string" || typeof msg.text !== "string") return;
+          todoUpdate(msg.id, msg.text);
+          return;
+        }
+        case "todo_delete": {
+          if (typeof msg.id !== "string") return;
+          todoRemove(msg.id);
+          return;
+        }
+        case "todo_clear_done": {
+          todoClearDone();
+          return;
+        }
+        case "note_create": {
+          if (typeof msg.text !== "string") return;
+          noteCreate({
+            address: info.address,
+            handle: info.handle,
+            text: msg.text,
+          });
+          return;
+        }
+        case "note_update": {
+          if (typeof msg.id !== "string" || typeof msg.text !== "string") return;
+          noteUpdate(msg.id, msg.text);
+          return;
+        }
+        case "note_delete": {
+          if (typeof msg.id !== "string") return;
+          noteRemove(msg.id);
           return;
         }
         case "publish": {
