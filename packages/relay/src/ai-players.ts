@@ -45,14 +45,62 @@ export type AIPlayerConfig = {
 // an X-API-Key header. Full catalog + pricing:
 //   curl https://llm.bankr.bot/v1/models -H "X-API-Key: $BANKR_API_KEY"
 //
-// Curated for chess: prefer reasoning models that have shown they can
-// stay through 30+ moves without coughing up unparseable nonsense.
-// MiniMax M2.7 was dropped — chronically resigned 1-4 moves in.
+// Curated for *watchable* chess on a live stream — speed matters as
+// much as strength when an audience is waiting on every move.
+//
+// Two tiers, both chosen for chess specifically (not general bench scores):
+//
+//   ⚡ FAST  — non-reasoning models. 1–4s/move, weaker but lively games.
+//             Default pick for casual / podcast rounds.
+//   🧠 SMART — reasoning models. 5–20s/move, stronger but glacial.
+//             Save for "serious matches" the audience is actually
+//             watching the chess of, not just the desktop around it.
+//
+// The 🤖 from earlier rosters was upgraded to 🧠 / ⚡ so users can
+// see the trade-off in the dropdown without opening a doc.
+//
+// Rotated out:
+//   - MiniMax M2.7 / M2.7 highspeed — chronically resigned 1–4 moves in
+//   - Venice Uncensored — chatty roleplay model, terrible at chess
+//   - Qwen 3 235B Thinking (Venice) — 20s on opening moves, replaced
+//     with the Instruct (non-thinking) variant of the same family
+//   - Grok 4.20 / Gemini 3.1 Pro (Bankr) — superseded by their Fast
+//     siblings; the slow tier is already covered by Opus + GPT 5.5
 const AI_PLAYERS: AIPlayerConfig[] = [
-  // ---- Bankr — flagship reasoners ---------------------------------
+  // ---- Bankr — ⚡ fast non-reasoning ------------------------------
+  // Smoke-tested for actual move latency (a "fast" name in the catalog
+  // doesn't guarantee fast inference — Gemini 3 Flash takes 7s, Grok
+  // 4.1 Fast secretly reasons for 150 tokens, GPT 5-mini hides 128
+  // reasoning tokens). The four below all came back in <1s with zero
+  // reasoning tokens.
+  {
+    id: "bankr-claude-haiku-4.5",
+    label: "Claude Haiku 4.5 (Bankr) ⚡",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "claude-haiku-4.5",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash Lite (Bankr) ⚡",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gemini-3.1-flash-lite",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-gpt-5.4-nano",
+    label: "GPT 5.4-nano (Bankr) ⚡",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gpt-5.4-nano",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  // ---- Bankr — 🧠 flagship reasoners ------------------------------
   {
     id: "bankr-claude-opus-4.7",
-    label: "Claude Opus 4.7 (Bankr) 🤖",
+    label: "Claude Opus 4.7 (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
     model: "claude-opus-4.7",
     envVar: "BANKR_API_KEY",
@@ -60,32 +108,15 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-gpt-5.5",
-    label: "GPT 5.5 (Bankr) 🤖",
+    label: "GPT 5.5 (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
     model: "gpt-5.5",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
   {
-    id: "bankr-gemini-3.1-pro",
-    label: "Gemini 3.1 Pro (Bankr) 🤖",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "gemini-3.1-pro",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
-  {
-    id: "bankr-grok-4.20",
-    label: "Grok 4.20 (Bankr) 🤖",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "grok-4.20",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
-  // ---- Bankr — already-proven Ruy-Lopez-grade ---------------------
-  {
     id: "bankr-kimi-k2.6",
-    label: "Kimi K2.6 (Bankr) 🤖",
+    label: "Kimi K2.6 (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
     model: "kimi-k2.6",
     envVar: "BANKR_API_KEY",
@@ -93,18 +124,9 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   },
   {
     id: "bankr-deepseek-v4-pro",
-    label: "DeepSeek V4 Pro (Bankr) 🤖",
+    label: "DeepSeek V4 Pro (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
     model: "deepseek-v4-pro",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
-  // ---- Bankr — cheap & quick (good for lots of test games) --------
-  {
-    id: "bankr-gpt-5-mini",
-    label: "GPT 5-mini (Bankr) 🤖",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "gpt-5-mini",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
@@ -114,36 +136,34 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // can pit two providers' "Claude Opus" against each other.
   {
     id: "venice-claude-opus-4.7",
-    label: "Claude Opus 4.7 (Venice) 🤖",
+    label: "Claude Opus 4.7 (Venice) 🧠",
     baseURL: "https://api.venice.ai/api/v1",
     model: "claude-opus-4-7",
     envVar: "VENICE_API_KEY",
   },
   {
     id: "venice-claude-sonnet-4.6",
-    label: "Claude Sonnet 4.6 (Venice) 🤖",
+    label: "Claude Sonnet 4.6 (Venice) 🧠",
     baseURL: "https://api.venice.ai/api/v1",
     model: "claude-sonnet-4-6",
     envVar: "VENICE_API_KEY",
   },
   // ---- Venice — non-Claude picks ----------------------------------
-  // Both of these are flagged by Venice itself in `model_spec.traits`:
-  //   zai-org-glm-4.7              → `most_intelligent`, `default`
-  //   qwen3-235b-a22b-thinking…    → `default_reasoning`
-  // Trust Venice's own labels — they know which of theirs play best.
-  // Dropped venice-uncensored: chatty role-play model, terrible at chess.
+  // GLM is Venice's `most_intelligent` non-reasoning flagship.
+  // Qwen 3 235B Instruct is the non-thinking sibling of the
+  // glacially-slow Qwen 3 Thinking we just rotated out.
   {
     id: "venice-glm-4.7",
-    label: "GLM 4.7 (Venice) 🤖",
+    label: "GLM 4.7 (Venice) 🧠",
     baseURL: "https://api.venice.ai/api/v1",
     model: "zai-org-glm-4.7",
     envVar: "VENICE_API_KEY",
   },
   {
-    id: "venice-qwen3-thinking",
-    label: "Qwen 3 235B Thinking (Venice) 🤖",
+    id: "venice-qwen3-instruct",
+    label: "Qwen 3 235B Instruct (Venice) ⚡",
     baseURL: "https://api.venice.ai/api/v1",
-    model: "qwen3-235b-a22b-thinking-2507",
+    model: "qwen3-235b-a22b-instruct-2507",
     envVar: "VENICE_API_KEY",
   },
 ];
