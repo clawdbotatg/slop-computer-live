@@ -27,6 +27,10 @@ export type DesktopFileProps = {
   onDelete: () => void;
   /** Double-click handler — opens the preview window. */
   onPreview: () => void;
+  /** Fires once on pointerup with the final position, if the user
+   *  actually moved the icon. Lets the parent intercept drops onto
+   *  the trash can. */
+  onDragEnd?: (pos: { x: number; y: number }) => void;
 };
 
 const ICON_SIZE = 88;
@@ -54,7 +58,17 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export const DesktopFile = ({ file, x, y, zIndex = 1, canDelete, onMove, onDelete, onPreview }: DesktopFileProps) => {
+export const DesktopFile = ({
+  file,
+  x,
+  y,
+  zIndex = 1,
+  canDelete,
+  onMove,
+  onDelete,
+  onPreview,
+  onDragEnd,
+}: DesktopFileProps) => {
   const [hover, setHover] = useState(false);
   const [imgPreview, setImgPreview] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
@@ -87,6 +101,15 @@ export const DesktopFile = ({ file, x, y, zIndex = 1, canDelete, onMove, onDelet
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
       /* already released */
+    }
+    // If the user actually moved (movedRef), fire onDragEnd with the
+    // final position. Parent uses this to detect "dropped on trash"
+    // — onMove fires continuously during drag so it can't be the
+    // trash-check trigger by itself.
+    if (movedRef.current && onDragEnd) {
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
+      onDragEnd({ x: dragRef.current.x + dx, y: dragRef.current.y + dy });
     }
     dragRef.current = null;
   };

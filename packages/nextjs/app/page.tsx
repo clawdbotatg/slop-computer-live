@@ -24,6 +24,7 @@ import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
+import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
 import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
@@ -809,22 +810,108 @@ const Desktop: NextPage = () => {
   // future autoplay-blocked component) retry their .play() call.
   const { gestured, trip: tripGesture } = useUserGesture();
 
-  // File preview — opens on double-click of a desktop file. State is
-  // per-peer (each viewer can have their own preview window open), so
-  // we keep the active file id in local state. Position is local too;
-  // close → reopen recenters.
-  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
-  const previewFile = useMemo(
-    () => (previewFileId ? (mesh.files.find(f => f.id === previewFileId) ?? null) : null),
-    [previewFileId, mesh.files],
-  );
-  // Clear the preview when the file gets deleted by anyone (so closing
-  // your preview-of-a-deleted-file isn't required to dismiss it).
+  // Trash can — pinned to the bottom-right of THIS viewer's viewport
+  // (not in the shared slot system; everyone's trash sits at a
+  // different absolute coord because viewports differ in size). The
+  // bbox is read from the ref at drop-time so resizes can't desync it.
+  const trashRef = useRef<HTMLDivElement | null>(null);
+  const isOverTrash = useCallback((iconX: number, iconY: number, iconW = 88, iconH = 110) => {
+    const r = trashRef.current?.getBoundingClientRect();
+    if (!r) return false;
+    return iconX < r.right && iconX + iconW > r.left && iconY < r.bottom && iconY + iconH > r.top;
+  }, []);
+  // Force-remount counter per app icon — bumped when the user drops
+  // an app icon onto the trash, so the icon snaps back to its
+  // (unchanged) slot position. Apps can't be trashed; only the user's
+  // intent to move is rejected.
+  const [iconSnapBackKey, setIconSnapBackKey] = useState<Record<string, number>>({});
+
+  // File previews — opened on double-click of a desktop file. State is
+  // per-peer (each viewer can have their own previews open) and supports
+  // multiple windows at once, keyed by file id. Each window tracks its
+  // own geometry + z so they can be moved, resized, focused, and closed
+  // independently like every other window on the desktop.
+  type PreviewWindowState = { x: number; y: number; width: number; height: number; z: number };
+  const [previewWindows, setPreviewWindows] = useState<Record<string, PreviewWindowState>>({});
+
+  const openPreview = useCallback((fileId: string) => {
+    setPreviewWindows(prev => {
+      const existing = prev[fileId];
+      const maxZ = Math.max(500, ...Object.values(prev).map(w => w.z));
+      // Already open → just bring to front. Don't shuffle x/y so an
+      // in-place double-click doesn't relocate a window the user has
+      // already arranged.
+      if (existing) {
+        if (existing.z >= maxZ) return prev;
+        return { ...prev, [fileId]: { ...existing, z: maxZ + 1 } };
+      }
+      // Fresh open → cascade so stacked previews don't fully overlap.
+      const offset = Object.keys(prev).length * 28;
+      const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+      const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+      const width = 640;
+      const height = 500;
+      const baseX = Math.max(60, Math.round(vw / 2 - width / 2));
+      const baseY = Math.max(60, Math.round(vh / 2 - height / 2));
+      return {
+        ...prev,
+        [fileId]: { x: baseX + offset, y: baseY + offset, width, height, z: maxZ + 1 },
+      };
+    });
+  }, []);
+
+  const closePreview = useCallback((fileId: string) => {
+    setPreviewWindows(prev => {
+      if (!prev[fileId]) return prev;
+      const next = { ...prev };
+      delete next[fileId];
+      return next;
+    });
+  }, []);
+
+  const movePreview = useCallback((fileId: string, x: number, y: number) => {
+    setPreviewWindows(prev => {
+      const cur = prev[fileId];
+      if (!cur) return prev;
+      return { ...prev, [fileId]: { ...cur, x, y } };
+    });
+  }, []);
+
+  const resizePreview = useCallback((fileId: string, x: number, y: number, width: number, height: number) => {
+    setPreviewWindows(prev => {
+      const cur = prev[fileId];
+      if (!cur) return prev;
+      return { ...prev, [fileId]: { ...cur, x, y, width, height } };
+    });
+  }, []);
+
+  const focusPreview = useCallback((fileId: string) => {
+    setPreviewWindows(prev => {
+      const cur = prev[fileId];
+      if (!cur) return prev;
+      const maxZ = Math.max(500, ...Object.values(prev).map(w => w.z));
+      if (cur.z >= maxZ) return prev;
+      return { ...prev, [fileId]: { ...cur, z: maxZ + 1 } };
+    });
+  }, []);
+
+  // Auto-dismiss any preview whose underlying file got deleted by
+  // anyone (so closing a preview-of-deleted-file isn't required to
+  // make it disappear).
+  const liveFileIds = useMemo(() => new Set(mesh.files.map(f => f.id)), [mesh.files]);
   useEffect(() => {
-    if (previewFileId && !mesh.files.some(f => f.id === previewFileId)) {
-      setPreviewFileId(null);
-    }
-  }, [previewFileId, mesh.files]);
+    setPreviewWindows(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of Object.keys(prev)) {
+        if (!liveFileIds.has(id)) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [liveFileIds]);
 
   // Drop-to-upload: files dragged from the OS onto the desktop background
   // POST to /v1/files and land at the drop coords. The relay broadcasts
@@ -940,13 +1027,28 @@ const Desktop: NextPage = () => {
               };
               return (
                 <DesktopIcon
-                  key={slotId}
+                  // Bump the key whenever this icon needs to snap back
+                  // (after a rejected trash drop). React remounts the
+                  // Rnd which re-reads its position prop, undoing
+                  // react-rnd's local-state drift from the cancelled
+                  // drag.
+                  key={`${slotId}-${iconSnapBackKey[slotId] ?? 0}`}
                   iconSrc={app.icon}
                   label={app.label}
                   x={slot.x}
                   y={slot.y}
                   zIndex={1}
-                  onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
+                  onMove={({ x, y }) => {
+                    // Drop onto trash → apps can't be deleted. Bump
+                    // the snap-back counter to force a re-render with
+                    // the unchanged slot position so the icon visually
+                    // returns home.
+                    if (isOverTrash(x, y)) {
+                      setIconSnapBackKey(prev => ({ ...prev, [slotId]: (prev[slotId] ?? 0) + 1 }));
+                      return;
+                    }
+                    mesh.updateSlot({ id: slotId, x, y });
+                  }}
                   onDoubleClick={() => {
                     // Open the singleton window AND bump it to the
                     // top. Double-clicking an icon should always bring
@@ -1050,7 +1152,14 @@ const Desktop: NextPage = () => {
                   canDelete={canDelete}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
                   onDelete={() => mesh.deleteFile(f.id)}
-                  onPreview={() => setPreviewFileId(f.id)}
+                  onPreview={() => openPreview(f.id)}
+                  onDragEnd={({ x, y }) => {
+                    // Dropped on the trash → delete the file. The
+                    // file_removed broadcast clears the icon for every
+                    // peer; the orphan slot at the trash position is
+                    // harmless (no icon points at it anymore).
+                    if (isOverTrash(x, y)) mesh.deleteFile(f.id);
+                  }}
                 />
               );
             })
@@ -1338,30 +1447,42 @@ const Desktop: NextPage = () => {
           </>
         ) : null}
 
-        {/* File preview — opens on double-click of a desktop file.
-            Per-peer local state (each viewer can preview different
-            files at the same time). Position is fixed at "centered-
-            ish" each open; no slot persistence because the preview
-            doesn't represent a long-lived window the way singleton
-            apps do. */}
-        {previewFile ? (
-          <Window
-            key={`preview-${previewFile.id}`}
-            title={previewFile.name}
-            x={Math.max(60, Math.round((typeof window !== "undefined" ? window.innerWidth : 1280) / 2 - 320))}
-            y={Math.max(60, Math.round((typeof window !== "undefined" ? window.innerHeight : 800) / 2 - 250))}
-            width={640}
-            height={500}
-            zIndex={500}
-            minWidth={320}
-            minHeight={240}
-            onClose={() => setPreviewFileId(null)}
-            bodyStyle={{ padding: 0, overflow: "hidden" }}
-            containerInset={{ top: 38 }}
-          >
-            <FilePreviewWindow file={previewFile} />
-          </Window>
-        ) : null}
+        {/* Trash can — pinned bottom-right of THIS viewer's viewport
+            (not in the shared slot system). Drag a file icon onto it
+            to delete; drag an app icon onto it and it snaps back
+            (apps can't be trashed). Gated on auth so the trash isn't
+            visible on the sign-in screen. */}
+        {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
+
+        {/* File previews — one window per opened file, all per-peer
+            local state. Move/resize/focus/close work like every other
+            window. Cascade on open so stacked previews don't fully
+            overlap. */}
+        {Object.entries(previewWindows).map(([fileId, w]) => {
+          const file = mesh.files.find(f => f.id === fileId);
+          if (!file) return null;
+          return (
+            <Window
+              key={`preview-${fileId}`}
+              title={file.name}
+              x={w.x}
+              y={w.y}
+              width={w.width}
+              height={w.height}
+              zIndex={w.z}
+              minWidth={320}
+              minHeight={240}
+              onClose={() => closePreview(fileId)}
+              onFocus={() => focusPreview(fileId)}
+              onMove={({ x, y }) => movePreview(fileId, x, y)}
+              onResize={({ x, y, width, height }) => resizePreview(fileId, x, y, width, height)}
+              bodyStyle={{ padding: 0, overflow: "hidden" }}
+              containerInset={{ top: 38 }}
+            >
+              <FilePreviewWindow file={file} />
+            </Window>
+          );
+        })}
       </div>
 
       {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
