@@ -333,8 +333,51 @@ decision).
 
 \`\`\`
 GET ${BASE}/v1/music
-# → { state: { src, index, playing, position, at, volume } | null }
+# → {
+#     state: { src, index, playing, position, at, volume } | null,
+#     version: 42  # bumps on every state change
+#   }
 \`\`\`
+
+### Long-poll the next change (DJ loop)
+
+\`\`\`
+GET ${BASE}/v1/music/wait?since=<version>&timeout=25
+\`\`\`
+
+Returns immediately if \`musicStateVersion > since\`. Otherwise blocks
+up to \`timeout\` seconds (default 25, max 60) waiting for the next
+change (set / play / pause / volume / track-swap), then returns the
+same shape as \`/v1/music\`.
+
+**Use this as the agent DJ loop's only wait.** Don't \`sleep()\` — the
+long-poll already blocks server-side until something happens. The
+pattern:
+
+1. \`GET /v1/music/wait?since=<v>\` blocks until any peer changes
+   the snapshot, OR for \`timeout\` seconds (whichever comes first).
+2. On wake, check the new state:
+   - If \`state.playing\` and the current track is about to end
+     (\`state.position + (Date.now() - state.at)/1000 >= duration\`),
+     pick the next track and POST a fresh snapshot.
+   - Otherwise, just re-enter step 1 with the new \`version\`.
+
+Each MP3's duration is inside \`packages/nextjs/public/music\` — not
+exposed via API yet, so query the file size / decode the header if
+you need exact length, or estimate from \`playlist.json\` metadata
+if you've added a \`duration\` field there.
+
+### Playlist
+
+\`\`\`
+GET ${BASE}/v1/music/playlist
+# → { tracks: [{ title, artist, src }, ...], _credit: "..." }
+\`\`\`
+
+Same-origin proxy of \`https://live.slop.computer/music/playlist.json\`,
+cached 5 min on the relay. Authenticated. To add a track, drop the
+MP3 in \`packages/nextjs/public/music/\` and append to that JSON in
+the repo — there's no runtime add endpoint.
 
 ### Set state
 
@@ -349,25 +392,25 @@ POST ${BASE}/v1/music/state {
 }
 \`\`\`
 
-Useful patterns: pause = same snapshot with \`playing:false\`. Skip to
-the next track = bump \`index\`, set \`position:0\`. Volume change =
-same fields, just a different \`volume\`. \`at\` should be roughly
-\`Date.now()\` when you build the snapshot — peers compute the live
-head as \`position + (Date.now() - at)/1000\` while playing. Omitting
-\`at\` defaults to "now".
+**Always set \`src\` and \`index\` together** — they're both stored,
+but nothing on the server enforces \`src === playlist[index].src\`.
+The window UI shows \`index\` as the "currently playing" highlight,
+while \`<audio>\` plays \`src\`. Sending one without the other is the
+fast path to a desynced UI.
 
-### Playlist
+Useful patterns:
+- **Pause** — repost the same snapshot with \`playing: false\`.
+- **Skip to next** — bump \`index\`, set the matching \`src\`, set
+  \`position: 0\`, set \`playing: true\`.
+- **Volume change** — keep all the other fields the same, change
+  \`volume\` (range \`0..1\`, server clamps).
+- **\`at\`** — should be roughly \`Date.now()\` when you build the
+  snapshot. Peers compute the live head as
+  \`position + (Date.now() - at) / 1000\` while playing. Omitting
+  \`at\` defaults to "now" on the server.
 
-The list of tracks is a static JSON file:
-
-\`\`\`
-GET https://live.slop.computer/music/playlist.json
-# → { tracks: [{ title, artist, src }, ...] }
-\`\`\`
-
-Read it to find valid \`src\` values. To add a track, drop the MP3
-in \`packages/nextjs/public/music/\` and append to \`playlist.json\`
-in the repo — there's no runtime add endpoint.
+Response also echoes the new \`version\` so a DJ loop can chain
+straight into \`/v1/music/wait?since=<new-version>\`.
 `;
 }
 

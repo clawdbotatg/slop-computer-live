@@ -92,6 +92,30 @@ type MusicState = {
 };
 let musicState: MusicState | null = null;
 
+// Music "state version" — bumped on every set. Lets an agent DJ-loop
+// (long-poll → react → set → poll again) wait cheaply for the track
+// to end or for another peer to change the snapshot.
+let musicStateVersion = 0;
+type MusicWaiter = { wake: () => void; cleanup: () => void };
+const musicWaiters: MusicWaiter[] = [];
+
+function bumpMusicVersion(): void {
+  musicStateVersion++;
+  const woke = musicWaiters.splice(0);
+  for (const w of woke) {
+    try {
+      w.cleanup();
+    } catch {
+      /* ignore */
+    }
+    try {
+      w.wake();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // Chess "state version" — bumped every time the chess game changes
 // (create/move/resign/abort). Lets long-pollers wait cheaply for the
 // next change without us needing to keep diffs of the game itself.
@@ -1077,7 +1101,84 @@ app.get("/v1/music", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { state: musicState };
+  return { state: musicState, version: musicStateVersion };
+});
+
+// Long-poll the music state. Pass `?since=<version>` from a previous
+// /v1/music response; this returns immediately if `musicStateVersion`
+// has already advanced, otherwise blocks up to `?timeout=<sec>` (default
+// 25, max 60) waiting for the next change.
+//
+// Drives the "agent DJ" loop: long-poll → check if the current track
+// just ended (position + elapsed-since-`at` >= duration) → set the
+// next track. Wakes on every state change broadcast — play/pause,
+// volume, src/index swap.
+app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/music/wait", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  const since = Number(req.query?.since ?? 0);
+  const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
+
+  if (!Number.isFinite(since) || musicStateVersion > since) {
+    return { state: musicState, version: musicStateVersion };
+  }
+
+  return await new Promise<unknown>(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve({ state: musicState, version: musicStateVersion });
+    };
+    const timer = setTimeout(finish, timeoutSec * 1000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      const idx = musicWaiters.findIndex(x => x === entry);
+      if (idx >= 0) musicWaiters.splice(idx, 1);
+      try {
+        reply.raw.off("close", finish);
+      } catch {
+        /* ignore */
+      }
+    };
+    const entry: MusicWaiter = { wake: finish, cleanup };
+    musicWaiters.push(entry);
+    reply.raw.on("close", finish);
+  });
+});
+
+// Playlist proxy. Same-origin convenience for agents that already
+// authenticate against the relay — saves a cross-host fetch to
+// live.slop.computer. The playlist lives in the Next.js public dir;
+// we fetch it once per `PLAYLIST_CACHE_MS` and serve the cached copy.
+const PLAYLIST_SRC =
+  process.env.MUSIC_PLAYLIST_URL ?? "https://live.slop.computer/music/playlist.json";
+const PLAYLIST_CACHE_MS = 5 * 60 * 1000;
+let playlistCache: { fetchedAt: number; body: unknown } | null = null;
+
+app.get("/v1/music/playlist", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  const now = Date.now();
+  if (playlistCache && now - playlistCache.fetchedAt < PLAYLIST_CACHE_MS) {
+    return playlistCache.body;
+  }
+  try {
+    const res = await fetch(PLAYLIST_SRC);
+    if (!res.ok) {
+      return reply.code(502).send({ error: "upstream", status: res.status });
+    }
+    const body = (await res.json()) as unknown;
+    playlistCache = { fetchedAt: now, body };
+    return body;
+  } catch (err) {
+    console.warn("[music] playlist fetch failed", err);
+    if (playlistCache) return playlistCache.body; // stale-on-error
+    return reply.code(502).send({ error: "fetch-failed" });
+  }
 });
 
 type MusicStateBody = {
@@ -1105,7 +1206,8 @@ app.post<{ Body: MusicStateBody }>("/v1/music/state", async (req, reply) => {
     volume: incomingVolume ?? musicState?.volume ?? 0.7,
   };
   broadcast({ type: "music_state", state: musicState });
-  return { ok: true, state: musicState };
+  bumpMusicVersion();
+  return { ok: true, state: musicState, version: musicStateVersion };
 });
 
 // =============================================================================
@@ -1947,6 +2049,7 @@ app.register(async function signalRoutes(fastify) {
             volume: incomingVolume ?? musicState?.volume ?? 0.7,
           };
           broadcast({ type: "music_state", state: musicState });
+          bumpMusicVersion();
           return;
         }
         case "chess_create_game": {
