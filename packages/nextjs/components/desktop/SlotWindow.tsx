@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type ReactNode } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef } from "react";
 import { Window } from "~~/components/ui";
 import type { PeerMeshState, SlotPosition } from "~~/hooks/usePeerMesh";
 
@@ -54,6 +54,23 @@ export const SlotWindow = ({
   children,
 }: SlotWindowProps) => {
   const slot = mesh.slots[slotId] ?? defaultSlot;
+
+  // Persist the defaultSlot to the mesh the first time this window mounts
+  // with no existing slot. Without this, the very first interaction
+  // (mousedown → onFocus → updateSlot({id, z})) goes through
+  // usePeerMesh.updateSlot's partial-patch merge with `cur === undefined`,
+  // which falls back to its hardcoded 360×260 defaults and snap-shrinks
+  // the window. Publication windows (camera/audio/screen) escape this
+  // because page.tsx eagerly persists a default slot the moment a
+  // publication appears; SlotWindow needs the same eager persist.
+  const meshUpdateSlot = mesh.updateSlot;
+  const defaultSlotRef = useRef(defaultSlot);
+  const hasSlot = mesh.slots[slotId] !== undefined;
+  useEffect(() => {
+    if (hasSlot) return;
+    meshUpdateSlot({ ...defaultSlotRef.current, id: slotId });
+  }, [hasSlot, slotId, meshUpdateSlot]);
+
   return (
     <Window
       title={title}
