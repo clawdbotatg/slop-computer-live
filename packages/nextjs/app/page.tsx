@@ -826,92 +826,73 @@ const Desktop: NextPage = () => {
   // intent to move is rejected.
   const [iconSnapBackKey, setIconSnapBackKey] = useState<Record<string, number>>({});
 
-  // File previews — opened on double-click of a desktop file. State is
-  // per-peer (each viewer can have their own previews open) and supports
-  // multiple windows at once, keyed by file id. Each window tracks its
-  // own geometry + z so they can be moved, resized, focused, and closed
-  // independently like every other window on the desktop.
-  type PreviewWindowState = { x: number; y: number; width: number; height: number; z: number };
-  const [previewWindows, setPreviewWindows] = useState<Record<string, PreviewWindowState>>({});
-
-  const openPreview = useCallback((fileId: string) => {
-    setPreviewWindows(prev => {
-      const existing = prev[fileId];
-      const maxZ = Math.max(500, ...Object.values(prev).map(w => w.z));
-      // Already open → just bring to front. Don't shuffle x/y so an
-      // in-place double-click doesn't relocate a window the user has
-      // already arranged.
-      if (existing) {
-        if (existing.z >= maxZ) return prev;
-        return { ...prev, [fileId]: { ...existing, z: maxZ + 1 } };
-      }
-      // Fresh open → cascade so stacked previews don't fully overlap.
-      const offset = Object.keys(prev).length * 28;
-      const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
-      const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-      const width = 640;
-      const height = 500;
-      const baseX = Math.max(60, Math.round(vw / 2 - width / 2));
-      const baseY = Math.max(60, Math.round(vh / 2 - height / 2));
-      return {
-        ...prev,
-        [fileId]: { x: baseX + offset, y: baseY + offset, width, height, z: maxZ + 1 },
+  // Open a singleton/preview window AND bump it to the absolute top
+  // across all slots. Used by both the icon double-click handler and
+  // the file-preview double-click — keeps "summon the window to the
+  // front" behavior identical regardless of which kind of icon you
+  // hit. Reading mesh.slots through a ref avoids a stale capture if
+  // this is called twice in quick succession.
+  const meshSlotsRefForFocus = useRef(mesh.slots);
+  meshSlotsRefForFocus.current = mesh.slots;
+  const meshOpenWindowForFocus = mesh.openWindow;
+  const focusApp = useCallback(
+    (id: string) => {
+      meshOpenWindowForFocus(id);
+      const slotId = `app-${id}`;
+      const cur = meshSlotsRefForFocus.current[slotId];
+      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z), 5);
+      const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
+        id: slotId,
+        z: maxZ + 1,
       };
-    });
-  }, []);
+      // Un-minimize: if the slot is at the dock height, inflate to
+      // sane defaults so the user actually sees a usable window. Each
+      // SharedAppWindow has its own minWidth/minHeight that clamps
+      // further.
+      if (cur && cur.height <= 40) {
+        patch.height = 400;
+        patch.width = Math.max(cur.width, 360);
+        patch.y = Math.max(60, cur.y - 360);
+      }
+      meshUpdateSlot(patch);
+    },
+    [meshOpenWindowForFocus, meshUpdateSlot],
+  );
 
-  const closePreview = useCallback((fileId: string) => {
-    setPreviewWindows(prev => {
-      if (!prev[fileId]) return prev;
-      const next = { ...prev };
-      delete next[fileId];
-      return next;
-    });
-  }, []);
-
-  const movePreview = useCallback((fileId: string, x: number, y: number) => {
-    setPreviewWindows(prev => {
-      const cur = prev[fileId];
-      if (!cur) return prev;
-      return { ...prev, [fileId]: { ...cur, x, y } };
-    });
-  }, []);
-
-  const resizePreview = useCallback((fileId: string, x: number, y: number, width: number, height: number) => {
-    setPreviewWindows(prev => {
-      const cur = prev[fileId];
-      if (!cur) return prev;
-      return { ...prev, [fileId]: { ...cur, x, y, width, height } };
-    });
-  }, []);
-
-  const focusPreview = useCallback((fileId: string) => {
-    setPreviewWindows(prev => {
-      const cur = prev[fileId];
-      if (!cur) return prev;
-      const maxZ = Math.max(500, ...Object.values(prev).map(w => w.z));
-      if (cur.z >= maxZ) return prev;
-      return { ...prev, [fileId]: { ...cur, z: maxZ + 1 } };
-    });
-  }, []);
-
-  // Auto-dismiss any preview whose underlying file got deleted by
-  // anyone (so closing a preview-of-deleted-file isn't required to
-  // make it disappear).
+  // File previews — opened on double-click of a desktop file. SHARED
+  // across the mesh exactly like every other singleton window: the
+  // open-state lives in `mesh.openWindowIds` keyed `preview-<fileId>`,
+  // geometry lives in `mesh.slots` keyed `app-preview-<fileId>`.
+  // Opening one opens for everyone; closing closes for everyone; move
+  // / resize / focus broadcast through the same slot system that the
+  // chat, music, chess, browser, todo, notes, gas, clock windows all
+  // use. NO local state — that was the bug.
+  //
+  // Auto-cleanup: when a file gets deleted, the open-state for its
+  // preview window is stale. Reap any `preview-<id>` whose underlying
+  // file is gone.
+  const meshCloseWindow = mesh.closeWindow;
   const liveFileIds = useMemo(() => new Set(mesh.files.map(f => f.id)), [mesh.files]);
   useEffect(() => {
-    setPreviewWindows(prev => {
-      let changed = false;
-      const next = { ...prev };
-      for (const id of Object.keys(prev)) {
-        if (!liveFileIds.has(id)) {
-          delete next[id];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [liveFileIds]);
+    for (const id of mesh.openWindowIds) {
+      if (!id.startsWith("preview-")) continue;
+      const fileId = id.slice("preview-".length);
+      if (!liveFileIds.has(fileId)) meshCloseWindow(id);
+    }
+  }, [mesh.openWindowIds, liveFileIds, meshCloseWindow]);
+
+  // Build the list of currently-open preview windows from the shared
+  // mesh state so every peer renders the same set.
+  const openPreviews = useMemo(() => {
+    const out: { fileId: string; file: (typeof mesh.files)[number] }[] = [];
+    for (const id of mesh.openWindowIds) {
+      if (!id.startsWith("preview-")) continue;
+      const fileId = id.slice("preview-".length);
+      const file = mesh.files.find(f => f.id === fileId);
+      if (file) out.push({ fileId, file });
+    }
+    return out;
+  }, [mesh.openWindowIds, mesh.files]);
 
   // Drop-to-upload: files dragged from the OS onto the desktop background
   // POST to /v1/files and land at the drop coords. The relay broadcasts
@@ -1050,33 +1031,10 @@ const Desktop: NextPage = () => {
                     mesh.updateSlot({ id: slotId, x, y });
                   }}
                   onDoubleClick={() => {
-                    // Open the singleton window AND bump it to the
-                    // top. Double-clicking an icon should always bring
-                    // the app to the front — whether it was already
-                    // open behind other windows, minimized to a pill,
-                    // or just being summoned for the first time.
-                    const focusApp = (id: string) => {
-                      mesh.openWindow(id);
-                      const slotId = `app-${id}`;
-                      const cur = mesh.slots[slotId];
-                      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
-                      const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
-                        id: slotId,
-                        z: maxZ + 1,
-                      };
-                      // Un-minimize: if the slot is at the dock height,
-                      // inflate to sane defaults so the user actually
-                      // sees a usable window. Each SharedAppWindow has
-                      // its own minWidth/minHeight that clamps further.
-                      if (cur && cur.height <= 40) {
-                        patch.height = 400;
-                        patch.width = Math.max(cur.width, 360);
-                        // Pull the y up so the inflated window sits
-                        // somewhere visible, not pinned to the bottom.
-                        patch.y = Math.max(60, cur.y - 360);
-                      }
-                      mesh.updateSlot(patch);
-                    };
+                    // focusApp lives at the component scope — it
+                    // opens the window AND bumps its z above every
+                    // slot, regardless of which kind of icon
+                    // triggered it (singleton apps, file previews).
                     switch (app.kind) {
                       case "chat":
                         focusApp("chat");
@@ -1152,7 +1110,7 @@ const Desktop: NextPage = () => {
                   canDelete={canDelete}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
                   onDelete={() => mesh.deleteFile(f.id)}
-                  onPreview={() => openPreview(f.id)}
+                  onPreview={() => focusApp(`preview-${f.id}`)}
                   isOverTrash={isOverTrash}
                   onDragEnd={({ x, y }) => {
                     // Dropped on the trash → delete the file. The
@@ -1455,35 +1413,33 @@ const Desktop: NextPage = () => {
             visible on the sign-in screen. */}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
 
-        {/* File previews — one window per opened file, all per-peer
-            local state. Move/resize/focus/close work like every other
-            window. Cascade on open so stacked previews don't fully
-            overlap. */}
-        {Object.entries(previewWindows).map(([fileId, w]) => {
-          const file = mesh.files.find(f => f.id === fileId);
-          if (!file) return null;
-          return (
-            <Window
-              key={`preview-${fileId}`}
-              title={file.name}
-              x={w.x}
-              y={w.y}
-              width={w.width}
-              height={w.height}
-              zIndex={w.z}
-              minWidth={320}
-              minHeight={240}
-              onClose={() => closePreview(fileId)}
-              onFocus={() => focusPreview(fileId)}
-              onMove={({ x, y }) => movePreview(fileId, x, y)}
-              onResize={({ x, y, width, height }) => resizePreview(fileId, x, y, width, height)}
-              bodyStyle={{ padding: 0, overflow: "hidden" }}
-              containerInset={{ top: 38 }}
-            >
-              <FilePreviewWindow file={file} />
-            </Window>
-          );
-        })}
+        {/* File previews — shared across the mesh, exactly like every
+            other singleton window. Each opens via mesh.openWindow
+            (`preview-<fileId>`), geometry lives in the slot system
+            keyed `app-preview-<fileId>`, focus / move / resize / close
+            all broadcast like the rest of the desktop. Cascading the
+            defaultSlot off the file count gives each new preview a
+            slightly different home position on first open; after that
+            the slot persists. */}
+        {openPreviews.map(({ fileId, file }, i) => (
+          <SharedAppWindow
+            key={`preview-${fileId}`}
+            mesh={mesh}
+            id={`preview-${fileId}`}
+            title={file.name}
+            defaultSlot={{
+              x: 180 + (i % 6) * 36,
+              y: 90 + (i % 6) * 28,
+              width: 640,
+              height: 500,
+              z: 500 + i,
+            }}
+            minWidth={320}
+            minHeight={240}
+          >
+            <FilePreviewWindow file={file} />
+          </SharedAppWindow>
+        ))}
       </div>
 
       {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
