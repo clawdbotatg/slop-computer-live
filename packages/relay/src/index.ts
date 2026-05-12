@@ -60,6 +60,7 @@ import {
   clearDone as todoClearDone,
   list as todoList,
   remove as todoRemove,
+  reorder as todoReorder,
   subscribe as subscribeTodos,
   toggle as todoToggle,
   update as todoUpdate,
@@ -1644,6 +1645,12 @@ app.register(async function signalRoutes(fastify) {
         }
         case "todo_clear_done": {
           todoClearDone();
+          return;
+        }
+        case "todo_reorder": {
+          if (!Array.isArray(msg.ids)) return;
+          const ids = msg.ids.filter((s: unknown): s is string => typeof s === "string");
+          todoReorder(ids);
           return;
         }
         case "note_create": {

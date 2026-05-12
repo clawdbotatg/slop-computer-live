@@ -10,6 +10,12 @@ import { shortAddress } from "~~/hooks/useSession";
 // item — the relay is the source of truth and broadcasts the full list
 // after every change. No optimistic insert needed; the broadcast echo
 // arrives in <100ms locally.
+//
+// Reorder: native HTML5 drag-and-drop on each row. While dragging we
+// keep a local `localOrder` that snaps the picked row to the hovered
+// slot so the UI updates immediately; on drop we send the new id list
+// to the relay, which rebroadcasts the canonical order and clears the
+// local override.
 
 export type TodoWindowProps = {
   mesh: PeerMeshState;
@@ -25,8 +31,30 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
 
-  const items = mesh.todos;
+  const serverItems = mesh.todos;
+  // While dragging, render from localOrder. Once the drop completes and
+  // the relay broadcast lands, the localOrder matches serverItems and
+  // we fall back to the server's view.
+  const items = useMemo(() => {
+    if (!localOrder) return serverItems;
+    const byId = new Map(serverItems.map(i => [i.id, i]));
+    const out: TodoItem[] = [];
+    const used = new Set<string>();
+    for (const id of localOrder) {
+      const it = byId.get(id);
+      if (it && !used.has(id)) {
+        out.push(it);
+        used.add(id);
+      }
+    }
+    for (const it of serverItems) {
+      if (!used.has(it.id)) out.push(it);
+    }
+    return out;
+  }, [serverItems, localOrder]);
   const remaining = useMemo(() => items.filter(i => !i.done).length, [items]);
   const completed = items.length - remaining;
 
@@ -78,9 +106,47 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
             {items.map(item => {
               const isEditing = editingId === item.id;
+              const isDragging = draggingId === item.id;
               return (
                 <li
                   key={item.id}
+                  draggable={!isEditing}
+                  onDragStart={e => {
+                    setDraggingId(item.id);
+                    setLocalOrder(items.map(i => i.id));
+                    e.dataTransfer.effectAllowed = "move";
+                    try {
+                      // Required by Firefox; the actual value is unused.
+                      e.dataTransfer.setData("text/plain", item.id);
+                    } catch {
+                      /* some browsers throw on setData in synthetic events */
+                    }
+                  }}
+                  onDragOver={e => {
+                    if (!draggingId || draggingId === item.id) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setLocalOrder(prev => {
+                      const cur = prev ?? items.map(i => i.id);
+                      const fromIdx = cur.indexOf(draggingId);
+                      const toIdx = cur.indexOf(item.id);
+                      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return cur;
+                      const next = cur.slice();
+                      next.splice(fromIdx, 1);
+                      next.splice(toIdx, 0, draggingId);
+                      return next;
+                    });
+                  }}
+                  onDragEnd={() => {
+                    if (localOrder) {
+                      const serverIds = serverItems.map(i => i.id);
+                      const sameOrder =
+                        localOrder.length === serverIds.length && localOrder.every((id, i) => id === serverIds[i]);
+                      if (!sameOrder) mesh.todoReorder(localOrder);
+                    }
+                    setDraggingId(null);
+                    setLocalOrder(null);
+                  }}
                   style={{
                     display: "flex",
                     alignItems: "flex-start",
@@ -89,8 +155,23 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
                     background: item.done ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
                     border: "1px solid var(--slop-border, #2a1d4a)",
                     borderRadius: 4,
+                    opacity: isDragging ? 0.4 : 1,
                   }}
                 >
+                  <span
+                    aria-hidden
+                    style={{
+                      color: "var(--slop-text-muted)",
+                      fontSize: 14,
+                      lineHeight: 1,
+                      cursor: "grab",
+                      userSelect: "none",
+                      paddingTop: 1,
+                    }}
+                    title="drag to reorder"
+                  >
+                    ⋮⋮
+                  </span>
                   <input
                     type="checkbox"
                     checked={item.done}

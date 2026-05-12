@@ -135,3 +135,31 @@ export function clearDone(): void {
     emit();
   }
 }
+
+// Reorder the list to match the order in `ids`. Any items present in
+// `items` but missing from `ids` are kept and appended at the end
+// (defensive: a race where one peer reorders while another adds shouldn't
+// nuke the new item). Unknown ids in `ids` are ignored.
+export function reorder(ids: string[]): void {
+  load();
+  const byId = new Map(items.map(i => [i.id, i]));
+  const ordered: TodoItem[] = [];
+  const used = new Set<string>();
+  for (const id of ids) {
+    const it = byId.get(id);
+    if (it && !used.has(id)) {
+      ordered.push(it);
+      used.add(id);
+    }
+  }
+  for (const it of items) {
+    if (!used.has(it.id)) ordered.push(it);
+  }
+  // Skip the broadcast when the order hasn't actually changed (e.g.
+  // a drop that landed back at the same index).
+  const sameOrder = ordered.length === items.length && ordered.every((it, i) => it.id === items[i]?.id);
+  if (sameOrder) return;
+  items = ordered;
+  persist();
+  emit();
+}

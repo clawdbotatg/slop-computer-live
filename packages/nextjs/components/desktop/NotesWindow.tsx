@@ -35,6 +35,13 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
   const [draft, setDraft] = useState("");
   const lastSentRef = useRef<{ id: string; text: string } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // When the user clicks "+ New", we want to switch to the new note as
+  // soon as it shows up in the broadcast. We can't just check
+  // notes[notes.length-1] in the click handler because the broadcast
+  // hasn't arrived yet. Instead, set a flag + the set of ids we know
+  // about now, then on the next notes change look for any new id.
+  const pendingNewRef = useRef<Set<string> | null>(null);
 
   // Default selection: the most-recently-updated note.
   const sorted = useMemo(() => [...notes].sort((a, b) => b.updatedTs - a.updatedTs), [notes]);
@@ -42,6 +49,18 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
     if (selectedId && notes.some(n => n.id === selectedId)) return;
     setSelectedId(sorted[0]?.id ?? null);
   }, [sorted, selectedId, notes]);
+
+  // Detect a freshly-created note (an id that wasn't in the set when
+  // the user clicked "+ New") and switch selection to it.
+  useEffect(() => {
+    const known = pendingNewRef.current;
+    if (!known) return;
+    const fresh = notes.find(n => !known.has(n.id));
+    if (fresh) {
+      pendingNewRef.current = null;
+      setSelectedId(fresh.id);
+    }
+  }, [notes]);
 
   // Sync draft with the selected note's server text. Skip when the
   // incoming text matches what we last sent (the broadcast echo of our
@@ -56,6 +75,15 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
     if (last && last.id === selected.id && last.text === selected.text) return;
     setDraft(selected.text);
   }, [selected]);
+
+  // Autofocus the editor whenever the selected note changes. Driven by
+  // selectedId rather than `selected` so we focus the moment the user
+  // clicks a sidebar entry — even before the body text resolves. The
+  // ref is null in the empty-state branch; the check guards that.
+  useEffect(() => {
+    if (!selectedId) return;
+    textareaRef.current?.focus();
+  }, [selectedId]);
 
   // Flush any pending debounced save when the selection changes or the
   // component unmounts. Without this, switching notes mid-typing would
@@ -80,9 +108,10 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
   };
 
   const createNote = () => {
+    // Snapshot the ids we know about right now; the pending-new effect
+    // above watches for any id that isn't in this set and selects it.
+    pendingNewRef.current = new Set(notes.map(n => n.id));
     mesh.noteCreate("");
-    // The broadcast will arrive shortly; the selection effect picks up
-    // the freshest note (highest updatedTs) which will be the new one.
   };
 
   const deleteSelected = () => {
@@ -224,6 +253,7 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
               </button>
             </div>
             <textarea
+              ref={textareaRef}
               value={draft}
               onChange={e => onDraftChange(e.target.value)}
               placeholder="start typing… (first line becomes the title)"

@@ -290,6 +290,9 @@ export type PeerMeshState = {
   todoUpdate: (id: string, text: string) => void;
   todoDelete: (id: string) => void;
   todoClearDone: () => void;
+  /** Apply a new ordering to the todo list. Unknown ids are ignored;
+   *  ids missing from `ids` are appended at the end. */
+  todoReorder: (ids: string[]) => void;
   /** Shared notes. Full-state replace from server on every change. */
   notes: Note[];
   noteCreate: (text: string) => void;
@@ -691,6 +694,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const todoClearDone = useCallback(() => {
     send({ type: "todo_clear_done" });
   }, [send]);
+  const todoReorder = useCallback(
+    (ids: string[]) => {
+      send({ type: "todo_reorder", ids });
+    },
+    [send],
+  );
 
   const noteCreate = useCallback(
     (text: string) => {
@@ -1210,6 +1219,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     todoUpdate,
     todoDelete,
     todoClearDone,
+    todoReorder,
     notes,
     noteCreate,
     noteUpdate,
