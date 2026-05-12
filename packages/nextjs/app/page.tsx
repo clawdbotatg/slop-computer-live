@@ -854,30 +854,57 @@ const Desktop: NextPage = () => {
                   zIndex={1}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y })}
                   onDoubleClick={() => {
+                    // Open the singleton window AND bump it to the
+                    // top. Double-clicking an icon should always bring
+                    // the app to the front — whether it was already
+                    // open behind other windows, minimized to a pill,
+                    // or just being summoned for the first time.
+                    const focusApp = (id: string) => {
+                      mesh.openWindow(id);
+                      const slotId = `app-${id}`;
+                      const cur = mesh.slots[slotId];
+                      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+                      const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
+                        id: slotId,
+                        z: maxZ + 1,
+                      };
+                      // Un-minimize: if the slot is at the dock height,
+                      // inflate to sane defaults so the user actually
+                      // sees a usable window. Each SharedAppWindow has
+                      // its own minWidth/minHeight that clamps further.
+                      if (cur && cur.height <= 40) {
+                        patch.height = 400;
+                        patch.width = Math.max(cur.width, 360);
+                        // Pull the y up so the inflated window sits
+                        // somewhere visible, not pinned to the bottom.
+                        patch.y = Math.max(60, cur.y - 360);
+                      }
+                      mesh.updateSlot(patch);
+                    };
                     switch (app.kind) {
                       case "chat":
-                        mesh.openWindow("chat");
+                        focusApp("chat");
                         return;
                       case "music":
-                        mesh.openWindow("music");
+                        focusApp("music");
                         return;
                       case "chess":
-                        mesh.openWindow("chess");
+                        focusApp("chess");
                         return;
                       case "qr":
-                        mesh.openWindow("qr");
+                        focusApp("qr");
                         return;
                       case "todo":
-                        mesh.openWindow("todo");
+                        focusApp("todo");
                         return;
                       case "notes":
-                        mesh.openWindow("notes");
+                        focusApp("notes");
                         return;
                       case "gas":
-                        mesh.openWindow("gas");
+                        focusApp("gas");
                         return;
                       case "clock":
-                        mesh.openWindow("clock");
+                        focusApp("clock");
                         return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
