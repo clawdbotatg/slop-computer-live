@@ -69,9 +69,22 @@ export const Window = ({
   };
 
   const restore = () => {
-    if (!savedRect) return;
-    onMove?.({ x: savedRect.x, y: savedRect.y });
-    onResize?.({ ...savedRect });
+    if (savedRect) {
+      onMove?.({ x: savedRect.x, y: savedRect.y });
+      onResize?.({ ...savedRect });
+      setMode("normal");
+      return;
+    }
+    // No saved rect — happens for peers that didn't initiate the dock,
+    // or after a reload where the slot height is TITLEBAR but the
+    // component's React state is fresh. Fall back to a reasonable
+    // restore: re-inflate at current x to min dimensions, positioned
+    // somewhere visible above the dock.
+    const fallbackW = Math.max(minWidth, 320);
+    const fallbackH = Math.max(minHeight, 240);
+    const fallbackY = Math.max(insets.top, y - fallbackH - 8);
+    onMove?.({ x, y: fallbackY });
+    onResize?.({ x, y: fallbackY, width: fallbackW, height: fallbackH });
     setMode("normal");
   };
 
@@ -95,42 +108,60 @@ export const Window = ({
       restore();
       return;
     }
-    // From max → snap back to the saved size first so the docked titlebar
-    // is the window's natural width, not viewport-wide. From normal → save
-    // current rect so we can restore later.
+    // Collapse to a titlebar-only "pill" pinned at the bottom of the
+    // screen. We save the current rect so a later click on the docked
+    // titlebar can restore the original geometry.
+    //
+    // Width also collapses to ~the docked title's natural display size
+    // (~200px). The body div isn't rendered in dock mode below, so
+    // size here is what react-rnd's wrapper actually paints.
     let dockX = x;
-    let dockW = width;
-    let dockH = height;
     if (mode === "max" && savedRect) {
       dockX = savedRect.x;
-      dockW = savedRect.width;
-      dockH = savedRect.height;
     } else if (mode === "normal") {
       setSavedRect({ x, y, width, height });
     }
+    const dockW = 200;
+    const dockH = TITLEBAR_HEIGHT;
     const dockY = window.innerHeight - insets.bottom - TITLEBAR_HEIGHT;
     onMove?.({ x: dockX, y: dockY });
     onResize?.({ x: dockX, y: dockY, width: dockW, height: dockH });
     setMode("dock");
   };
 
+  // Derive docked state from height so it stays correct across peers
+  // (only the initiator has mode="dock" locally — others receive the
+  // 36px slot height via the shared mesh) and across reloads (fresh
+  // mount loses local mode state but the slot persists).
+  const isDocked = mode === "dock" || height <= TITLEBAR_HEIGHT;
+
   const body = (
     <>
-      <TitleBar title={title} active={active} onClose={onClose} onMinimize={handleMinimize} onZoom={handleZoom} />
-      <div
-        className={bodyClassName}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          background: "var(--slop-panel)",
-          color: "var(--slop-text)",
-          padding: 8,
-          overflow: "auto",
-          ...bodyStyle,
-        }}
-      >
-        {children}
-      </div>
+      <TitleBar
+        title={title}
+        active={active}
+        showDots={!isDocked}
+        onClose={isDocked ? undefined : onClose}
+        onMinimize={isDocked ? undefined : handleMinimize}
+        onZoom={isDocked ? undefined : handleZoom}
+        onTitleClick={isDocked ? restore : undefined}
+      />
+      {isDocked ? null : (
+        <div
+          className={bodyClassName}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            background: "var(--slop-panel)",
+            color: "var(--slop-text)",
+            padding: 8,
+            overflow: "auto",
+            ...bodyStyle,
+          }}
+        >
+          {children}
+        </div>
+      )}
     </>
   );
 
@@ -163,6 +194,7 @@ export const Window = ({
       minWidth={minWidth}
       minHeight={minHeight}
       dragHandleClassName="slop-titlebar"
+      enableResizing={!isDocked}
       className="slop-window"
       style={{
         zIndex,
@@ -184,7 +216,11 @@ export const Window = ({
         // behind the menubar with no way to grab it back.
         const clampedY = Math.max(insets.top, d.y);
         onMove?.({ x: d.x, y: clampedY });
-        if (mode !== "normal") {
+        // Dragging a docked pill should KEEP it docked — the user is
+        // rearranging minimized items along the bottom, not expanding
+        // them. Preserve mode + savedRect so a later titlebar click
+        // can still restore. Dragging out of max → revert to normal.
+        if (mode === "max") {
           setMode("normal");
           setSavedRect(null);
         }

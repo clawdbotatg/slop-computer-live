@@ -8,6 +8,11 @@ interface TitleBarProps {
   onClose?: () => void;
   onMinimize?: () => void;
   onZoom?: () => void;
+  /** Optional click handler for the whole title row. Used by the
+   *  minimized "dock" mode where any click on the bar restores the
+   *  window. A real drag won't fire onClick because react-rnd's drag
+   *  threshold suppresses the synthetic click. */
+  onTitleClick?: () => void;
   className?: string;
 }
 
@@ -56,10 +61,16 @@ export const TitleBar = ({
   onClose,
   onMinimize,
   onZoom,
+  onTitleClick,
   className = "",
 }: TitleBarProps) => {
   return (
-    <div data-grab="true" className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}>
+    <div
+      data-grab="true"
+      className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}
+      onClick={onTitleClick}
+      style={onTitleClick ? { cursor: "pointer" } : undefined}
+    >
       {showDots && (
         // data-grab="false" so the cursor stays a pointer over the row.
         // (We've tried other approaches to also stop the drag itself

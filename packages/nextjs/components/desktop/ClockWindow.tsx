@@ -2,23 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-// Local clock + countdown timer. State is per-user (each peer has their
-// own timer; nothing is shared via the mesh). Two displays stacked:
-//   - Wall-clock at top, refreshed every second
-//   - Countdown below, with an input that accepts SS, MM:SS, or H:MM:SS
+// Per-user clock app with three modes selected via tabs at the bottom:
+//   - Time     — current time, with quick-pick world clocks
+//   - Timer    — stopwatch (start / stop / reset, supports lap-style runs
+//                via reset between starts)
+//   - Countdown — type a duration, count down, beep when it hits zero
 //
-// When a running countdown reaches zero we beep via Web Audio (a short
-// 880Hz square-wave envelope — works in every modern browser without
-// loading an audio file) and visually pulse the display.
+// All state is local. The "now" wall-clock tick (250ms) drives both
+// the time display and the running stopwatch/countdown displays.
 
 const FINISH_TONE_DURATION_MS = 800;
 
-// Parse a duration string. Accepts:
-//   "90"        → 90 seconds
-//   "1:30"      → 1m 30s
-//   "10:00"     → 10m 0s
-//   "1:30:00"   → 1h 30m 0s
-// Returns null if the input doesn't fit any of those shapes.
+// --- helpers ----------------------------------------------------------------
+
 function parseDuration(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -27,15 +23,10 @@ function parseDuration(raw: string): number | null {
   const nums = parts.map(p => Number(p));
   if (nums.some(n => !Number.isFinite(n) || n < 0)) return null;
   let seconds = 0;
-  if (nums.length === 1) {
-    seconds = nums[0] ?? 0;
-  } else if (nums.length === 2) {
-    seconds = (nums[0] ?? 0) * 60 + (nums[1] ?? 0);
-  } else if (nums.length === 3) {
-    seconds = (nums[0] ?? 0) * 3600 + (nums[1] ?? 0) * 60 + (nums[2] ?? 0);
-  } else {
-    return null;
-  }
+  if (nums.length === 1) seconds = nums[0] ?? 0;
+  else if (nums.length === 2) seconds = (nums[0] ?? 0) * 60 + (nums[1] ?? 0);
+  else if (nums.length === 3) seconds = (nums[0] ?? 0) * 3600 + (nums[1] ?? 0) * 60 + (nums[2] ?? 0);
+  else return null;
   if (seconds <= 0) return null;
   return seconds;
 }
@@ -50,6 +41,12 @@ function formatHMS(totalSecs: number): string {
   return `${pad(m)}:${pad(sec)}`;
 }
 
+function formatHMSWithMillis(totalMs: number): string {
+  const totalSecs = Math.floor(totalMs / 1000);
+  const ms = Math.floor((totalMs % 1000) / 10); // 2-digit centiseconds
+  return `${formatHMS(totalSecs)}.${ms.toString().padStart(2, "0")}`;
+}
+
 function playFinishTone() {
   try {
     const Ctx =
@@ -62,7 +59,6 @@ function playFinishTone() {
     osc.connect(gain);
     gain.connect(ctx.destination);
     const now = ctx.currentTime;
-    // Quick attack, hold, release envelope so it doesn't click.
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(0.25, now + 0.02);
     gain.gain.setValueAtTime(0.25, now + 0.5);
@@ -71,108 +67,84 @@ function playFinishTone() {
     osc.stop(now + FINISH_TONE_DURATION_MS / 1000 + 0.05);
     osc.onended = () => ctx.close().catch(() => {});
   } catch {
-    /* AudioContext blocked / unavailable — silent finish is acceptable */
+    /* AudioContext blocked / unavailable — silent finish is fine */
   }
 }
 
+// --- world clocks -----------------------------------------------------------
+
+type ZoneEntry = { id: string; label: string; tz: string };
+
+const ZONES: ZoneEntry[] = [
+  { id: "local", label: "Local", tz: "local" },
+  { id: "utc", label: "UTC", tz: "UTC" },
+  { id: "nyc", label: "New York", tz: "America/New_York" },
+  { id: "la", label: "Los Angeles", tz: "America/Los_Angeles" },
+  { id: "london", label: "London", tz: "Europe/London" },
+  { id: "berlin", label: "Berlin", tz: "Europe/Berlin" },
+  { id: "tokyo", label: "Tokyo", tz: "Asia/Tokyo" },
+  { id: "shanghai", label: "Shanghai", tz: "Asia/Shanghai" },
+];
+
+function timeInZone(date: Date, tz: string): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  };
+  if (tz !== "local") opts.timeZone = tz;
+  try {
+    return new Intl.DateTimeFormat(undefined, opts).format(date);
+  } catch {
+    // Invalid timeZone (very old browser) — fall back to UTC.
+    return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: "UTC" }).format(date);
+  }
+}
+
+// --- stopwatch + countdown state machines -----------------------------------
+
+type StopwatchState =
+  | { phase: "idle" }
+  | { phase: "running"; startedAt: number; pausedElapsedMs: number }
+  | { phase: "paused"; pausedElapsedMs: number };
+
 type CountdownState =
   | { phase: "idle" }
-  | { phase: "running"; totalSecs: number; endAt: number /* ms epoch */ }
+  | { phase: "running"; totalSecs: number; endAt: number }
   | { phase: "paused"; totalSecs: number; remainingSecs: number }
   | { phase: "done"; totalSecs: number };
 
+type Tab = "time" | "timer" | "countdown";
+
+// --- component --------------------------------------------------------------
+
 export const ClockWindow = () => {
   const [now, setNow] = useState(() => Date.now());
-  const [input, setInput] = useState("10:00");
-  const [state, setState] = useState<CountdownState>({ phase: "idle" });
+  const [tab, setTab] = useState<Tab>("time");
+  const [selectedZone, setSelectedZone] = useState<string>("local");
+  const [stopwatch, setStopwatch] = useState<StopwatchState>({ phase: "idle" });
+  const [countdownInput, setCountdownInput] = useState("10:00");
+  const [countdown, setCountdown] = useState<CountdownState>({ phase: "idle" });
   const finishedRef = useRef(false);
 
-  // 250ms tick. Fine-grained enough that countdown seconds tick over
-  // smoothly even when the user's tab is mid-rerender for some other
-  // reason, but light enough to never matter.
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
 
-  // Auto-finish when a running timer hits zero.
+  // Auto-finish countdown.
   useEffect(() => {
-    if (state.phase !== "running") return;
-    if (now < state.endAt) return;
+    if (countdown.phase !== "running") return;
+    if (now < countdown.endAt) return;
     if (finishedRef.current) return;
     finishedRef.current = true;
-    setState({ phase: "done", totalSecs: state.totalSecs });
+    setCountdown({ phase: "done", totalSecs: countdown.totalSecs });
     playFinishTone();
-  }, [now, state]);
-
-  // Reset the finished-once guard whenever we leave the "done" state.
+  }, [now, countdown]);
   useEffect(() => {
-    if (state.phase !== "done") finishedRef.current = false;
-  }, [state.phase]);
-
-  const wallClock = useMemo(() => {
-    const d = new Date(now);
-    const hh = d.getHours();
-    const mm = d.getMinutes().toString().padStart(2, "0");
-    const ss = d.getSeconds().toString().padStart(2, "0");
-    const ampm = hh >= 12 ? "PM" : "AM";
-    const h12 = ((hh + 11) % 12) + 1;
-    return `${h12}:${mm}:${ss} ${ampm}`;
-  }, [now]);
-
-  const remaining = useMemo(() => {
-    if (state.phase === "running") return Math.max(0, Math.ceil((state.endAt - now) / 1000));
-    if (state.phase === "paused") return state.remainingSecs;
-    if (state.phase === "done") return 0;
-    return parseDuration(input) ?? 0;
-  }, [state, now, input]);
-
-  const parsedInput = parseDuration(input);
-
-  const start = () => {
-    const secs = parseDuration(input);
-    if (!secs) return;
-    setState({ phase: "running", totalSecs: secs, endAt: Date.now() + secs * 1000 });
-  };
-  const resume = () => {
-    if (state.phase !== "paused") return;
-    setState({
-      phase: "running",
-      totalSecs: state.totalSecs,
-      endAt: Date.now() + state.remainingSecs * 1000,
-    });
-  };
-  const pause = () => {
-    if (state.phase !== "running") return;
-    const remainingSecs = Math.max(0, Math.ceil((state.endAt - Date.now()) / 1000));
-    setState({ phase: "paused", totalSecs: state.totalSecs, remainingSecs });
-  };
-  const reset = () => {
-    setState({ phase: "idle" });
-  };
-  const addSeconds = (extra: number) => {
-    if (state.phase === "running") {
-      setState({ phase: "running", totalSecs: state.totalSecs + extra, endAt: state.endAt + extra * 1000 });
-    } else if (state.phase === "paused") {
-      setState({
-        phase: "paused",
-        totalSecs: state.totalSecs + extra,
-        remainingSecs: Math.max(0, state.remainingSecs + extra),
-      });
-    } else if (state.phase === "done") {
-      // From "done", +1 minute reanimates the timer with a fresh 60s.
-      setState({ phase: "running", totalSecs: extra, endAt: Date.now() + extra * 1000 });
-    } else {
-      // idle: extend the parsed input as a convenience.
-      const cur = parseDuration(input) ?? 0;
-      const next = cur + extra;
-      setInput(formatHMS(next));
-    }
-  };
-
-  const isRunning = state.phase === "running";
-  const isPaused = state.phase === "paused";
-  const isDone = state.phase === "done";
+    if (countdown.phase !== "done") finishedRef.current = false;
+  }, [countdown.phase]);
 
   return (
     <div
@@ -185,12 +157,85 @@ export const ClockWindow = () => {
         fontFamily: "var(--slop-font-body)",
       }}
     >
-      {/* Wall clock */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {tab === "time" ? (
+          <TimePanel now={now} selectedZone={selectedZone} onPick={setSelectedZone} />
+        ) : tab === "timer" ? (
+          <TimerPanel now={now} state={stopwatch} onChange={setStopwatch} />
+        ) : (
+          <CountdownPanel
+            now={now}
+            input={countdownInput}
+            onInput={setCountdownInput}
+            state={countdown}
+            onChange={setCountdown}
+          />
+        )}
+      </div>
+
+      {/* Tabs */}
       <div
         style={{
-          padding: "10px 12px 6px",
-          borderBottom: "1px solid var(--slop-border, #2a1d4a)",
-          textAlign: "center",
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          borderTop: "1px solid var(--slop-border, #2a1d4a)",
+          background: "#0a061a",
+        }}
+      >
+        {(["time", "timer", "countdown"] as const).map(t => {
+          const active = t === tab;
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              style={{
+                padding: "8px 4px",
+                fontSize: 10,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                background: active ? "rgba(255,62,201,0.15)" : "transparent",
+                color: active ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-text-muted)",
+                border: "none",
+                borderTop: active ? "2px solid var(--slop-magenta, #ff3ec9)" : "2px solid transparent",
+                cursor: "pointer",
+              }}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// --- Time panel -------------------------------------------------------------
+
+const TimePanel = ({
+  now,
+  selectedZone,
+  onPick,
+}: {
+  now: number;
+  selectedZone: string;
+  onPick: (id: string) => void;
+}) => {
+  const date = useMemo(() => new Date(now), [now]);
+  const zone = ZONES.find(z => z.id === selectedZone) ?? ZONES[0];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 16,
+          gap: 4,
         }}
       >
         <div
@@ -202,14 +247,213 @@ export const ClockWindow = () => {
             color: "var(--slop-text-muted)",
           }}
         >
-          Now
+          {zone.label}
         </div>
-        <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
-          {wallClock}
+        <div style={{ fontSize: 36, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+          {timeInZone(date, zone.tz)}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+          {date.toLocaleDateString(undefined, {
+            ...(zone.tz !== "local" ? { timeZone: zone.tz } : {}),
+            weekday: "short",
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })}
         </div>
       </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, 1fr)",
+          gap: 4,
+          padding: 8,
+          borderTop: "1px solid var(--slop-border, #2a1d4a)",
+        }}
+      >
+        {ZONES.map(z => {
+          const active = z.id === selectedZone;
+          return (
+            <button
+              key={z.id}
+              type="button"
+              onClick={() => onPick(z.id)}
+              style={{
+                padding: "5px 8px",
+                fontSize: 10,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                textAlign: "left",
+                background: active ? "var(--slop-magenta, #ff3ec9)" : "transparent",
+                color: active ? "#06030d" : "var(--slop-text)",
+                border: "1px solid var(--slop-border, #2a1d4a)",
+                borderRadius: 3,
+                cursor: "pointer",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <span>{z.label}</span>
+              <span
+                style={{
+                  fontSize: 9,
+                  fontFamily: "var(--slop-font-body)",
+                  color: active ? "#06030d" : "var(--slop-text-muted)",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {timeInZone(date, z.tz)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
-      {/* Countdown */}
+// --- Timer (stopwatch) panel ------------------------------------------------
+
+const TimerPanel = ({
+  now,
+  state,
+  onChange,
+}: {
+  now: number;
+  state: StopwatchState;
+  onChange: (s: StopwatchState) => void;
+}) => {
+  const elapsedMs =
+    state.phase === "running"
+      ? state.pausedElapsedMs + (now - state.startedAt)
+      : state.phase === "paused"
+        ? state.pausedElapsedMs
+        : 0;
+  const isRunning = state.phase === "running";
+  const isPaused = state.phase === "paused";
+
+  const start = () => {
+    if (state.phase === "running") return;
+    onChange({
+      phase: "running",
+      startedAt: Date.now(),
+      pausedElapsedMs: state.phase === "paused" ? state.pausedElapsedMs : 0,
+    });
+  };
+  const stop = () => {
+    if (state.phase !== "running") return;
+    onChange({
+      phase: "paused",
+      pausedElapsedMs: state.pausedElapsedMs + (Date.now() - state.startedAt),
+    });
+  };
+  const reset = () => {
+    onChange({ phase: "idle" });
+  };
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        gap: 14,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 9,
+          fontFamily: "var(--slop-font-display)",
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: isRunning ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-text-muted)",
+        }}
+      >
+        {isRunning ? "Running" : isPaused ? "Paused" : "Ready"}
+      </div>
+      <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
+        {formatHMSWithMillis(elapsedMs)}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        {!isRunning ? (
+          <button type="button" onClick={start} style={primaryBtnStyle(true)}>
+            {isPaused ? "Resume" : "Start"}
+          </button>
+        ) : (
+          <button type="button" onClick={stop} style={primaryBtnStyle(true)}>
+            Stop
+          </button>
+        )}
+        <button type="button" onClick={reset} style={secondaryBtnStyle} disabled={state.phase === "idle"}>
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// --- Countdown panel --------------------------------------------------------
+
+const COUNTDOWN_PRESETS: { label: string; secs: number }[] = [
+  { label: "30s", secs: 30 },
+  { label: "1m", secs: 60 },
+  { label: "5m", secs: 5 * 60 },
+  { label: "10m", secs: 10 * 60 },
+  { label: "25m", secs: 25 * 60 },
+];
+
+const CountdownPanel = ({
+  now,
+  input,
+  onInput,
+  state,
+  onChange,
+}: {
+  now: number;
+  input: string;
+  onInput: (s: string) => void;
+  state: CountdownState;
+  onChange: (s: CountdownState) => void;
+}) => {
+  const remaining = useMemo(() => {
+    if (state.phase === "running") return Math.max(0, Math.ceil((state.endAt - now) / 1000));
+    if (state.phase === "paused") return state.remainingSecs;
+    if (state.phase === "done") return 0;
+    return parseDuration(input) ?? 0;
+  }, [state, now, input]);
+
+  const parsed = parseDuration(input);
+  const isRunning = state.phase === "running";
+  const isPaused = state.phase === "paused";
+  const isDone = state.phase === "done";
+
+  const startFrom = (secs: number) => {
+    if (secs <= 0) return;
+    onChange({ phase: "running", totalSecs: secs, endAt: Date.now() + secs * 1000 });
+  };
+  const start = () => {
+    const s = parseDuration(input);
+    if (s) startFrom(s);
+  };
+  const pause = () => {
+    if (state.phase !== "running") return;
+    const remainingSecs = Math.max(0, Math.ceil((state.endAt - Date.now()) / 1000));
+    onChange({ phase: "paused", totalSecs: state.totalSecs, remainingSecs });
+  };
+  const resume = () => {
+    if (state.phase !== "paused") return;
+    onChange({ phase: "running", totalSecs: state.totalSecs, endAt: Date.now() + state.remainingSecs * 1000 });
+  };
+  const reset = () => onChange({ phase: "idle" });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div
         style={{
           flex: 1,
@@ -217,7 +461,7 @@ export const ClockWindow = () => {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          padding: 12,
+          padding: 14,
           gap: 10,
         }}
       >
@@ -235,12 +479,11 @@ export const ClockWindow = () => {
         <div
           aria-live="polite"
           style={{
-            fontSize: 48,
+            fontSize: 44,
             fontWeight: 800,
             lineHeight: 1,
             fontVariantNumeric: "tabular-nums",
             color: isDone ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-text)",
-            // Subtle pulse when done — relies on the now-tick re-render.
             transform: isDone ? `scale(${1 + ((now / 400) % 1 > 0.5 ? 0.04 : 0)})` : "none",
             transition: "transform 0.15s",
           }}
@@ -249,70 +492,52 @@ export const ClockWindow = () => {
         </div>
 
         {state.phase === "idle" ? (
-          <input
-            type="text"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && parsedInput) start();
-            }}
-            placeholder="MM:SS or H:MM:SS"
-            spellCheck={false}
-            style={{
-              width: 160,
-              padding: "6px 10px",
-              fontSize: 16,
-              fontVariantNumeric: "tabular-nums",
-              fontFamily: "var(--slop-font-body)",
-              background: "#0e0820",
-              color: parsedInput ? "var(--slop-text)" : "#ff6b6b",
-              border: `1px solid ${parsedInput ? "var(--slop-border, #2a1d4a)" : "#ff6b6b"}`,
-              borderRadius: 4,
-              outline: "none",
-              textAlign: "center",
-            }}
-          />
-        ) : null}
-
-        {/* Quick-add buttons */}
-        <div style={{ display: "flex", gap: 6 }}>
-          {[60, 5 * 60, 15 * 60].map(s => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => addSeconds(s)}
-              style={{
-                padding: "4px 8px",
-                fontSize: 10,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                background: "transparent",
-                color: "var(--slop-text-muted)",
-                border: "1px solid var(--slop-border, #2a1d4a)",
-                borderRadius: 3,
-                cursor: "pointer",
+          <>
+            <input
+              type="text"
+              value={input}
+              onChange={e => onInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && parsed) start();
               }}
-            >
-              +{s >= 60 ? `${s / 60}m` : `${s}s`}
-            </button>
-          ))}
-        </div>
+              placeholder="MM:SS or H:MM:SS"
+              spellCheck={false}
+              style={{
+                width: 160,
+                padding: "6px 10px",
+                fontSize: 16,
+                fontVariantNumeric: "tabular-nums",
+                fontFamily: "var(--slop-font-body)",
+                background: "#0e0820",
+                color: parsed ? "var(--slop-text)" : "#ff6b6b",
+                border: `1px solid ${parsed ? "var(--slop-border, #2a1d4a)" : "#ff6b6b"}`,
+                borderRadius: 4,
+                outline: "none",
+                textAlign: "center",
+              }}
+            />
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+              {COUNTDOWN_PRESETS.map(p => (
+                <button key={p.label} type="button" onClick={() => startFrom(p.secs)} style={presetBtnStyle}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
       </div>
 
-      {/* Controls */}
       <div
         style={{
           display: "flex",
           gap: 6,
           padding: 8,
           borderTop: "1px solid var(--slop-border, #2a1d4a)",
-          background: "#0a061a",
           justifyContent: "center",
         }}
       >
         {state.phase === "idle" ? (
-          <button type="button" onClick={start} disabled={!parsedInput} style={primaryBtnStyle(Boolean(parsedInput))}>
+          <button type="button" onClick={start} disabled={!parsed} style={primaryBtnStyle(Boolean(parsed))}>
             Start
           </button>
         ) : null}
@@ -335,6 +560,8 @@ export const ClockWindow = () => {
     </div>
   );
 };
+
+// --- shared button styles ---------------------------------------------------
 
 function primaryBtnStyle(enabled: boolean): React.CSSProperties {
   return {
@@ -361,6 +588,19 @@ const secondaryBtnStyle: React.CSSProperties = {
   color: "var(--slop-text)",
   border: "1px solid var(--slop-border, #2a1d4a)",
   borderRadius: 4,
+  cursor: "pointer",
+};
+
+const presetBtnStyle: React.CSSProperties = {
+  padding: "4px 10px",
+  fontSize: 11,
+  fontFamily: "var(--slop-font-display)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  background: "transparent",
+  color: "var(--slop-text-muted)",
+  border: "1px solid var(--slop-border, #2a1d4a)",
+  borderRadius: 3,
   cursor: "pointer",
 };
 
