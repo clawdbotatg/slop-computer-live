@@ -43,6 +43,7 @@ export const SKILL_TOPICS = [
   "notes",
   "gas",
   "avatars",
+  "files",
 ] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
 
@@ -90,6 +91,7 @@ Returns the canonical desktop snapshot. Top-level fields:
 | \`todos\` | \`TodoItem[]\` | Shared todo list |
 | \`notes\` | \`Note[]\` | Shared notes |
 | \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot |
+| \`files\` | \`FileEntry[]\` | User-uploaded files on the shared desktop |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
@@ -160,6 +162,7 @@ rules and recommended loops that aren't repeated here.
 | **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |
 | **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` |
 | **Avatars** (your PFP — upload / hide / clear) | \`GET ${BASE}/v1/skill/avatars\` |
+| **Files** (drag-and-drop desktop files — upload / download / delete) | \`GET ${BASE}/v1/skill/files\` |
 
 Each sub-skill is small (< 100 lines). Cache them; only re-fetch on
 unexpected 4xx from an endpoint they documented.
@@ -581,6 +584,7 @@ or you risk the merge falling back to generic defaults.
 | \`icon-<appId>\` | Desktop icon for app \`appId\` (e.g. \`icon-chess\`) |
 | \`app-<appId>\` | Singleton app window (chess, music, chat) |
 | \`browser-<hex>\` | A specific shared browser window |
+| \`file-<hex>\` | A user-uploaded desktop file icon (see Files sub-skill) |
 | \`owner-<addr>-camera\` | Someone's camera publication window |
 | \`owner-<addr>-screen\` | Someone's screen-share window |
 | \`owner-<addr>-audio\` | Someone's audio publication window |
@@ -907,6 +911,104 @@ You can only manage your own PFP — the relay derives the target
 }
 
 // =============================================================================
+// Files (shared desktop drag-and-drop)
+// =============================================================================
+
+export function skillFiles(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Files sub-skill
+
+The shared desktop has a file system. Anyone can drag-and-drop files
+onto the desktop background; the relay stores them and broadcasts
+an event so every peer renders an icon at the drop position. Click
+opens the file in a new tab (browser-native handling); double-click
+downloads. Position lives in the slot system keyed \`file-<id>\` —
+move/resize via the slots sub-skill.
+
+Storage layout on the relay: \`/var/lib/slop-relay/files/<id>.<ext>\`
+plus a \`files.json\` metadata index. Capped at 500 items total and
+50 MB per file. Older items get evicted (oldest first) when the cap
+is hit.
+
+### Read the list
+
+\`\`\`
+GET ${BASE}/v1/files
+# → { items: [{ id, name, size, mime, ownerKey, uploaderLabel,
+#               ts, storedAs }, ...] }
+\`\`\`
+
+Also embedded in \`GET /v1/state\` under \`files\`.
+
+### Upload
+
+\`\`\`
+POST ${BASE}/v1/files?name=<original-filename>
+Content-Type: application/octet-stream
+X-Mime: <real-mime-type>
+Body: raw file bytes (≤ 50 MB)
+# → { ok: true, item: { id, name, size, mime, ... } }
+\`\`\`
+
+The body is always shipped as \`application/octet-stream\`; the file's
+real MIME type goes in the \`X-Mime\` header (or, if omitted, the
+relay falls back to whatever Content-Type came in). Filename goes in
+the \`?name=\` query (URL-encoded) or the \`X-Filename\` header.
+
+Errors: 400 \`empty\`, 413 \`too-large\`, 400 \`write-failed:<reason>\`.
+
+After a successful upload the relay broadcasts \`file_added\` with
+the full \`item\` to every peer; the desktop UI auto-renders the new
+icon. Agents that want a specific drop position should also POST a
+slot update keyed \`file-<id>\` (see slots sub-skill).
+
+### Download
+
+\`\`\`
+GET ${BASE}/files/<id>
+\`\`\`
+
+**No auth.** File ids are unguessable (16 hex chars) so listing is
+the only enumeration path, and listing IS auth-gated. The relay
+serves the original bytes with \`Content-Disposition: attachment\` and
+the uploaded filename intact, so browsers download with the right
+name.
+
+### Delete
+
+\`\`\`
+DELETE ${BASE}/v1/files/<id>
+\`\`\`
+
+Uploader-only OR host (the relay enforces). 403 = forbidden, 404 =
+not-found. On success the relay broadcasts \`file_removed\` with the
+id.
+
+### File slot positioning
+
+The drop position when a user uploads a file is just a slot update
+keyed \`file-<id>\`. To place a file programmatically after upload:
+
+\`\`\`bash
+# 1. Upload, capture the returned id
+ID=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/octet-stream" \\
+  -H "x-mime: image/png" \\
+  --data-binary @cat.png \\
+  "${BASE}/v1/files?name=cat.png" | jq -r .item.id)
+
+# 2. Place the icon at (400, 200)
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  ${BASE}/v1/slots \\
+  -d "{\\"id\\":\\"file-$ID\\",\\"x\\":400,\\"y\\":200,\\"width\\":88,\\"height\\":110}"
+\`\`\`
+`;
+}
+
+// =============================================================================
 // Router
 // =============================================================================
 
@@ -932,5 +1034,7 @@ export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean)
       return skillGas(token, isHost);
     case "avatars":
       return skillAvatars(token, isHost);
+    case "files":
+      return skillFiles(token, isHost);
   }
 }

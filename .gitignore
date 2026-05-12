@@ -29,3 +29,7 @@ scripts/
 
 # Relay's local password file — generated at runtime, dev-only path.
 .slop-data/
+
+# Music + user-uploaded files live on the box (`/var/lib/slop-relay/{music,files}`),
+# served by the relay. Never commit binary blobs into the repo.
+packages/nextjs/public/music/

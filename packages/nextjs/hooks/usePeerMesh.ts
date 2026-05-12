@@ -158,6 +158,19 @@ export type GasState = {
   updatedAt: number;
 };
 
+/** A user-uploaded file on the shared desktop. Mirrors
+ *  `packages/relay/src/files.ts` FileEntry. */
+export type FileEntry = {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  ownerKey: string;
+  uploaderLabel: string;
+  ts: number;
+  storedAs: string;
+};
+
 export type MusicState = {
   src: string | null;
   index: number;
@@ -312,6 +325,11 @@ export type PeerMeshState = {
   /** Latest gas snapshot from the relay's poll loop. `null` until the
    *  first successful Alchemy + Chainlink read lands. */
   gasState: GasState | null;
+  /** Files dropped onto the shared desktop. Mirrors the relay's
+   *  /var/lib/slop-relay/files store, broadcast on every add/remove. */
+  files: FileEntry[];
+  /** Remove a file by id (server enforces uploader-or-host). */
+  deleteFile: (id: string) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -334,6 +352,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [gasState, setGasState] = useState<GasState | null>(null);
+  const [files, setFiles] = useState<FileEntry[]>([]);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -735,6 +754,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  // Files mutate via HTTP (binary upload + DELETE) rather than WS, so
+  // the deleteFile callback fires an HTTP request. The relay broadcasts
+  // `file_removed` to the mesh after a successful delete, which our WS
+  // handler above picks up — no optimistic insert needed.
+  const deleteFile = useCallback((id: string) => {
+    fetch(`${RELAY_HTTP_URL}/v1/files/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("deleteFile failed", err));
+  }, []);
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -889,6 +919,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (msg.gasState && typeof msg.gasState === "object") {
             setGasState(msg.gasState as GasState);
+          }
+          if (Array.isArray(msg.files)) {
+            setFiles(msg.files as FileEntry[]);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -1129,6 +1162,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "file_added" && msg.item && typeof (msg.item as FileEntry).id === "string") {
+          const f = msg.item as FileEntry;
+          setFiles(prev => (prev.some(x => x.id === f.id) ? prev : [...prev, f]));
+          return;
+        }
+        if (msg.type === "file_removed" && typeof msg.id === "string") {
+          const id = msg.id as string;
+          setFiles(prev => prev.filter(f => f.id !== id));
+          return;
+        }
+        if (msg.type === "files" && Array.isArray(msg.items)) {
+          setFiles(msg.items as FileEntry[]);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1248,6 +1296,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     noteUpdate,
     noteDelete,
     gasState,
+    files,
+    deleteFile,
     broadcastTxRequest,
   };
 }

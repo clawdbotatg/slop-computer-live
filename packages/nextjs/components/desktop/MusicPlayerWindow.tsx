@@ -18,7 +18,14 @@ import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 
 type Track = { title: string; artist: string; src: string };
 
-const PLAYLIST_URL = "/music/playlist.json";
+// Music files + playlist now live on the relay (not the Next.js public
+// dir), so we prepend RELAY_HTTP for fetches and audio loads. The `src`
+// field inside the playlist stays as a root-relative path (`/music/foo.mp3`)
+// so the relay can serve it and the mesh state can store it without
+// host coupling.
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+const PLAYLIST_URL = `${RELAY_HTTP}/music/playlist.json`;
+const audioUrl = (src: string): string => (src.startsWith("/") ? `${RELAY_HTTP}${src}` : src);
 const VOLUME_KEY = "slop-music-volume-v1";
 const MUTE_KEY = "slop-music-mute-v1";
 /** Tolerance, in seconds, between local audio.currentTime and the
@@ -210,7 +217,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     // Source mismatch → load the correct track. Setting `src` cancels any
     // in-flight load so this is safe to call repeatedly with the same value.
     if (!a.src.endsWith(current.src)) {
-      a.src = current.src;
+      a.src = audioUrl(current.src);
       a.load();
     }
 
@@ -515,9 +522,12 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         userSelect: "none",
       }}
     >
-      {/* Same-origin source — no crossOrigin attribute so the dev server's
-          missing CORS headers can't stall the load. */}
-      <audio ref={audioRef} preload="metadata" />
+      {/* Audio is served by the relay at RELAY_HTTP/music/*. crossOrigin
+          is required for `ctx.createMediaElementSource(audio)` to read
+          samples for the spectrum analyser — without it the visualizer
+          stays flat. The relay sets `Access-Control-Allow-Origin` for
+          configured origins via @fastify/cors. */}
+      <audio ref={audioRef} preload="metadata" crossOrigin="anonymous" />
 
       {/* Per-user local mute — overlaid in the top-right of the player
           window, same idea as AudioVisualizer / camera's "your side"

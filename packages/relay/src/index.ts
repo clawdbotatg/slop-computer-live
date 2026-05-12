@@ -74,6 +74,15 @@ import {
 } from "./notes.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
 import { resolveEns } from "./ens.js";
+import {
+  FILES_DIR_PATH,
+  FILES_MAX_BYTES,
+  add as fileAdd,
+  get as fileGet,
+  list as fileList,
+  remove as fileRemove,
+  subscribe as subscribeFiles,
+} from "./files.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -185,6 +194,12 @@ const app = Fastify({
 // passthrough parser so Fastify gives us the Buffer instead of trying to
 // parse JSON. Per-route bodyLimit overrides the global 16KB cap.
 app.addContentTypeParser(/^image\/(jpeg|png|webp)$/, { parseAs: "buffer" }, (_req, body, done) => {
+  done(null, body);
+});
+// Generic binary upload — used by the desktop file system. Clients POST
+// raw bytes as application/octet-stream and pass the real mime + name
+// in `x-mime` / `?name=`.
+app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => {
   done(null, body);
 });
 
@@ -409,6 +424,7 @@ app.get("/v1/state", async (req, reply) => {
     todos: todoList(),
     notes: noteList(),
     gasState: getGasState(),
+    files: fileList(),
   };
 });
 
@@ -616,6 +632,16 @@ subscribeGas(state => {
   broadcast({ type: "gas", state });
 });
 startGas();
+
+// Desktop file system: broadcast every add/remove so all peers see new
+// file icons appear / disappear in real time. Bulk-list events aren't
+// emitted (none of the producers fire those) but the channel exists if
+// we later add e.g. a "delete all my files" admin endpoint.
+subscribeFiles(event => {
+  if (event.type === "added") broadcast({ type: "file_added", item: event.item });
+  else if (event.type === "removed") broadcast({ type: "file_removed", id: event.id });
+  else broadcast({ type: "files", items: event.items });
+});
 
 type ChatBody = { text?: unknown };
 
@@ -912,6 +938,80 @@ app.delete("/v1/avatars", async (req, reply) => {
   return { ok: true, removed, key };
 });
 
+// --- Music files (static) --------------------------------------------------
+// MP3s + playlist.json live in MUSIC_DIR (default `/var/lib/slop-relay/music`
+// in prod, `./.slop-data/music` in dev). Manual range-request support so
+// HTML5 <audio> can seek mid-track for the mesh sync.
+const MUSIC_DIR = process.env.MUSIC_DIR ?? "./.slop-data/music";
+
+function musicContentType(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case "mp3":
+      return "audio/mpeg";
+    case "ogg":
+      return "audio/ogg";
+    case "wav":
+      return "audio/wav";
+    case "m4a":
+      return "audio/mp4";
+    case "json":
+      return "application/json; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+app.get<{ Params: { filename: string } }>("/music/:filename", async (req, reply) => {
+  const filename = req.params.filename;
+  // Strict filename — no path traversal, no slashes.
+  if (!/^[a-z0-9._-]+$/i.test(filename) || filename.includes("..")) {
+    return reply.code(400).send({ error: "bad-name" });
+  }
+  const fs = await import("node:fs/promises");
+  const fsSync = await import("node:fs");
+  const filepath = `${MUSIC_DIR}/${filename}`;
+  let stat;
+  try {
+    stat = await fs.stat(filepath);
+  } catch {
+    return reply.code(404).send({ error: "not-found" });
+  }
+  const ext = filename.split(".").pop() ?? "";
+  const ct = musicContentType(ext);
+
+  // playlist.json is small + frequently fetched → read into a buffer
+  // and skip range support.
+  if (filename === "playlist.json") {
+    const buf = await fs.readFile(filepath);
+    reply.header("content-type", ct);
+    reply.header("cache-control", "no-store");
+    return reply.send(buf);
+  }
+
+  // Range requests: HTML5 <audio> issues these when seeking. Without
+  // 206 support the browser re-fetches the whole file every seek,
+  // which makes mid-track sync between peers feel terrible.
+  const rangeHeader = req.headers.range;
+  reply.header("accept-ranges", "bytes");
+  reply.header("content-type", ct);
+  reply.header("cache-control", "public, max-age=3600");
+  if (rangeHeader && /^bytes=/.test(rangeHeader)) {
+    const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+    if (m && m[1] !== undefined) {
+      const start = parseInt(m[1], 10);
+      const end = m[2] ? parseInt(m[2], 10) : stat.size - 1;
+      if (Number.isFinite(start) && start <= end && end < stat.size) {
+        reply.code(206);
+        reply.header("content-range", `bytes ${start}-${end}/${stat.size}`);
+        reply.header("content-length", end - start + 1);
+        return reply.send(fsSync.createReadStream(filepath, { start, end }));
+      }
+    }
+  }
+  reply.header("content-length", stat.size);
+  return reply.send(fsSync.createReadStream(filepath));
+});
+
 app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, reply) => {
   const filename = req.params.filename;
   // Defense-in-depth: only serve files matching the strict shape we write.
@@ -1149,35 +1249,21 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/music/wait",
   });
 });
 
-// Playlist proxy. Same-origin convenience for agents that already
-// authenticate against the relay — saves a cross-host fetch to
-// live.slop.computer. The playlist lives in the Next.js public dir;
-// we fetch it once per `PLAYLIST_CACHE_MS` and serve the cached copy.
-const PLAYLIST_SRC =
-  process.env.MUSIC_PLAYLIST_URL ?? "https://live.slop.computer/music/playlist.json";
-const PLAYLIST_CACHE_MS = 5 * 60 * 1000;
-let playlistCache: { fetchedAt: number; body: unknown } | null = null;
-
+// Playlist — read from MUSIC_DIR/playlist.json on every request (the
+// file is small and rarely changes; cache headers on the static
+// /music/playlist.json route handle the heavy traffic). Auth-gated so
+// it sits behind the same bearer as the rest of /v1/.
 app.get("/v1/music/playlist", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  const now = Date.now();
-  if (playlistCache && now - playlistCache.fetchedAt < PLAYLIST_CACHE_MS) {
-    return playlistCache.body;
-  }
   try {
-    const res = await fetch(PLAYLIST_SRC);
-    if (!res.ok) {
-      return reply.code(502).send({ error: "upstream", status: res.status });
-    }
-    const body = (await res.json()) as unknown;
-    playlistCache = { fetchedAt: now, body };
-    return body;
+    const fs = await import("node:fs/promises");
+    const buf = await fs.readFile(`${MUSIC_DIR}/playlist.json`, "utf8");
+    return JSON.parse(buf);
   } catch (err) {
-    console.warn("[music] playlist fetch failed", err);
-    if (playlistCache) return playlistCache.body; // stale-on-error
-    return reply.code(502).send({ error: "fetch-failed" });
+    console.warn("[music] playlist read failed", err);
+    return reply.code(502).send({ error: "read-failed" });
   }
 });
 
@@ -1341,6 +1427,80 @@ app.get("/v1/gas", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
   return { state: getGasState() };
+});
+
+// --- Files REST surface -----------------------------------------------------
+// Drag-and-drop on the desktop posts raw bytes here; everyone sees the
+// resulting icon. List + download endpoints are agent-facing too.
+
+app.get("/v1/files", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { items: fileList() };
+});
+
+// Upload — raw body. Filename comes from `?name=<original>` (URL-encoded)
+// or the `x-filename` header. Content-type is the request's. We cap the
+// body at FILES_MAX_BYTES via Fastify's bodyLimit per-route.
+type FileUploadQuery = { name?: string };
+app.post<{ Querystring: FileUploadQuery }>(
+  "/v1/files",
+  { bodyLimit: FILES_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply
+        .code(400)
+        .send({ error: "empty-body", note: "POST raw bytes with `?name=<filename>` and the file's content-type" });
+    }
+    const headerName = typeof req.headers["x-filename"] === "string" ? (req.headers["x-filename"] as string) : "";
+    const queryName = typeof req.query?.name === "string" ? req.query.name : "";
+    const name = queryName || headerName || "untitled";
+    // Real mime travels in `x-mime` because the body itself is always
+    // shipped as application/octet-stream (browser drag-and-drop into a
+    // fetch() doesn't carry the file's MIME). Fall back to whatever the
+    // request content-type actually was.
+    const headerMime = typeof req.headers["x-mime"] === "string" ? (req.headers["x-mime"] as string) : "";
+    const mime = headerMime || String(req.headers["content-type"] ?? "application/octet-stream");
+    const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "anon";
+    const uploaderLabel = a.session.handle ?? a.session.address ?? "anon";
+    const result = fileAdd({ name, mime, buffer: body, ownerKey, uploaderLabel });
+    if ("error" in result) return reply.code(400).send(result);
+    return { ok: true, item: result };
+  },
+);
+
+app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "";
+  const result = fileRemove(req.params.id, ownerKey, a.isHost);
+  if (result === "not-found") return reply.code(404).send({ error: "not-found" });
+  if (result === "forbidden") return reply.code(403).send({ error: "forbidden" });
+  return { ok: true };
+});
+
+// Public download. No auth — file URLs are shared across the mesh and
+// embeddable in <img>/<a> tags. The id is unguessable (random 16-hex)
+// so listing is the only enumeration path, which IS auth-gated.
+app.get<{ Params: { id: string } }>("/files/:id", async (req, reply) => {
+  const id = req.params.id;
+  if (!/^[a-z0-9]+$/i.test(id)) return reply.code(400).send({ error: "bad-id" });
+  const item = fileGet(id);
+  if (!item) return reply.code(404).send({ error: "not-found" });
+  const fsSync = await import("node:fs");
+  const filepath = `${FILES_DIR_PATH}/${item.storedAs}`;
+  if (!fsSync.existsSync(filepath)) return reply.code(404).send({ error: "missing-on-disk" });
+  reply.header("content-type", item.mime);
+  reply.header("content-length", item.size);
+  // RFC 5987-style encoded filename so non-ASCII names survive intact.
+  const encodedName = encodeURIComponent(item.name);
+  reply.header("content-disposition", `attachment; filename*=UTF-8''${encodedName}`);
+  reply.header("cache-control", "public, max-age=3600");
+  return reply.send(fsSync.createReadStream(filepath));
 });
 
 // --- ENS resolution (read-only, no auth gate) -------------------------------
@@ -1818,6 +1978,7 @@ app.register(async function signalRoutes(fastify) {
       todos: todoList(),
       notes: noteList(),
       gasState: getGasState(),
+      files: fileList(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

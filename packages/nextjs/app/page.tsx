@@ -13,6 +13,7 @@ import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
+import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
@@ -807,6 +808,55 @@ const Desktop: NextPage = () => {
   // future autoplay-blocked component) retry their .play() call.
   const { gestured, trip: tripGesture } = useUserGesture();
 
+  // Drop-to-upload: files dragged from the OS onto the desktop background
+  // POST to /v1/files and land at the drop coords. The relay broadcasts
+  // `file_added` which arrives via the mesh and renders the new icon
+  // for everyone; we additionally write the initial slot so the icon
+  // appears at the exact spot the user dropped it.
+  const [dropHover, setDropHover] = useState(false);
+  const dragDepthRef = useRef(0);
+  const meshUpdateSlotForFiles = mesh.updateSlot;
+  const uploadFiles = useCallback(
+    async (files: FileList, dropX: number, dropY: number) => {
+      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+      let cascade = 0;
+      for (const file of Array.from(files)) {
+        try {
+          const buf = await file.arrayBuffer();
+          const res = await fetch(`${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-mime": file.type || "application/octet-stream",
+            },
+            body: buf,
+          });
+          if (!res.ok) {
+            console.warn("upload failed", file.name, res.status, await res.text());
+            continue;
+          }
+          const data = (await res.json()) as { item?: { id?: string } };
+          const id = data.item?.id;
+          if (id) {
+            meshUpdateSlotForFiles({
+              id: `file-${id}`,
+              x: dropX + cascade * 12,
+              y: dropY + cascade * 12,
+              width: 88,
+              height: 110,
+              z: maxZ + 1 + cascade,
+            });
+            cascade += 1;
+          }
+        } catch (err) {
+          console.warn("upload failed", file.name, err);
+        }
+      }
+    },
+    [mesh.slots, meshUpdateSlotForFiles],
+  );
+
   return (
     <>
       <DesktopBackground />
@@ -817,6 +867,32 @@ const Desktop: NextPage = () => {
         meshConnected={mesh.connected}
       />
       <div
+        onDragEnter={e => {
+          if (!session.authenticated) return;
+          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+          e.preventDefault();
+          dragDepthRef.current += 1;
+          setDropHover(true);
+        }}
+        onDragOver={e => {
+          if (!session.authenticated) return;
+          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={() => {
+          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+          if (dragDepthRef.current === 0) setDropHover(false);
+        }}
+        onDrop={e => {
+          if (!session.authenticated) return;
+          if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          dragDepthRef.current = 0;
+          setDropHover(false);
+          // Drop coords in viewport pixels — same coord space slots live in.
+          void uploadFiles(e.dataTransfer.files, e.clientX - 44, e.clientY - 55);
+        }}
         style={{
           position: "fixed",
           inset: 0,
@@ -922,6 +998,40 @@ const Desktop: NextPage = () => {
                         if (app.url) spawnBrowser(app.url);
                     }
                   }}
+                />
+              );
+            })
+          : null}
+
+        {/* Desktop files — server-stored, mesh-broadcast. Position lives
+            in the slot system keyed `file-<id>`. Drop new files via the
+            wrapper's `onDrop` below; downloading is a double-click on
+            the icon. */}
+        {session.authenticated && mesh.bootstrapped
+          ? mesh.files.map((f, i) => {
+              const slotId = `file-${f.id}`;
+              // Default position spreads new files in a diagonal cascade
+              // when no slot exists yet (e.g. fresh upload before our
+              // slot_update broadcast lands).
+              const slot = mesh.slots[slotId] ?? {
+                id: slotId,
+                x: 140 + (i % 8) * 95,
+                y: 60 + Math.floor(i / 8) * 105,
+                width: 88,
+                height: 110,
+                z: 1,
+              };
+              const myKey = session.authenticated ? (session.address ?? session.handle ?? "").toLowerCase() : "";
+              const canDelete = !!myKey && (f.ownerKey === myKey || session.role === "host");
+              return (
+                <DesktopFile
+                  key={slotId}
+                  file={f}
+                  x={slot.x}
+                  y={slot.y}
+                  canDelete={canDelete}
+                  onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
+                  onDelete={() => mesh.deleteFile(f.id)}
                 />
               );
             })
@@ -1084,6 +1194,34 @@ const Desktop: NextPage = () => {
               </Button>
             </div>
           </Window>
+        ) : null}
+
+        {/* Drop-to-upload overlay — appears while the user is dragging
+            files from the OS over the desktop. Pointer-events:none so
+            it doesn't intercept the drop itself (the wrapper above does). */}
+        {dropHover ? (
+          <div
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(255,62,201,0.12)",
+              border: "3px dashed var(--slop-magenta, #ff3ec9)",
+              color: "#fff",
+              fontFamily: "var(--slop-font-display)",
+              fontSize: 22,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              pointerEvents: "none",
+              zIndex: 9999,
+              textShadow: "0 2px 4px rgba(0,0,0,0.6)",
+            }}
+          >
+            drop to share
+          </div>
         ) : null}
 
         {/* === Singleton app windows ============================ */}
