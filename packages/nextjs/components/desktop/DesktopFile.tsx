@@ -31,6 +31,12 @@ export type DesktopFileProps = {
    *  actually moved the icon. Lets the parent intercept drops onto
    *  the trash can. */
   onDragEnd?: (pos: { x: number; y: number }) => void;
+  /** Predicate the icon polls during drag to know whether its current
+   *  position overlaps the trash. When true, the icon visibly shrinks
+   *  + fades to telegraph the impending delete. The icon's z is also
+   *  bumped above the trash during ANY drag (not just over trash) so
+   *  the file always appears on top of the can. */
+  isOverTrash?: (x: number, y: number) => boolean;
 };
 
 const ICON_SIZE = 88;
@@ -68,9 +74,16 @@ export const DesktopFile = ({
   onDelete,
   onPreview,
   onDragEnd,
+  isOverTrash,
 }: DesktopFileProps) => {
   const [hover, setHover] = useState(false);
   const [imgPreview, setImgPreview] = useState(false);
+  // While the user is actively dragging this icon, lift it above the
+  // trash (which lives at z=50). Without this the dragged file slips
+  // BEHIND the trash on hover and the user can't see what they're
+  // about to delete.
+  const [isDragging, setIsDragging] = useState(false);
+  const [overTrash, setOverTrash] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const movedRef = useRef(false);
 
@@ -93,7 +106,17 @@ export const DesktopFile = ({
     const dy = e.clientY - dragRef.current.startY;
     if (!movedRef.current && Math.hypot(dx, dy) < 4) return;
     movedRef.current = true;
-    onMove({ x: dragRef.current.x + dx, y: dragRef.current.y + dy });
+    if (!isDragging) setIsDragging(true);
+    const nextX = dragRef.current.x + dx;
+    const nextY = dragRef.current.y + dy;
+    onMove({ x: nextX, y: nextY });
+    // Poll trash-overlap each move so the shrink-fade kicks in
+    // exactly while the cursor lingers over the can. Cheap (one
+    // getBoundingClientRect read inside the predicate).
+    if (isOverTrash) {
+      const over = isOverTrash(nextX, nextY);
+      if (over !== overTrash) setOverTrash(over);
+    }
   };
   const endDrag = (e: React.PointerEvent) => {
     if (!dragRef.current) return;
@@ -112,6 +135,8 @@ export const DesktopFile = ({
       onDragEnd({ x: dragRef.current.x + dx, y: dragRef.current.y + dy });
     }
     dragRef.current = null;
+    setIsDragging(false);
+    setOverTrash(false);
   };
 
   return (
@@ -131,13 +156,21 @@ export const DesktopFile = ({
         left: x,
         top: y,
         width: ICON_SIZE,
-        zIndex,
+        // While dragging, slot a high z so the icon paints above
+        // every other desktop element (including the trash at z=50).
+        // When the cursor enters the trash zone the icon also shrinks
+        // + fades to telegraph that releasing here will delete it.
+        zIndex: isDragging ? 1000 : zIndex,
         userSelect: "none",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         gap: 4,
         cursor: "grab",
+        transform: overTrash ? "scale(0.6)" : "scale(1)",
+        transformOrigin: "center",
+        opacity: overTrash ? 0.5 : 1,
+        transition: "transform 0.12s ease-out, opacity 0.12s ease-out",
       }}
     >
       <div

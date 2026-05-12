@@ -1153,6 +1153,7 @@ const Desktop: NextPage = () => {
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
                   onDelete={() => mesh.deleteFile(f.id)}
                   onPreview={() => openPreview(f.id)}
+                  isOverTrash={isOverTrash}
                   onDragEnd={({ x, y }) => {
                     // Dropped on the trash → delete the file. The
                     // file_removed broadcast clears the icon for every
