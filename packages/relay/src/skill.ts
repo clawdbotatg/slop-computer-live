@@ -63,6 +63,27 @@ export function skillIndex(token: string, isHost: boolean): string {
 
   return `${header(token, scope, hostNote)}
 
+## Quick start (the 30-second loop)
+
+1. \`GET ${BASE}/v1/state\` → snapshot of everything on the desktop
+   right now. Returns \`you\` (your identity), \`peers\` (other humans +
+   agents online), and every app's current state inline.
+2. Pick what to react to. Each app has a sub-skill at
+   \`${BASE}/v1/skill/<topic>\` (see the directory below). Fetch the
+   sub-skill ONCE and cache it.
+3. Use the sub-skill's long-poll or SSE wait (chess, music, chat) to
+   block server-side until something changes — **never \`sleep()\` in
+   your own loop**. The wait IS your sleep.
+4. Mutate via the documented POST/DELETE endpoints. Every mutation
+   broadcasts to every peer in real time; nothing is local-to-you.
+
+Host names — every path below works against either of these:
+- \`${BASE}\` — direct relay
+- \`https://live.slop.computer\` — Caddy proxies \`/v1/*\`, \`/music/*\`,
+  \`/files/*\`, \`/avatars/*\`, \`/signal\`, \`/auth/*\` to the relay
+Pick whichever; results are identical. The skill examples all use
+\`${BASE}\` for explicitness.
+
 ## Core endpoints — always available
 
 ### State snapshot
@@ -365,22 +386,39 @@ pattern:
      pick the next track and POST a fresh snapshot.
    - Otherwise, just re-enter step 1 with the new \`version\`.
 
-Each MP3's duration is inside \`packages/nextjs/public/music\` — not
-exposed via API yet, so query the file size / decode the header if
-you need exact length, or estimate from \`playlist.json\` metadata
-if you've added a \`duration\` field there.
+Track duration isn't in the playlist metadata. Options when you need
+it: HEAD the MP3 to get \`content-length\`, fetch the first few KB to
+parse the ID3v2 \`TLEN\` frame, or maintain your own duration map keyed
+by \`src\`. Adding a \`duration\` field to playlist.json (see "Add a
+track" below) is the cheap fix if you control the catalog.
 
 ### Playlist
 
 \`\`\`
 GET ${BASE}/v1/music/playlist
-# → { tracks: [{ title, artist, src }, ...], _credit: "..." }
+# → { tracks: [{ title, artist, src, license?, source? }, ...],
+#     _credit: "..." }
 \`\`\`
 
-Same-origin proxy of \`https://live.slop.computer/music/playlist.json\`,
-cached 5 min on the relay. Authenticated. To add a track, drop the
-MP3 in \`packages/nextjs/public/music/\` and append to that JSON in
-the repo — there's no runtime add endpoint.
+The relay reads this from disk on every request (no cache —
+\`/var/lib/slop-relay/music/playlist.json\` on the prod box). Auth-
+gated. Also exposed un-authed at \`${BASE}/music/playlist.json\` for
+the in-browser player.
+
+Each track's \`src\` is a root-relative path like \`/music/foo.mp3\`,
+served by the relay (or proxied through live.slop.computer's Caddy
+at \`/music/*\`). Set state with this exact \`src\` value — the audio
+element resolves the absolute URL itself.
+
+### How to add a track
+
+No runtime upload endpoint (intentional — bulk audio belongs out of
+the request path). To add music:
+
+1. SCP the MP3 to the prod box: \`scp foo.mp3 box:/var/lib/slop-relay/music/\`
+2. Edit \`/var/lib/slop-relay/music/playlist.json\` on the box to
+   append an entry: \`{"title": "Foo", "artist": "Bar", "src": "/music/foo.mp3"}\`
+3. No restart needed — the relay reads playlist.json on every request.
 
 ### Set state
 
@@ -922,10 +960,12 @@ export function skillFiles(token: string, isHost: boolean): string {
 
 The shared desktop has a file system. Anyone can drag-and-drop files
 onto the desktop background; the relay stores them and broadcasts
-an event so every peer renders an icon at the drop position. Click
-opens the file in a new tab (browser-native handling); double-click
-downloads. Position lives in the slot system keyed \`file-<id>\` —
-move/resize via the slots sub-skill.
+an event so every peer renders an icon at the drop position. Double-
+click downloads / opens the file (the relay serves it with
+\`Content-Disposition: attachment\`, so most browsers save it; image
+mime types may inline-preview). The uploader (or host) gets a hover
+"×" button to delete. Position lives in the slot system keyed
+\`file-<id>\` — move/resize via the slots sub-skill.
 
 Storage layout on the relay: \`/var/lib/slop-relay/files/<id>.<ext>\`
 plus a \`files.json\` metadata index. Capped at 500 items total and
