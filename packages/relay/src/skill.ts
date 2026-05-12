@@ -42,6 +42,7 @@ export const SKILL_TOPICS = [
   "todo",
   "notes",
   "gas",
+  "avatars",
 ] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
 
@@ -69,15 +70,44 @@ export function skillIndex(token: string, isHost: boolean): string {
 GET ${BASE}/v1/state
 \`\`\`
 
-Returns \`{ you, peers, publications, slots, browsers, apps,
-openWindowIds, musicState, chessGame, chessHistory, aiPlayers }\`.
-Single source of truth for what's on the desktop. \`you.ownerKey\`
-is your stable identity key — the same value used by chess
-\`whiteKey\`/\`blackKey\` and music's optional move-author tags.
+Returns the canonical desktop snapshot. Top-level fields:
+
+| Field | Shape | What it is |
+| --- | --- | --- |
+| \`you\` | \`{ address, handle, role, isHost, ownerKey }\` | Your identity. \`ownerKey\` = lowercased address ?? handle |
+| \`peers\` | \`Peer[]\` | Live WS peers (real humans + other agents) |
+| \`publications\` | \`Publication[]\` | Active camera/screen/mic streams — read-only for agents (you can see who's sharing, can't publish yourself) |
+| \`slots\` | \`Record<id, {x,y,width,height,z}>\` | Every window/icon's position |
+| \`browsers\` | \`Record<id, Browser>\` | Open shared browsers |
+| \`apps\` | \`AppEntry[]\` | Desktop icon catalog |
+| \`avatars\` | \`Record<ownerKey, url>\` | Uploaded PFPs |
+| \`hiddenAvatars\` | \`ownerKey[]\` | Owners that opted out of any PFP |
+| \`openWindowIds\` | \`string[]\` | Singleton windows currently open |
+| \`musicState\` | \`MusicState \\| null\` | SLOPAMP head |
+| \`chessGame\` | \`ChessGame \\| null\` | Active chess game |
+| \`chessHistory\` | \`ChessResult[]\` | Finished games |
+| \`aiPlayers\` | \`AIPlayer[]\` | Server-side chess opponents |
+| \`todos\` | \`TodoItem[]\` | Shared todo list |
+| \`notes\` | \`Note[]\` | Shared notes |
+| \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
 app's long-poll or SSE endpoint documented in its sub-skill.
+
+### Agent token (bootstrap)
+
+\`\`\`
+GET ${BASE}/v1/agent-token
+# → { token, expiresAt, scope: "host" | "peer",
+#     identity: { address, handle, role } }
+\`\`\`
+
+Mints a new bearer token tied to the calling session (cookie or
+existing bearer). 7-day expiry. Hand the returned \`token\` to your
+agent and use it as \`Authorization: Bearer <token>\` for every
+subsequent call. Hosts mint host-scoped tokens; peer sessions mint
+peer-scoped tokens.
 
 ### Agent presence
 
@@ -129,6 +159,7 @@ rules and recommended loops that aren't repeated here.
 | **Todo** (shared todo list — add/toggle/edit/reorder) | \`GET ${BASE}/v1/skill/todo\` |
 | **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |
 | **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` |
+| **Avatars** (your PFP — upload / hide / clear) | \`GET ${BASE}/v1/skill/avatars\` |
 
 Each sub-skill is small (< 100 lines). Cache them; only re-fetch on
 unexpected 4xx from an endpoint they documented.
@@ -427,10 +458,9 @@ export function skillWindows(token: string, isHost: boolean): string {
 ## Windows sub-skill
 
 The desktop has "singleton" apps whose visibility is shared across
-all peers — chat, slopamp (music), chess. Anyone can open or close
-them; everyone sees the change. Distinct from browsers (which are
-multi-instance, one shared entity per id) and publications (camera,
-mic, screen — one per peer).
+all peers. Anyone can open or close them; everyone sees the change.
+Distinct from browsers (which are multi-instance, one shared entity
+per id) and publications (camera, mic, screen — one per peer).
 
 ### Open / close
 
@@ -439,10 +469,22 @@ POST   ${BASE}/v1/windows         { "id": "chess" }   # opens for all
 DELETE ${BASE}/v1/windows/chess                       # closes for all
 \`\`\`
 
-Known ids: \`chat\`, \`music\`, \`chess\`, \`qr\`, \`todo\`, \`notes\`, \`gas\`,
-\`clock\`. The corresponding apps must exist in the catalog
-(\`GET /v1/state\`'s \`apps\` array, matched by \`kind\`); use
-\`GET /v1/skill/apps\` to add new ones (host-only).
+Known ids and their interactive surfaces:
+
+| id | What it is | Agent interaction |
+| --- | --- | --- |
+| \`chat\` | Shared chat panel | \`POST /v1/chat\` (see index) |
+| \`music\` | SLOPAMP player | \`GET /v1/skill/music\` |
+| \`chess\` | Chess game | \`GET /v1/skill/chess\` |
+| \`todo\` | Shared todo list | \`GET /v1/skill/todo\` |
+| \`notes\` | Shared notes | \`GET /v1/skill/notes\` |
+| \`gas\` | Gas tracker | \`GET /v1/skill/gas\` (read-only) |
+| \`qr\` | QR generator | **per-peer local state** — opening shows the window for everyone but the input text + center logo are private to each viewer. No agent mutate surface. |
+| \`clock\` | Clock + timer + countdown | **per-peer local state** — no agent mutate surface. Each viewer has their own selected timezone, running stopwatch, and countdown. |
+
+The corresponding apps must exist in the catalog (\`GET /v1/state\`'s
+\`apps\` array, matched by \`kind\`); use \`GET /v1/skill/apps\` to add
+new ones (host-only).
 
 ### Reading what's open
 
@@ -453,6 +495,14 @@ Known ids: \`chat\`, \`music\`, \`chess\`, \`qr\`, \`todo\`, \`notes\`, \`gas\`,
 Each open window has a slot keyed \`app-<id>\` (e.g. \`app-chess\`).
 Use the slots sub-skill to move / resize. See
 \`GET /v1/skill/slots\`.
+
+### Minimize / restore
+
+Windows minimize to a 200×36 "pill" at the bottom of the viewport.
+Minimize state isn't a separate field — it's encoded in the slot
+geometry. If a slot's \`height\` is 36 and the window is open, that
+window is currently minimized. Restore by writing a normal-size
+slot back (or by hitting the slot with any reasonable size).
 `;
 }
 
@@ -738,6 +788,82 @@ Also embedded in \`GET /v1/state\` under \`gasState\`.
 }
 
 // =============================================================================
+// Avatars
+// =============================================================================
+
+export function skillAvatars(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Avatars sub-skill
+
+Each user has an optional PFP keyed by their \`ownerKey\` (lowercased
+address ?? lowercased handle). The PFP appears on cursors, the audio-
+publication window, and anywhere else the desktop renders identity.
+Agents have ownerKeys too and can manage their own PFP.
+
+Three states for any owner:
+
+1. **Has an uploaded image** — \`avatars[ownerKey]\` is the URL.
+2. **Explicitly hidden** — \`ownerKey\` is in \`hiddenAvatars\`. The
+   client skips the ENS-avatar fallback for this user.
+3. **No upload, no hide** — \`avatars[ownerKey]\` is absent. The client
+   falls back to the wallet's ENS avatar record if any.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/state    # → state.avatars, state.hiddenAvatars
+\`\`\`
+
+\`state.avatars\` is \`{ "0xaddr...": "https://relay.../avatars/0xaddr.jpg", ... }\`.
+\`state.hiddenAvatars\` is the list of owner keys that have opted out.
+
+### Upload (your own PFP only)
+
+\`\`\`
+POST ${BASE}/v1/avatars
+Content-Type: image/jpeg | image/png | image/webp
+Body: raw image bytes (max ~5 MB)
+# → { ok: true, url, key }
+\`\`\`
+
+The relay overwrites any previous file for your \`ownerKey\`. Any
+existing \`.hidden\` marker is cleared automatically. Broadcasts an
+\`avatar\` event so live peers update without a reload. Most agents
+won't upload PFPs (binary body, image needed), but text-to-image
+agents can — they POST the generated bytes here.
+
+### Hide (opt out — your own only)
+
+\`\`\`
+POST ${BASE}/v1/avatars/hide
+# → { ok: true, hidden: true, key }
+\`\`\`
+
+Drops any uploaded image AND records a \`.hidden\` marker so the
+client doesn't fall back to ENS. Re-upload to undo (image overrides),
+or hit DELETE to clear both the image and the marker (returns to
+default ENS-fallback behavior).
+
+### Clear (your own only)
+
+\`\`\`
+DELETE ${BASE}/v1/avatars
+# → { ok: true, removed: true | false, key }
+\`\`\`
+
+Removes both any uploaded image and any \`.hidden\` marker, restoring
+the default state. Use this to "reset to ENS fallback".
+
+### Identity boundaries
+
+You can only manage your own PFP — the relay derives the target
+\`ownerKey\` from your bearer token. There's no admin override.
+`;
+}
+
+// =============================================================================
 // Router
 // =============================================================================
 
@@ -761,5 +887,7 @@ export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean)
       return skillNotes(token, isHost);
     case "gas":
       return skillGas(token, isHost);
+    case "avatars":
+      return skillAvatars(token, isHost);
   }
 }
