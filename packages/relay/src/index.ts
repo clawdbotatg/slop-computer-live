@@ -227,7 +227,7 @@ const DEFAULT_APPS: AppEntry[] = [
   {
     id: "qr",
     label: "QR",
-    icon: "/icons/qr.svg",
+    icon: "/icons/qr.png",
     kind: "qr",
   },
 ];
