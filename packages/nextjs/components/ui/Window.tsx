@@ -194,6 +194,7 @@ export const Window = ({
       minWidth={minWidth}
       minHeight={minHeight}
       dragHandleClassName="slop-titlebar"
+      disableDragging={isDocked}
       enableResizing={!isDocked}
       className="slop-window"
       style={{
@@ -216,10 +217,8 @@ export const Window = ({
         // behind the menubar with no way to grab it back.
         const clampedY = Math.max(insets.top, d.y);
         onMove?.({ x: d.x, y: clampedY });
-        // Dragging a docked pill should KEEP it docked — the user is
-        // rearranging minimized items along the bottom, not expanding
-        // them. Preserve mode + savedRect so a later titlebar click
-        // can still restore. Dragging out of max → revert to normal.
+        // Dragging out of max → revert to normal. (Dragging is disabled
+        // while docked so the docked case can't fire here.)
         if (mode === "max") {
           setMode("normal");
           setSavedRect(null);
