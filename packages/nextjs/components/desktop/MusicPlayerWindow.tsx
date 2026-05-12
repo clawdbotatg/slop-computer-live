@@ -149,6 +149,26 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const current = tracks[index] ?? null;
 
+  // What's ACTUALLY playing right now, derived from the shared
+  // music state's `src` (not the playlist position). This decouples
+  // "what's audible" from "what's in the visible playlist" so a
+  // genre switch mid-song doesn't yank playback to a different
+  // track. If the playing src happens to be in the new playlist, we
+  // use that track's metadata for the marquee; if not, we synthesize
+  // a minimal record from the URL so the LCD has something to show.
+  const playingTrack = useMemo<Track | null>(() => {
+    const src = ms?.src;
+    if (!src) return null;
+    const found = tracks.find(t => t.src === src);
+    if (found) return found;
+    const filename =
+      src
+        .split("/")
+        .pop()
+        ?.replace(/\.mp3$/i, "") ?? "track";
+    return { title: filename, artist: "—", src };
+  }, [ms?.src, tracks]);
+
   // ---- Web Audio graph -------------------------------------------------
   // analyser for the spectrum, plus a stereo panner for the BAL slider.
   // Built lazily *inside the user gesture* (any transport click) — Chrome
@@ -225,12 +245,15 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   //   - play / pause to match the shared `playing` flag
   useEffect(() => {
     const a = audioRef.current;
-    if (!a || !current) return;
+    if (!a || !playingTrack) return;
 
     // Source mismatch → load the correct track. Setting `src` cancels any
     // in-flight load so this is safe to call repeatedly with the same value.
-    if (!a.src.endsWith(current.src)) {
-      a.src = audioUrl(current.src);
+    // We load `playingTrack.src` (derived from ms.src), NOT `current.src`,
+    // so a genre switch doesn't yank playback to the new playlist's
+    // track at the same index.
+    if (!a.src.endsWith(playingTrack.src)) {
+      a.src = audioUrl(playingTrack.src);
       a.load();
     }
 
@@ -260,7 +283,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     // re-sync on snapshot edges and trust the audio element to drift
     // smoothly between them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ms?.src, ms?.index, ms?.playing, ms?.position, ms?.at, current?.src]);
+  }, [ms?.src, ms?.index, ms?.playing, ms?.position, ms?.at, playingTrack?.src]);
 
   // Lifecycle event listeners — drive *local* state (duration, error)
   // and broadcast on track-end so all peers advance together.
@@ -394,24 +417,30 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     [mesh, current, index, setupGraph, shownVolume],
   );
 
+  // For pause/resume/seek/stop we broadcast the CURRENTLY-PLAYING
+  // track's src (from ms), not whatever's at the selected playlist
+  // index — those can diverge after a genre switch. Falls back to
+  // the selected track's src if nothing is playing yet.
+  const activeSrc = ms?.src ?? current?.src ?? null;
+
   const togglePlay = useCallback(() => {
-    if (!current) return;
+    if (!activeSrc) return;
     const a = audioRef.current;
     const at = livePosition(mesh.musicState);
     broadcast({
-      src: current.src,
+      src: activeSrc,
       index,
       playing: !playing,
       // Capture a fresh position from the local audio element if we have
       // one, otherwise from the shared snapshot. Either is "now".
       position: a && Number.isFinite(a.currentTime) ? a.currentTime : at,
     });
-  }, [broadcast, current, index, playing, mesh]);
+  }, [broadcast, activeSrc, index, playing, mesh]);
 
   const stop = useCallback(() => {
-    if (!current) return;
-    broadcast({ src: current.src, index, playing: false, position: 0 });
-  }, [broadcast, current, index]);
+    if (!activeSrc) return;
+    broadcast({ src: activeSrc, index, playing: false, position: 0 });
+  }, [broadcast, activeSrc, index]);
 
   const next = useCallback(() => {
     if (tracks.length === 0) return;
@@ -423,8 +452,8 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     if (tracks.length === 0) return;
     // > 3s into the track? rewind. Else jump to previous. (Winamp default.)
     const a = audioRef.current;
-    if (a && a.currentTime > 3 && current) {
-      broadcast({ src: current.src, index, playing, position: 0 });
+    if (a && a.currentTime > 3 && activeSrc) {
+      broadcast({ src: activeSrc, index, playing, position: 0 });
       return;
     }
     const i = (index - 1 + tracks.length) % tracks.length;
@@ -515,9 +544,16 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const lcdTrackText = useMemo(() => {
     if (error) return error;
-    if (!current) return tracks.length === 0 ? "loading playlist…" : "no track";
-    return `${index + 1}. ${current.artist} - ${current.title}  (${fmtTime(duration)})`;
-  }, [current, error, tracks.length, index, duration]);
+    // Show what's actually playing (from ms.src), not what's at the
+    // selected playlist index. Across a genre switch these can diverge.
+    if (playingTrack) {
+      return `${playingTrack.artist} - ${playingTrack.title}  (${fmtTime(duration)})`;
+    }
+    if (current) {
+      return `${index + 1}. ${current.artist} - ${current.title}  (${fmtTime(duration)})`;
+    }
+    return tracks.length === 0 ? "loading playlist…" : "no track";
+  }, [playingTrack, current, error, tracks.length, index, duration]);
 
   const shownPosition = seeking ? seekValue : displayPosition;
   const seekMax = duration > 0 ? duration : 1;
@@ -663,12 +699,13 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           onMouseUp={e => {
             const v = parseFloat((e.target as HTMLInputElement).value);
             setSeeking(false);
-            if (!current || !Number.isFinite(v)) return;
-            // Broadcast the seek; the sync effect re-positions every peer
-            // (including us) and resumes playback if we were playing.
-            broadcast({ src: current.src, index, playing, position: v });
+            if (!activeSrc || !Number.isFinite(v)) return;
+            // Broadcast the seek against the currently-playing track,
+            // not whatever the playlist cursor is on (those can
+            // diverge after a genre switch).
+            broadcast({ src: activeSrc, index, playing, position: v });
           }}
-          disabled={!current || duration === 0}
+          disabled={!activeSrc || duration === 0}
           aria-label="seek"
           className="slop-music-range slop-music-range--seek"
           style={{ width: "100%" }}
@@ -866,7 +903,10 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             </div>
           ) : (
             tracks.map((t, i) => {
-              const active = i === index;
+              // Highlight by src match (what's actually playing),
+              // not by the stored ms.index value — across a genre
+              // switch those can point at unrelated tracks.
+              const active = playingTrack?.src === t.src;
               return (
                 <div
                   key={t.src}

@@ -1465,13 +1465,13 @@ app.post<{ Body: SetGenreBody }>("/v1/music/genre", async (req, reply) => {
   if (incoming !== null && !isGenre(incoming)) return reply.code(400).send({ error: "unknown-genre" });
   try {
     const out = await setCurrentGenre(incoming as string | null);
-    // Reset shared music state so the OLD genre's track doesn't keep
-    // playing while the new playlist is showing different songs. Peers
-    // see an idle player; the next "play" picks track 0 of the new
-    // playlist.
-    musicState = null;
-    bumpMusicVersion();
-    broadcast({ type: "music_state", state: null });
+    // Intentionally do NOT reset musicState here. If someone is in the
+    // middle of a song from genre A and a peer switches to genre B,
+    // the currently-playing song should keep playing — only an
+    // explicit click on a new track in genre B should change what's
+    // playing. The audio src lives in musicState.src and the client
+    // looks up "what's playing" by src match, so the genre flip is
+    // purely a playlist-view change.
     return { ok: true, genre: out.genre };
   } catch (err) {
     return reply.code(502).send({ error: "set-failed", detail: (err as Error).message });
