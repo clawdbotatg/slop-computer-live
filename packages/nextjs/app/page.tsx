@@ -15,6 +15,7 @@ import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
 import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
+import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
@@ -808,6 +809,23 @@ const Desktop: NextPage = () => {
   // future autoplay-blocked component) retry their .play() call.
   const { gestured, trip: tripGesture } = useUserGesture();
 
+  // File preview — opens on double-click of a desktop file. State is
+  // per-peer (each viewer can have their own preview window open), so
+  // we keep the active file id in local state. Position is local too;
+  // close → reopen recenters.
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const previewFile = useMemo(
+    () => (previewFileId ? (mesh.files.find(f => f.id === previewFileId) ?? null) : null),
+    [previewFileId, mesh.files],
+  );
+  // Clear the preview when the file gets deleted by anyone (so closing
+  // your preview-of-a-deleted-file isn't required to dismiss it).
+  useEffect(() => {
+    if (previewFileId && !mesh.files.some(f => f.id === previewFileId)) {
+      setPreviewFileId(null);
+    }
+  }, [previewFileId, mesh.files]);
+
   // Drop-to-upload: files dragged from the OS onto the desktop background
   // POST to /v1/files and land at the drop coords. The relay broadcasts
   // `file_added` which arrives via the mesh and renders the new icon
@@ -1032,6 +1050,7 @@ const Desktop: NextPage = () => {
                   canDelete={canDelete}
                   onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
                   onDelete={() => mesh.deleteFile(f.id)}
+                  onPreview={() => setPreviewFileId(f.id)}
                 />
               );
             })
@@ -1317,6 +1336,31 @@ const Desktop: NextPage = () => {
               <ClockWindow />
             </SharedAppWindow>
           </>
+        ) : null}
+
+        {/* File preview — opens on double-click of a desktop file.
+            Per-peer local state (each viewer can preview different
+            files at the same time). Position is fixed at "centered-
+            ish" each open; no slot persistence because the preview
+            doesn't represent a long-lived window the way singleton
+            apps do. */}
+        {previewFile ? (
+          <Window
+            key={`preview-${previewFile.id}`}
+            title={previewFile.name}
+            x={Math.max(60, Math.round((typeof window !== "undefined" ? window.innerWidth : 1280) / 2 - 320))}
+            y={Math.max(60, Math.round((typeof window !== "undefined" ? window.innerHeight : 800) / 2 - 250))}
+            width={640}
+            height={500}
+            zIndex={500}
+            minWidth={320}
+            minHeight={240}
+            onClose={() => setPreviewFileId(null)}
+            bodyStyle={{ padding: 0, overflow: "hidden" }}
+            containerInset={{ top: 38 }}
+          >
+            <FilePreviewWindow file={previewFile} />
+          </Window>
         ) : null}
       </div>
 

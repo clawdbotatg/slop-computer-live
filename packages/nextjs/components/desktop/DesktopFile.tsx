@@ -25,6 +25,8 @@ export type DesktopFileProps = {
   canDelete: boolean;
   onMove: (pos: { x: number; y: number }) => void;
   onDelete: () => void;
+  /** Double-click handler — opens the preview window. */
+  onPreview: () => void;
 };
 
 const ICON_SIZE = 88;
@@ -52,7 +54,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export const DesktopFile = ({ file, x, y, zIndex = 1, canDelete, onMove, onDelete }: DesktopFileProps) => {
+export const DesktopFile = ({ file, x, y, zIndex = 1, canDelete, onMove, onDelete, onPreview }: DesktopFileProps) => {
   const [hover, setHover] = useState(false);
   const [imgPreview, setImgPreview] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
@@ -98,7 +100,7 @@ export const DesktopFile = ({ file, x, y, zIndex = 1, canDelete, onMove, onDelet
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onDoubleClick={() => {
-        if (!movedRef.current) window.open(downloadUrl, "_blank", "noopener");
+        if (!movedRef.current) onPreview();
       }}
       data-grab="true"
       style={{
