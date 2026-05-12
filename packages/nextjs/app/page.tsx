@@ -13,6 +13,7 @@ import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
+import { GasWindow } from "~~/components/desktop/GasWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
@@ -52,7 +53,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes" | "gas";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -859,6 +860,9 @@ const Desktop: NextPage = () => {
                       case "notes":
                         mesh.openWindow("notes");
                         return;
+                      case "gas":
+                        mesh.openWindow("gas");
+                        return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
                         // close button is how you stop. Keeps the icon
@@ -1110,6 +1114,16 @@ const Desktop: NextPage = () => {
               minHeight={300}
             >
               <NotesWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="gas"
+              title="GAS"
+              defaultSlot={{ x: 320, y: 160, width: 460, height: 460 }}
+              minWidth={360}
+              minHeight={320}
+            >
+              <GasWindow mesh={mesh} />
             </SharedAppWindow>
           </>
         ) : null}

@@ -72,6 +72,7 @@ import {
   subscribe as subscribeNotes,
   update as noteUpdate,
 } from "./notes.js";
+import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -195,7 +196,7 @@ type AppEntry = {
   label: string;
   icon: string;
   url?: string;
-  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes";
+  kind?: "browser" | "chat" | "audio" | "video" | "screen" | "music" | "chess" | "qr" | "todo" | "notes" | "gas";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -258,6 +259,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Notes",
     icon: "/icons/notes.png",
     kind: "notes",
+  },
+  {
+    id: "gas",
+    label: "Gas",
+    icon: "/icons/gas.png",
+    kind: "gas",
   },
 ];
 
@@ -556,6 +563,13 @@ subscribeTodos(items => {
 subscribeNotes(items => {
   broadcast({ type: "notes", items });
 });
+
+// Gas tracker poll loop. Server-side polling keeps the Alchemy API key
+// off the client and shares one RPC budget across all connected peers.
+subscribeGas(state => {
+  broadcast({ type: "gas", state });
+});
+startGas();
 
 type ChatBody = { text?: unknown };
 
@@ -1559,6 +1573,7 @@ app.register(async function signalRoutes(fastify) {
       aiPlayers: listAvailableAIPlayers(),
       todos: todoList(),
       notes: noteList(),
+      gasState: getGasState(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

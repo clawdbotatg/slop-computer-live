@@ -147,6 +147,17 @@ export type Note = {
   text: string;
 };
 
+/** Ethereum gas snapshot — polled on the relay every ~12s, broadcast on
+ *  change. Mirrors `packages/relay/src/gas.ts`. */
+export type GasState = {
+  baseFeeGwei: number;
+  slowGwei: number;
+  mediumGwei: number;
+  fastGwei: number;
+  ethUsd: number;
+  updatedAt: number;
+};
+
 export type MusicState = {
   src: string | null;
   index: number;
@@ -298,6 +309,9 @@ export type PeerMeshState = {
   noteCreate: (text: string) => void;
   noteUpdate: (id: string, text: string) => void;
   noteDelete: (id: string) => void;
+  /** Latest gas snapshot from the relay's poll loop. `null` until the
+   *  first successful Alchemy + Chainlink read lands. */
+  gasState: GasState | null;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -319,6 +333,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [gasState, setGasState] = useState<GasState | null>(null);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -872,6 +887,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (Array.isArray(msg.notes)) {
             setNotes(msg.notes as Note[]);
           }
+          if (msg.gasState && typeof msg.gasState === "object") {
+            setGasState(msg.gasState as GasState);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1106,6 +1124,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "gas" && msg.state && typeof msg.state === "object") {
+          setGasState(msg.state as GasState);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1224,6 +1247,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     noteCreate,
     noteUpdate,
     noteDelete,
+    gasState,
     broadcastTxRequest,
   };
 }
