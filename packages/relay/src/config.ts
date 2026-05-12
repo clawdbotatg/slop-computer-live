@@ -36,4 +36,6 @@ export const config = {
   turnSecret: env("TURN_SECRET", ""),
   turnHost: env("TURN_HOST", ""),
   turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),
+  jamendoClientId: env("JAMENDO_CLIENT_ID", ""),
+  jamendoClientSecret: env("JAMENDO_CLIENT_SECRET", ""),
 };

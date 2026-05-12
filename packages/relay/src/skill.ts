@@ -113,6 +113,8 @@ Returns the canonical desktop snapshot. Top-level fields:
 | \`notes\` | \`Note[]\` | Shared notes |
 | \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot |
 | \`files\` | \`FileEntry[]\` | User-uploaded files on the shared desktop |
+| \`musicGenres\` | \`{ id, label }[]\` | Jamendo genre catalog the music app exposes |
+| \`musicGenre\` | \`string \\| null\` | Active genre (null = Kevin MacLeod legacy set) |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
@@ -392,7 +394,7 @@ parse the ID3v2 \`TLEN\` frame, or maintain your own duration map keyed
 by \`src\`. Adding a \`duration\` field to playlist.json (see "Add a
 track" below) is the cheap fix if you control the catalog.
 
-### Playlist
+### Playlist (legacy / Kevin MacLeod set)
 
 \`\`\`
 GET ${BASE}/v1/music/playlist
@@ -400,25 +402,74 @@ GET ${BASE}/v1/music/playlist
 #     _credit: "..." }
 \`\`\`
 
-The relay reads this from disk on every request (no cache —
-\`/var/lib/slop-relay/music/playlist.json\` on the prod box). Auth-
-gated. Also exposed un-authed at \`${BASE}/music/playlist.json\` for
-the in-browser player.
+This is the **legacy** static playlist (curated Kevin MacLeod + a few
+others, all on \`/var/lib/slop-relay/music/\` on the prod box). Active
+when no Jamendo genre is selected (\`state.musicGenre === null\`). Auth-
+gated. Also exposed un-authed at \`${BASE}/music/playlist.json\` for the
+in-browser player.
 
 Each track's \`src\` is a root-relative path like \`/music/foo.mp3\`,
-served by the relay (or proxied through live.slop.computer's Caddy
-at \`/music/*\`). Set state with this exact \`src\` value — the audio
-element resolves the absolute URL itself.
+served by the relay. Set state with this exact \`src\` value — the
+audio element resolves the absolute URL itself.
 
-### How to add a track
+### Jamendo genres (current default surface)
 
-No runtime upload endpoint (intentional — bulk audio belongs out of
-the request path). To add music:
+The music player normally points at a Jamendo-backed trending playlist
+keyed by genre. Selection is shared across the mesh: when any peer
+picks "rock", every peer's player switches.
+
+\`\`\`
+# List available genres + currently selected
+GET ${BASE}/v1/music/genres
+# → { genres: [{ id, label }, ...], current: "rock" | null }
+
+# Switch the shared genre (or pass null to fall back to the legacy
+# playlist). First-time switch to a cold genre takes ~30s while the
+# relay downloads ~20 trending MP3s from Jamendo.
+POST ${BASE}/v1/music/genre   { "genre": "rock" }
+POST ${BASE}/v1/music/genre   { "genre": null }
+# → { ok: true, genre: "rock" | null }
+
+# Read a specific genre's playlist (auto-refreshes if cache > 1h old).
+GET ${BASE}/v1/music/genre/<genre>/playlist
+# → { genre, label, tag, fetchedAt, tracks: [
+#       { title, artist, src, duration, jamendoId, license, source },
+#       ...
+#     ] }
+\`\`\`
+
+The 10 supported genres at launch: \`pop\`, \`rock\`, \`electronic\`,
+\`hiphop\`, \`indie\`, \`dance\`, \`folk\`, \`punk\`, \`country\`, \`house\`.
+
+Switching genre **resets the shared music state** server-side
+(broadcasts \`music_state: null\`) so the previous genre's track
+doesn't keep playing while the new playlist is showing different
+songs. The next \`POST /v1/music/state\` from anyone starts the new
+genre's playback.
+
+Genre changes broadcast as \`{ type: "music_genre", genre }\` over the
+mesh WS, with the corresponding \`state.musicGenre\` field updated.
+
+### Trending refresh + dedupe
+
+Each genre's track list refreshes lazily — calling the playlist
+endpoint with a cached-but-stale (> 1h) result triggers a fresh pull
+from Jamendo (\`order=popularity_week\`). Newly-trending tracks get
+downloaded to \`/var/lib/slop-relay/jamendo-music/<genre>/<id>.mp3\`;
+tracks that were already on disk are reused (file name is the Jamendo
+\`id\`, so a track that's still trending next week doesn't duplicate).
+The relay rewrites the per-genre \`playlist.json\` to reflect this
+week's order even when all tracks are cached.
+
+### How to add more music
+
+The Jamendo flow handles the volume case — switching to a fresh
+genre auto-populates 20 tracks. For the legacy playlist:
 
 1. SCP the MP3 to the prod box: \`scp foo.mp3 box:/var/lib/slop-relay/music/\`
 2. Edit \`/var/lib/slop-relay/music/playlist.json\` on the box to
-   append an entry: \`{"title": "Foo", "artist": "Bar", "src": "/music/foo.mp3"}\`
-3. No restart needed — the relay reads playlist.json on every request.
+   append \`{"title": "Foo", "artist": "Bar", "src": "/music/foo.mp3"}\`.
+3. No restart needed.
 
 ### Set state
 

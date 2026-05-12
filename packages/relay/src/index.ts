@@ -83,6 +83,17 @@ import {
   remove as fileRemove,
   subscribe as subscribeFiles,
 } from "./files.js";
+import {
+  GENRE_IDS,
+  GENRES,
+  JAMENDO_DIR,
+  getCurrentGenre,
+  isGenre,
+  readPlaylist,
+  refreshGenre,
+  setCurrentGenre,
+  subscribe as subscribeJamendo,
+} from "./jamendo.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -425,6 +436,8 @@ app.get("/v1/state", async (req, reply) => {
     notes: noteList(),
     gasState: getGasState(),
     files: fileList(),
+    musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
+    musicGenre: getCurrentGenre(),
   };
 });
 
@@ -641,6 +654,12 @@ subscribeFiles(event => {
   if (event.type === "added") broadcast({ type: "file_added", item: event.item });
   else if (event.type === "removed") broadcast({ type: "file_removed", id: event.id });
   else broadcast({ type: "files", items: event.items });
+});
+
+// Jamendo genre selection — shared across the mesh. When any peer
+// picks a genre, all peers' music players switch playlists.
+subscribeJamendo(event => {
+  broadcast({ type: "music_genre", genre: event.genre });
 });
 
 type ChatBody = { text?: unknown };
@@ -1420,6 +1439,115 @@ app.delete<{ Params: { id: string } }>("/v1/notes/:id", async (req, reply) => {
   return { ok: true };
 });
 
+// --- Jamendo genre playlists -----------------------------------------------
+// Shared genre selection that drives the music player. The current
+// genre is broadcast over the mesh; selecting a genre also triggers an
+// hourly-ish refresh of the trending tracks for that genre (downloads
+// new MP3s, dedupes against on-disk track ids).
+
+type SetGenreBody = { genre?: unknown };
+
+app.get("/v1/music/genres", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return {
+    genres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
+    current: getCurrentGenre(),
+  };
+});
+
+app.post<{ Body: SetGenreBody }>("/v1/music/genre", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const incoming = req.body?.genre;
+  if (incoming !== null && typeof incoming !== "string") return reply.code(400).send({ error: "bad-genre" });
+  if (incoming !== null && !isGenre(incoming)) return reply.code(400).send({ error: "unknown-genre" });
+  try {
+    const out = await setCurrentGenre(incoming as string | null);
+    // Reset shared music state so the OLD genre's track doesn't keep
+    // playing while the new playlist is showing different songs. Peers
+    // see an idle player; the next "play" picks track 0 of the new
+    // playlist.
+    musicState = null;
+    bumpMusicVersion();
+    broadcast({ type: "music_state", state: null });
+    return { ok: true, genre: out.genre };
+  } catch (err) {
+    return reply.code(502).send({ error: "set-failed", detail: (err as Error).message });
+  }
+});
+
+app.get<{ Params: { genre: string } }>("/v1/music/genre/:genre/playlist", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!isGenre(req.params.genre)) return reply.code(404).send({ error: "unknown-genre" });
+  reply.header("cache-control", "no-store");
+  // Lazily refresh if the cache is stale. Hot path (popular genre, cached
+  // and fresh) returns immediately; cold path may take ~30s while we
+  // download missing tracks.
+  try {
+    const pl = await refreshGenre(req.params.genre);
+    return pl;
+  } catch (err) {
+    // Stale-on-error: prefer the previously-fetched playlist if any
+    // (e.g. Jamendo briefly down) over a 502.
+    const fallback = readPlaylist(req.params.genre);
+    if (fallback) return fallback;
+    return reply.code(502).send({ error: "refresh-failed", detail: (err as Error).message });
+  }
+});
+
+// Static serve for the per-genre MP3s. Same range-supporting pattern as
+// /music/<filename>, but two path segments deep so genre playlists stay
+// neatly partitioned on disk.
+app.get<{ Params: { genre: string; filename: string } }>(
+  "/jamendo-music/:genre/:filename",
+  async (req, reply) => {
+    const { genre, filename } = req.params;
+    if (!isGenre(genre)) return reply.code(404).send({ error: "unknown-genre" });
+    if (!/^[a-z0-9._-]+$/i.test(filename) || filename.includes("..")) {
+      return reply.code(400).send({ error: "bad-name" });
+    }
+    const fs = await import("node:fs/promises");
+    const fsSync = await import("node:fs");
+    const filepath = `${JAMENDO_DIR}/${genre}/${filename}`;
+    let stat;
+    try {
+      stat = await fs.stat(filepath);
+    } catch {
+      return reply.code(404).send({ error: "not-found" });
+    }
+    const ext = filename.split(".").pop() ?? "";
+    const ct = ext === "json" ? "application/json; charset=utf-8" : "audio/mpeg";
+    if (filename.endsWith(".json")) {
+      const buf = await fs.readFile(filepath);
+      reply.header("content-type", ct);
+      reply.header("cache-control", "no-store");
+      return reply.send(buf);
+    }
+    const rangeHeader = req.headers.range;
+    reply.header("accept-ranges", "bytes");
+    reply.header("content-type", ct);
+    reply.header("cache-control", "public, max-age=3600");
+    if (rangeHeader && /^bytes=/.test(rangeHeader)) {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+      if (m && m[1] !== undefined) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? parseInt(m[2], 10) : stat.size - 1;
+        if (Number.isFinite(start) && start <= end && end < stat.size) {
+          reply.code(206);
+          reply.header("content-range", `bytes ${start}-${end}/${stat.size}`);
+          reply.header("content-length", end - start + 1);
+          return reply.send(fsSync.createReadStream(filepath, { start, end }));
+        }
+      }
+    }
+    reply.header("content-length", stat.size);
+    return reply.send(fsSync.createReadStream(filepath));
+  },
+);
+
 // --- Gas REST surface (read-only) -------------------------------------------
 
 app.get("/v1/gas", async (req, reply) => {
@@ -1979,6 +2107,8 @@ app.register(async function signalRoutes(fastify) {
       notes: noteList(),
       gasState: getGasState(),
       files: fileList(),
+      musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
+      musicGenre: getCurrentGenre(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

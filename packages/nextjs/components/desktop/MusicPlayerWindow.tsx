@@ -113,18 +113,27 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
   }, [selfMuted]);
 
-  // Pull the playlist.json once. Errors surface in the LCD area; the rest
-  // of the UI keeps working (transport buttons just no-op).
+  // Pull the playlist whenever the shared genre changes. Genre-mode
+  // hits the relay's lazy-refresh endpoint (downloads new trending
+  // tracks on cache miss) — the first switch to a cold genre can take
+  // ~30s while it pulls ~20 MP3s server-side. The status text in the
+  // LCD reflects that. Genre = null = the legacy /music playlist (the
+  // Kevin MacLeod set), which we hide by default but keep around for
+  // revert safety.
+  const activeGenre = mesh.musicGenre;
   useEffect(() => {
     let cancelled = false;
-    fetch(PLAYLIST_URL, { cache: "no-store" })
+    setError(null);
+    const url = activeGenre ? `${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist` : PLAYLIST_URL;
+    setError(activeGenre ? `loading ${activeGenre}…` : null);
+    fetch(url, { cache: "no-store", credentials: "include" })
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { tracks?: unknown }) => {
         if (cancelled) return;
         if (!Array.isArray(data.tracks)) throw new Error("no tracks");
         const valid = (data.tracks as Track[]).filter(t => typeof t?.src === "string" && typeof t?.title === "string");
         setTracks(valid);
-        if (valid.length === 0) setError("playlist is empty");
+        setError(valid.length === 0 ? "playlist is empty" : null);
       })
       .catch(err => {
         if (!cancelled) setError(`couldn't load playlist: ${(err as Error).message}`);
@@ -132,7 +141,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [activeGenre]);
 
   const current = tracks[index] ?? null;
 
@@ -754,6 +763,51 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           flexDirection: "column",
         }}
       >
+        {/* Genre selector row — Jamendo-backed trending playlists.
+            Shared across the mesh: clicking a genre flips every peer's
+            playlist. The first click on a cold genre triggers the
+            relay to download ~20 tracks, which can take ~30s; the LCD
+            status text reflects the load state. */}
+        {mesh.musicGenres.length > 0 ? (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 2,
+              padding: "4px 4px 0",
+              background: "linear-gradient(180deg, rgba(124,77,255,0.18) 0%, rgba(0,0,0,0.4) 100%)",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            {mesh.musicGenres.map(g => {
+              const active = mesh.musicGenre === g.id;
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => mesh.setMusicGenre(active ? null : g.id)}
+                  style={{
+                    padding: "3px 8px",
+                    fontSize: 9,
+                    fontFamily: "var(--slop-font-display)",
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    background: active
+                      ? "linear-gradient(180deg, rgba(255,62,201,0.45) 0%, rgba(124,77,255,0.35) 100%)"
+                      : "transparent",
+                    color: active ? "var(--slop-amber, #ffae00)" : "rgba(188,255,91,0.7)",
+                    border: `1px solid ${active ? "rgba(255,174,0,0.6)" : "rgba(255,255,255,0.1)"}`,
+                    borderRadius: 2,
+                    cursor: "pointer",
+                  }}
+                  title={active ? "click to deselect" : `play trending ${g.label.toLowerCase()}`}
+                >
+                  {g.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         <div
           style={{
             padding: "3px 8px",
@@ -764,7 +818,9 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             borderBottom: "1px solid rgba(255,255,255,0.08)",
           }}
         >
-          PLAYLIST EDITOR — {tracks.length} ITEM{tracks.length === 1 ? "" : "S"}
+          {mesh.musicGenre
+            ? `${mesh.musicGenre.toUpperCase()} — TRENDING THIS WEEK — ${tracks.length} ITEM${tracks.length === 1 ? "" : "S"}`
+            : `PLAYLIST EDITOR — ${tracks.length} ITEM${tracks.length === 1 ? "" : "S"}`}
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {tracks.length === 0 ? (

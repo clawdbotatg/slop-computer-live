@@ -330,6 +330,16 @@ export type PeerMeshState = {
   files: FileEntry[];
   /** Remove a file by id (server enforces uploader-or-host). */
   deleteFile: (id: string) => void;
+  /** Catalog of music genres exposed by the Jamendo integration.
+   *  Populated from /v1/state on hello; the music player renders one
+   *  tab per genre. */
+  musicGenres: { id: string; label: string }[];
+  /** Currently-selected genre. null = Jamendo mode off; the player
+   *  falls back to the static /music playlist (Kevin MacLeod set). */
+  musicGenre: string | null;
+  /** Switch the shared current genre. Triggers the relay's lazy
+   *  download/refresh — first time on a cold genre can take ~30s. */
+  setMusicGenre: (genre: string | null) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -353,6 +363,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [notes, setNotes] = useState<Note[]>([]);
   const [gasState, setGasState] = useState<GasState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
+  const [musicGenre, setMusicGenreLocal] = useState<string | null>(null);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -765,6 +777,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     }).catch(err => console.warn("deleteFile failed", err));
   }, []);
 
+  // Switch the shared genre. The relay broadcasts `music_genre`
+  // back to every peer (including us) so we don't optimistically
+  // setState here — the WS echo is authoritative.
+  const setMusicGenre = useCallback((genre: string | null) => {
+    fetch(`${RELAY_HTTP_URL}/v1/music/genre`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ genre }),
+    }).catch(err => console.warn("setMusicGenre failed", err));
+  }, []);
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -922,6 +946,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (Array.isArray(msg.files)) {
             setFiles(msg.files as FileEntry[]);
+          }
+          if (Array.isArray(msg.musicGenres)) {
+            setMusicGenresState(msg.musicGenres as { id: string; label: string }[]);
+          }
+          if (typeof msg.musicGenre === "string" || msg.musicGenre === null) {
+            setMusicGenreLocal(msg.musicGenre as string | null);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -1177,6 +1207,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "music_genre" && (typeof msg.genre === "string" || msg.genre === null)) {
+          setMusicGenreLocal(msg.genre as string | null);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1298,6 +1333,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     gasState,
     files,
     deleteFile,
+    musicGenres,
+    musicGenre,
+    setMusicGenre,
     broadcastTxRequest,
   };
 }
