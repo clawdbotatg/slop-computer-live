@@ -395,15 +395,17 @@ this, ask the host.
 \`\`\`
 GET ${BASE}/v1/ens/resolve?name=clawdbotatg.eth
 # → { ok: true, name, protocol: "ipfs"|"ipns"|"swarm",
-#     value, gateway: "https://dweb.link/ipfs/<cid>/" }
+#     value, gateway: "https://<cid>.ipfs.community.bgipfs.com/" }
 # → { ok: false, error: "no-contenthash" | ... }
 \`\`\`
 
 Resolves an ENS name's contenthash record directly via Alchemy and
 decodes it (IPFS CIDv0/CIDv1, IPNS, Swarm) into a ready-to-load
-gateway URL on \`dweb.link\` (or \`api.gateway.ethswarm.org\` for
-Swarm). No \`eth.link\` / \`eth.limo\` indirection. Cached on the relay
-for 10 minutes.
+gateway URL on \`community.bgipfs.com\` (subdomain-style, origin-
+isolated; Swarm falls back to \`api.gateway.ethswarm.org\` path-style).
+No \`eth.link\` / \`eth.limo\` indirection. Cached on the relay for
+10 minutes. CIDv0 multihashes are auto-upgraded to CIDv1 base32 so
+the result is always a DNS-safe subdomain label.
 
 The slop-computer browser URL bar uses this transparently: typing
 \`foo.eth\` (or \`foo.eth/some/path\`) auto-resolves before navigation.

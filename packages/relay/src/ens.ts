@@ -59,24 +59,6 @@ export type EnsResolveResult = EnsResolveOk | EnsResolveErr;
 
 // --- Base encoding helpers ---------------------------------------------------
 
-const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function base58btcEncode(bytes: Uint8Array): string {
-  let n = 0n;
-  for (const b of bytes) n = n * 256n + BigInt(b);
-  let out = "";
-  while (n > 0n) {
-    out = BASE58_ALPHABET[Number(n % 58n)] + out;
-    n /= 58n;
-  }
-  // Preserve leading-zero bytes as leading '1'.
-  for (const b of bytes) {
-    if (b === 0) out = "1" + out;
-    else break;
-  }
-  return out;
-}
-
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
 function base32Encode(bytes: Uint8Array): string {
@@ -118,8 +100,14 @@ function hexToBytes(hex: string): Uint8Array {
 function encodeCID(bytes: Uint8Array): string | null {
   if (bytes.length < 2) return null;
   if (bytes[0] === 0x12 && bytes[1] === 0x20) {
-    // CIDv0: just the sha2-256 multihash, base58btc.
-    return base58btcEncode(bytes);
+    // CIDv0 multihash. Convert to CIDv1 dag-pb so the result is DNS-safe
+    // (lowercase base32) — subdomain-style IPFS gateways require it.
+    // CIDv1 = [version=0x01, codec=0x70 (dag-pb)] ++ original multihash.
+    const cidv1 = new Uint8Array(bytes.length + 2);
+    cidv1[0] = 0x01;
+    cidv1[1] = 0x70;
+    cidv1.set(bytes, 2);
+    return "b" + base32Encode(cidv1);
   }
   if (bytes[0] === 0x01) {
     // CIDv1: multibase "b" prefix indicates base32.
@@ -158,12 +146,14 @@ function decodeContenthash(hex: string): { protocol: "ipfs" | "ipns" | "swarm"; 
 }
 
 function gatewayUrlFor(protocol: "ipfs" | "ipns" | "swarm", value: string): string {
-  // Use path-based dweb.link for IPFS/IPNS — works for both CIDv0 and
-  // CIDv1, no DNS-label-length issues for long CIDs, and the gateway
-  // pins requests so subsequent visits are fast.
-  if (protocol === "ipfs") return `https://dweb.link/ipfs/${value}/`;
-  if (protocol === "ipns") return `https://dweb.link/ipns/${value}/`;
-  // Swarm — Ethswarm's public gateway.
+  // Subdomain-style gateway on `community.bgipfs.com`. Each CID gets
+  // its own origin which keeps cookies/localStorage isolated between
+  // sites (the way native domain-loaded apps expect). Subdomain mode
+  // requires DNS-safe CIDs — `encodeCID` already upgrades CIDv0 →
+  // CIDv1 base32 above so this always holds for IPFS/IPNS.
+  if (protocol === "ipfs") return `https://${value}.ipfs.community.bgipfs.com/`;
+  if (protocol === "ipns") return `https://${value}.ipns.community.bgipfs.com/`;
+  // Swarm — Ethswarm's public gateway (path-based; no subdomain mode).
   return `https://api.gateway.ethswarm.org/bzz/${value}/`;
 }
 
