@@ -134,17 +134,28 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // playlist endpoint still exists on the relay as a revert escape
   // hatch, but isn't shown by this component.
   const activeGenre = mesh.musicGenre;
+
+  // Fetch a fresh playlist whenever the genre changes. ALWAYS clears
+  // `tracks` first so the previous genre's rows never leak across the
+  // transition — even a cached refresh takes a moment to resolve and
+  // the user was seeing stale rows in that gap. Empty `tracks` +
+  // `loading…` error state = the LoadingBar empty-state renders, so
+  // every genre click flashes the loader before the new list paints.
+  //
+  // mesh.musicCustom is INTENTIONALLY not a dep here — including it
+  // would re-run this effect on every add/remove and flash the list
+  // even when the user isn't switching tabs. Custom-sync lives in a
+  // separate effect below.
   useEffect(() => {
     let cancelled = false;
+    setTracks([]);
     if (!activeGenre) {
-      setTracks([]);
       setError("pick a genre");
       return;
     }
-    // Custom playlist is broadcast over the mesh — no fetch needed.
-    // mesh.musicCustom is the source of truth; re-runs when broadcasts
-    // arrive via the deps below.
     if (activeGenre === "custom") {
+      // Initial population on switch-to-Custom. Subsequent broadcasts
+      // are handled by the sync-effect below.
       setTracks(mesh.musicCustom as Track[]);
       setError(null);
       return;
@@ -168,6 +179,17 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGenre]);
+
+  // Keep the Custom tab synced with mesh broadcasts (add/remove/
+  // reorder) WITHOUT clearing the list on every change. Only runs
+  // while the user is actually viewing Custom — other tabs get their
+  // tracks from the fetch effect above.
+  useEffect(() => {
+    if (activeGenre !== "custom") return;
+    setTracks(mesh.musicCustom as Track[]);
+    setError(null);
   }, [activeGenre, mesh.musicCustom]);
 
   const current = tracks[index] ?? null;
