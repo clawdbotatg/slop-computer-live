@@ -23,6 +23,7 @@ import {
   openBrowser as openSharedBrowser,
 } from "./browsers.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
+import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import { addPeer, broadcast, findPeersBySessionToken, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
 import {
   MAX_TEXT_LEN as CHAT_MAX_TEXT,
@@ -1953,6 +1954,37 @@ app.post("/admin/stop", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return { ok: true };
+});
+
+// Peek at the latest recording on disk without uploading. Used by the host
+// UI to show "ready to finalize: <name>, <size>" before they hit the button.
+app.get("/admin/recording", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const latest = await findLatestRecording(config.recordingsDir, "live");
+  return { latest, pinning: isFinalizeInFlight() };
+});
+
+// Pin the latest MediaMTX recording to bgipfs and return the CID. The host
+// writes that CID onto the episode contract. Single-flight — concurrent
+// callers share the same upload. Long-running (uploads can take minutes
+// for a full session), so set a generous client timeout.
+app.post("/admin/finalize", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  try {
+    const result = await finalizeRecording({
+      recordingsDir: config.recordingsDir,
+      pathName: "live",
+      bgipfsBin: config.bgipfsBin,
+      bgipfsConfigPath: config.bgipfsConfigPath,
+      log: line => app.log.info(line),
+    });
+    return { ok: true, ...result };
+  } catch (err) {
+    app.log.error({ err }, "finalize failed");
+    return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.get("/admin/peers", async (req, reply) => {

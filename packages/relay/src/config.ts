@@ -33,6 +33,12 @@ export const config = {
   mediamtxPublishUser: env("MEDIAMTX_PUBLISH_USER", "live"),
   mediamtxPublishPass: env("MEDIAMTX_PUBLISH_PASS", ""),
   hlsUrl: env("HLS_URL", "https://media.slop.computer/hls/live/index.m3u8"),
+  // Directory MediaMTX writes recordings into (matches recordPath root in
+  // deploy/mediamtx.yml). /admin/finalize scans `<recordingsDir>/live/` and
+  // grabs the newest file.
+  recordingsDir: env("RECORDINGS_DIR", "/home/ubuntu/recordings"),
+  bgipfsBin: env("BGIPFS_BIN", "bgipfs"),
+  bgipfsConfigPath: env("BGIPFS_CONFIG", `${process.env.HOME ?? ""}/.bgipfs/credentials.json`),
   turnSecret: env("TURN_SECRET", ""),
   turnHost: env("TURN_HOST", ""),
   turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),

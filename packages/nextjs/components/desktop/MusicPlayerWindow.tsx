@@ -66,11 +66,15 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const [seekValue, setSeekValue] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // Volume is shared via mesh.musicState.volume. We keep a local "draft"
-  // value for smooth slider feedback during a drag — the broadcast only
-  // fires on mouseup. localStorage seeds the initial value when the
-  // shared state is null (relay just restarted, no one playing).
+  // value for smooth slider feedback during a drag, AND broadcast that
+  // draft to peers throttled at ~80ms — that's enough to let a slow drag
+  // fade everyone in/out together without spamming the relay. The final
+  // release still fires an immediate broadcast as the flush. localStorage
+  // seeds the initial value when the shared state is null (relay just
+  // restarted, no one playing).
   const [volumeDraft, setVolumeDraft] = useState(0.7);
   const [volumeDragging, setVolumeDragging] = useState(false);
+  const volumeBroadcastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-user local mute. Doesn't touch the shared volume or playback —
   // just silences this peer's <audio> element so they can step away
   // without making everyone else stop. Persisted across reloads.
@@ -747,15 +751,31 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             step={0.01}
             value={shownVolume}
             // Smooth feedback while dragging — change the local audio
-            // immediately so the dragger hears their own change. No
-            // network traffic until they let go.
+            // immediately so the dragger hears their own change. Also
+            // broadcast the in-flight value to peers, throttled to a
+            // pending-timeout so a slow drag can fade everyone together
+            // without spamming the relay every onChange tick.
             onChange={e => {
-              setVolumeDraft(parseFloat(e.target.value));
+              const v = parseFloat(e.target.value);
+              if (!Number.isFinite(v)) return;
+              setVolumeDraft(v);
+              if (volumeBroadcastTimerRef.current == null) {
+                volumeBroadcastTimerRef.current = setTimeout(() => {
+                  volumeBroadcastTimerRef.current = null;
+                  broadcast({ volume: v });
+                }, 80);
+              }
             }}
             onMouseDown={() => setVolumeDragging(true)}
             onMouseUp={e => {
               const v = parseFloat((e.target as HTMLInputElement).value);
               setVolumeDragging(false);
+              // Flush any pending throttled broadcast and send the final
+              // committed value immediately on release.
+              if (volumeBroadcastTimerRef.current != null) {
+                clearTimeout(volumeBroadcastTimerRef.current);
+                volumeBroadcastTimerRef.current = null;
+              }
               if (Number.isFinite(v)) broadcast({ volume: v });
             }}
             // Touch support (mobile/tablet) — same handshake. Pull the
@@ -766,6 +786,10 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             onTouchEnd={e => {
               setVolumeDragging(false);
               const v = parseFloat((e.target as HTMLInputElement).value);
+              if (volumeBroadcastTimerRef.current != null) {
+                clearTimeout(volumeBroadcastTimerRef.current);
+                volumeBroadcastTimerRef.current = null;
+              }
               if (Number.isFinite(v)) broadcast({ volume: v });
             }}
             aria-label="volume"

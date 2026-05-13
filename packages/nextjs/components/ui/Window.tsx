@@ -194,6 +194,13 @@ export const Window = ({
       minWidth={minWidth}
       minHeight={minHeight}
       dragHandleClassName="slop-titlebar"
+      // Even though the titlebar is the drag handle, the traffic-light
+      // buttons within it must NOT start a drag. Without this, react-rnd's
+      // drag-init on mousedown can swallow the synthetic click on the
+      // button (especially when the window isn't focused and the parent's
+      // onMouseDown also fires to bump z), forcing users to click twice
+      // to close.
+      cancel=".slop-titlebar__dot"
       disableDragging={isDocked}
       enableResizing={!isDocked}
       className="slop-window"

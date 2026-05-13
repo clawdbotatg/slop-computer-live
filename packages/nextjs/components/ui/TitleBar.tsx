@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef } from "react";
 
 interface TitleBarProps {
   title: React.ReactNode;
@@ -30,6 +30,20 @@ const DOT_GLYPH: Record<DotKind, string> = {
 
 const Dot = ({ kind, onClick, label }: { kind: DotKind; onClick?: () => void; label?: string }) => {
   const cls = `slop-titlebar__dot slop-titlebar__dot--${kind}${onClick ? "" : " slop-titlebar__dot--disabled"}`;
+  // Fire the action on mousedown rather than click. The titlebar IS the
+  // react-rnd drag handle, so when an unfocused window receives a click
+  // on a dot, react-rnd's drag-init + the parent window's focus bump can
+  // race the synthetic click and we'd need a second click to commit.
+  // Acting on mousedown removes the race — the X closes immediately, even
+  // when the window doesn't have focus.
+  //
+  // stopPropagation on every relevant event keeps the parent .slop-titlebar
+  // from also receiving it (so we don't bump z while closing, and we don't
+  // hand react-rnd a half-started drag). The onClick path is kept for
+  // keyboard activation (Space/Enter on role="button"); a `firedRef`
+  // dedupes the case where mouse click also dispatches click after our
+  // mousedown handler already ran (Dot still in the tree, e.g. zoom).
+  const firedRef = useRef(false);
   if (!onClick) {
     return (
       <span className={cls} aria-hidden data-grab="false">
@@ -37,17 +51,19 @@ const Dot = ({ kind, onClick, label }: { kind: DotKind; onClick?: () => void; la
       </span>
     );
   }
+  const fire = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    if (firedRef.current) return;
+    firedRef.current = true;
+    // Clear next tick so a follow-up gesture can fire again. The dot may
+    // be unmounted before this runs (close/minimize) — harmless.
+    setTimeout(() => {
+      firedRef.current = false;
+    }, 0);
+    onClick();
+  };
   return (
-    <span
-      className={cls}
-      role="button"
-      aria-label={label}
-      data-grab="false"
-      onClick={e => {
-        e.stopPropagation();
-        onClick();
-      }}
-    >
+    <span className={cls} role="button" aria-label={label} data-grab="false" onMouseDown={fire} onClick={fire}>
       {DOT_GLYPH[kind]}
     </span>
   );

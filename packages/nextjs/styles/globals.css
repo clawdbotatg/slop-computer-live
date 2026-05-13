@@ -108,7 +108,9 @@
   /* Hide the system cursor everywhere — we render a custom one in
      React via useLocalCursor. The few CSS rules below that explicitly
      set `cursor:` are overridden so they all stay invisible. */
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     cursor: none !important;
   }
 
@@ -165,13 +167,7 @@
 
 .slop-titlebar {
   background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(0, 0, 0, 0.28) 0px,
-      rgba(0, 0, 0, 0.28) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.28) 0px, rgba(0, 0, 0, 0.28) 1px, transparent 1px, transparent 3px),
     var(--slop-titlebar);
   color: #000;
   font-family: var(--slop-font-display);
@@ -196,13 +192,7 @@
 
 .slop-titlebar--active {
   background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(0, 0, 0, 0.28) 0px,
-      rgba(0, 0, 0, 0.28) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.28) 0px, rgba(0, 0, 0, 0.28) 1px, transparent 1px, transparent 3px),
     var(--slop-titlebar-active);
   color: #000;
 }
@@ -372,13 +362,7 @@
   align-items: stretch;
   gap: 4px;
   background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(0, 0, 0, 0.32) 0px,
-      rgba(0, 0, 0, 0.32) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.32) 0px, rgba(0, 0, 0, 0.32) 1px, transparent 1px, transparent 3px),
     linear-gradient(180deg, rgba(255, 62, 201, 0.18) 0%, rgba(0, 0, 0, 0.7) 100%);
   border-bottom: 1px solid var(--slop-magenta);
   box-shadow:
@@ -585,15 +569,26 @@
    sliders. Only applied to inputs inside the music window. */
 
 @keyframes slop-music-marquee {
-  0%   { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
 }
 
 /* Pulsing dot next to the chess player whose turn it is. Subtle —
    we want a rhythm cue, not a strobe. */
 @keyframes slop-chess-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.45; transform: scale(0.7); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.7);
+  }
 }
 .slop-chess-pulse {
   display: inline-block;

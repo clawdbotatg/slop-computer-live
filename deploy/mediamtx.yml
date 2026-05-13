@@ -56,3 +56,13 @@ paths:
   live:
     source: publisher
     sourceOnDemand: no
+    # Persist every live session to disk so it can be uploaded to IPFS after
+    # the show. Files land at /home/ubuntu/recordings/live/<timestamp>.mp4
+    # (fragmented MP4 — browser-playable, remuxable in seconds with
+    # `ffmpeg -c copy`). The relay's /admin/finalize endpoint scans this dir.
+    record: yes
+    recordPath: /home/ubuntu/recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordFormat: fmp4
+    recordPartDuration: 1s
+    recordSegmentDuration: 24h
+    recordDeleteAfter: 0

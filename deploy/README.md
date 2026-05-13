@@ -69,6 +69,36 @@ yarn next:build && yarn relay:build && yarn browser:build
 sudo systemctl restart slop-live slop-relay slop-browser-host
 ```
 
+## Recordings → IPFS
+
+MediaMTX writes every live session to `/home/ubuntu/recordings/live/` as
+fragmented MP4 (see `mediamtx.yml`). The relay's `/admin/finalize`
+endpoint takes the newest file, pins it to bgipfs, and returns a CID for
+the episode contract.
+
+One-time setup on the box:
+
+```bash
+sudo mkdir -p /home/ubuntu/recordings
+sudo chown ubuntu:ubuntu /home/ubuntu/recordings
+
+# bgipfs CLI + creds (grab key at https://bgipfs.com → API Keys)
+npm install -g bgipfs
+bgipfs upload config init --nodeUrl="https://upload.bgipfs.com" --apiKey="$KEY"
+```
+
+The credentials file lands at `~/.bgipfs/credentials.json`. The relay
+service runs as `ubuntu`, so make sure that's the user that ran the init
+command.
+
+The frontpage admin (`https://slop.computer/admin`) calls these relay
+endpoints cross-origin with `credentials: include`, so add the frontpage
+host to `CORS_ORIGINS`:
+
+```
+CORS_ORIGINS=https://live.slop.computer,https://slop.computer
+```
+
 ## Notes
 
 - HTTPS is required for `getUserMedia` / `getDisplayMedia`. Caddy handles certs.
