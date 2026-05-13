@@ -917,7 +917,13 @@ const Desktop: NextPage = () => {
   // relay broadcasts `file_added`). One entry per in-flight POST, with
   // the same (x, y) the icon will eventually land at so the loader
   // visually morphs into the file icon when the upload completes.
-  const [uploadsInFlight, setUploadsInFlight] = useState<Array<{ id: string; name: string; x: number; y: number }>>([]);
+  // `progress` (0..100) is populated from XHR upload.onprogress when
+  // the request is `lengthComputable`. While it's still undefined the
+  // LoadingBar renders its indeterminate animation; once we get our
+  // first progress event the bar switches to determinate mode.
+  const [uploadsInFlight, setUploadsInFlight] = useState<
+    Array<{ id: string; name: string; x: number; y: number; progress?: number }>
+  >([]);
 
   const uploadFiles = useCallback(
     async (files: FileList, dropX: number, dropY: number) => {
@@ -932,22 +938,37 @@ const Desktop: NextPage = () => {
         // drop is 5 stacked boxes you can watch tick down together.
         setUploadsInFlight(prev => [...prev, { id: localId, name: file.name, x: slotX, y: slotY }]);
         cascade += 1;
+        // Run the POST through XMLHttpRequest instead of fetch so we
+        // can subscribe to `upload.onprogress`. fetch() only exposes a
+        // body-reader for DOWNloads, not uploads; XHR is the only
+        // way to drive a real determinate progress bar today.
+        const result = await new Promise<{ ok: boolean; body?: string }>(resolve => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", `${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}`);
+          xhr.withCredentials = true;
+          xhr.setRequestHeader("content-type", "application/octet-stream");
+          xhr.setRequestHeader("x-mime", file.type || "application/octet-stream");
+          xhr.upload.onprogress = ev => {
+            if (!ev.lengthComputable) return;
+            const pct = Math.min(100, Math.max(0, Math.round((ev.loaded / ev.total) * 100)));
+            setUploadsInFlight(prev => prev.map(u => (u.id === localId ? { ...u, progress: pct } : u)));
+          };
+          // upload.onload doesn't fire reliably across browsers; pin
+          // 100% on load via the main xhr.onload instead, then resolve.
+          xhr.onload = () => {
+            setUploadsInFlight(prev => prev.map(u => (u.id === localId ? { ...u, progress: 100 } : u)));
+            resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: xhr.responseText });
+          };
+          xhr.onerror = () => resolve({ ok: false });
+          xhr.onabort = () => resolve({ ok: false });
+          xhr.send(file);
+        });
         try {
-          const buf = await file.arrayBuffer();
-          const res = await fetch(`${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}`, {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              "content-type": "application/octet-stream",
-              "x-mime": file.type || "application/octet-stream",
-            },
-            body: buf,
-          });
-          if (!res.ok) {
-            console.warn("upload failed", file.name, res.status, await res.text());
+          if (!result.ok) {
+            console.warn("upload failed", file.name, result.body);
             continue;
           }
-          const data = (await res.json()) as { item?: { id?: string } };
+          const data = JSON.parse(result.body ?? "{}") as { item?: { id?: string } };
           const id = data.item?.id;
           if (id) {
             meshUpdateSlotForFiles({
@@ -960,7 +981,7 @@ const Desktop: NextPage = () => {
             });
           }
         } catch (err) {
-          console.warn("upload failed", file.name, err);
+          console.warn("upload parse failed", file.name, err);
         } finally {
           setUploadsInFlight(prev => prev.filter(u => u.id !== localId));
         }
@@ -1174,7 +1195,17 @@ const Desktop: NextPage = () => {
               userSelect: "none",
             }}
           >
-            <LoadingBar cells={6} caption="" style={{ fontSize: 12, color: "var(--slop-lime, #bcff5b)" }} />
+            <LoadingBar
+              cells={6}
+              // Determinate once XHR upload.onprogress has fired at
+              // least once; before that the bar runs the indeterminate
+              // animation (LoadingBar's default when `progress` is
+              // undefined). Caption shows the live % so the user can
+              // read the actual figure.
+              progress={u.progress}
+              caption={typeof u.progress === "number" ? `${u.progress}%` : ""}
+              style={{ fontSize: 12, color: "var(--slop-lime, #bcff5b)" }}
+            />
             <span
               style={{
                 width: "100%",
