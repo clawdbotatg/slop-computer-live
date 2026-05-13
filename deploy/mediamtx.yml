@@ -65,4 +65,4 @@ paths:
     recordFormat: fmp4
     recordPartDuration: 1s
     recordSegmentDuration: 24h
-    recordDeleteAfter: 0
+    recordDeleteAfter: 0s
