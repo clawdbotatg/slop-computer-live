@@ -94,6 +94,12 @@ import {
   setCurrentGenre,
   subscribe as subscribeJamendo,
 } from "./jamendo.js";
+import {
+  type ClockState,
+  getState as getClockState,
+  setState as setClockState,
+  subscribe as subscribeClock,
+} from "./clock.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -438,6 +444,7 @@ app.get("/v1/state", async (req, reply) => {
     files: fileList(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
     musicGenre: getCurrentGenre(),
+    clockState: getClockState(),
   };
 });
 
@@ -660,6 +667,14 @@ subscribeFiles(event => {
 // picks a genre, all peers' music players switch playlists.
 subscribeJamendo(event => {
   broadcast({ type: "music_genre", genre: event.genre });
+});
+
+// Clock app state — shared across the mesh. Tab pick, timezone,
+// stopwatch + countdown all synchronized. Wall-clock-anchored fields
+// (`startedAt`, `endAt`) mean every peer's UI computes the same
+// remaining/elapsed at any moment without us syncing per-tick.
+subscribeClock(state => {
+  broadcast({ type: "clock_state", state });
 });
 
 type ChatBody = { text?: unknown };
@@ -1548,6 +1563,28 @@ app.get<{ Params: { genre: string; filename: string } }>(
   },
 );
 
+// --- Clock REST surface -----------------------------------------------------
+// Shared clock state — tab pick, timezone, stopwatch, countdown. Anyone
+// can mutate; the server validates the shape and broadcasts the new
+// state to every peer.
+
+type ClockBody = Partial<ClockState>;
+
+app.get("/v1/clock", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { state: getClockState() };
+});
+
+app.post<{ Body: ClockBody }>("/v1/clock", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!req.body || typeof req.body !== "object") return reply.code(400).send({ error: "bad-body" });
+  const next = setClockState(req.body);
+  return { ok: true, state: next };
+});
+
 // --- Gas REST surface (read-only) -------------------------------------------
 
 app.get("/v1/gas", async (req, reply) => {
@@ -2109,6 +2146,7 @@ app.register(async function signalRoutes(fastify) {
       files: fileList(),
       musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
       musicGenre: getCurrentGenre(),
+      clockState: getClockState(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 

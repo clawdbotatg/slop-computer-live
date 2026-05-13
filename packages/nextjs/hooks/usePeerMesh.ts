@@ -158,6 +158,34 @@ export type GasState = {
   updatedAt: number;
 };
 
+/** Shared clock app state — mirrors `packages/relay/src/clock.ts`.
+ *  Wall-clock-anchored: `endAt` and `startedAt` are `Date.now()`
+ *  epoch values, so every peer computes the same remaining/elapsed
+ *  from their own local clock without us pushing per-tick updates. */
+export type ClockTab = "time" | "timer" | "countdown";
+export type ClockStopwatchState =
+  | { phase: "idle" }
+  | { phase: "running"; startedAt: number; pausedElapsedMs: number }
+  | { phase: "paused"; pausedElapsedMs: number };
+export type ClockCountdownState =
+  | { phase: "idle" }
+  | { phase: "running"; totalSecs: number; endAt: number }
+  | { phase: "paused"; totalSecs: number; remainingSecs: number }
+  | { phase: "done"; totalSecs: number };
+export type ClockState = {
+  tab: ClockTab;
+  selectedZone: string;
+  stopwatch: ClockStopwatchState;
+  countdown: ClockCountdownState;
+};
+
+const DEFAULT_CLOCK_STATE: ClockState = {
+  tab: "time",
+  selectedZone: "local",
+  stopwatch: { phase: "idle" },
+  countdown: { phase: "idle" },
+};
+
 /** A user-uploaded file on the shared desktop. Mirrors
  *  `packages/relay/src/files.ts` FileEntry. */
 export type FileEntry = {
@@ -330,6 +358,12 @@ export type PeerMeshState = {
   files: FileEntry[];
   /** Remove a file by id (server enforces uploader-or-host). */
   deleteFile: (id: string) => void;
+  /** Shared clock app state — tab pick, zone, stopwatch + countdown
+   *  all synchronized across every peer. */
+  clockState: ClockState;
+  /** Partial-update setter. Pass only the fields you want to change;
+   *  the server preserves the rest. */
+  setClockState: (patch: Partial<ClockState>) => void;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -365,6 +399,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
   const [musicGenre, setMusicGenreLocal] = useState<string | null>(null);
+  const [clockState, setClockStateLocal] = useState<ClockState>(DEFAULT_CLOCK_STATE);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -789,6 +824,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     }).catch(err => console.warn("setMusicGenre failed", err));
   }, []);
 
+  // Update the shared clock state. Partial patch — fields you omit
+  // are preserved server-side. Relay broadcasts `clock_state` to
+  // every peer (including us) so the WS echo is authoritative.
+  const setClockState = useCallback((patch: Partial<ClockState>) => {
+    fetch(`${RELAY_HTTP_URL}/v1/clock`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }).catch(err => console.warn("setClockState failed", err));
+  }, []);
+
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {
       send({
@@ -952,6 +999,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (typeof msg.musicGenre === "string" || msg.musicGenre === null) {
             setMusicGenreLocal(msg.musicGenre as string | null);
+          }
+          if (msg.clockState && typeof msg.clockState === "object") {
+            setClockStateLocal(msg.clockState as ClockState);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -1212,6 +1262,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "clock_state" && msg.state && typeof msg.state === "object") {
+          setClockStateLocal(msg.state as ClockState);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1336,6 +1391,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     musicGenres,
     musicGenre,
     setMusicGenre,
+    clockState,
+    setClockState,
     broadcastTxRequest,
   };
 }

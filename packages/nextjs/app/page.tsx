@@ -1401,7 +1401,7 @@ const Desktop: NextPage = () => {
               minWidth={260}
               minHeight={320}
             >
-              <ClockWindow />
+              <ClockWindow mesh={mesh} />
             </SharedAppWindow>
           </>
         ) : null}

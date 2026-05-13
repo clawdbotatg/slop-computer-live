@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 
 // Per-user clock app with three modes selected via tabs at the bottom:
 //   - Time     — current time, with quick-pick world clocks
@@ -102,7 +103,7 @@ function timeInZone(date: Date, tz: string): string {
   }
 }
 
-// --- stopwatch + countdown state machines -----------------------------------
+// --- state types (shared via the mesh) -------------------------------------
 
 type StopwatchState =
   | { phase: "idle" }
@@ -117,44 +118,32 @@ type CountdownState =
 
 type Tab = "time" | "timer" | "countdown";
 
-// --- persistence ------------------------------------------------------------
-
-// Survive reloads: tab, zone pick, stopwatch + countdown phases, and the input
-// draft. The `startedAt`/`endAt` fields are wall-clock `Date.now()` values, so
-// a running countdown picks up at exactly the right `remaining` on reload.
-const STORAGE_KEY = "slop:clock:state:v1";
-
-type PersistedState = {
-  tab: Tab;
-  selectedZone: string;
-  stopwatch: StopwatchState;
-  countdownInput: string;
-  countdown: CountdownState;
-};
-
-function loadPersisted(): Partial<PersistedState> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Partial<PersistedState>;
-  } catch {
-    return {};
-  }
-}
-
 // --- component --------------------------------------------------------------
 
-export const ClockWindow = () => {
+// Multiplayer: tab pick, selected zone, stopwatch + countdown state ALL
+// flow through `mesh.clockState`. The relay persists it and broadcasts on
+// every change so every viewer sees the same display. Wall-clock-anchored
+// fields (`startedAt`, `endAt`) mean each peer's UI computes the same
+// remaining/elapsed from their own Date.now(), so we don't have to sync
+// per-tick — just on state transitions.
+//
+// `countdownInput` (the typed duration BEFORE start) stays local: there's
+// no value in two peers fighting over a draft. It's only used to compute
+// `totalSecs` when one of them hits Start, which IS broadcast.
+
+export const ClockWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const [now, setNow] = useState(() => Date.now());
-  const persistedRef = useRef<Partial<PersistedState> | null>(null);
-  if (persistedRef.current === null) persistedRef.current = loadPersisted();
-  const persisted = persistedRef.current;
-  const [tab, setTab] = useState<Tab>(persisted.tab ?? "time");
-  const [selectedZone, setSelectedZone] = useState<string>(persisted.selectedZone ?? "local");
-  const [stopwatch, setStopwatch] = useState<StopwatchState>(persisted.stopwatch ?? { phase: "idle" });
-  const [countdownInput, setCountdownInput] = useState(persisted.countdownInput ?? "10:00");
-  const [countdown, setCountdown] = useState<CountdownState>(persisted.countdown ?? { phase: "idle" });
+  const tab = mesh.clockState.tab;
+  const selectedZone = mesh.clockState.selectedZone;
+  const stopwatch = mesh.clockState.stopwatch;
+  const countdown = mesh.clockState.countdown;
+  const [countdownInput, setCountdownInput] = useState("10:00");
+
+  const setTab = useCallback((t: Tab) => mesh.setClockState({ tab: t }), [mesh]);
+  const setSelectedZone = useCallback((zone: string) => mesh.setClockState({ selectedZone: zone }), [mesh]);
+  const setStopwatch = useCallback((s: StopwatchState) => mesh.setClockState({ stopwatch: s }), [mesh]);
+  const setCountdown = useCallback((c: CountdownState) => mesh.setClockState({ countdown: c }), [mesh]);
+
   const finishedRef = useRef(false);
 
   useEffect(() => {
@@ -162,18 +151,10 @@ export const ClockWindow = () => {
     return () => clearInterval(t);
   }, []);
 
-  // Save on every meaningful state change. Cheap — single JSON blob, small.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const payload: PersistedState = { tab, selectedZone, stopwatch, countdownInput, countdown };
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      /* quota / disabled storage — ignore */
-    }
-  }, [tab, selectedZone, stopwatch, countdownInput, countdown]);
-
-  // Auto-finish countdown.
+  // Auto-finish countdown — every peer detects the transition locally
+  // (since endAt is wall-clock) and fires the beep at the exact same
+  // moment. Whoever's tick fires first ALSO pushes the "done" state to
+  // the mesh; subsequent peers find phase already "done" and skip.
   useEffect(() => {
     if (countdown.phase !== "running") return;
     if (now < countdown.endAt) return;
@@ -181,7 +162,7 @@ export const ClockWindow = () => {
     finishedRef.current = true;
     setCountdown({ phase: "done", totalSecs: countdown.totalSecs });
     playFinishTone();
-  }, [now, countdown]);
+  }, [now, countdown, setCountdown]);
   useEffect(() => {
     if (countdown.phase !== "done") finishedRef.current = false;
   }, [countdown.phase]);
