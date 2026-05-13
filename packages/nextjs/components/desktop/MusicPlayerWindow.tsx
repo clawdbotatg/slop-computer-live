@@ -17,7 +17,18 @@ import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 // graph (we don't pipe audio through the mesh — each peer plays the
 // same MP3 from their own browser).
 
-type Track = { title: string; artist: string; src: string };
+type Track = {
+  title: string;
+  artist: string;
+  src: string;
+  // Jamendo-only fields (absent for legacy /music tracks). The
+  // [+]/[−] buttons + drag-reorder gate on `jamendoId` so legacy
+  // tracks just have no custom-list affordance.
+  jamendoId?: string;
+  duration?: number;
+  license?: string;
+  source?: string;
+};
 
 // Music files + playlist now live on the relay (not the Next.js public
 // dir), so we prepend RELAY_HTTP for fetches and audio loads. The `src`
@@ -130,6 +141,14 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       setError("pick a genre");
       return;
     }
+    // Custom playlist is broadcast over the mesh — no fetch needed.
+    // mesh.musicCustom is the source of truth; re-runs when broadcasts
+    // arrive via the deps below.
+    if (activeGenre === "custom") {
+      setTracks(mesh.musicCustom as Track[]);
+      setError(null);
+      return;
+    }
     setError(`loading ${activeGenre}…`);
     fetch(`${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist`, {
       cache: "no-store",
@@ -149,7 +168,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     return () => {
       cancelled = true;
     };
-  }, [activeGenre]);
+  }, [activeGenre, mesh.musicCustom]);
 
   const current = tracks[index] ?? null;
 
@@ -172,6 +191,35 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         ?.replace(/\.mp3$/i, "") ?? "track";
     return { title: filename, artist: "—", src };
   }, [ms?.src, tracks]);
+
+  // Custom-playlist helpers used by the [+]/[−] buttons on each row,
+  // and by drag-to-reorder logic when viewing the Custom tab.
+  const isCustomTab = activeGenre === "custom";
+  const customIds = useMemo(() => new Set(mesh.musicCustom.map(t => t.jamendoId).filter(Boolean)), [mesh.musicCustom]);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [localCustomOrder, setLocalCustomOrder] = useState<string[] | null>(null);
+
+  // When dragging on the Custom tab, render from `localCustomOrder`
+  // for instant visual feedback. Once the drop fires + the relay
+  // broadcasts back, `tracks` (sourced from mesh.musicCustom) catches
+  // up and we drop the local override.
+  const displayedTracks = useMemo<Track[]>(() => {
+    if (!isCustomTab || !localCustomOrder) return tracks;
+    const byId = new Map(tracks.map(t => [t.jamendoId, t]));
+    const out: Track[] = [];
+    const used = new Set<string>();
+    for (const id of localCustomOrder) {
+      const t = byId.get(id);
+      if (t && !used.has(id)) {
+        out.push(t);
+        used.add(id);
+      }
+    }
+    for (const t of tracks) {
+      if (!t.jamendoId || !used.has(t.jamendoId)) out.push(t);
+    }
+    return out;
+  }, [isCustomTab, localCustomOrder, tracks]);
 
   // ---- Web Audio graph -------------------------------------------------
   // analyser for the spectrum, plus a stereo panner for the BAL slider.
@@ -938,7 +986,8 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             // The `error` state holds "loading <genre>…" while the
             // fetch is in flight, so we use it to discriminate states
             // (1) and (3): if it starts with "loading", show the
-            // animated bar.
+            // animated bar. Custom never shows a loader — it's just
+            // empty until the user adds something.
             <div
               style={{
                 padding: 16,
@@ -951,7 +1000,9 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
                 gap: 10,
               }}
             >
-              {activeGenre && error?.startsWith("loading") ? (
+              {isCustomTab ? (
+                <span>custom is empty — click [+] on any track to add it.</span>
+              ) : activeGenre && error?.startsWith("loading") ? (
                 <>
                   <LoadingBar
                     cells={14}
@@ -967,20 +1018,61 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
               )}
             </div>
           ) : (
-            tracks.map((t, i) => {
+            displayedTracks.map((t, i) => {
               // Highlight by src match (what's actually playing),
               // not by the stored ms.index value — across a genre
               // switch those can point at unrelated tracks.
               const active = playingTrack?.src === t.src;
+              const inCustom = t.jamendoId ? customIds.has(t.jamendoId) : false;
+              const isDraggingRow = isCustomTab && draggingId === t.jamendoId;
               return (
                 <div
                   key={t.src}
+                  draggable={isCustomTab && !!t.jamendoId}
+                  onDragStart={e => {
+                    if (!isCustomTab || !t.jamendoId) return;
+                    setDraggingId(t.jamendoId);
+                    setLocalCustomOrder(tracks.map(x => x.jamendoId).filter((id): id is string => !!id));
+                    e.dataTransfer.effectAllowed = "move";
+                    try {
+                      e.dataTransfer.setData("text/plain", t.jamendoId);
+                    } catch {
+                      /* Firefox edge case — value unused anyway */
+                    }
+                  }}
+                  onDragOver={e => {
+                    if (!isCustomTab || !draggingId || !t.jamendoId || draggingId === t.jamendoId) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setLocalCustomOrder(prev => {
+                      const cur = prev ?? tracks.map(x => x.jamendoId).filter((id): id is string => !!id);
+                      const fromIdx = cur.indexOf(draggingId);
+                      const toIdx = cur.indexOf(t.jamendoId!);
+                      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return cur;
+                      const next = cur.slice();
+                      next.splice(fromIdx, 1);
+                      next.splice(toIdx, 0, draggingId);
+                      return next;
+                    });
+                  }}
+                  onDragEnd={() => {
+                    if (!isCustomTab) return;
+                    if (localCustomOrder) {
+                      const serverIds = mesh.musicCustom.map(x => x.jamendoId);
+                      const sameOrder =
+                        localCustomOrder.length === serverIds.length &&
+                        localCustomOrder.every((id, idx) => id === serverIds[idx]);
+                      if (!sameOrder) mesh.reorderMusicCustom(localCustomOrder);
+                    }
+                    setDraggingId(null);
+                    setLocalCustomOrder(null);
+                  }}
                   onDoubleClick={() => playIndex(i)}
                   onClick={() => playIndex(i)}
                   title={`click to play • ${t.src}`}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "26px 1fr auto",
+                    gridTemplateColumns: `${isCustomTab ? "14px " : ""}26px 1fr auto 22px`,
                     alignItems: "center",
                     gap: 6,
                     padding: "2px 8px",
@@ -992,8 +1084,24 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
                         : "rgba(255,255,255,0.02)",
                     color: active ? "var(--slop-lime, #bcff5b)" : "rgba(188,255,91,0.75)",
                     letterSpacing: "0.04em",
+                    opacity: isDraggingRow ? 0.4 : 1,
+                    cursor: isCustomTab ? "grab" : "default",
                   }}
                 >
+                  {isCustomTab ? (
+                    <span
+                      aria-hidden
+                      title="drag to reorder"
+                      style={{
+                        color: "rgba(255,174,0,0.4)",
+                        userSelect: "none",
+                        fontSize: 11,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ⋮⋮
+                    </span>
+                  ) : null}
                   <span
                     style={{
                       color: active ? "var(--slop-amber, #ffae00)" : "rgba(255,174,0,0.55)",
@@ -1021,6 +1129,58 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
                   >
                     {active ? fmtTime(duration) : "--:--"}
                   </span>
+                  {/* Custom-list mutator. On the Custom tab → [−]
+                      removes the track. On any other tab → [+] adds
+                      (disabled if already in custom). Stop click +
+                      mousedown propagation so the row's "click to
+                      play" handler doesn't fire when the user is
+                      just managing the list. */}
+                  {t.jamendoId ? (
+                    isCustomTab ? (
+                      <button
+                        type="button"
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={e => {
+                          e.stopPropagation();
+                          if (t.jamendoId) mesh.removeFromMusicCustom(t.jamendoId);
+                        }}
+                        title="remove from custom"
+                        style={customBtnStyle("remove")}
+                      >
+                        −
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={inCustom}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={e => {
+                          e.stopPropagation();
+                          if (inCustom || !t.jamendoId) return;
+                          // Narrow Track → JamendoTrack with safe defaults
+                          // for any optional fields. We only get here for
+                          // tracks that originated from a Jamendo genre, so
+                          // the metadata is real; the fallbacks are just
+                          // type-system appeasement.
+                          mesh.addToMusicCustom({
+                            title: t.title,
+                            artist: t.artist,
+                            src: t.src,
+                            duration: t.duration ?? 0,
+                            jamendoId: t.jamendoId,
+                            license: t.license ?? "",
+                            source: t.source ?? "",
+                          });
+                        }}
+                        title={inCustom ? "already in custom" : "add to custom"}
+                        style={customBtnStyle(inCustom ? "added" : "add")}
+                      >
+                        {inCustom ? "✓" : "+"}
+                      </button>
+                    )
+                  ) : (
+                    <span aria-hidden style={{ width: 22 }} />
+                  )}
                 </div>
               );
             })
@@ -1030,6 +1190,29 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     </div>
   );
 };
+
+function customBtnStyle(kind: "add" | "added" | "remove"): React.CSSProperties {
+  const base: React.CSSProperties = {
+    width: 18,
+    height: 18,
+    padding: 0,
+    fontSize: 12,
+    lineHeight: "16px",
+    border: "1px solid rgba(255,255,255,0.18)",
+    borderRadius: 3,
+    cursor: kind === "added" ? "default" : "pointer",
+    fontFamily: "var(--slop-font-display)",
+    background: "transparent",
+  };
+  if (kind === "add") {
+    return { ...base, color: "var(--slop-lime, #bcff5b)", borderColor: "rgba(188,255,91,0.4)" };
+  }
+  if (kind === "added") {
+    return { ...base, color: "var(--slop-text-muted)", borderColor: "rgba(255,255,255,0.1)" };
+  }
+  // remove
+  return { ...base, color: "var(--slop-magenta, #ff3ec9)", borderColor: "rgba(255,62,201,0.45)" };
+}
 
 // --- Transport button -------------------------------------------------
 type Icon = "prev" | "play" | "pause" | "stop" | "next";

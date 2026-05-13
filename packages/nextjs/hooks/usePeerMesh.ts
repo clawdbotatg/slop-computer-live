@@ -147,6 +147,18 @@ export type Note = {
   text: string;
 };
 
+/** Jamendo / Custom playlist track. Mirrors
+ *  `packages/relay/src/jamendo.ts`'s JamendoTrack. */
+export type JamendoTrack = {
+  title: string;
+  artist: string;
+  src: string;
+  duration: number;
+  jamendoId: string;
+  license: string;
+  source: string;
+};
+
 /** Ethereum gas snapshot — polled on the relay every ~12s, broadcast on
  *  change. Mirrors `packages/relay/src/gas.ts`. */
 export type GasState = {
@@ -374,6 +386,13 @@ export type PeerMeshState = {
   /** Switch the shared current genre. Triggers the relay's lazy
    *  download/refresh — first time on a cold genre can take ~30s. */
   setMusicGenre: (genre: string | null) => void;
+  /** User-curated "Custom" playlist — same shape as any other genre's
+   *  tracks, mesh-broadcast on add/remove/reorder. Each peer's [+] /
+   *  [−] buttons check this list to know which state to show. */
+  musicCustom: JamendoTrack[];
+  addToMusicCustom: (track: JamendoTrack) => void;
+  removeFromMusicCustom: (jamendoId: string) => void;
+  reorderMusicCustom: (orderedIds: string[]) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
 };
 
@@ -399,6 +418,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
   const [musicGenre, setMusicGenreLocal] = useState<string | null>(null);
+  const [musicCustom, setMusicCustomLocal] = useState<JamendoTrack[]>([]);
   const [clockState, setClockStateLocal] = useState<ClockState>(DEFAULT_CLOCK_STATE);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
@@ -824,6 +844,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     }).catch(err => console.warn("setMusicGenre failed", err));
   }, []);
 
+  // Custom playlist mutations — all three flow through HTTP POSTs /
+  // DELETE on the relay, which validates + broadcasts `music_custom`
+  // back to the mesh. No optimistic local update.
+  const addToMusicCustom = useCallback((track: JamendoTrack) => {
+    fetch(`${RELAY_HTTP_URL}/v1/music/custom/add`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track }),
+    }).catch(err => console.warn("addToMusicCustom failed", err));
+  }, []);
+  const removeFromMusicCustom = useCallback((jamendoId: string) => {
+    fetch(`${RELAY_HTTP_URL}/v1/music/custom/${encodeURIComponent(jamendoId)}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("removeFromMusicCustom failed", err));
+  }, []);
+  const reorderMusicCustom = useCallback((orderedIds: string[]) => {
+    fetch(`${RELAY_HTTP_URL}/v1/music/custom/reorder`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: orderedIds }),
+    }).catch(err => console.warn("reorderMusicCustom failed", err));
+  }, []);
+
   // Update the shared clock state. Partial patch — fields you omit
   // are preserved server-side. Relay broadcasts `clock_state` to
   // every peer (including us) so the WS echo is authoritative.
@@ -999,6 +1045,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (typeof msg.musicGenre === "string" || msg.musicGenre === null) {
             setMusicGenreLocal(msg.musicGenre as string | null);
+          }
+          if (Array.isArray(msg.musicCustom)) {
+            setMusicCustomLocal(msg.musicCustom as JamendoTrack[]);
           }
           if (msg.clockState && typeof msg.clockState === "object") {
             setClockStateLocal(msg.clockState as ClockState);
@@ -1262,6 +1311,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "music_custom" && Array.isArray(msg.tracks)) {
+          setMusicCustomLocal(msg.tracks as JamendoTrack[]);
+          return;
+        }
+
         if (msg.type === "clock_state" && msg.state && typeof msg.state === "object") {
           setClockStateLocal(msg.state as ClockState);
           return;
@@ -1391,6 +1445,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     musicGenres,
     musicGenre,
     setMusicGenre,
+    musicCustom,
+    addToMusicCustom,
+    removeFromMusicCustom,
+    reorderMusicCustom,
     clockState,
     setClockState,
     broadcastTxRequest,

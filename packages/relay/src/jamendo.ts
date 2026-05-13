@@ -35,13 +35,25 @@ export const GENRES: Record<string, { label: string; tag: string }> = {
   punk: { label: "Punk", tag: "punk" },
   country: { label: "Country", tag: "country" },
   house: { label: "House", tag: "house" },
+  // "custom" is special — not Jamendo-backed, never auto-refreshed.
+  // Tracks land here when a user clicks [+] on any other genre. Stored
+  // separately (custom-playlist.json) so refreshing other genres can't
+  // touch it. The underlying MP3 files are reused from whatever genre
+  // they were originally fetched into — refreshGenre never deletes,
+  // only appends, so once a file is on disk it stays.
+  custom: { label: "Custom", tag: "" },
 };
 
 export type Genre = keyof typeof GENRES;
 export const GENRE_IDS = Object.keys(GENRES);
+export const CUSTOM_GENRE = "custom";
 
 export function isGenre(s: string): s is Genre {
   return Object.prototype.hasOwnProperty.call(GENRES, s);
+}
+
+function isCustom(genre: string): boolean {
+  return genre === CUSTOM_GENRE;
 }
 
 export type JamendoTrack = {
@@ -117,8 +129,42 @@ export function getCurrentGenre(): string | null {
   return loadState().currentGenre;
 }
 
+const CUSTOM_FILE = `${JAMENDO_DIR}/custom-playlist.json`;
+
+function loadCustomTracks(): JamendoTrack[] {
+  try {
+    const raw = readFileSync(CUSTOM_FILE, "utf8");
+    const parsed = JSON.parse(raw) as { tracks?: unknown };
+    return Array.isArray(parsed.tracks) ? (parsed.tracks as JamendoTrack[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomTracks(tracks: JamendoTrack[]): void {
+  try {
+    mkdirSync(JAMENDO_DIR, { recursive: true });
+    writeFileSync(CUSTOM_FILE, JSON.stringify({ tracks }, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[jamendo] saveCustom failed", err);
+  }
+}
+
+export function getCustomPlaylist(): GenrePlaylist {
+  return {
+    genre: CUSTOM_GENRE,
+    label: GENRES[CUSTOM_GENRE]!.label,
+    tag: "",
+    fetchedAt: Date.now(),
+    tracks: loadCustomTracks(),
+  };
+}
+
 export function readPlaylist(genre: string): GenrePlaylist | null {
   if (!isGenre(genre)) return null;
+  // Custom playlist lives in its own file — never auto-refreshed, never
+  // overwritten by a genre fetch.
+  if (isCustom(genre)) return getCustomPlaylist();
   const path = `${JAMENDO_DIR}/${genre}/playlist.json`;
   try {
     const raw = readFileSync(path, "utf8");
@@ -126,6 +172,71 @@ export function readPlaylist(genre: string): GenrePlaylist | null {
   } catch {
     return null;
   }
+}
+
+// --- Custom playlist mutations ---------------------------------------------
+
+type CustomSubscriber = (tracks: JamendoTrack[]) => void;
+const customSubscribers = new Set<CustomSubscriber>();
+export function subscribeCustom(fn: CustomSubscriber): () => void {
+  customSubscribers.add(fn);
+  return () => customSubscribers.delete(fn);
+}
+function emitCustom(tracks: JamendoTrack[]): void {
+  for (const fn of customSubscribers) {
+    try {
+      fn(tracks);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+const CUSTOM_MAX_TRACKS = 200;
+
+export function addToCustom(track: JamendoTrack): JamendoTrack[] {
+  const tracks = loadCustomTracks();
+  // Dedupe by jamendoId — clicking [+] on a track that's already in
+  // custom is a no-op rather than an error.
+  if (tracks.some(t => t.jamendoId === track.jamendoId)) return tracks;
+  tracks.push(track);
+  if (tracks.length > CUSTOM_MAX_TRACKS) tracks.splice(0, tracks.length - CUSTOM_MAX_TRACKS);
+  saveCustomTracks(tracks);
+  emitCustom(tracks);
+  return tracks;
+}
+
+export function removeFromCustom(jamendoId: string): JamendoTrack[] {
+  const tracks = loadCustomTracks();
+  const next = tracks.filter(t => t.jamendoId !== jamendoId);
+  if (next.length === tracks.length) return tracks; // no-op
+  saveCustomTracks(next);
+  emitCustom(next);
+  return next;
+}
+
+export function reorderCustom(orderedIds: string[]): JamendoTrack[] {
+  const tracks = loadCustomTracks();
+  const byId = new Map(tracks.map(t => [t.jamendoId, t]));
+  const out: JamendoTrack[] = [];
+  const used = new Set<string>();
+  for (const id of orderedIds) {
+    const t = byId.get(id);
+    if (t && !used.has(id)) {
+      out.push(t);
+      used.add(id);
+    }
+  }
+  // Defensive: any track not in `orderedIds` (e.g. raced with concurrent
+  // add) gets appended at the end so we don't lose anything.
+  for (const t of tracks) {
+    if (!used.has(t.jamendoId)) out.push(t);
+  }
+  const sameOrder = out.length === tracks.length && out.every((t, i) => t.jamendoId === tracks[i]?.jamendoId);
+  if (sameOrder) return tracks;
+  saveCustomTracks(out);
+  emitCustom(out);
+  return out;
 }
 
 // --- Refresh from Jamendo --------------------------------------------------
@@ -140,6 +251,9 @@ const inFlight = new Map<string, Promise<GenrePlaylist>>();
 
 export async function refreshGenre(genre: string, opts: { force?: boolean } = {}): Promise<GenrePlaylist> {
   if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
+  // Custom is user-curated, never fetched from Jamendo. Just hand back
+  // whatever's on disk.
+  if (isCustom(genre)) return getCustomPlaylist();
   const cached = inFlight.get(genre);
   if (cached) return cached;
   const p = doRefresh(genre, opts).finally(() => inFlight.delete(genre));

@@ -88,11 +88,17 @@ import {
   GENRE_IDS,
   GENRES,
   JAMENDO_DIR,
+  type JamendoTrack,
+  addToCustom,
   getCurrentGenre,
+  getCustomPlaylist,
   isGenre,
   readPlaylist,
   refreshGenre,
+  removeFromCustom,
+  reorderCustom,
   setCurrentGenre,
+  subscribeCustom,
   subscribe as subscribeJamendo,
 } from "./jamendo.js";
 import {
@@ -445,6 +451,7 @@ app.get("/v1/state", async (req, reply) => {
     files: fileList(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
     musicGenre: getCurrentGenre(),
+    musicCustom: getCustomPlaylist().tracks,
     clockState: getClockState(),
   };
 });
@@ -668,6 +675,13 @@ subscribeFiles(event => {
 // picks a genre, all peers' music players switch playlists.
 subscribeJamendo(event => {
   broadcast({ type: "music_genre", genre: event.genre });
+});
+
+// Custom playlist — shared across the mesh. Broadcast the full
+// track list on every add/remove/reorder so every peer's [+]/[-]
+// state stays in sync.
+subscribeCustom(tracks => {
+  broadcast({ type: "music_custom", tracks });
 });
 
 // Clock app state — shared across the mesh. Tab pick, timezone,
@@ -1514,6 +1528,59 @@ app.get<{ Params: { genre: string } }>("/v1/music/genre/:genre/playlist", async 
   }
 });
 
+// --- Custom playlist mutations --------------------------------------------
+// The Custom genre is user-curated. Each [+] click on a track in some
+// other genre posts that track's metadata here; the track's MP3 stays
+// on disk in its original genre's dir, and Custom just references the
+// same `src` path. Reorder + remove follow the same pattern.
+
+type AddCustomBody = { track?: unknown };
+
+app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const t = req.body?.track as Partial<JamendoTrack> | undefined;
+  if (
+    !t ||
+    typeof t.title !== "string" ||
+    typeof t.artist !== "string" ||
+    typeof t.src !== "string" ||
+    typeof t.jamendoId !== "string"
+  ) {
+    return reply.code(400).send({ error: "bad-track" });
+  }
+  // Normalize: only persist the fields we know about. Defends against
+  // a misbehaving client storing extra junk in the saved blob.
+  const tracks = addToCustom({
+    title: t.title,
+    artist: t.artist,
+    src: t.src,
+    duration: typeof t.duration === "number" ? t.duration : 0,
+    jamendoId: t.jamendoId,
+    license: typeof t.license === "string" ? t.license : "",
+    source: typeof t.source === "string" ? t.source : "",
+  });
+  return { ok: true, tracks };
+});
+
+app.delete<{ Params: { jamendoId: string } }>("/v1/music/custom/:jamendoId", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const tracks = removeFromCustom(req.params.jamendoId);
+  return { ok: true, tracks };
+});
+
+type ReorderCustomBody = { ids?: unknown };
+
+app.post<{ Body: ReorderCustomBody }>("/v1/music/custom/reorder", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
+  const ids = req.body.ids.filter((x: unknown): x is string => typeof x === "string");
+  const tracks = reorderCustom(ids);
+  return { ok: true, tracks };
+});
+
 // Static serve for the per-genre MP3s. Same range-supporting pattern as
 // /music/<filename>, but two path segments deep so genre playlists stay
 // neatly partitioned on disk.
@@ -2178,6 +2245,7 @@ app.register(async function signalRoutes(fastify) {
       files: fileList(),
       musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
       musicGenre: getCurrentGenre(),
+      musicCustom: getCustomPlaylist().tracks,
       clockState: getClockState(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
