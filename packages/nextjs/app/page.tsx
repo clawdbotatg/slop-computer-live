@@ -411,6 +411,168 @@ const Desktop: NextPage = () => {
     });
   }, [apps, mesh]);
 
+  // --- Arrange "for X" layouts -------------------------------------------
+  // Each writes a batch of slot updates that broadcasts to every peer, so
+  // when the host hits "Arrange for Screen Share" every viewer's desktop
+  // restacks identically. Geometry uses the local viewport so the
+  // proportions look right on each peer's screen even though the absolute
+  // sizes differ.
+  const meshPublications = mesh.publications;
+  const meshSlotsRefForArrange = useRef(mesh.slots);
+  meshSlotsRefForArrange.current = mesh.slots;
+  const meshUpdateSlotForArrange = mesh.updateSlot;
+
+  const arrangeForScreenShare = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const TOP_INSET = 38; // menubar
+    const PAD = 12;
+    const RIGHT_STRIP = 280;
+
+    const screens = meshPublications.filter(p => p.kind === "screen");
+    const cameras = meshPublications.filter(p => p.kind === "camera");
+
+    // Bump z above every existing slot so the rearranged set sits on top
+    // of any browsers / app windows the user had floating around.
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+
+    const stageWidth = Math.max(320, vw - RIGHT_STRIP - PAD * 3);
+    const stageHeight = Math.max(240, vh - TOP_INSET - PAD * 2);
+    screens.forEach((pub, i) => {
+      // Multiple screen shares (rare) cascade slightly within the stage.
+      meshUpdateSlotForArrange({
+        id: slotIdFor(pub),
+        x: PAD + i * 16,
+        y: TOP_INSET + PAD + i * 16,
+        width: stageWidth,
+        height: stageHeight,
+        z: z++,
+      });
+    });
+
+    // Cameras stack equally down the right strip.
+    if (cameras.length > 0) {
+      const totalGap = (cameras.length - 1) * PAD;
+      const camHeight = Math.max(120, Math.floor((vh - TOP_INSET - PAD * 2 - totalGap) / cameras.length));
+      cameras.forEach((pub, i) => {
+        meshUpdateSlotForArrange({
+          id: slotIdFor(pub),
+          x: vw - RIGHT_STRIP - PAD,
+          y: TOP_INSET + PAD + i * (camHeight + PAD),
+          width: RIGHT_STRIP,
+          height: camHeight,
+          z: z++,
+        });
+      });
+    }
+  }, [meshPublications, meshUpdateSlotForArrange]);
+
+  const arrangeForVideo = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const TOP_INSET = 38;
+    const PAD = 12;
+
+    const cameras = meshPublications.filter(p => p.kind === "camera");
+    if (cameras.length === 0) return;
+
+    // Hard cap at 5 — host says we'll never exceed that. Extra cameras
+    // (defensive) get tiled at the end of the last row.
+    const layouts: Array<{ cols: number; rows: number }> = [
+      { cols: 1, rows: 1 }, // 1: full
+      { cols: 2, rows: 1 }, // 2: side by side
+      { cols: 2, rows: 2 }, // 3: 2 over 1 (handled below)
+      { cols: 2, rows: 2 }, // 4: 2x2
+      { cols: 3, rows: 2 }, // 5: 3 over 2
+    ];
+    const n = Math.min(cameras.length, layouts.length);
+    const layout = layouts[n - 1]!;
+    const gridW = vw - PAD * 2;
+    const gridH = vh - TOP_INSET - PAD * 2;
+    const cellW = Math.floor((gridW - (layout.cols - 1) * PAD) / layout.cols);
+    const cellH = Math.floor((gridH - (layout.rows - 1) * PAD) / layout.rows);
+
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+
+    cameras.forEach((pub, i) => {
+      let row = Math.floor(i / layout.cols);
+      let col = i % layout.cols;
+      // Special case for 3: top row holds 2, bottom row holds 1 centered.
+      // (The default 2x2 cell logic would leave a hole on the bottom-
+      // right; this centers the third instead.)
+      if (n === 3 && i === 2) {
+        row = 1;
+        col = 0;
+      }
+      const x = PAD + col * (cellW + PAD);
+      const y = TOP_INSET + PAD + row * (cellH + PAD);
+      // For the centered 3rd cell, span across both columns horizontally.
+      const w = n === 3 && i === 2 ? cellW * 2 + PAD : cellW;
+      meshUpdateSlotForArrange({
+        id: slotIdFor(pub),
+        x,
+        y,
+        width: w,
+        height: cellH,
+        z: z++,
+      });
+    });
+  }, [meshPublications, meshUpdateSlotForArrange]);
+
+  // Open music + clock side by side, start a 10-minute countdown so
+  // everyone sees the same timer tick down. Wall-clock-anchored via
+  // endAt so peers stay in lockstep without per-tick sync.
+  const meshSetClockStateForArrange = mesh.setClockState;
+  const meshOpenWindowForArrange = mesh.openWindow;
+  const arrangeForCountdown = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const TOP_INSET = 38;
+    const PAD = 16;
+
+    meshOpenWindowForArrange("music");
+    meshOpenWindowForArrange("clock");
+
+    // Music left, clock right. Sized so both fit on a normal viewport
+    // without overlap; height bounded so they sit in the upper-middle
+    // of the screen rather than spanning everything.
+    const halfW = Math.max(360, Math.floor((vw - PAD * 3) / 2));
+    const winH = Math.max(440, Math.min(640, vh - TOP_INSET - PAD * 2));
+    const winY = TOP_INSET + PAD;
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+    meshUpdateSlotForArrange({
+      id: "app-music",
+      x: PAD,
+      y: winY,
+      width: halfW,
+      height: winH,
+      z: z++,
+    });
+    meshUpdateSlotForArrange({
+      id: "app-clock",
+      x: PAD + halfW + PAD,
+      y: winY,
+      width: halfW,
+      height: winH,
+      z: z++,
+    });
+
+    // Flip the clock to countdown tab + start a 10-minute timer
+    // anchored to Date.now() so every peer's UI computes the same
+    // remaining.
+    meshSetClockStateForArrange({
+      tab: "countdown",
+      countdown: {
+        phase: "running",
+        totalSecs: 600,
+        endAt: Date.now() + 600 * 1000,
+      },
+    });
+  }, [meshOpenWindowForArrange, meshUpdateSlotForArrange, meshSetClockStateForArrange]);
+
   const viewMenu = useMemo<Menu>(
     () => ({
       label: "View",
@@ -420,8 +582,9 @@ const Desktop: NextPage = () => {
         { label: "  Show Grid", disabled: true },
         { divider: true, label: "" },
         { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
-        { label: "Tile Windows", disabled: true },
-        { label: "Cascade Windows", disabled: true },
+        { label: "Arrange for Screen Share", onClick: arrangeForScreenShare },
+        { label: "Arrange for Video", onClick: arrangeForVideo },
+        { label: "Arrange for Countdown", onClick: arrangeForCountdown },
         { divider: true, label: "" },
         {
           label: "Full Screen",
@@ -433,7 +596,7 @@ const Desktop: NextPage = () => {
         },
       ],
     }),
-    [autoArrangeIcons],
+    [autoArrangeIcons, arrangeForScreenShare, arrangeForVideo, arrangeForCountdown],
   );
 
   // ---- Slot clamp on viewport resize ------------------------------------
