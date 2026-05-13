@@ -1178,14 +1178,17 @@ const Desktop: NextPage = () => {
               position: "absolute",
               left: u.x,
               top: u.y,
-              width: 88,
-              minHeight: 110,
-              padding: "10px 8px",
+              // Wider than the 88px icon to give the loading bar room
+              // to breathe. The eventual file icon still lands flush-
+              // left at (u.x, u.y) after the upload finishes; the box
+              // is a transient indicator, not a slot placeholder.
+              width: 180,
+              padding: "10px 12px",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              gap: 8,
+              gap: 6,
               background: "linear-gradient(180deg, rgba(20,10,40,0.92) 0%, rgba(6,3,13,0.92) 100%)",
               border: "1px solid rgba(255,62,201,0.45)",
               borderRadius: 6,
@@ -1196,16 +1199,28 @@ const Desktop: NextPage = () => {
             }}
           >
             <LoadingBar
-              cells={6}
+              cells={10}
               // Determinate once XHR upload.onprogress has fired at
               // least once; before that the bar runs the indeterminate
               // animation (LoadingBar's default when `progress` is
-              // undefined). Caption shows the live % so the user can
-              // read the actual figure.
+              // undefined). Caption is empty here — we render the %
+              // on its own line below the bar so it reads more like
+              // a small status panel than an inline progress meter.
               progress={u.progress}
-              caption={typeof u.progress === "number" ? `${u.progress}%` : ""}
-              style={{ fontSize: 12, color: "var(--slop-lime, #bcff5b)" }}
+              caption=""
+              style={{ fontSize: 13, color: "var(--slop-lime, #bcff5b)" }}
             />
+            <span
+              style={{
+                fontSize: 11,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.1em",
+                color: typeof u.progress === "number" ? "var(--slop-amber, #ffae00)" : "var(--slop-text-muted)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {typeof u.progress === "number" ? `${u.progress}%` : "uploading…"}
+            </span>
             <span
               style={{
                 width: "100%",
