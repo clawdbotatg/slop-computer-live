@@ -20,6 +20,7 @@ import { GasWindow } from "~~/components/desktop/GasWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
+import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
@@ -946,12 +947,7 @@ const Desktop: NextPage = () => {
   return (
     <>
       <DesktopBackground />
-      <MenuBar
-        menus={[fileMenu, editMenu, viewMenu]}
-        peers={mesh.peers}
-        myId={mesh.myId}
-        meshConnected={mesh.connected}
-      />
+      <MenuBar menus={[fileMenu, editMenu, viewMenu]} meshConnected={mesh.connected} />
       <div
         onDragEnter={e => {
           if (!session.authenticated) return;
@@ -1412,6 +1408,11 @@ const Desktop: NextPage = () => {
             (apps can't be trashed). Gated on auth so the trash isn't
             visible on the sign-in screen. */}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
+        {/* Always-visible "who's here" panel pinned to the top-right
+            (per-peer viewport position, not in the shared slot system,
+            like the trash). Sign-out / power dropdowns from the menubar
+            naturally overlay this via their z=9100. */}
+        {session.authenticated ? <PinnedPeers peers={mesh.peers} myId={mesh.myId} /> : null}
 
         {/* File previews — shared across the mesh, exactly like every
             other singleton window. Each opens via mesh.openWindow
