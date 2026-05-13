@@ -28,7 +28,16 @@ import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
-import { BandFlag, Button, ClickRipple, DesktopBackground, type Menu, MenuBar, Window } from "~~/components/ui";
+import {
+  BandFlag,
+  Button,
+  ClickRipple,
+  DesktopBackground,
+  LoadingBar,
+  type Menu,
+  MenuBar,
+  Window,
+} from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
@@ -903,11 +912,26 @@ const Desktop: NextPage = () => {
   const [dropHover, setDropHover] = useState(false);
   const dragDepthRef = useRef(0);
   const meshUpdateSlotForFiles = mesh.updateSlot;
+  // In-flight upload markers. Per-peer local state — only the uploader
+  // sees these (other peers' UIs just see the file appear when the
+  // relay broadcasts `file_added`). One entry per in-flight POST, with
+  // the same (x, y) the icon will eventually land at so the loader
+  // visually morphs into the file icon when the upload completes.
+  const [uploadsInFlight, setUploadsInFlight] = useState<Array<{ id: string; name: string; x: number; y: number }>>([]);
+
   const uploadFiles = useCallback(
     async (files: FileList, dropX: number, dropY: number) => {
       const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
       let cascade = 0;
       for (const file of Array.from(files)) {
+        const localId = `upload-${Math.random().toString(36).slice(2, 10)}`;
+        const slotX = dropX + cascade * 12;
+        const slotY = dropY + cascade * 12;
+        // Show the loader box BEFORE awaiting the network. For multiple
+        // dropped files, each gets its own cascaded box so a 5-file
+        // drop is 5 stacked boxes you can watch tick down together.
+        setUploadsInFlight(prev => [...prev, { id: localId, name: file.name, x: slotX, y: slotY }]);
+        cascade += 1;
         try {
           const buf = await file.arrayBuffer();
           const res = await fetch(`${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}`, {
@@ -928,16 +952,17 @@ const Desktop: NextPage = () => {
           if (id) {
             meshUpdateSlotForFiles({
               id: `file-${id}`,
-              x: dropX + cascade * 12,
-              y: dropY + cascade * 12,
+              x: slotX,
+              y: slotY,
               width: 88,
               height: 110,
               z: maxZ + 1 + cascade,
             });
-            cascade += 1;
           }
         } catch (err) {
           console.warn("upload failed", file.name, err);
+        } finally {
+          setUploadsInFlight(prev => prev.filter(u => u.id !== localId));
         }
       }
     },
@@ -1119,6 +1144,56 @@ const Desktop: NextPage = () => {
               );
             })
           : null}
+
+        {/* In-flight upload markers — per-peer local state, only
+            visible to the uploader. Render at the same (x, y) the
+            eventual file icon will use so the loader visually swaps
+            into the icon on completion. */}
+        {uploadsInFlight.map(u => (
+          <div
+            key={u.id}
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: u.x,
+              top: u.y,
+              width: 88,
+              minHeight: 110,
+              padding: "10px 8px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              background: "linear-gradient(180deg, rgba(20,10,40,0.92) 0%, rgba(6,3,13,0.92) 100%)",
+              border: "1px solid rgba(255,62,201,0.45)",
+              borderRadius: 6,
+              boxShadow: "0 0 12px rgba(255,62,201,0.25), 0 4px 12px rgba(0,0,0,0.6)",
+              zIndex: 2,
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          >
+            <LoadingBar cells={6} caption="" style={{ fontSize: 12, color: "var(--slop-lime, #bcff5b)" }} />
+            <span
+              style={{
+                width: "100%",
+                fontSize: 9,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: "var(--slop-text-muted)",
+                textAlign: "center",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={u.name}
+            >
+              {u.name}
+            </span>
+          </div>
+        ))}
 
         {/* Shared windows — one per active publication. Same on every peer. */}
         {windows.map(({ pub, slotId, slot }) => {
