@@ -66,7 +66,7 @@ export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
           borderBottom: "1px solid rgba(255,62,201,0.18)",
         }}
       >
-        Who&apos;s Here — {peers.length}
+        {peers.length} guest{peers.length === 1 ? "" : "s"}
       </div>
       {peers.length === 0 ? (
         <div style={{ color: "var(--slop-text-muted)", fontStyle: "italic", padding: "4px 2px" }}>just you so far.</div>
@@ -100,14 +100,13 @@ export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
                     fontWeight: p.role === "host" ? 600 : undefined,
                   }}
                 >
-                  {p.role === "host" ? (
-                    <span aria-hidden style={{ color: "var(--slop-amber, #ffae00)" }}>
-                      ★
-                    </span>
-                  ) : null}
+                  {/* BandFlag (identity-derived blockie-color strip) sits
+                      to the left of the label — fills the slot the host
+                      star used to occupy. Host emphasis is now carried by
+                      fontWeight + the role tag on the right. */}
+                  <BandFlag bands={bandsFromIdentity({ address: p.address, handle: p.handle, fallback: p.id })} />
                   {labelOf(p)}
                   {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
-                  <BandFlag bands={bandsFromIdentity({ address: p.address, handle: p.handle, fallback: p.id })} />
                 </span>
                 <span
                   style={{
