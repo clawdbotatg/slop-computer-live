@@ -67,15 +67,21 @@ export const AudioDropZone = ({ isMine, onFile, children }: AudioDropZoneProps) 
     return <>{children}</>;
   }
 
+  // stopPropagation so the drop / dragover doesn't bubble to the
+  // desktop's drop-to-upload handler in page.tsx. Without this, dropping
+  // an image onto an audio publication's avatar zone ALSO created a
+  // desktop file icon for it (double upload).
   const handleEnter = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       setHover(true);
     }
   };
   const handleOver = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = "copy";
     }
   };
@@ -89,6 +95,7 @@ export const AudioDropZone = ({ isMine, onFile, children }: AudioDropZoneProps) 
   };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setHover(false);
     const file = e.dataTransfer.files?.[0];
     if (file) onFile(file);

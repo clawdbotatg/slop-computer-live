@@ -66,15 +66,22 @@ export const QrCodeWindow = () => {
     }
   };
 
+  // stopPropagation on every drag event that handles a Files payload —
+  // otherwise the event bubbles up to the desktop's drop-to-upload
+  // handler in page.tsx and the file gets BOTH consumed by QR and
+  // uploaded as a desktop file icon. stopPropagation on dragenter/over
+  // suppresses the desktop's "drop to share" overlay too.
   const onDragEnter = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       setHover(true);
     }
   };
   const onDragOver = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = "copy";
     }
   };
@@ -85,6 +92,7 @@ export const QrCodeWindow = () => {
   };
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setHover(false);
     void handleFile(e.dataTransfer.files?.[0]);
   };

@@ -311,15 +311,20 @@ const AvatarDrop = ({
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // stopPropagation so this drop doesn't ALSO bubble up to the
+  // desktop's drop-to-upload handler in page.tsx (which would
+  // additionally save the image as a desktop file icon).
   const handleEnter = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       setHover(true);
     }
   };
   const handleOver = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = "copy";
     }
   };
@@ -333,6 +338,7 @@ const AvatarDrop = ({
   };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setHover(false);
     const file = e.dataTransfer.files?.[0];
     if (file) onFile(file);
