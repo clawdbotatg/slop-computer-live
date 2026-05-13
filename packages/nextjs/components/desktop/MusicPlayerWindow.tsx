@@ -546,6 +546,47 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     return () => window.removeEventListener(ACTIVATED_EVENT, onActivated);
   }, [mesh, setupGraph]);
 
+  // OS audio device swap recovery. When the user plugs in headphones (or
+  // switches default output via the menubar / Bluetooth / etc.) Chrome
+  // doesn't automatically reroute audio that's already in flight — the
+  // <audio> element keeps "playing" but the samples go to the previous
+  // device, and the AudioContext destination stays pinned to the old
+  // sink. Symptom: audio dies after the switch and you have to manually
+  // stop + start to bring it back on the new device.
+  //
+  // Recovery: on `devicechange`, if the shared state says we SHOULD be
+  // playing, briefly pause + play the audio element. A fresh play()
+  // call routes to the current default device. Also resume the
+  // AudioContext (sometimes it gets suspended on device swaps).
+  //
+  // We don't tear down the AudioContext / MediaElementSource because
+  // Chrome forbids creating a second MediaElementSource on the same
+  // <audio> element. Pause+play is enough for the user-audible audio;
+  // the visualizer keeps working because its analyser is still in the
+  // graph.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    const onDeviceChange = () => {
+      const a = audioRef.current;
+      if (!a) return;
+      audioCtxRef.current?.resume().catch(() => undefined);
+      if (!mesh.musicState?.playing) return;
+      // Pause + replay nudges Chrome to re-resolve the audio sink. The
+      // currentTime is preserved across pause/play so there's no visible
+      // skip — peers stay in sync within the existing tolerance.
+      try {
+        a.pause();
+      } catch {
+        /* ignore */
+      }
+      a.play().catch(err => {
+        setError(`device-change retry: ${(err as Error).message}`);
+      });
+    };
+    navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
+  }, [mesh]);
+
   const lcdTrackText = useMemo(() => {
     if (error) return error;
     // Show what's actually playing (from ms.src), not what's at the
