@@ -23,20 +23,23 @@ export const SlopBackdrop = () => (
       position: "fixed",
       right: RIGHT_OFFSET,
       bottom: 72,
-      width: "70vw",
-      maxWidth: "70vw",
+      // Box sizes to its text content so `right` anchors the *text's*
+      // right edge — not a wider invisible box. Without this the text
+      // could float left of the right edge on wide monitors.
+      width: "max-content",
       margin: 0,
       padding: 0,
       pointerEvents: "none",
       userSelect: "none",
       zIndex: 0, // behind icons (z=1), trash (z=50), and windows — pure backdrop
-      // 70vw / ~98 cols / ~0.6 em per monospace char → ~1.19vw font-size.
-      // Clamp keeps it readable on very small or very large viewports.
+      // ~98 cols × 0.6em/char in monospace → 1.19vw font-size makes the
+      // rendered text width ≈ 70vw. Min stays for very narrow viewports.
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: "clamp(4px, 1.18vw, 16px)",
+      fontSize: "max(4px, 1.18vw)",
       lineHeight: 1,
       letterSpacing: 0,
       whiteSpace: "pre",
+      textAlign: "right",
       color: "var(--slop-magenta, #ff3ec9)",
       opacity: 0.18,
       textShadow: "0 0 6px rgba(255,62,201,0.25)",
