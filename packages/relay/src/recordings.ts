@@ -1,4 +1,7 @@
-import { readdir, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { readdir, stat, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 // `openAsBlob` lands in Node 19.8+ (we're on 22) but @types/node@18 in
 // this workspace doesn't ship the declaration yet. Import it dynamically
@@ -42,6 +45,7 @@ export type FinalizeResult = {
 /** Streaming progress events emitted by finalizeRecording. */
 export type FinalizeEvent =
   | { phase: "starting"; file: string; name: string; totalBytes: number }
+  | { phase: "remuxing" }
   | { phase: "uploading"; bytes: number; totalBytes: number }
   | { phase: "done"; cid: string; file: string; name: string; sizeBytes: number; mtime: number }
   | { phase: "error"; message: string };
@@ -140,6 +144,47 @@ export async function pinToLocalIpfs(opts: {
   return { cid, size };
 }
 
+/**
+ * Remux a fragmented-MP4 recording (what MediaMTX writes with
+ * `recordFormat: fmp4`) into a standard non-fragmented MP4 with
+ * `-c copy` (no re-encode, ~30x realtime) and `+faststart` (moov atom
+ * at the front so the file is streamable over HTTP without
+ * pre-buffering).
+ *
+ * Why: fmp4 keeps both audio + video tracks but some players (incl.
+ * a few macOS/Chrome combos) silently skip the audio track when handed
+ * a fragmented file. The standard-mp4 container plays everywhere.
+ *
+ * Output lands in $TMPDIR with a random name; the returned `cleanup`
+ * removes it. The caller MUST call cleanup once the file is pinned (or
+ * the pin fails) or we leak files into /tmp.
+ */
+async function remuxToStandardMp4(input: string): Promise<{ output: string; cleanup: () => Promise<void> }> {
+  const output = join(tmpdir(), `slop-remux-${Date.now()}-${randomBytes(4).toString("hex")}.mp4`);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      "ffmpeg",
+      ["-y", "-i", input, "-c", "copy", "-movflags", "+faststart", "-loglevel", "error", output],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", code => {
+      if (code !== 0) reject(new Error(`ffmpeg remux exited ${code}: ${stderr.trim().slice(0, 300)}`));
+      else resolve();
+    });
+  });
+  return {
+    output,
+    cleanup: async () => {
+      await unlink(output).catch(() => {});
+    },
+  };
+}
+
 // Guards against firing two finalizes for the same recording at once —
 // re-uploading the same bytes is wasted bandwidth and confuses the host.
 let inFlight: Promise<FinalizeResult> | null = null;
@@ -169,14 +214,30 @@ export async function finalizeRecording(opts: {
     emit({ phase: "starting", file: latest.file, name: latest.name, totalBytes: latest.sizeBytes });
 
     try {
-      const { cid, size } = await pinToLocalIpfs({
-        apiUrl: opts.ipfsApiUrl,
-        file: latest.file,
-        onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes: latest.sizeBytes }),
-      });
-      const result: FinalizeResult = { cid, file: latest.file, name: latest.name, sizeBytes: size || latest.sizeBytes, mtime: latest.mtime };
-      emit({ phase: "done", ...result });
-      return result;
+      // Remux fmp4 → standard mp4 so audio plays in all browsers / players,
+      // not just fmp4-aware ones (Safari OK, others sometimes silently drop
+      // the audio track). `-c copy` keeps quality identical and runs at
+      // ~300x realtime.
+      emit({ phase: "remuxing" });
+      const { output: remuxed, cleanup } = await remuxToStandardMp4(latest.file);
+      try {
+        const { cid, size } = await pinToLocalIpfs({
+          apiUrl: opts.ipfsApiUrl,
+          file: remuxed,
+          onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes: latest.sizeBytes }),
+        });
+        const result: FinalizeResult = {
+          cid,
+          file: latest.file,
+          name: latest.name,
+          sizeBytes: size || latest.sizeBytes,
+          mtime: latest.mtime,
+        };
+        emit({ phase: "done", ...result });
+        return result;
+      } finally {
+        await cleanup();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       emit({ phase: "error", message });
