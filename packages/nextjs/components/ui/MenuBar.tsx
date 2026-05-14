@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { LivePulse } from "./LivePulse";
+import { Address } from "@scaffold-ui/components";
+import type { Address as AddressType } from "viem";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 
 export type MenuItem = {
@@ -29,6 +31,11 @@ interface MenuBarProps {
    *  itself moved out of the menubar — see `<PinnedPeers>` for the
    *  always-visible top-right HUD. */
   meshConnected?: boolean;
+  /** Optional session-wallet chip. If a wallet address is supplied
+   *  we render the Address component as a clickable chip; otherwise
+   *  a "Deploy wallet" link. Clicking either opens the wallet window. */
+  walletAddress?: string | null;
+  onWalletClick?: () => void;
 }
 
 export const MenuBar = ({
@@ -38,6 +45,8 @@ export const MenuBar = ({
   className = "",
   menus = [],
   meshConnected,
+  walletAddress,
+  onWalletClick,
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
 
@@ -68,6 +77,34 @@ export const MenuBar = ({
       <span className="flex-1" />
       {right ?? (
         <span className="slop-menubar__status" style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
+          {onWalletClick ? (
+            <button
+              type="button"
+              onClick={onWalletClick}
+              className="slop-menubar__item"
+              title={walletAddress ? "Open session wallet" : "No wallet deployed yet — click to deploy"}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                color: "inherit",
+                font: "inherit",
+                letterSpacing: "inherit",
+                textTransform: "inherit",
+                cursor: "pointer",
+                margin: 0,
+                border: 0,
+                background: "transparent",
+                padding: "0 8px",
+              }}
+            >
+              {walletAddress ? (
+                <Address address={walletAddress as AddressType} size="xs" onlyEnsOrAddress />
+              ) : (
+                <span style={{ color: "var(--slop-magenta, #ff3ec9)" }}>[ deploy wallet ]</span>
+              )}
+            </button>
+          ) : null}
           {authNode}
           <span
             className="slop-menubar__item"

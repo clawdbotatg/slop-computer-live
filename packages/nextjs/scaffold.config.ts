@@ -1,4 +1,4 @@
-import { mainnet as mainnetBase } from "viem/chains";
+import { base as baseBase, mainnet as mainnetBase } from "viem/chains";
 import type { Chain } from "viem/chains";
 
 export type ScaffoldConfig = {
@@ -11,6 +11,7 @@ export type ScaffoldConfig = {
 };
 
 const ALCHEMY_MAINNET_RPC = `https://eth-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+const ALCHEMY_BASE_RPC = `https://base-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
@@ -24,22 +25,35 @@ export const mainnet = {
   },
 } as const satisfies Chain;
 
+// Same RPC-patching for Base so every code path that reads chain.rpcUrls
+// directly lands on Alchemy instead of the public mainnet.base.org endpoint.
+export const base = {
+  ...baseBase,
+  rpcUrls: {
+    default: { http: [ALCHEMY_BASE_RPC] },
+    public: { http: [ALCHEMY_BASE_RPC] },
+  },
+} as const satisfies Chain;
+
 const scaffoldConfig = {
-  // The networks on which your DApp is live
-  targetNetworks: [mainnet],
+  // Base first — wallet deploys + multisig txs cost pennies vs. dollars.
+  // Mainnet stays in the list so ENS resolution and the existing Frontpage
+  // contract calls (which live on mainnet) keep working.
+  targetNetworks: [base, mainnet],
 
   // The interval at which your front-end polls the RPC servers for new data
   // it has no effect if you only target the local network (default is 4000)
   pollingInterval: 30000,
 
-  // Alchemy API key — required for mainnet. If unset, the patched mainnet URL
-  // ends with `/v2/` and fails loudly rather than silently falling back.
+  // Alchemy API key — required. If unset, the patched RPC URLs end with
+  // `/v2/` and fail loudly rather than silently falling back.
   alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || "",
 
   // If you want to use a different RPC for a specific network, you can add it here.
   // The key is the chain ID, and the value is the HTTP RPC URL
   rpcOverrides: {
     [mainnet.id]: ALCHEMY_MAINNET_RPC,
+    [base.id]: ALCHEMY_BASE_RPC,
   },
 
   // This is ours WalletConnect's default project ID.

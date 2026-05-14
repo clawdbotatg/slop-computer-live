@@ -28,6 +28,7 @@ import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView } from "~~/components/desktop/VideoView";
+import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import {
   BandFlag,
   Button,
@@ -79,7 +80,8 @@ type AppEntry = {
     | "todo"
     | "notes"
     | "gas"
-    | "clock";
+    | "clock"
+    | "wallet";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -1156,7 +1158,12 @@ const Desktop: NextPage = () => {
   return (
     <>
       <DesktopBackground />
-      <MenuBar menus={[fileMenu, editMenu, viewMenu]} meshConnected={mesh.connected} />
+      <MenuBar
+        menus={[fileMenu, editMenu, viewMenu]}
+        meshConnected={mesh.connected}
+        walletAddress={mesh.wallet?.address ?? null}
+        onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
+      />
       <div
         onDragEnter={e => {
           if (!session.authenticated) return;
@@ -1264,6 +1271,9 @@ const Desktop: NextPage = () => {
                         return;
                       case "clock":
                         focusApp("clock");
+                        return;
+                      case "wallet":
+                        focusApp("wallet");
                         return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
@@ -1511,6 +1521,8 @@ const Desktop: NextPage = () => {
                 txRequests={txForThis}
                 onNavigate={url => mesh.navigateBrowser(browser.id, url)}
                 canControl={session.authenticated}
+                wallet={mesh.wallet}
+                walletProposeTx={mesh.walletProposeTx}
               />
             </Window>
           );
@@ -1682,6 +1694,16 @@ const Desktop: NextPage = () => {
               minHeight={320}
             >
               <ClockWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="wallet"
+              title="WALLET"
+              defaultSlot={{ x: 400, y: 100, width: 460, height: 580 }}
+              minWidth={360}
+              minHeight={420}
+            >
+              <WalletWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
             </SharedAppWindow>
           </>
         ) : null}

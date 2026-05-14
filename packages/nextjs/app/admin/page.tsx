@@ -245,6 +245,35 @@ const AdminPage: NextPage = () => {
     }
   };
 
+  const [walletResetBusy, setWalletResetBusy] = useState(false);
+  const resetSessionWallet = async () => {
+    if (walletResetBusy) return;
+    if (
+      !confirm(
+        "Wipe the current multisig + history + all pending txs? This can't be undone (but it doesn't touch the on-chain contract).",
+      )
+    ) {
+      return;
+    }
+    setWalletResetBusy(true);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/wallet/reset`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setStatus(`wallet reset failed: ${(data as { error?: string }).error ?? res.statusText}`);
+      } else {
+        setStatus("Session wallet reset.");
+      }
+    } catch (err) {
+      setStatus(`wallet reset failed: ${(err as Error).message}`);
+    } finally {
+      setWalletResetBusy(false);
+    }
+  };
+
   const kickPeer = async (id: string) => {
     try {
       const res = await fetch(`${RELAY_BASE}/admin/kick`, {
@@ -715,6 +744,20 @@ const AdminPage: NextPage = () => {
             ))}
           </div>
         )}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Session wallet
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 13 }}>
+          Per-episode multisig lives in <code>.slop-data/wallet.json</code> on the relay. Resetting clears the deployed
+          address + history + every pending tx so the wallet window goes back to the deploy form. The on-chain contract
+          itself is unaffected.
+        </p>
+        <Button onClick={resetSessionWallet} disabled={!isHost || walletResetBusy}>
+          {walletResetBusy ? "Resetting…" : "Reset session wallet"}
+        </Button>
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>

@@ -107,6 +107,23 @@ import {
   setState as setClockState,
   subscribe as subscribeClock,
 } from "./clock.js";
+import {
+  type WalletRecord,
+  type WalletTx,
+  addSignature as walletAddSignature,
+  archiveCurrent as walletArchiveCurrent,
+  findTx as walletFindTx,
+  listTxs as walletListTxs,
+  getCurrent as walletGetCurrent,
+  proposeTx as walletProposeTx,
+  removeTx as walletRemoveTx,
+  setCurrent as walletSetCurrent,
+  setTxStatus as walletSetTxStatus,
+  setTxSummary as walletSetTxSummary,
+  subscribe as subscribeWallet,
+  wipeAll as walletWipeAll,
+} from "./wallet.js";
+import { summarizeTransaction } from "./wallet-ai.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -272,7 +289,8 @@ type AppEntry = {
     | "todo"
     | "notes"
     | "gas"
-    | "clock";
+    | "clock"
+    | "wallet";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -347,6 +365,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Clock",
     icon: "/icons/clock.png",
     kind: "clock",
+  },
+  {
+    id: "wallet",
+    label: "Wallet",
+    icon: "/icons/wallet.png",
+    kind: "wallet",
   },
 ];
 
@@ -453,6 +477,8 @@ app.get("/v1/state", async (req, reply) => {
     musicGenre: getCurrentGenre(),
     musicCustom: getCustomPlaylist().tracks,
     clockState: getClockState(),
+    wallet: walletGetCurrent(),
+    walletTxs: walletListTxs(),
   };
 });
 
@@ -690,6 +716,13 @@ subscribeCustom(tracks => {
 // remaining/elapsed at any moment without us syncing per-tick.
 subscribeClock(state => {
   broadcast({ type: "clock_state", state });
+});
+
+// Session wallet — broadcast current/history + pending tx queue on
+// every mutation. Same full-state-replace pattern as todos/notes.
+subscribeWallet(state => {
+  broadcast({ type: "wallet", current: state.current, history: state.history });
+  broadcast({ type: "wallet_txs", txs: state.txs });
 });
 
 type ChatBody = { text?: unknown };
@@ -2060,6 +2093,17 @@ app.get("/admin/peers", async (req, reply) => {
   return { peers: listPeers() };
 });
 
+// Host-only "nuke the session wallet" — wipes current + history + tx queue.
+// Same effect as `rm .slop-data/wallet.json` but doesn't require shell access.
+// Used by the admin page's "Reset session wallet" button so the host can
+// recycle the deploy flow during a show.
+app.post("/admin/wallet/reset", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  walletWipeAll();
+  return { ok: true };
+});
+
 type KickBody = { id?: unknown };
 
 // --- Fanout (server-side restream to YouTube/Twitch/X/Kick) -----------------
@@ -2247,6 +2291,8 @@ app.register(async function signalRoutes(fastify) {
       musicGenre: getCurrentGenre(),
       musicCustom: getCustomPlaylist().tracks,
       clockState: getClockState(),
+      wallet: walletGetCurrent(),
+      walletTxs: walletListTxs(),
     });
     broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -2552,6 +2598,130 @@ app.register(async function signalRoutes(fastify) {
             value: typeof msg.value === "string" ? msg.value : null,
             chainId: typeof msg.chainId === "number" ? msg.chainId : null,
           });
+          return;
+        }
+        case "wallet_deploy": {
+          // Client has just confirmed a `MultisigFactory.createMultisig` tx
+          // and tells us the resulting record. We don't recompute — we trust
+          // the broadcast (the client already verified the tx receipt).
+          const rec = msg.wallet as Partial<WalletRecord> | undefined;
+          if (
+            !rec ||
+            typeof rec.address !== "string" ||
+            typeof rec.chainId !== "number" ||
+            typeof rec.deployer !== "string" ||
+            typeof rec.salt !== "string" ||
+            typeof rec.threshold !== "number" ||
+            !Array.isArray(rec.signers)
+          ) {
+            return send(socket, { type: "error", error: "bad_wallet_deploy" });
+          }
+          const signers = rec.signers
+            .filter(
+              (s): s is { address: string; label: string; signerType: "eoa" | "passkey" } =>
+                !!s && typeof s.address === "string" && typeof s.label === "string" && (s.signerType === "eoa" || s.signerType === "passkey"),
+            )
+            .map(s => ({ address: s.address.toLowerCase(), label: s.label, signerType: s.signerType }));
+          if (signers.length === 0) return send(socket, { type: "error", error: "no_signers" });
+          walletSetCurrent({
+            id: typeof rec.id === "string" ? rec.id : Math.random().toString(36).slice(2),
+            address: rec.address.toLowerCase(),
+            chainId: rec.chainId,
+            deployer: rec.deployer.toLowerCase(),
+            salt: rec.salt,
+            signers,
+            threshold: rec.threshold,
+            txHash: typeof rec.txHash === "string" ? rec.txHash : null,
+            createdAt: typeof rec.createdAt === "number" ? rec.createdAt : Date.now(),
+            label: typeof rec.label === "string" ? rec.label : `Episode ${new Date().toISOString().slice(0, 10)}`,
+          });
+          return;
+        }
+        case "wallet_new_episode": {
+          // Archive `current` and let the deploy flow surface again.
+          walletArchiveCurrent();
+          return;
+        }
+        case "wallet_tx_propose": {
+          const cur = walletGetCurrent();
+          if (!cur) return send(socket, { type: "error", error: "no_wallet" });
+          if (
+            typeof msg.target !== "string" ||
+            typeof msg.value !== "string" ||
+            typeof msg.data !== "string" ||
+            typeof msg.deadline !== "string" ||
+            typeof msg.nonce !== "string" ||
+            typeof msg.execHash !== "string"
+          ) {
+            return send(socket, { type: "error", error: "bad_propose" });
+          }
+          const tx = walletProposeTx({
+            multisigAddress: cur.address,
+            chainId: cur.chainId,
+            from: info.address,
+            fromLabel: info.handle ?? info.address ?? null,
+            source: msg.source === "browser" ? "browser" : "manual",
+            browserId: typeof msg.browserId === "string" ? msg.browserId : null,
+            target: msg.target,
+            value: msg.value,
+            data: msg.data,
+            deadline: msg.deadline,
+            nonce: msg.nonce,
+            execHash: msg.execHash,
+          });
+          // Fire-and-forget AI summary — broadcasts when it lands.
+          void summarizeTransaction({
+            chainId: cur.chainId,
+            multisigAddress: cur.address,
+            target: tx.target,
+            value: tx.value,
+            data: tx.data,
+          }).then(summary => walletSetTxSummary(tx.id, summary));
+          return;
+        }
+        case "wallet_tx_sign": {
+          if (
+            typeof msg.id !== "string" ||
+            typeof msg.signer !== "string" ||
+            typeof msg.data !== "string" ||
+            (msg.sigType !== 0 && msg.sigType !== 1)
+          ) {
+            return send(socket, { type: "error", error: "bad_sign" });
+          }
+          walletAddSignature(msg.id, {
+            signer: msg.signer,
+            sigType: msg.sigType,
+            data: msg.data,
+            receivedAt: Date.now(),
+          });
+          return;
+        }
+        case "wallet_tx_status": {
+          if (typeof msg.id !== "string" || typeof msg.status !== "string") {
+            return send(socket, { type: "error", error: "bad_status" });
+          }
+          const allowed: WalletTx["status"][] = ["pending", "executing", "executed", "failed", "expired", "cancelled"];
+          if (!allowed.includes(msg.status as WalletTx["status"])) return;
+          walletSetTxStatus(msg.id, msg.status as WalletTx["status"], typeof msg.txHash === "string" ? msg.txHash : null);
+          return;
+        }
+        case "wallet_tx_remove": {
+          if (typeof msg.id !== "string") return;
+          walletRemoveTx(msg.id);
+          return;
+        }
+        case "wallet_tx_resummarize": {
+          if (typeof msg.id !== "string") return;
+          const tx = walletFindTx(msg.id);
+          const cur = walletGetCurrent();
+          if (!tx || !cur) return;
+          void summarizeTransaction({
+            chainId: cur.chainId,
+            multisigAddress: cur.address,
+            target: tx.target,
+            value: tx.value,
+            data: tx.data,
+          }).then(summary => walletSetTxSummary(tx.id, summary));
           return;
         }
         default:

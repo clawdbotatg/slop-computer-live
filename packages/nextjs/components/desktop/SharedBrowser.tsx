@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
-import type { Address as AddressType } from "viem";
+import { type Address as AddressType, type Hex } from "viem";
+import { usePublicClient } from "wagmi";
 import { Button, LoadingBar, TextField } from "~~/components/ui";
-import type { Browser, TxRequest } from "~~/hooks/usePeerMesh";
+import { MultisigAbi } from "~~/contracts/multisig";
+import type { Browser, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
+import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
-// Hardcoded for v1. Eventually this is the slop-computer smart-contract
-// wallet address; for now we impersonate vitalik so the UI has someone real
-// to point at on chain.
+// Legacy fallback used only when no session wallet is deployed yet — keeps
+// the existing impersonate-as-vitalik prototype working until the host
+// hits "Deploy" in the wallet window.
 export const IMPERSONATED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" as AddressType;
 
 const BROWSER_HOST_URL = process.env.NEXT_PUBLIC_BROWSER_HOST_URL ?? "ws://localhost:8090";
@@ -78,9 +81,21 @@ export type SharedBrowserProps = {
   txRequests: TxRequest[];
   onNavigate: (url: string) => void;
   canControl: boolean;
+  /** When a session wallet is deployed we route captured tx_requests
+   *  into the multisig's signing queue instead of just displaying
+   *  them locally. */
+  wallet?: WalletRecord | null;
+  walletProposeTx?: PeerMeshState["walletProposeTx"];
 };
 
-export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: SharedBrowserProps) => {
+export const SharedBrowser = ({
+  browser,
+  txRequests,
+  onNavigate,
+  canControl,
+  wallet,
+  walletProposeTx,
+}: SharedBrowserProps) => {
   const [draft, setDraft] = useState(browser.url);
   const lastSeenUrlRef = useRef(browser.url);
   const [frameSrc, setFrameSrc] = useState<string | null>(null);
@@ -92,6 +107,17 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
   const [hostTxRequests, setHostTxRequests] = useState<TxRequest[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const publicClient = usePublicClient();
+  // Latest wallet + propose-tx fn lives in a ref so the WS message
+  // handler (which is captured by browser.id only — see the effect
+  // dep array below) always sees the current values without
+  // re-subscribing on every wallet mutation.
+  const walletRef = useRef<WalletRecord | null>(wallet ?? null);
+  const proposeRef = useRef<PeerMeshState["walletProposeTx"] | null>(walletProposeTx ?? null);
+  useEffect(() => {
+    walletRef.current = wallet ?? null;
+    proposeRef.current = walletProposeTx ?? null;
+  }, [wallet, walletProposeTx]);
   // Set when the host tells us the page navigated on its own (link click,
   // window.location, popup-redirect). We mirror that URL into mesh state
   // so all peers' URL bars update, but we must NOT echo it back as a
@@ -163,6 +189,49 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
           receivedAt: Date.now(),
         };
         setHostTxRequests(prev => [next, ...prev].slice(0, 50));
+
+        // If a session wallet is deployed, also push this into the
+        // multisig's signing queue. Fire-and-forget — we read the
+        // current nonce from chain, compute the exec hash, and tell
+        // the relay (which AI-summarizes + broadcasts to all peers).
+        const w = walletRef.current;
+        const propose = proposeRef.current;
+        if (w && propose && publicClient && to && calldata.startsWith("0x")) {
+          void (async () => {
+            try {
+              const nonce = (await publicClient.readContract({
+                address: w.address as AddressType,
+                abi: MultisigAbi,
+                functionName: "nonce",
+              })) as bigint;
+              const deadline = defaultDeadline();
+              const target = to as AddressType;
+              const valueWei = value && value !== "0x" ? BigInt(value) : 0n;
+              const data = calldata as Hex;
+              const execHash = computeExecHash({
+                chainId: w.chainId,
+                multisig: w.address as AddressType,
+                nonce,
+                deadline,
+                target,
+                value: valueWei,
+                data,
+              });
+              propose({
+                target,
+                value: valueWei.toString(),
+                data,
+                deadline: deadline.toString(),
+                nonce: nonce.toString(),
+                execHash,
+                source: "browser",
+                browserId: browser.id,
+              });
+            } catch (err) {
+              console.warn("[wallet] failed to enqueue browser tx", err);
+            }
+          })();
+        }
         return;
       }
     };
@@ -418,11 +487,15 @@ export const SharedBrowser = ({ browser, txRequests, onNavigate, canControl }: S
           background: "rgba(255,62,201,0.06)",
           borderBottom: "1px solid rgba(255,62,201,0.15)",
         }}
-        title="Wallet calls are intercepted server-side and impersonated as this address. Calldata appears below — nothing is signed."
+        title={
+          wallet
+            ? "Wallet calls are intercepted server-side and shown as if sent by the session multisig. Each tx lands in the wallet's signing queue."
+            : "No session wallet yet — impersonating vitalik for prototyping. Deploy a wallet from the menubar to route txs through a real multisig."
+        }
       >
         <span style={{ color: connState === "open" ? "var(--slop-magenta, #ff3ec9)" : "#888" }}>◉</span>
-        <span>Impersonating</span>
-        <Address address={IMPERSONATED_ADDRESS} size="xs" onlyEnsOrAddress />
+        <span>{wallet ? "Acting as" : "Impersonating"}</span>
+        <Address address={(wallet?.address ?? IMPERSONATED_ADDRESS) as AddressType} size="xs" onlyEnsOrAddress />
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--slop-text-muted)" }}>{connState}</span>
         <button

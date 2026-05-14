@@ -33,3 +33,7 @@ scripts/
 # Music + user-uploaded files live on the box (`/var/lib/slop-relay/{music,files}`),
 # served by the relay. Never commit binary blobs into the repo.
 packages/nextjs/public/music/
+
+# TypeScript incremental build cache — regenerated on every `tsc`,
+# should never land in git.
+*.tsbuildinfo

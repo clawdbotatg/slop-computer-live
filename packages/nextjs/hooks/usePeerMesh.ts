@@ -116,6 +116,54 @@ export type TxRequest = {
   receivedAt: number;
 };
 
+/** Session-wallet (multisig) records — mirrors
+ *  `packages/relay/src/wallet.ts`. */
+export type WalletSigner = {
+  address: string;
+  label: string;
+  signerType: "eoa" | "passkey";
+};
+export type WalletRecord = {
+  id: string;
+  address: string;
+  chainId: number;
+  deployer: string;
+  salt: string;
+  signers: WalletSigner[];
+  threshold: number;
+  txHash: string | null;
+  createdAt: number;
+  label: string;
+};
+export type WalletTxSignature = {
+  signer: string;
+  sigType: 0 | 1;
+  data: string;
+  receivedAt: number;
+};
+export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
+export type WalletTx = {
+  id: string;
+  multisigAddress: string;
+  chainId: number;
+  from: string | null;
+  fromLabel: string | null;
+  source: "browser" | "manual";
+  browserId: string | null;
+  target: string;
+  value: string;
+  data: string;
+  deadline: string;
+  nonce: string;
+  execHash: string;
+  summary: string | null;
+  signatures: WalletTxSignature[];
+  status: WalletTxStatus;
+  txHash: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type ChatMessage = {
   id: string;
   ts: number;
@@ -394,6 +442,33 @@ export type PeerMeshState = {
   removeFromMusicCustom: (jamendoId: string) => void;
   reorderMusicCustom: (orderedIds: string[]) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
+  /** Currently-deployed session multisig. `null` until someone hits
+   *  "Deploy wallet" in the wallet window. */
+  wallet: WalletRecord | null;
+  /** Archive of past-episode multisigs (newest first). */
+  walletHistory: WalletRecord[];
+  /** Pending tx queue for `wallet` plus a tail of executed/failed txs. */
+  walletTxs: WalletTx[];
+  /** Tell the relay a multisig has just been deployed. */
+  walletDeploy: (rec: WalletRecord) => void;
+  /** Archive `wallet` and reset the UI to the deploy state. */
+  walletNewEpisode: () => void;
+  /** Propose a transaction. The relay generates the id, applies the AI
+   *  summary lazily, and broadcasts back as `wallet_txs`. */
+  walletProposeTx: (req: {
+    target: string;
+    value: string;
+    data: string;
+    deadline: string;
+    nonce: string;
+    execHash: string;
+    source: WalletTx["source"];
+    browserId?: string | null;
+  }) => void;
+  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => void;
+  walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
+  walletRemoveTx: (id: string) => void;
+  walletResummarize: (id: string) => void;
 };
 
 export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshState {
@@ -425,6 +500,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
   const [aiPlayers, setAiPlayers] = useState<AIPlayer[]>([]);
+  const [wallet, setWallet] = useState<WalletRecord | null>(null);
+  const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
+  const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
@@ -896,6 +974,65 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const walletDeploy = useCallback(
+    (rec: WalletRecord) => {
+      send({ type: "wallet_deploy", wallet: rec });
+    },
+    [send],
+  );
+  const walletNewEpisode = useCallback(() => {
+    send({ type: "wallet_new_episode" });
+  }, [send]);
+  const walletProposeTx = useCallback(
+    (req: {
+      target: string;
+      value: string;
+      data: string;
+      deadline: string;
+      nonce: string;
+      execHash: string;
+      source: WalletTx["source"];
+      browserId?: string | null;
+    }) => {
+      send({
+        type: "wallet_tx_propose",
+        target: req.target,
+        value: req.value,
+        data: req.data,
+        deadline: req.deadline,
+        nonce: req.nonce,
+        execHash: req.execHash,
+        source: req.source,
+        browserId: req.browserId ?? null,
+      });
+    },
+    [send],
+  );
+  const walletSignTx = useCallback(
+    (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => {
+      send({ type: "wallet_tx_sign", id, signer: sig.signer, sigType: sig.sigType, data: sig.data });
+    },
+    [send],
+  );
+  const walletSetTxStatus = useCallback(
+    (id: string, status: WalletTxStatus, txHash?: string | null) => {
+      send({ type: "wallet_tx_status", id, status, txHash: txHash ?? null });
+    },
+    [send],
+  );
+  const walletRemoveTx = useCallback(
+    (id: string) => {
+      send({ type: "wallet_tx_remove", id });
+    },
+    [send],
+  );
+  const walletResummarize = useCallback(
+    (id: string) => {
+      send({ type: "wallet_tx_resummarize", id });
+    },
+    [send],
+  );
+
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
       // Optimistic local update so a controlled <Rnd> doesn't snap back
@@ -1051,6 +1188,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (msg.clockState && typeof msg.clockState === "object") {
             setClockStateLocal(msg.clockState as ClockState);
+          }
+          if (msg.wallet === null || (msg.wallet && typeof msg.wallet === "object")) {
+            setWallet((msg.wallet ?? null) as WalletRecord | null);
+          }
+          if (Array.isArray(msg.walletTxs)) {
+            setWalletTxs(msg.walletTxs as WalletTx[]);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -1321,6 +1464,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "wallet") {
+          setWallet((msg.current ?? null) as WalletRecord | null);
+          if (Array.isArray(msg.history)) {
+            setWalletHistory(msg.history as WalletRecord[]);
+          }
+          return;
+        }
+
+        if (msg.type === "wallet_txs" && Array.isArray(msg.txs)) {
+          setWalletTxs(msg.txs as WalletTx[]);
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -1452,5 +1608,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     clockState,
     setClockState,
     broadcastTxRequest,
+    wallet,
+    walletHistory,
+    walletTxs,
+    walletDeploy,
+    walletNewEpisode,
+    walletProposeTx,
+    walletSignTx,
+    walletSetTxStatus,
+    walletRemoveTx,
+    walletResummarize,
   };
 }
