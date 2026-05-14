@@ -37,8 +37,10 @@ export const config = {
   // deploy/mediamtx.yml). /admin/finalize scans `<recordingsDir>/live/` and
   // grabs the newest file.
   recordingsDir: env("RECORDINGS_DIR", "/home/ubuntu/recordings"),
-  bgipfsBin: env("BGIPFS_BIN", "bgipfs"),
-  bgipfsConfigPath: env("BGIPFS_CONFIG", `${process.env.HOME ?? ""}/.bgipfs/credentials.json`),
+  // Local kubo daemon (systemd `ipfs.service`). /admin/finalize POSTs the
+  // recording to /api/v0/add and streams the {Bytes, Hash} response back
+  // to the host UI as a real progress bar.
+  ipfsApiUrl: env("IPFS_API_URL", "http://127.0.0.1:5001"),
   turnSecret: env("TURN_SECRET", ""),
   turnHost: env("TURN_HOST", ""),
   turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),

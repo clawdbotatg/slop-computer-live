@@ -32,6 +32,14 @@ media.slop.computer {
     handle_path /hls/* {
         reverse_proxy localhost:8888
     }
+    # Self-hosted IPFS path gateway. Episodes that were pinned by the relay
+    # (POST /api/v0/add to kubo on :5001) are reachable here at
+    # https://media.slop.computer/ipfs/<cid>. We use `handle` (not
+    # handle_path) so the /ipfs prefix is preserved — kubo's gateway
+    # routes on it.
+    handle /ipfs/* {
+        reverse_proxy localhost:8080
+    }
     # Bare-domain access still works for raw MediaMTX paths.
     reverse_proxy localhost:8888
 }

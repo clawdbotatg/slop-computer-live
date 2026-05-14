@@ -2065,25 +2065,46 @@ app.get("/admin/recording", async (req, reply) => {
   return { latest, pinning: isFinalizeInFlight() };
 });
 
-// Pin the latest MediaMTX recording to bgipfs and return the CID. The host
-// writes that CID onto the episode contract. Single-flight — concurrent
-// callers share the same upload. Long-running (uploads can take minutes
-// for a full session), so set a generous client timeout.
+// Pin the latest MediaMTX recording to the local kubo daemon and stream
+// progress back as application/x-ndjson — one JSON object per line. The
+// host UI parses each line to drive its progress bar; the final line
+// carries `{phase:"done", cid, ...}`. Single-flight: concurrent callers
+// would see kubo errors anyway, but the guard in recordings.ts makes a
+// second request piggy-back on the first.
 app.post("/admin/finalize", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-store",
+    // Disable Caddy/reverse-proxy buffering so each progress line lands
+    // at the browser as soon as the relay emits it.
+    "X-Accel-Buffering": "no",
+  });
+
+  const writeEvent = (obj: unknown) => {
+    try {
+      reply.raw.write(JSON.stringify(obj) + "\n");
+    } catch {
+      /* connection closed by client — fine, we'll notice on next write */
+    }
+  };
+
   try {
-    const result = await finalizeRecording({
+    await finalizeRecording({
       recordingsDir: config.recordingsDir,
       pathName: "live",
-      bgipfsBin: config.bgipfsBin,
-      bgipfsConfigPath: config.bgipfsConfigPath,
-      log: line => app.log.info(line),
+      ipfsApiUrl: config.ipfsApiUrl,
+      onEvent: writeEvent,
     });
-    return { ok: true, ...result };
   } catch (err) {
+    // `finalizeRecording` already emits a `phase: "error"` event, but
+    // belt-and-suspenders if the throw came from somewhere else.
     app.log.error({ err }, "finalize failed");
-    return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    reply.raw.end();
   }
 });
 
