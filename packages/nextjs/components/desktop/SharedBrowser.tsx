@@ -163,20 +163,24 @@ export const SharedBrowser = ({
   }, [peers, selfAddress, selfLabel]);
 
   type ImpersonatorMode = "wallet" | `peer:${string}` | "custom";
-  const [impMode, setImpMode] = useState<ImpersonatorMode>(() => (wallet ? "wallet" : "custom"));
+
+  // Priority: 1) deployed wallet, 2) any peer in the room (other "guest"
+  // watching), 3) self (you're alone — impersonate yourself rather than
+  // vitalik), 4) custom fallback. Same logic feeds both the synchronous
+  // useState initializer (so the first WS query carries the right
+  // address) and the auto-pick effect (which catches the case where
+  // wallet/peers aren't loaded yet at mount).
+  const pickAutoMode = (): ImpersonatorMode | null => {
+    if (wallet) return "wallet";
+    const firstPeer = (peers ?? []).find(p => typeof p.address === "string" && ADDRESS_RE.test(p.address));
+    if (firstPeer?.address) return `peer:${firstPeer.address}` as ImpersonatorMode;
+    if (selfAddress && ADDRESS_RE.test(selfAddress)) return `peer:${selfAddress}` as ImpersonatorMode;
+    return null;
+  };
+
+  const [impMode, setImpMode] = useState<ImpersonatorMode>(() => pickAutoMode() ?? "custom");
   const [customImpAddr, setCustomImpAddr] = useState<AddressType>(IMPERSONATED_ADDRESS);
 
-  // First connected guest with a usable address. Mesh.peers excludes self,
-  // so this is "someone else watching the stream" — exactly the demo
-  // case where you want to act as them, not as yourself.
-  const firstGuestAddress = useMemo(() => {
-    const guest = (peers ?? []).find(
-      p => p.role === "guest" && typeof p.address === "string" && ADDRESS_RE.test(p.address),
-    );
-    return guest?.address ?? null;
-  }, [peers]);
-
-  // Auto-pick priority: 1) deployed wallet, 2) first guest, 3) custom.
   // Runs once: the moment the dropdown is still at its default (custom +
   // vitalik) AND something better is available, we upgrade. After the
   // upgrade fires once we never auto-switch again, so a user who
@@ -185,16 +189,12 @@ export const SharedBrowser = ({
   useEffect(() => {
     if (autoPickedRef.current) return;
     if (impMode !== "custom" || customImpAddr !== IMPERSONATED_ADDRESS) return;
-    if (wallet) {
-      autoPickedRef.current = true;
-      setImpMode("wallet");
-      return;
-    }
-    if (firstGuestAddress) {
-      autoPickedRef.current = true;
-      setImpMode(`peer:${firstGuestAddress}` as ImpersonatorMode);
-    }
-  }, [wallet, firstGuestAddress, impMode, customImpAddr]);
+    const picked = pickAutoMode();
+    if (!picked) return;
+    autoPickedRef.current = true;
+    setImpMode(picked);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet, peers, selfAddress, impMode, customImpAddr]);
 
   const effectiveImpersonator: AddressType = useMemo(() => {
     if (impMode === "wallet") return (wallet?.address as AddressType) ?? IMPERSONATED_ADDRESS;
