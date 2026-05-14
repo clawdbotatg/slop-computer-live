@@ -35,7 +35,10 @@ export type RecordingFile = {
 };
 
 export type FinalizeResult = {
+  /** CID of the actual video file (mp4). */
   cid: string;
+  /** CID of the manifest JSON pinned alongside, which references the video CID. */
+  manifestCid: string;
   file: string;
   name: string;
   sizeBytes: number;
@@ -47,7 +50,16 @@ export type FinalizeEvent =
   | { phase: "starting"; file: string; name: string; totalBytes: number }
   | { phase: "remuxing" }
   | { phase: "uploading"; bytes: number; totalBytes: number }
-  | { phase: "done"; cid: string; file: string; name: string; sizeBytes: number; mtime: number }
+  | { phase: "pinning-manifest" }
+  | {
+      phase: "done";
+      cid: string;
+      manifestCid: string;
+      file: string;
+      name: string;
+      sizeBytes: number;
+      mtime: number;
+    }
   | { phase: "error"; message: string };
 
 /**
@@ -145,6 +157,27 @@ export async function pinToLocalIpfs(opts: {
 }
 
 /**
+ * Pin an in-memory JSON blob to kubo via /api/v0/add. Returns the CID.
+ * Used to publish a tiny manifest alongside the (much larger) video.
+ */
+export async function pinJsonToLocalIpfs(opts: { apiUrl: string; json: unknown }): Promise<string> {
+  const body = new Blob([JSON.stringify(opts.json, null, 2)], { type: "application/json" });
+  const form = new FormData();
+  form.append("file", body, "manifest.json");
+  const res = await fetch(`${opts.apiUrl}/api/v0/add?pin=true`, { method: "POST", body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`kubo /api/v0/add (manifest) ${res.status}: ${text.slice(0, 200)}`);
+  }
+  // kubo returns one JSON object on the final line for a single small file.
+  const text = await res.text();
+  const lastLine = text.trim().split("\n").pop() || "";
+  const parsed = JSON.parse(lastLine) as { Hash?: string };
+  if (!parsed.Hash) throw new Error(`kubo: manifest pin returned no Hash: ${text.slice(0, 200)}`);
+  return parsed.Hash;
+}
+
+/**
  * Remux a fragmented-MP4 recording (what MediaMTX writes with
  * `recordFormat: fmp4`) into a standard non-fragmented MP4 with
  * `-c copy` (no re-encode, ~30x realtime) and `+faststart` (moov atom
@@ -226,8 +259,25 @@ export async function finalizeRecording(opts: {
           file: remuxed,
           onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes: latest.sizeBytes }),
         });
+
+        // Build + pin the minimal manifest. The host UI can later issue a
+        // setManifest tx with a richer manifest CID (description, transcript,
+        // etc.) — we just guarantee a valid v1 manifest exists out of the gate
+        // so the on-chain reference is never half-baked.
+        emit({ phase: "pinning-manifest" });
+        const manifestJson = {
+          version: 1,
+          video: {
+            cid,
+            sizeBytes: size || latest.sizeBytes,
+            format: "video/mp4",
+          },
+        };
+        const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
+
         const result: FinalizeResult = {
           cid,
+          manifestCid,
           file: latest.file,
           name: latest.name,
           sizeBytes: size || latest.sizeBytes,
