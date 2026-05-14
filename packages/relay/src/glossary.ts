@@ -80,11 +80,15 @@ export function list(): GlossaryTerm[] {
 // stored term in place and re-emit so subscribers see the new TLDR.
 // We re-find the entry by id at completion time because the term could
 // have been removed (or recreated with a fresh id) while the request
-// was in flight.
+// was in flight. Pass other entries as priming so the AI infers the
+// domain from existing glossary terms.
 function generateTldrAsync(id: string, term: string): void {
+  // Snapshot peer terms BEFORE the async call so we don't capture the
+  // pending entry itself (it was just pushed onto `items`).
+  const existingTerms = items.filter(i => i.id !== id).map(i => i.term);
   void (async () => {
     try {
-      const tldr = await defineTerm(term);
+      const tldr = await defineTerm(term, { existingTerms });
       load();
       const it = items.find(i => i.id === id);
       if (!it) return;

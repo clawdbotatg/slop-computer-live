@@ -13,16 +13,42 @@ function fallbackTldr(term: string): string {
   return `${FALLBACK_PREFIX}${term} (set ANTHROPIC_API_KEY on the relay for an AI-written TLDR).`;
 }
 
-export async function defineTerm(term: string): Promise<string> {
+export type DefineContext = {
+  /** Optional disambiguation hint from the user (e.g. "AI agents", "EVM"). */
+  hint?: string;
+  /** Other terms already in the glossary — used to prime the model toward
+   *  the same domain as the rest of the glossary, so once you have a few
+   *  AI terms or a few crypto terms in, new entries pick the right
+   *  meaning automatically. */
+  existingTerms?: string[];
+};
+
+export async function defineTerm(term: string, ctx: DefineContext = {}): Promise<string> {
   const trimmed = term.trim();
   if (!trimmed) return "(empty term)";
   if (!ANTHROPIC_API_KEY) return fallbackTldr(trimmed);
 
-  const prompt = `Define this term in ONE short sentence (max 25 words). The audience is technical but unfamiliar with this specific term. No preamble, no quotes around the term, just the definition.
+  const hint = ctx.hint?.trim() ?? "";
+  const others = (ctx.existingTerms ?? [])
+    .map(s => s.trim())
+    .filter(Boolean)
+    .filter(s => s.toLowerCase() !== trimmed.toLowerCase())
+    .slice(0, 30);
+
+  // The glossary lives inside a podcast/live-discussion product about AI
+  // agents, LLM tooling, and developer tools — with crypto/web3 crossover
+  // when those topics intersect with AI. Web search is enabled so the
+  // model can look up jargon coined in the last year or two (new agents,
+  // libraries, frameworks) that's likely past its training cutoff.
+  const prompt = `This glossary is for live discussions about AI: agents, LLMs, MCP, tool use, evals, RAG, developer tooling — with occasional crypto / web3 crossover (on-chain agents, agent payments, MEV when it touches AI). Assume an AI-flavored domain by default; only treat the term as crypto-specific if it's an obvious crypto primitive (ERC, EIP, Seaport, Uniswap, etc.).
+
+If you don't recognize the term, or if it's likely very new (a tool, library, agent framework, paper, or piece of jargon from the last year or two), USE WEB SEARCH to look it up. New things drift fast — don't guess from training data alone.
 
 Term: ${trimmed}
+${hint ? `Context (user-provided hint): ${hint}` : ""}
+${others.length ? `Other terms already in this glossary (use to infer the domain): ${others.join(", ")}` : ""}
 
-If the term looks crypto/blockchain-adjacent (EIP, ERC, protocol names, tooling), assume that context. If it's ambiguous, pick the most likely meaning and define that — don't list alternatives.`;
+OUTPUT FORMAT: Exactly one short sentence (max 30 words) defining the term. Start directly with the definition — do NOT include "I'll search for...", "Based on the search results...", "According to...", or any other preamble. No quotes around the term. No alternatives. No hedging.`.trim();
 
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -34,8 +60,12 @@ If the term looks crypto/blockchain-adjacent (EIP, ERC, protocol names, tooling)
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 200,
+        max_tokens: 1024,
         messages: [{ role: "user", content: prompt }],
+        // Server-side web search — the model decides when to invoke it
+        // and we get the post-search text back inline. Capped at 2
+        // searches per term so a single definition stays under ~$0.02.
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }],
       }),
     });
     if (!res.ok) {
@@ -43,10 +73,24 @@ If the term looks crypto/blockchain-adjacent (EIP, ERC, protocol names, tooling)
       return `(AI definition failed: ${res.status}) ${text.slice(0, 120)}`;
     }
     const json = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-    const out = (json.content ?? [])
+    // Take only text blocks that come AFTER the last web_search_tool_result
+    // (or all text blocks if no search ran). This skips the model's
+    // pre-search "let me look that up" chatter and keeps the final
+    // definition clean.
+    const blocks = json.content ?? [];
+    let lastSearchIdx = -1;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i]!.type === "web_search_tool_result") {
+        lastSearchIdx = i;
+        break;
+      }
+    }
+    const out = blocks
+      .slice(lastSearchIdx + 1)
       .filter(c => c.type === "text")
       .map(c => c.text ?? "")
-      .join("\n")
+      .join(" ")
+      .replace(/^(based on (the )?(search )?results?[,:]?\s*|according to [^,]+,\s*)/i, "")
       .trim();
     return out || fallbackTldr(trimmed);
   } catch (err) {
