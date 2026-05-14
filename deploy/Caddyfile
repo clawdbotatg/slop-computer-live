@@ -12,7 +12,11 @@ live.slop.computer {
     # Relay HTTP routes (SIWE auth, admin start/stop, TURN creds, agent
     # API, public apps catalog) and WS /signal endpoint. NOTE: port 8081 —
     # :8080 is owned by based-keno.
-    @relay path /signal* /auth/* /admin/* /turn/* /internal/* /v1/* /apps
+    #
+    # `/files/*` and `/avatars/*` are PUBLIC download endpoints (no auth
+    # gate; ids are unguessable). Without them here, dropped images load
+    # as `<img src="…/files/<id>">` → Caddy → Next.js → 404 → broken icon.
+    @relay path /signal* /auth/* /admin/* /turn/* /internal/* /v1/* /apps /files/* /avatars/*
     reverse_proxy @relay localhost:8081
 
     # Browser-host: shared headless Chrome with frame streaming + impersonator.
