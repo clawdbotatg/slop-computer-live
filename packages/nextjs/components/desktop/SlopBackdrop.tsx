@@ -22,7 +22,7 @@ export const SlopBackdrop = () => (
     style={{
       position: "fixed",
       right: RIGHT_OFFSET,
-      bottom: 72,
+      bottom: 168,
       // inline-block + auto width makes the <pre>'s width hug its text
       // (max-content was flaky on some browsers for <pre>), so the
       // `right` offset anchors the actual ASCII art's right edge — not
