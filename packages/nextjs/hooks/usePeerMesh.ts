@@ -195,6 +195,19 @@ export type Note = {
   text: string;
 };
 
+/** Glossary entry — AI-generated TLDR for a term that came up.
+ *  Server-authoritative, mirrors `packages/relay/src/glossary.ts`. */
+export type GlossaryTerm = {
+  id: string;
+  term: string;
+  tldr: string;
+  status: "pending" | "ready" | "error";
+  createdTs: number;
+  updatedTs: number;
+  address: string | null;
+  handle: string | null;
+};
+
 /** Jamendo / Custom playlist track. Mirrors
  *  `packages/relay/src/jamendo.ts`'s JamendoTrack. */
 export type JamendoTrack = {
@@ -410,6 +423,12 @@ export type PeerMeshState = {
   noteCreate: (text: string) => void;
   noteUpdate: (id: string, text: string) => void;
   noteDelete: (id: string) => void;
+  /** Shared glossary. Each term has an AI-generated TLDR that arrives
+   *  asynchronously (`status: pending → ready`). Full-state replace. */
+  glossary: GlossaryTerm[];
+  glossaryAdd: (term: string) => void;
+  glossaryRegenerate: (id: string) => void;
+  glossaryDelete: (id: string) => void;
   /** Latest gas snapshot from the relay's poll loop. `null` until the
    *  first successful Alchemy + Chainlink read lands. */
   gasState: GasState | null;
@@ -489,6 +508,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [gasState, setGasState] = useState<GasState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
@@ -899,6 +919,27 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const glossaryAdd = useCallback(
+    (term: string) => {
+      const trimmed = term.trim().slice(0, 120);
+      if (!trimmed) return;
+      send({ type: "glossary_add", term: trimmed });
+    },
+    [send],
+  );
+  const glossaryRegenerate = useCallback(
+    (id: string) => {
+      send({ type: "glossary_regenerate", id });
+    },
+    [send],
+  );
+  const glossaryDelete = useCallback(
+    (id: string) => {
+      send({ type: "glossary_delete", id });
+    },
+    [send],
+  );
+
   // Files mutate via HTTP (binary upload + DELETE) rather than WS, so
   // the deleteFile callback fires an HTTP request. The relay broadcasts
   // `file_removed` to the mesh after a successful delete, which our WS
@@ -1171,6 +1212,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           if (Array.isArray(msg.notes)) {
             setNotes(msg.notes as Note[]);
           }
+          if (Array.isArray(msg.glossary)) {
+            setGlossary(msg.glossary as GlossaryTerm[]);
+          }
           if (msg.gasState && typeof msg.gasState === "object") {
             setGasState(msg.gasState as GasState);
           }
@@ -1429,6 +1473,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "glossary" && Array.isArray(msg.items)) {
+          setGlossary(msg.items as GlossaryTerm[]);
+          return;
+        }
+
         if (msg.type === "gas" && msg.state && typeof msg.state === "object") {
           setGasState(msg.state as GasState);
           return;
@@ -1595,6 +1644,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     noteCreate,
     noteUpdate,
     noteDelete,
+    glossary,
+    glossaryAdd,
+    glossaryRegenerate,
+    glossaryDelete,
     gasState,
     files,
     deleteFile,

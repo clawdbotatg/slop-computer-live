@@ -74,6 +74,13 @@ import {
   subscribe as subscribeNotes,
   update as noteUpdate,
 } from "./notes.js";
+import {
+  create as glossaryCreate,
+  list as glossaryList,
+  regenerate as glossaryRegenerate,
+  remove as glossaryRemove,
+  subscribe as subscribeGlossary,
+} from "./glossary.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
 import { resolveEns } from "./ens.js";
 import {
@@ -472,6 +479,7 @@ app.get("/v1/state", async (req, reply) => {
     aiPlayers: listAvailableAIPlayers(),
     todos: todoList(),
     notes: noteList(),
+    glossary: glossaryList(),
     gasState: getGasState(),
     files: fileList(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
@@ -679,6 +687,11 @@ subscribeTodos(items => {
 });
 subscribeNotes(items => {
   broadcast({ type: "notes", items });
+});
+// Glossary: term added or its TLDR resolved → full-list rebroadcast.
+// Same small-list trade-off as notes/todos.
+subscribeGlossary(items => {
+  broadcast({ type: "glossary", items });
 });
 
 // Gas tracker poll loop. Server-side polling keeps the Alchemy API key
@@ -1503,6 +1516,42 @@ app.delete<{ Params: { id: string } }>("/v1/notes/:id", async (req, reply) => {
   return { ok: true };
 });
 
+// --- Glossary REST surface --------------------------------------------------
+// Term creation kicks off an async AI TLDR generation; the broadcast loop
+// surfaces the resolved tldr to peers a moment later.
+
+type GlossaryTermBody = { term?: unknown };
+
+app.get("/v1/glossary", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { items: glossaryList() };
+});
+
+app.post<{ Body: GlossaryTermBody }>("/v1/glossary", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const term = typeof req.body?.term === "string" ? req.body.term : "";
+  const entry = glossaryCreate({ term, address: a.session.address, handle: a.session.handle });
+  if (!entry) return reply.code(400).send({ error: "empty-term" });
+  return { ok: true, item: entry };
+});
+
+app.post<{ Params: { id: string } }>("/v1/glossary/:id/regenerate", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!glossaryRegenerate(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/glossary/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!glossaryRemove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
 // --- Jamendo genre playlists -----------------------------------------------
 // Shared genre selection that drives the music player. The current
 // genre is broadcast over the mesh; selecting a genre also triggers an
@@ -2315,6 +2364,7 @@ app.register(async function signalRoutes(fastify) {
       aiPlayers: listAvailableAIPlayers(),
       todos: todoList(),
       notes: noteList(),
+      glossary: glossaryList(),
       gasState: getGasState(),
       files: fileList(),
       musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
@@ -2434,6 +2484,25 @@ app.register(async function signalRoutes(fastify) {
         case "note_delete": {
           if (typeof msg.id !== "string") return;
           noteRemove(msg.id);
+          return;
+        }
+        case "glossary_add": {
+          if (typeof msg.term !== "string") return;
+          glossaryCreate({
+            term: msg.term,
+            address: info.address,
+            handle: info.handle,
+          });
+          return;
+        }
+        case "glossary_regenerate": {
+          if (typeof msg.id !== "string") return;
+          glossaryRegenerate(msg.id);
+          return;
+        }
+        case "glossary_delete": {
+          if (typeof msg.id !== "string") return;
+          glossaryRemove(msg.id);
           return;
         }
         case "publish": {

@@ -17,6 +17,7 @@ import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
+import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
@@ -80,6 +81,7 @@ type AppEntry = {
     | "qr"
     | "todo"
     | "notes"
+    | "glossary"
     | "gas"
     | "clock"
     | "wallet";
@@ -1267,6 +1269,9 @@ const Desktop: NextPage = () => {
                       case "notes":
                         focusApp("notes");
                         return;
+                      case "glossary":
+                        focusApp("glossary");
+                        return;
                       case "gas":
                         focusApp("gas");
                         return;
@@ -1678,6 +1683,16 @@ const Desktop: NextPage = () => {
               minHeight={300}
             >
               <NotesWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="glossary"
+              title="GLOSSARY"
+              defaultSlot={{ x: 300, y: 160, width: 420, height: 460 }}
+              minWidth={300}
+              minHeight={280}
+            >
+              <GlossaryWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
