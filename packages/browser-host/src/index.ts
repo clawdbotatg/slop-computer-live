@@ -92,6 +92,11 @@ type Tab = {
   page: Page;
   cdp: CDPSession;
   url: string;
+  /** Address the injected provider claims to be. Per-tab so each browser
+   *  window can impersonate something different (deployed wallet, peer
+   *  address, custom). Changed by the `set_impersonator` WS message,
+   *  which destroys + recreates the tab with a new value. */
+  impersonatedAddress: string;
   subscribers: Set<WebSocket>;
   shutdownTimer: NodeJS.Timeout | null;
   /** Wall-clock ms when the most recent frame was emitted. Used by
@@ -105,6 +110,15 @@ type Tab = {
    *  Reload requests on a crashed tab go straight to "destroy + recreate". */
   crashed: boolean;
 };
+
+// EIP-55 / checksum-agnostic 0x40 hex check. Anything that doesn't match
+// falls back to the configured default — we never reflect untrusted
+// strings into the injected provider verbatim.
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+function sanitizeImpersonator(raw: unknown): string {
+  if (typeof raw !== "string") return config.impersonatedAddress;
+  return ADDRESS_RE.test(raw) ? raw : config.impersonatedAddress;
+}
 
 const tabs = new Map<string, Tab>();
 const tabBoots = new Map<string, Promise<Tab>>();
@@ -202,7 +216,7 @@ async function forwardTxToRelay(tab: Tab, payload: unknown): Promise<void> {
   }
 }
 
-async function createTab(id: string, url: string): Promise<Tab> {
+async function createTab(id: string, url: string, impersonatedAddress: string): Promise<Tab> {
   const b = await getBrowser();
   const page = await b.newPage();
 
@@ -215,7 +229,7 @@ async function createTab(id: string, url: string): Promise<Tab> {
   // Inject window.ethereum *before* any of the dapp's scripts. This is the
   // whole point of the browser-host — same-origin code runs against our
   // fake provider before MetaMask, EIP-6963 listeners, etc. ever fire.
-  await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(config.impersonatedAddress, config.chainId));
+  await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(impersonatedAddress, config.chainId));
 
   // Pin all navigations to this same tab. Without this:
   //   - window.open(url) creates a new puppeteer Page we're not streaming →
@@ -405,6 +419,7 @@ async function createTab(id: string, url: string): Promise<Tab> {
     page,
     cdp,
     url,
+    impersonatedAddress,
     subscribers: new Set(),
     shutdownTimer: null,
     lastFrameAt: Date.now(),
@@ -500,10 +515,11 @@ setInterval(() => {
     const t = tab;
     void (async () => {
       const url = t.url;
+      const impersonator = t.impersonatedAddress;
       const oldSubs = [...t.subscribers];
       await destroyTab(t.id);
       try {
-        const next = await createTab(t.id, url);
+        const next = await createTab(t.id, url, impersonator);
         for (const ws of oldSubs) next.subscribers.add(ws);
       } catch (err) {
         app.log.error({ id: t.id, err: (err as Error).message }, "watchdog recreate failed");
@@ -518,7 +534,9 @@ app.get("/health", async () => ({
   ok: true,
   service: "slop-browser-host",
   tabs: tabs.size,
-  impersonating: config.impersonatedAddress,
+  // Default impersonator for tabs created without an explicit address.
+  // Per-tab values appear in /diag.
+  defaultImpersonator: config.impersonatedAddress,
 }));
 
 // Diagnostics. Lists tab metadata so a wedged tab can be inspected from the
@@ -530,6 +548,7 @@ app.get("/diag", async () => {
     tabs: [...tabs.values()].map(t => ({
       id: t.id,
       url: t.url,
+      impersonatedAddress: t.impersonatedAddress,
       subscribers: t.subscribers.size,
       lastFrameAt: t.lastFrameAt,
       msSinceLastFrame: now - t.lastFrameAt,
@@ -546,6 +565,7 @@ app.get<{ Params: { id: string } }>("/diag/:id", async (req, reply) => {
   return {
     id: t.id,
     url: t.url,
+    impersonatedAddress: t.impersonatedAddress,
     subscribers: t.subscribers.size,
     lastFrameAt: t.lastFrameAt,
     msSinceLastFrame: now - t.lastFrameAt,
@@ -557,19 +577,24 @@ app.get<{ Params: { id: string } }>("/diag/:id", async (req, reply) => {
 // ---- WS /stream/:id -------------------------------------------------------
 
 app.register(async function (fastify) {
-  fastify.get<{ Params: { id: string }; Querystring: { url?: string } }>(
+  fastify.get<{ Params: { id: string }; Querystring: { url?: string; impersonated?: string } }>(
     "/stream/:id",
     { websocket: true },
     async (socket, req) => {
       const id = req.params.id;
       const initialUrl = req.query.url ?? "about:blank";
+      // First subscriber for a brand-new tab picks the impersonator from
+      // their query. Subsequent subscribers join the existing tab and
+      // inherit whatever it's currently impersonating — they can
+      // change it later via `set_impersonator`.
+      const initialImpersonator = sanitizeImpersonator(req.query.impersonated);
       let tab = tabs.get(id);
       if (!tab) {
         // Coalesce concurrent subscribers so we don't launch N tabs for the
         // same browser id. The first subscriber wins; everyone else awaits.
         let boot = tabBoots.get(id);
         if (!boot) {
-          boot = createTab(id, initialUrl).finally(() => tabBoots.delete(id));
+          boot = createTab(id, initialUrl, initialImpersonator).finally(() => tabBoots.delete(id));
           tabBoots.set(id, boot);
         }
         try {
@@ -583,7 +608,7 @@ app.register(async function (fastify) {
       }
       cancelShutdown(tab);
       tab.subscribers.add(socket);
-      send(socket, { type: "hello", id, url: tab.url });
+      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress });
 
       socket.on("message", (raw: Buffer | string) => {
         let msg: { type?: string; [k: string]: unknown };
@@ -607,16 +632,46 @@ app.register(async function (fastify) {
             // making the user click reload twice is worse than just
             // giving them a fresh tab on click one.
             const url = tab.url;
+            const impersonator = tab.impersonatedAddress;
             const t = tab;
             app.log.info({ id: t.id, url }, "reload — destroy+recreate");
             void (async () => {
               const oldSubs = [...t.subscribers];
               await destroyTab(t.id);
               try {
-                const next = await createTab(t.id, url);
+                const next = await createTab(t.id, url, impersonator);
                 for (const ws of oldSubs) next.subscribers.add(ws);
               } catch (err) {
                 app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
+              }
+            })();
+            return;
+          }
+          case "set_impersonator": {
+            // Swapping the injected provider's address requires a page-
+            // level destroy+recreate: `evaluateOnNewDocument` only fires
+            // on the next navigation, and existing pages still hold a
+            // reference to the old non-writable window.ethereum. Same
+            // mechanics as `reload`, but with a new impersonator.
+            const next = sanitizeImpersonator(msg.address);
+            if (next.toLowerCase() === tab.impersonatedAddress.toLowerCase()) return;
+            const url = tab.url;
+            const t = tab;
+            app.log.info({ id: t.id, from: t.impersonatedAddress, to: next }, "set_impersonator");
+            void (async () => {
+              const oldSubs = [...t.subscribers];
+              await destroyTab(t.id);
+              try {
+                const created = await createTab(t.id, url, next);
+                for (const ws of oldSubs) {
+                  created.subscribers.add(ws);
+                  // Each subscribed peer's UI tracks the current
+                  // impersonator separately from its local dropdown
+                  // selection, so broadcast the new value.
+                  send(ws, { type: "impersonator_changed", impersonated: next });
+                }
+              } catch (err) {
+                app.log.error({ id: t.id, err: (err as Error).message }, "impersonator recreate failed");
               }
             })();
             return;
@@ -718,7 +773,7 @@ app
   .listen({ port: config.port, host: config.host })
   .then(() => {
     app.log.info(
-      `slop-browser-host listening on http://${config.host}:${config.port} — impersonating ${config.impersonatedAddress} on chain ${config.chainId}`,
+      `slop-browser-host listening on http://${config.host}:${config.port} — default impersonator ${config.impersonatedAddress} on chain ${config.chainId}`,
     );
   })
   .catch(err => {

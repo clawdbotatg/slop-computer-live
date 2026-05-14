@@ -1,18 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Address } from "@scaffold-ui/components";
+import { Address, AddressInput } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex } from "viem";
 import { usePublicClient } from "wagmi";
 import { Button, LoadingBar, TextField } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
-import type { Browser, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
+import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
-// Legacy fallback used only when no session wallet is deployed yet — keeps
-// the existing impersonate-as-vitalik prototype working until the host
-// hits "Deploy" in the wallet window.
+// Default address shown in the "custom" impersonator input until the user
+// types something else. Vitalik because it's the canonical address every
+// dapp will gracefully degrade against.
 export const IMPERSONATED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" as AddressType;
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 const BROWSER_HOST_URL = process.env.NEXT_PUBLIC_BROWSER_HOST_URL ?? "ws://localhost:8090";
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -86,6 +88,13 @@ export type SharedBrowserProps = {
    *  them locally. */
   wallet?: WalletRecord | null;
   walletProposeTx?: PeerMeshState["walletProposeTx"];
+  /** Other connected peers — surfaced as picks in the impersonator
+   *  dropdown so you can browse the dapp as if you were them. */
+  peers?: Peer[];
+  /** Local user's own address (and optional handle label) — included as
+   *  an impersonator option so you can act as yourself without typing. */
+  selfAddress?: string | null;
+  selfLabel?: string | null;
 };
 
 export const SharedBrowser = ({
@@ -95,6 +104,9 @@ export const SharedBrowser = ({
   canControl,
   wallet,
   walletProposeTx,
+  peers,
+  selfAddress,
+  selfLabel,
 }: SharedBrowserProps) => {
   const [draft, setDraft] = useState(browser.url);
   const lastSeenUrlRef = useRef(browser.url);
@@ -124,6 +136,67 @@ export const SharedBrowser = ({
   // "navigate" — that'd re-fetch the same URL and waste a round trip.
   const incomingUrlRef = useRef<string | null>(null);
 
+  // ---- Impersonator picker --------------------------------------------------
+  // Dropdown lets you act as: the deployed session wallet, any other
+  // connected peer (or yourself), or a custom address typed in via
+  // <AddressInput>. Whatever's effective is sent to the browser-host so
+  // the injected window.ethereum reports that address.
+
+  // Distinct participant entries (self + peers), deduped on lowercase
+  // address. Self comes first so you can pick yourself without scrolling
+  // through a busy room.
+  const participants = useMemo(() => {
+    const out: { address: AddressType; label: string }[] = [];
+    const seen = new Set<string>();
+    if (selfAddress && ADDRESS_RE.test(selfAddress)) {
+      seen.add(selfAddress.toLowerCase());
+      out.push({ address: selfAddress as AddressType, label: selfLabel ?? "you" });
+    }
+    for (const p of peers ?? []) {
+      if (!p.address || !ADDRESS_RE.test(p.address)) continue;
+      const k = p.address.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ address: p.address as AddressType, label: p.handle ?? "peer" });
+    }
+    return out;
+  }, [peers, selfAddress, selfLabel]);
+
+  type ImpersonatorMode = "wallet" | `peer:${string}` | "custom";
+  const [impMode, setImpMode] = useState<ImpersonatorMode>(() => (wallet ? "wallet" : "custom"));
+  const [customImpAddr, setCustomImpAddr] = useState<AddressType>(IMPERSONATED_ADDRESS);
+
+  // When a wallet first becomes available the user hasn't picked anything
+  // yet — bump them to the wallet option so the default "Deploy → use
+  // your multisig" flow keeps working. We only do this auto-switch once
+  // (tracked via ref) so a user who explicitly picked "custom" doesn't
+  // get yanked back later.
+  const autoPickedWalletRef = useRef(false);
+  useEffect(() => {
+    if (wallet && !autoPickedWalletRef.current && impMode === "custom" && customImpAddr === IMPERSONATED_ADDRESS) {
+      autoPickedWalletRef.current = true;
+      setImpMode("wallet");
+    }
+  }, [wallet, impMode, customImpAddr]);
+
+  const effectiveImpersonator: AddressType = useMemo(() => {
+    if (impMode === "wallet") return (wallet?.address as AddressType) ?? IMPERSONATED_ADDRESS;
+    if (impMode === "custom") return customImpAddr;
+    return impMode.slice(5) as AddressType; // strip "peer:" prefix
+  }, [impMode, wallet?.address, customImpAddr]);
+
+  // Ref versions so the WS-open effect (keyed only on browser.id) can
+  // read the latest impersonator + participants without re-subscribing
+  // on every state change.
+  const impersonatorRef = useRef(effectiveImpersonator);
+  useEffect(() => {
+    impersonatorRef.current = effectiveImpersonator;
+  }, [effectiveImpersonator]);
+  const participantsRef = useRef(participants);
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
+
   // Keep the URL bar in sync with shared state, but don't clobber what the
   // user is in the middle of typing.
   useEffect(() => {
@@ -137,12 +210,22 @@ export const SharedBrowser = ({
   // shared-state URL change we send a "navigate" message so the headless
   // tab follows the URL bar.
   useEffect(() => {
-    const url = `${BROWSER_HOST_URL}/stream/${encodeURIComponent(browser.id)}?url=${encodeURIComponent(browser.url)}`;
+    // First subscriber for a fresh tab decides its initial impersonator;
+    // later subscribers just get whatever's already live (server sends
+    // `impersonated` back in `hello`).
+    const url =
+      `${BROWSER_HOST_URL}/stream/${encodeURIComponent(browser.id)}` +
+      `?url=${encodeURIComponent(browser.url)}` +
+      `&impersonated=${encodeURIComponent(impersonatorRef.current)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => setConnState("open");
     ws.onclose = () => {
       setConnState("closed");
+      // Force re-sync from `hello` on the next reconnect so a stale
+      // local pick doesn't override whatever the tab is now impersonating.
+      setHelloReceived(false);
+      lastSentImpRef.current = null;
       if (wsRef.current === ws) wsRef.current = null;
     };
     ws.onerror = () => setConnState("closed");
@@ -156,6 +239,42 @@ export const SharedBrowser = ({
       if (msg.type === "frame" && typeof msg.data === "string") {
         setFrameSrc(`data:image/jpeg;base64,${msg.data}`);
         return;
+      }
+      // Host echoes the current impersonator on connect (`hello`) and on
+      // every change (`impersonator_changed`). When the server's address
+      // differs from our local pick we sync UP: another peer changed it,
+      // so our dropdown should match. We avoid feedback by only syncing
+      // when the message address doesn't already equal our effective.
+      if ((msg.type === "hello" || msg.type === "impersonator_changed") && typeof msg.impersonated === "string") {
+        if (msg.type === "hello") setHelloReceived(true);
+        const incoming = msg.impersonated;
+        if (!ADDRESS_RE.test(incoming)) {
+          /* fall through to other hello handling */
+        } else if (incoming.toLowerCase() === impersonatorRef.current.toLowerCase()) {
+          // Server agrees with our local pick — mark it as already-sent
+          // so the set_impersonator effect doesn't fire a no-op.
+          lastSentImpRef.current = incoming.toLowerCase();
+        } else {
+          // Server's authoritative impersonator differs from our local
+          // pick (e.g. another peer changed it). Mirror it into our
+          // dropdown state AND mark it as already-sent so the
+          // set_impersonator effect doesn't bounce it right back.
+          lastSentImpRef.current = incoming.toLowerCase();
+          const liveWallet = walletRef.current;
+          if (liveWallet && incoming.toLowerCase() === liveWallet.address.toLowerCase()) {
+            setImpMode("wallet");
+          } else {
+            const match = participantsRef.current.find(p => p.address.toLowerCase() === incoming.toLowerCase());
+            if (match) {
+              setImpMode(`peer:${match.address}` as ImpersonatorMode);
+            } else {
+              setCustomImpAddr(incoming as AddressType);
+              setImpMode("custom");
+            }
+          }
+        }
+        if (msg.type === "impersonator_changed") return;
+        // hello: fall through to the url field below.
       }
       if (msg.type === "url" && typeof msg.url === "string") {
         // Page navigated server-side. Stash so the navigate-effect skips
@@ -247,6 +366,30 @@ export const SharedBrowser = ({
     // URL changes are sent as navigate messages over the existing WS.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browser.id]);
+
+  // Push local impersonator picks to the headless tab. We compare against
+  // the last value we *sent* (rather than the message we last received)
+  // so an echo from the server doesn't bounce back as a redundant
+  // set_impersonator. A blank lastSentRef means we haven't sent yet —
+  // first non-matching value triggers the swap.
+  const lastSentImpRef = useRef<string | null>(null);
+  // Wait for `hello` before sending set_impersonator: on reconnect to an
+  // existing tab, our local pick may be stale and the server's value is
+  // authoritative. The `hello` handler updates lastSentImpRef and may
+  // sync our local state — letting that run first avoids a spurious
+  // tab-recreate on the server.
+  const [helloReceived, setHelloReceived] = useState(false);
+  useEffect(() => {
+    if (!helloReceived) return;
+    if (connState !== "open") return;
+    if (!ADDRESS_RE.test(effectiveImpersonator)) return;
+    const lower = effectiveImpersonator.toLowerCase();
+    if (lastSentImpRef.current === lower) return;
+    lastSentImpRef.current = lower;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "set_impersonator", address: effectiveImpersonator }));
+  }, [effectiveImpersonator, connState, helloReceived]);
 
   // Reflect URL changes from the shared mesh state to the headless tab.
   // Skip when the URL change *originated* on the host (in-page link click,
@@ -487,15 +630,48 @@ export const SharedBrowser = ({
           background: "rgba(255,62,201,0.06)",
           borderBottom: "1px solid rgba(255,62,201,0.15)",
         }}
-        title={
-          wallet
-            ? "Wallet calls are intercepted server-side and shown as if sent by the session multisig. Each tx lands in the wallet's signing queue."
-            : "No session wallet yet — impersonating vitalik for prototyping. Deploy a wallet from the menubar to route txs through a real multisig."
-        }
+        title="The injected window.ethereum reports this address as the connected wallet. Pick the deployed multisig, any participant, or a custom address."
       >
         <span style={{ color: connState === "open" ? "var(--slop-magenta, #ff3ec9)" : "#888" }}>◉</span>
-        <span>{wallet ? "Acting as" : "Impersonating"}</span>
-        <Address address={(wallet?.address ?? IMPERSONATED_ADDRESS) as AddressType} size="xs" onlyEnsOrAddress />
+        <span>Impersonating</span>
+        <select
+          value={impMode}
+          onChange={e => setImpMode(e.target.value as ImpersonatorMode)}
+          disabled={!canControl}
+          style={{
+            background: "rgba(0,0,0,0.4)",
+            color: "var(--slop-text)",
+            border: "1px solid rgba(255,62,201,0.3)",
+            borderRadius: 3,
+            font: "inherit",
+            padding: "1px 4px",
+            cursor: canControl ? "pointer" : "not-allowed",
+          }}
+        >
+          {wallet ? (
+            <option value="wallet">
+              wallet — {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
+            </option>
+          ) : null}
+          {participants.map(p => (
+            <option key={p.address.toLowerCase()} value={`peer:${p.address}`}>
+              {p.label} — {p.address.slice(0, 6)}…{p.address.slice(-4)}
+            </option>
+          ))}
+          <option value="custom">custom…</option>
+        </select>
+        {impMode === "custom" ? (
+          <div style={{ minWidth: 220, maxWidth: 340 }}>
+            <AddressInput
+              value={customImpAddr}
+              placeholder="0x… or vitalik.eth"
+              disabled={!canControl}
+              onChange={next => setCustomImpAddr(((next ?? "") as AddressType) || IMPERSONATED_ADDRESS)}
+            />
+          </div>
+        ) : (
+          <Address address={effectiveImpersonator} size="xs" onlyEnsOrAddress />
+        )}
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--slop-text-muted)" }}>{connState}</span>
         <button

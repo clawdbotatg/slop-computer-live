@@ -1524,6 +1524,9 @@ const Desktop: NextPage = () => {
                 canControl={session.authenticated}
                 wallet={mesh.wallet}
                 walletProposeTx={mesh.walletProposeTx}
+                peers={mesh.peers}
+                selfAddress={session.authenticated ? session.address : null}
+                selfLabel={session.authenticated ? (session.handle ?? null) : null}
               />
             </Window>
           );
