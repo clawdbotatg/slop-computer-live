@@ -166,18 +166,35 @@ export const SharedBrowser = ({
   const [impMode, setImpMode] = useState<ImpersonatorMode>(() => (wallet ? "wallet" : "custom"));
   const [customImpAddr, setCustomImpAddr] = useState<AddressType>(IMPERSONATED_ADDRESS);
 
-  // When a wallet first becomes available the user hasn't picked anything
-  // yet — bump them to the wallet option so the default "Deploy → use
-  // your multisig" flow keeps working. We only do this auto-switch once
-  // (tracked via ref) so a user who explicitly picked "custom" doesn't
-  // get yanked back later.
-  const autoPickedWalletRef = useRef(false);
+  // First connected guest with a usable address. Mesh.peers excludes self,
+  // so this is "someone else watching the stream" — exactly the demo
+  // case where you want to act as them, not as yourself.
+  const firstGuestAddress = useMemo(() => {
+    const guest = (peers ?? []).find(
+      p => p.role === "guest" && typeof p.address === "string" && ADDRESS_RE.test(p.address),
+    );
+    return guest?.address ?? null;
+  }, [peers]);
+
+  // Auto-pick priority: 1) deployed wallet, 2) first guest, 3) custom.
+  // Runs once: the moment the dropdown is still at its default (custom +
+  // vitalik) AND something better is available, we upgrade. After the
+  // upgrade fires once we never auto-switch again, so a user who
+  // explicitly picked "custom" doesn't get yanked back.
+  const autoPickedRef = useRef(false);
   useEffect(() => {
-    if (wallet && !autoPickedWalletRef.current && impMode === "custom" && customImpAddr === IMPERSONATED_ADDRESS) {
-      autoPickedWalletRef.current = true;
+    if (autoPickedRef.current) return;
+    if (impMode !== "custom" || customImpAddr !== IMPERSONATED_ADDRESS) return;
+    if (wallet) {
+      autoPickedRef.current = true;
       setImpMode("wallet");
+      return;
     }
-  }, [wallet, impMode, customImpAddr]);
+    if (firstGuestAddress) {
+      autoPickedRef.current = true;
+      setImpMode(`peer:${firstGuestAddress}` as ImpersonatorMode);
+    }
+  }, [wallet, firstGuestAddress, impMode, customImpAddr]);
 
   const effectiveImpersonator: AddressType = useMemo(() => {
     if (impMode === "wallet") return (wallet?.address as AddressType) ?? IMPERSONATED_ADDRESS;
