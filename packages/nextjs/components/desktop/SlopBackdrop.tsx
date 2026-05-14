@@ -41,7 +41,7 @@ export const SlopBackdrop = () => (
       lineHeight: 1,
       letterSpacing: 0,
       whiteSpace: "pre",
-      textAlign: "right",
+      textAlign: "left",
       color: "var(--slop-magenta, #ff3ec9)",
       opacity: 0.18,
       textShadow: "0 0 6px rgba(255,62,201,0.25)",
