@@ -13,7 +13,7 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
-import { Button, TextField } from "~~/components/ui";
+import { Button, LoadingBar, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
@@ -489,6 +489,12 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
             </button>
           </div>
         </div>
+      ) : null}
+
+      {deploying ? (
+        <LoadingBar
+          caption={writePending ? "confirm in wallet…" : receiptLoading ? "waiting for inclusion…" : "finalizing…"}
+        />
       ) : null}
 
       <div style={{ display: "flex", gap: 8 }}>
