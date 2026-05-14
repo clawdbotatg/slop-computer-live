@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { createHmac, randomBytes } from "node:crypto";
+import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {
   type Publication,
@@ -2071,41 +2072,49 @@ app.get("/admin/recording", async (req, reply) => {
 // carries `{phase:"done", cid, ...}`. Single-flight: concurrent callers
 // would see kubo errors anyway, but the guard in recordings.ts makes a
 // second request piggy-back on the first.
+//
+// IMPORTANT: hand Fastify a Readable via `reply.send(stream)` rather than
+// writing to `reply.raw` directly. The latter bypasses @fastify/cors,
+// which leaves the browser seeing a cross-origin response with no
+// Access-Control-Allow-Origin header → "Failed to fetch". The Readable
+// path lets the CORS plugin attach its headers before Node flushes them.
 app.post("/admin/finalize", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
 
-  reply.raw.writeHead(200, {
-    "Content-Type": "application/x-ndjson",
-    "Cache-Control": "no-store",
-    // Disable Caddy/reverse-proxy buffering so each progress line lands
-    // at the browser as soon as the relay emits it.
-    "X-Accel-Buffering": "no",
-  });
+  const stream = new Readable({ read() {} });
+
+  // Disable Caddy/reverse-proxy buffering so each progress line lands
+  // at the browser as soon as the relay emits it.
+  reply.header("Content-Type", "application/x-ndjson");
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Accel-Buffering", "no");
 
   const writeEvent = (obj: unknown) => {
-    try {
-      reply.raw.write(JSON.stringify(obj) + "\n");
-    } catch {
-      /* connection closed by client — fine, we'll notice on next write */
-    }
+    stream.push(JSON.stringify(obj) + "\n");
   };
 
-  try {
-    await finalizeRecording({
-      recordingsDir: config.recordingsDir,
-      pathName: "live",
-      ipfsApiUrl: config.ipfsApiUrl,
-      onEvent: writeEvent,
-    });
-  } catch (err) {
-    // `finalizeRecording` already emits a `phase: "error"` event, but
-    // belt-and-suspenders if the throw came from somewhere else.
-    app.log.error({ err }, "finalize failed");
-    writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
-  } finally {
-    reply.raw.end();
-  }
+  // Kick the finalize off in the background — Fastify pipes `stream`
+  // to the wire and returns to the event loop while we push events.
+  void (async () => {
+    try {
+      await finalizeRecording({
+        recordingsDir: config.recordingsDir,
+        pathName: "live",
+        ipfsApiUrl: config.ipfsApiUrl,
+        onEvent: writeEvent,
+      });
+    } catch (err) {
+      // `finalizeRecording` already emits a `phase: "error"` event, but
+      // belt-and-suspenders if the throw came from somewhere else.
+      app.log.error({ err }, "finalize failed");
+      writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      stream.push(null); // EOF
+    }
+  })();
+
+  return reply.send(stream);
 });
 
 app.get("/admin/peers", async (req, reply) => {
