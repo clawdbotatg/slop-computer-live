@@ -24,6 +24,7 @@ import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
+import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
@@ -1713,6 +1714,7 @@ const Desktop: NextPage = () => {
             to delete; drag an app icon onto it and it snaps back
             (apps can't be trashed). Gated on auth so the trash isn't
             visible on the sign-in screen. */}
+        {session.authenticated ? <SlopBackdrop /> : null}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
         {/* Always-visible "who's here" panel pinned to the top-right
             (per-peer viewport position, not in the shared slot system,

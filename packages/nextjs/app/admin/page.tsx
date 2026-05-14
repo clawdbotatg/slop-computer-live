@@ -7,7 +7,6 @@ import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
 import { Bevel, Button, Cursor, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
-import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
@@ -201,8 +200,6 @@ const AdminPage: NextPage = () => {
     return u.toString();
   }, [invite, mounted]);
 
-  const { writeContractAsync } = useScaffoldWriteContract({ contractName: "SlopComputerFrontpage" });
-
   const handleSiwe = async () => {
     if (!address) return;
     setStatus("Requesting nonce...");
@@ -306,7 +303,6 @@ const AdminPage: NextPage = () => {
     startedAt?: string;
   };
   const [stream, setStream] = useState<StreamSession | null>(null);
-  const [showTitle, setShowTitle] = useState("Slop Computer Live");
   const [fanouts, setFanouts] = useState<Fanout[]>([]);
   const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
 
@@ -400,38 +396,11 @@ const AdminPage: NextPage = () => {
         return;
       }
       setStream(data as StreamSession);
-      setStatus("Got RTMP credentials. Paste into OBS, start streaming, then click Go Live to flip the contract.");
+      setStatus(
+        "Got RTMP credentials. Paste into OBS and start streaming. Then go to slop.computer/admin to flip the on-chain registry.",
+      );
     } catch (err) {
       setStatus(`fetch failed: ${(err as Error).message}`);
-    }
-  };
-
-  const handleGoLive = async () => {
-    if (!stream) {
-      setStatus("Get RTMP info first.");
-      return;
-    }
-    setStatus("Calling goLive() on mainnet...");
-    try {
-      await writeContractAsync({
-        functionName: "goLive",
-        args: [showTitle || "Slop Computer Live", stream.hlsUrl],
-      });
-      setStatus("goLive tx sent — frontpage will flip to LIVE within ~12s.");
-    } catch (err) {
-      setStatus(`goLive failed: ${(err as Error).message}`);
-    }
-  };
-
-  const handleGoOffline = async () => {
-    setStatus("Calling goOffline()...");
-    try {
-      await writeContractAsync({ functionName: "goOffline" });
-      await fetch(`${RELAY_BASE}/admin/stop`, { method: "POST", credentials: "include" });
-      setStream(null);
-      setStatus("Offline.");
-    } catch (err) {
-      setStatus(`goOffline failed: ${(err as Error).message}`);
     }
   };
 
@@ -620,26 +589,17 @@ const AdminPage: NextPage = () => {
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Broadcast</h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
-          1. Click <strong>Get OBS info</strong>. 2. Paste the URL + key into OBS, set the Browser Source to{" "}
-          <code>https://live.slop.computer/desktop</code>, and start streaming. 3. Click <strong>Go live</strong> to
-          flip the mainnet contract — <code>slop.computer</code> will show the LIVE banner with the HLS player.
+          1. Click <strong>Set up OBS</strong> to fetch RTMP credentials. 2. Paste the URL + key into OBS, set the
+          Browser Source to <code>https://live.slop.computer/desktop</code>, and start streaming. 3. Go to{" "}
+          <a href="https://slop.computer/admin" target="_blank" rel="noreferrer" className="slop-link">
+            slop.computer/admin
+          </a>{" "}
+          to flip the on-chain registry — the homepage&apos;s LIVE banner + HLS player read from there.
         </p>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-          <Button onClick={handleGetRtmpInfo} disabled={!isHost}>
-            Get OBS info
-          </Button>
-          <TextField
-            placeholder="Show title"
-            value={showTitle}
-            onChange={e => setShowTitle(e.target.value)}
-            style={{ minWidth: 240 }}
-          />
-          <Button variant="primary" onClick={handleGoLive} disabled={!isHost || !stream}>
-            Go live
-          </Button>
-          <Button onClick={handleGoOffline} disabled={!isHost}>
-            Go offline
+          <Button variant="primary" onClick={handleGetRtmpInfo} disabled={!isHost}>
+            Set up OBS
           </Button>
         </div>
 
