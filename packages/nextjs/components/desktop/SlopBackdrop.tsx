@@ -22,7 +22,7 @@ export const SlopBackdrop = () => (
     style={{
       position: "fixed",
       right: RIGHT_OFFSET,
-      bottom: 24,
+      bottom: 72,
       width: "70vw",
       maxWidth: "70vw",
       margin: 0,
