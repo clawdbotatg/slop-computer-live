@@ -7,12 +7,10 @@ import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 //   - Time     — current time, with quick-pick world clocks
 //   - Timer    — stopwatch (start / stop / reset, supports lap-style runs
 //                via reset between starts)
-//   - Countdown — type a duration, count down, beep when it hits zero
+//   - Countdown — type a duration, count down to zero (silent finish)
 //
 // All state is local. The "now" wall-clock tick (250ms) drives both
 // the time display and the running stopwatch/countdown displays.
-
-const FINISH_TONE_DURATION_MS = 800;
 
 // --- helpers ----------------------------------------------------------------
 
@@ -46,30 +44,6 @@ function formatHMSWithMillis(totalMs: number): string {
   const totalSecs = Math.floor(totalMs / 1000);
   const ms = Math.floor((totalMs % 1000) / 10); // 2-digit centiseconds
   return `${formatHMS(totalSecs)}.${ms.toString().padStart(2, "0")}`;
-}
-
-function playFinishTone() {
-  try {
-    const Ctx =
-      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "square";
-    osc.frequency.value = 880;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    const now = ctx.currentTime;
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.25, now + 0.02);
-    gain.gain.setValueAtTime(0.25, now + 0.5);
-    gain.gain.linearRampToValueAtTime(0, now + FINISH_TONE_DURATION_MS / 1000);
-    osc.start(now);
-    osc.stop(now + FINISH_TONE_DURATION_MS / 1000 + 0.05);
-    osc.onended = () => ctx.close().catch(() => {});
-  } catch {
-    /* AudioContext blocked / unavailable — silent finish is fine */
-  }
 }
 
 // --- world clocks -----------------------------------------------------------
@@ -152,16 +126,15 @@ export const ClockWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   }, []);
 
   // Auto-finish countdown — every peer detects the transition locally
-  // (since endAt is wall-clock) and fires the beep at the exact same
-  // moment. Whoever's tick fires first ALSO pushes the "done" state to
-  // the mesh; subsequent peers find phase already "done" and skip.
+  // (since endAt is wall-clock) at the exact same moment. Whoever's tick
+  // fires first pushes the "done" state to the mesh; subsequent peers
+  // find phase already "done" and skip. No sound — finish is silent.
   useEffect(() => {
     if (countdown.phase !== "running") return;
     if (now < countdown.endAt) return;
     if (finishedRef.current) return;
     finishedRef.current = true;
     setCountdown({ phase: "done", totalSecs: countdown.totalSecs });
-    playFinishTone();
   }, [now, countdown, setCountdown]);
   useEffect(() => {
     if (countdown.phase !== "done") finishedRef.current = false;
