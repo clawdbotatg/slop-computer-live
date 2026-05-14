@@ -23,10 +23,12 @@ export const SlopBackdrop = () => (
       position: "fixed",
       right: RIGHT_OFFSET,
       bottom: 72,
-      // Box sizes to its text content so `right` anchors the *text's*
-      // right edge — not a wider invisible box. Without this the text
-      // could float left of the right edge on wide monitors.
-      width: "max-content",
+      // inline-block + auto width makes the <pre>'s width hug its text
+      // (max-content was flaky on some browsers for <pre>), so the
+      // `right` offset anchors the actual ASCII art's right edge — not
+      // a wider invisible box that lets the text float left of it.
+      display: "inline-block",
+      width: "auto",
       margin: 0,
       padding: 0,
       pointerEvents: "none",
