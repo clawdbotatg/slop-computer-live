@@ -326,13 +326,18 @@ export const SharedBrowser = ({
         };
         setHostTxRequests(prev => [next, ...prev].slice(0, 50));
 
-        // If a session wallet is deployed, also push this into the
-        // multisig's signing queue. Fire-and-forget — we read the
-        // current nonce from chain, compute the exec hash, and tell
-        // the relay (which AI-summarizes + broadcasts to all peers).
+        // Route captured txs to the wallet being impersonated. The dapp
+        // built this calldata assuming the impersonated address is the
+        // sender, so it only makes sense to queue it on that same address.
+        // Today we can only queue against the session wallet (relay's
+        // propose flow is tied to walletGetCurrent), so we require the
+        // impersonator to match. Anything else just lands in the local
+        // tx panel.
         const w = walletRef.current;
         const propose = proposeRef.current;
-        if (w && propose && publicClient && to && calldata.startsWith("0x")) {
+        const imp = impersonatorRef.current;
+        const impMatchesWallet = !!w && imp.toLowerCase() === w.address.toLowerCase();
+        if (w && propose && publicClient && to && calldata.startsWith("0x") && impMatchesWallet) {
           void (async () => {
             try {
               const nonce = (await publicClient.readContract({
