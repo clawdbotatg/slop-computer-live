@@ -179,6 +179,34 @@ function getClient() {
   return client;
 }
 
+// Address → primary ENS name. Used at SIWE-auth time so sessions are stamped
+// with the speaker's handle rather than relying on the client to do reverse
+// lookups at render time (which leaves the on-IPFS chat/transcript archives
+// with null handles). 1-hour cache — ENS primary names change very rarely
+// and an extra Alchemy call per session login is cheap.
+const reverseCache = new Map<string, { expiresAt: number; name: string | null }>();
+const REVERSE_TTL_MS = 60 * 60 * 1000;
+
+export async function reverseLookup(address: string): Promise<string | null> {
+  if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
+  const key = address.toLowerCase();
+  const cached = reverseCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.name;
+  const c = getClient();
+  if (!c) return null;
+  try {
+    // viem's `getEnsName` does the canonical two-step: read the primary name
+    // off `addr.reverse`, then verify the forward record points back to the
+    // address (so a squatter can't claim someone else's name).
+    const name = await c.getEnsName({ address: key as `0x${string}` });
+    reverseCache.set(key, { name: name ?? null, expiresAt: Date.now() + REVERSE_TTL_MS });
+    return name ?? null;
+  } catch (err) {
+    console.warn("[ens] reverse failed", key, err);
+    return null;
+  }
+}
+
 export async function resolveEns(rawName: string): Promise<EnsResolveResult> {
   const name = rawName.toLowerCase().trim();
   if (!name || !name.endsWith(".eth")) return { ok: false, error: "invalid-name" };

@@ -50,6 +50,7 @@ import {
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
+import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
@@ -223,12 +224,14 @@ const Desktop: NextPage = () => {
   const media = useLocalMedia(addStream, stopStream);
 
   // Live transcript: Web Speech runs locally in the browser whenever the
-  // user has a published mic (standalone audio share OR camera with bundled
-  // audio). Final-result segments POST to /v1/transcript and land in the
-  // episode manifest at finalize time. Gate is mic-published only — no
-  // separate opt-in toggle yet, the act of sharing audio is the consent.
+  // user has a published mic AND the host has flipped STT on for the
+  // episode (so dinking around pre-air doesn't pollute the archive).
+  // Final-result segments POST to /v1/transcript and land in the episode
+  // manifest at finalize time.
+  const episode = useEpisodeState(RELAY_HTTP);
   useLiveTranscript({
     enabled: media.activeAudio || media.activeCamera,
+    episodeSttOn: episode.sttOn,
     relayHttpUrl: RELAY_HTTP,
   });
 

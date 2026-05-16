@@ -116,7 +116,13 @@ import {
   subscribe as subscribeNewsDigest,
 } from "./news-digest.js";
 import { start as startPolymarket } from "./polymarket.js";
-import { resolveEns } from "./ens.js";
+import { resolveEns, reverseLookup as reverseLookupEns } from "./ens.js";
+import {
+  type EpisodeState,
+  getState as getEpisodeState,
+  setSttOn as setEpisodeSttOn,
+  subscribe as subscribeEpisode,
+} from "./episode.js";
 import {
   FILES_DIR_PATH,
   FILES_MAX_BYTES,
@@ -949,6 +955,61 @@ app.get("/admin/transcript", async (req, reply) => {
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   reply.header("cache-control", "no-store");
   return { segments: recentTranscript() };
+});
+
+// --- Episode flags (STT toggle, etc.) ---------------------------------------
+// Tiny key-value store the host flips to gate things like live transcript
+// posting. Peers read /v1/episode (or subscribe to /v1/episode/stream) so
+// their browser knows when STT is allowed.
+
+app.get("/v1/episode", async (_req, reply) => {
+  reply.header("cache-control", "no-store");
+  return getEpisodeState();
+});
+
+app.get("/v1/episode/stream", async (req, reply) => {
+  // Same cross-origin handling as /v1/chat/stream — slop.computer reads
+  // this too if it ever wants to react to STT-on state visually.
+  const origin = (req.headers.origin as string | undefined) ?? "";
+  const corsOrigins = config.corsOrigins;
+  const allowOrigin =
+    corsOrigins.includes("*") || corsOrigins.includes(origin) ? origin || "*" : "";
+  const sseHeaders: Record<string, string> = {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  };
+  if (allowOrigin) {
+    sseHeaders["access-control-allow-origin"] = allowOrigin;
+    sseHeaders["access-control-allow-credentials"] = "true";
+    sseHeaders["vary"] = "Origin";
+  }
+  reply.raw.writeHead(200, sseHeaders);
+  const write = (event: string, data: unknown) => {
+    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  write("init", getEpisodeState());
+  const unsub = subscribeEpisode((s: EpisodeState) => write("episode", s));
+  const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsub();
+    try {
+      reply.raw.end();
+    } catch {
+      /* already closed */
+    }
+  });
+});
+
+type EpisodeSttBody = { on?: unknown };
+
+app.post<{ Body: EpisodeSttBody }>("/admin/episode/stt", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const on = req.body?.on === true;
+  return setEpisodeSttOn(on);
 });
 
 app.get("/admin/transcript/stream", async (req, reply) => {
@@ -2116,10 +2177,14 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
   if (!check.isAdmin && !isInvited(req.cookies[INVITE_COOKIE])) {
     return reply.code(403).send({ error: "invite-required" });
   }
+  // Resolve the primary ENS name once at login so chat / transcript /
+  // cursor labels all carry a real handle instead of null. Cached for an
+  // hour, so the per-session cost is one Alchemy call per cold user.
+  const handle = check.address ? await reverseLookupEns(check.address) : null;
   const session = createSession({
     role: check.isAdmin ? "host" : "guest",
     address: check.address,
-    handle: null,
+    handle,
   });
   reply.setCookie(SESSION_COOKIE, session.token, {
     path: "/",
@@ -2186,7 +2251,8 @@ app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
   });
   if (!result.ok) return reply.code(401).send({ error: result.error });
 
-  const session = createSession({ role: "guest", address: result.address, handle: null });
+  const handle = result.address ? await reverseLookupEns(result.address) : null;
+  const session = createSession({ role: "guest", address: result.address, handle });
   reply.setCookie(SESSION_COOKIE, session.token, {
     path: "/",
     httpOnly: true,

@@ -51,8 +51,14 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
 
 export type UseLiveTranscriptOptions = {
   /** Master gate — set true ONLY when the peer's mic is unmuted, published,
-   *  and the user has opted in to live transcript. */
+   *  and the user has opted in to live transcript. AND-ed with `episodeSttOn`
+   *  inside the hook, so the host can disable transcription episode-wide
+   *  without each peer toggling their mic. */
   enabled: boolean;
+  /** Host-controlled per-episode flag, read from /v1/episode. When false,
+   *  the hook stays dormant even if `enabled` is true — the show isn't on
+   *  the record yet. */
+  episodeSttOn: boolean;
   /** Relay base URL, e.g. `https://slop.computer`. Must match the same
    *  origin the user's session cookie is scoped to. */
   relayHttpUrl: string;
@@ -75,7 +81,10 @@ export type UseLiveTranscriptResult = {
 };
 
 export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTranscriptResult {
-  const { enabled, relayHttpUrl, lang = "en-US", onError } = opts;
+  const { enabled: rawEnabled, episodeSttOn, relayHttpUrl, lang = "en-US", onError } = opts;
+  // Hook is dormant unless BOTH the per-peer gate AND the episode-wide
+  // STT flag are on. Either being false stops recognition.
+  const enabled = rawEnabled && episodeSttOn;
   const [supported, setSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);

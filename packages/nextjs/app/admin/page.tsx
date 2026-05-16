@@ -7,6 +7,7 @@ import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
 import { Bevel, Button, Cursor, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
+import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
@@ -305,6 +306,30 @@ const AdminPage: NextPage = () => {
   const [stream, setStream] = useState<StreamSession | null>(null);
   const [fanouts, setFanouts] = useState<Fanout[]>([]);
   const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
+
+  // Episode-wide STT toggle. The hook SSE-subscribes so the button reflects
+  // any flips made from other admin tabs (or the API directly) immediately.
+  const episode = useEpisodeState(RELAY_BASE);
+  const [sttBusy, setSttBusy] = useState(false);
+  const toggleEpisodeStt = async (on: boolean) => {
+    setSttBusy(true);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/episode/stt`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ on }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setStatus(`STT toggle failed: ${data?.error ?? res.statusText}`);
+      }
+    } catch (err) {
+      setStatus(`STT toggle failed: ${(err as Error).message}`);
+    } finally {
+      setSttBusy(false);
+    }
+  };
 
   // ---- Services health -----------------------------------------------------
   // Poll each /health URL every 5s. Services without a healthUrl render as
@@ -630,6 +655,42 @@ const AdminPage: NextPage = () => {
             </span>
           </div>
         ) : null}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Live transcript
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
+          When ON, every peer with a published mic runs Web Speech locally and posts final segments to the relay. They
+          land in the per-episode transcript archive at finalize. Default OFF so pre-show dinking-around isn&apos;t
+          captured.
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span
+            style={{
+              padding: "2px 8px",
+              fontFamily: "var(--slop-font-display)",
+              fontSize: 11,
+              textTransform: "uppercase",
+              background: episode.sttOn ? "var(--slop-accent)" : "var(--slop-bevel-dark)",
+              color: episode.sttOn ? "var(--slop-bg)" : "var(--slop-text-muted)",
+            }}
+          >
+            STT {episode.sttOn ? "ON" : "OFF"}
+          </span>
+          <Button onClick={() => toggleEpisodeStt(!episode.sttOn)} disabled={sttBusy}>
+            {episode.sttOn ? "Turn STT off" : "Turn STT on"}
+          </Button>
+          <a
+            href={`${RELAY_BASE}/admin/transcript`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "var(--slop-text-muted)", fontSize: 12, marginLeft: "auto" }}
+          >
+            view raw segments ↗
+          </a>
+        </div>
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
