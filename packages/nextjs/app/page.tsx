@@ -50,6 +50,7 @@ import {
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
+import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
@@ -220,6 +221,17 @@ const Desktop: NextPage = () => {
   );
 
   const media = useLocalMedia(addStream, stopStream);
+
+  // Live transcript: Web Speech runs locally in the browser whenever the
+  // user has a published mic (standalone audio share OR camera with bundled
+  // audio). Final-result segments POST to /v1/transcript and land in the
+  // episode manifest at finalize time. Gate is mic-published only — no
+  // separate opt-in toggle yet, the act of sharing audio is the consent.
+  useLiveTranscript({
+    enabled: media.activeAudio || media.activeCamera,
+    relayHttpUrl: RELAY_HTTP,
+  });
+
   // Forward-declared so the share menu's "Stop screen" handler can clear it
   // synchronously, regardless of whether we're actively sharing or just have
   // a post-reload resume placeholder up.
