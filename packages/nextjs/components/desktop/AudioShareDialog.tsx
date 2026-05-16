@@ -61,7 +61,13 @@ export const AudioShareDialog = ({
   const [hidden, setHidden] = useState<boolean>(initialHidden);
   const displayedAvatar = uploadedAvatar || (hidden ? null : ensAvatarUrl);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  // Drag-hover state is owned by the dialog (not by AvatarDrop) so the
+  // entire modal acts as a drop target — dropping anywhere in the modal
+  // uploads the image. The dashed AvatarDrop region still lights up to
+  // give the user a clear target, but missing it doesn't crash the page
+  // by letting the browser navigate to the dropped file.
   const [avatarHover, setAvatarHover] = useState(false);
+  const dragDepthRef = useRef(0);
 
   // (Re)acquire the preview stream whenever the selected mic changes.
   // The visualizer ball is bound to this stream — switching mics gives
@@ -160,6 +166,34 @@ export const AudioShareDialog = ({
     setHidden(false);
   };
 
+  // Dialog-level drag/drop. Without these, dropping a file anywhere on
+  // the dialog backdrop falls through to the browser default (navigate
+  // to the file → blows away the page). Depth counter handles the
+  // dragenter-on-every-child quirk.
+  const onDialogDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setAvatarHover(true);
+  };
+  const onDialogDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+  const onDialogDragLeave = () => {
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setAvatarHover(false);
+  };
+  const onDialogDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setAvatarHover(false);
+    const file = e.dataTransfer.files[0];
+    if (file) void handleFile(file);
+  };
+
   return (
     <div
       role="dialog"
@@ -167,6 +201,10 @@ export const AudioShareDialog = ({
       onClick={e => {
         if (e.target === e.currentTarget) onClose();
       }}
+      onDragEnter={onDialogDragEnter}
+      onDragOver={onDialogDragOver}
+      onDragLeave={onDialogDragLeave}
+      onDrop={onDialogDrop}
       style={{
         position: "fixed",
         inset: 0,
@@ -258,7 +296,6 @@ export const AudioShareDialog = ({
             canUnhide={hidden && !!ensAvatarUrl}
             uploading={uploadingAvatar}
             hover={avatarHover}
-            setHover={setAvatarHover}
             onFile={handleFile}
             onRemoveUpload={removeUpload}
             onHide={hideAvatar}
@@ -277,8 +314,10 @@ export const AudioShareDialog = ({
   );
 };
 
-// Dashed-border drop target. Shows a 64px preview when an avatar is set.
-// Three actions surface, mutually exclusive:
+// Dashed-border target that lights up when the user drags a file into
+// the dialog. Drop handling lives on the dialog itself (so dropping
+// anywhere in the modal works, not just inside this small rectangle) —
+// this component is purely visual + a click-to-pick fallback.
 //  - canRemoveUpload (×): clear the user's upload, fall back to ENS
 //  - canHide (trash): opt out entirely (no upload, no ENS) — peers see nothing
 //  - canUnhide: lifted when in hidden state and an ENS image is available
@@ -290,7 +329,6 @@ const AvatarDrop = ({
   canUnhide,
   uploading,
   hover,
-  setHover,
   onFile,
   onRemoveUpload,
   onHide,
@@ -303,7 +341,6 @@ const AvatarDrop = ({
   canUnhide: boolean;
   uploading: boolean;
   hover: boolean;
-  setHover: (h: boolean) => void;
   onFile: (file: File) => void;
   onRemoveUpload: () => void;
   onHide: () => void;
@@ -311,45 +348,8 @@ const AvatarDrop = ({
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // stopPropagation so this drop doesn't ALSO bubble up to the
-  // desktop's drop-to-upload handler in page.tsx (which would
-  // additionally save the image as a desktop file icon).
-  const handleEnter = (e: React.DragEvent) => {
-    if (Array.from(e.dataTransfer.types).includes("Files")) {
-      e.preventDefault();
-      e.stopPropagation();
-      setHover(true);
-    }
-  };
-  const handleOver = (e: React.DragEvent) => {
-    if (Array.from(e.dataTransfer.types).includes("Files")) {
-      e.preventDefault();
-      e.stopPropagation();
-      e.dataTransfer.dropEffect = "copy";
-    }
-  };
-  const handleLeave = (e: React.DragEvent) => {
-    // dragleave also fires when crossing into a child element. Only
-    // clear hover when the cursor leaves the wrapper for good — i.e.,
-    // relatedTarget is null or sits outside this subtree.
-    const next = e.relatedTarget as Node | null;
-    if (next && e.currentTarget.contains(next)) return;
-    setHover(false);
-  };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setHover(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) onFile(file);
-  };
-
   return (
     <div
-      onDragEnter={handleEnter}
-      onDragOver={handleOver}
-      onDragLeave={handleLeave}
-      onDrop={handleDrop}
       onClick={() => inputRef.current?.click()}
       style={{
         position: "relative",
