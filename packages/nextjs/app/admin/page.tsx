@@ -330,6 +330,27 @@ const AdminPage: NextPage = () => {
       setSttBusy(false);
     }
   };
+  const [transcriptClearBusy, setTranscriptClearBusy] = useState(false);
+  const clearTranscript = async () => {
+    if (!window.confirm("Wipe the on-box transcript log? This can't be undone.")) return;
+    setTranscriptClearBusy(true);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/transcript`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = (await res.json().catch(() => null)) as { clearedCount?: number; error?: string } | null;
+      if (!res.ok) {
+        setStatus(`Transcript clear failed: ${data?.error ?? res.statusText}`);
+      } else {
+        setStatus(`Cleared ${data?.clearedCount ?? 0} transcript segments.`);
+      }
+    } catch (err) {
+      setStatus(`Transcript clear failed: ${(err as Error).message}`);
+    } finally {
+      setTranscriptClearBusy(false);
+    }
+  };
 
   // ---- Services health -----------------------------------------------------
   // Poll each /health URL every 5s. Services without a healthUrl render as
@@ -663,33 +684,56 @@ const AdminPage: NextPage = () => {
         </h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
           When ON, every peer with a published mic runs Web Speech locally and posts final segments to the relay. They
-          land in the per-episode transcript archive at finalize. Default OFF so pre-show dinking-around isn&apos;t
-          captured.
+          land in the per-episode transcript archive at finalize, then auto-clear so the next episode starts fresh.
+          Default OFF so pre-show dinking around isn&apos;t captured.
         </p>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span
-            style={{
-              padding: "2px 8px",
-              fontFamily: "var(--slop-font-display)",
-              fontSize: 11,
-              textTransform: "uppercase",
-              background: episode.sttOn ? "var(--slop-accent)" : "var(--slop-bevel-dark)",
-              color: episode.sttOn ? "var(--slop-bg)" : "var(--slop-text-muted)",
-            }}
-          >
-            STT {episode.sttOn ? "ON" : "OFF"}
-          </span>
-          <Button onClick={() => toggleEpisodeStt(!episode.sttOn)} disabled={sttBusy}>
-            {episode.sttOn ? "Turn STT off" : "Turn STT on"}
-          </Button>
-          <a
-            href={`${RELAY_BASE}/admin/transcript`}
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: "var(--slop-text-muted)", fontSize: 12, marginLeft: "auto" }}
-          >
-            view raw segments ↗
-          </a>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "8px 12px",
+            border: "1px solid var(--slop-bevel-dark)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            <span
+              style={{
+                padding: "2px 8px",
+                fontSize: 10,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                background: episode.sttOn ? "var(--slop-accent)" : "var(--slop-bevel-dark)",
+                color: episode.sttOn ? "var(--slop-bg)" : "var(--slop-text-muted)",
+              }}
+            >
+              {episode.sttOn ? "ON AIR" : "STANDBY"}
+            </span>
+            <a
+              href={`${RELAY_BASE}/admin/transcript`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--slop-text-muted)", fontSize: 12 }}
+            >
+              view raw ↗
+            </a>
+            <Button onClick={clearTranscript} disabled={transcriptClearBusy}>
+              Clear
+            </Button>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {episode.sttOn ? (
+              <Button onClick={() => toggleEpisodeStt(false)} disabled={sttBusy}>
+                Stop STT
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={() => toggleEpisodeStt(true)} disabled={sttBusy}>
+                Start STT
+              </Button>
+            )}
+          </div>
         </div>
       </Bevel>
 

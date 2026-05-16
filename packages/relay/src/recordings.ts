@@ -10,7 +10,7 @@ import * as nodeFs from "node:fs";
 const openAsBlob = (nodeFs as unknown as { openAsBlob: (path: string) => Promise<Blob> }).openAsBlob;
 
 import { readArchive as readChatArchive } from "./chat.js";
-import { readArchive as readTranscriptArchive } from "./transcript.js";
+import { clear as clearTranscript, readArchive as readTranscriptArchive } from "./transcript.js";
 import { type EpisodeMeta, generateEpisodeMeta } from "./meta-ai.js";
 
 // Post-stream archival: MediaMTX writes the live session to disk
@@ -363,6 +363,19 @@ export async function finalizeRecording(opts: {
         if (transcriptPin) manifestJson.transcript = transcriptPin;
         if (aiMeta) manifestJson.meta = aiMeta;
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
+
+        // Manifest pin succeeded → the transcript archive is safely captured
+        // on IPFS. Wipe the on-box JSONL so the next episode starts fresh
+        // instead of accumulating segments across shows. Chat is left alone
+        // — its per-episode-vs-community-wide semantics are a separate call.
+        if (transcriptPin) {
+          try {
+            clearTranscript();
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[finalize] transcript clear failed", err);
+          }
+        }
 
         const result: FinalizeResult = {
           cid,

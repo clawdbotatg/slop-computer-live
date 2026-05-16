@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Live transcript stream. Each peer runs Web Speech in the browser and
@@ -106,6 +106,27 @@ export function append(input: {
 export function recent(): TranscriptSegment[] {
   load();
   return [...buffer];
+}
+
+// Wipe the on-disk JSONL + in-memory ring. Called automatically at the
+// end of a successful finalize (the just-pinned manifest captured the
+// archive; next episode starts fresh) and exposed as DELETE /admin/transcript
+// so the host can wipe pre-show test segments.
+//
+// Notifies subscribers with a synthetic "cleared" marker so SSE viewers
+// can refresh — they should ignore the marker for archiving purposes
+// (it has no id/text).
+export function clear(): { clearedCount: number } {
+  load();
+  const clearedCount = buffer.length;
+  buffer = [];
+  try {
+    mkdirSync(dirname(TRANSCRIPT_LOG_FILE), { recursive: true });
+    writeFileSync(TRANSCRIPT_LOG_FILE, "", "utf8");
+  } catch {
+    /* disk write failed — ring is wiped, file may still hold old content */
+  }
+  return { clearedCount };
 }
 
 // Read the full on-disk JSONL log + segment count. Used at finalize time

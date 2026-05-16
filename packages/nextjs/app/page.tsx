@@ -94,6 +94,7 @@ type AppEntry = {
     | "gas"
     | "clock"
     | "wallet"
+    | "ai-wallet"
     | "research"
     | "news";
 };
@@ -1286,6 +1287,9 @@ const Desktop: NextPage = () => {
                         return;
                       case "wallet":
                         focusApp("wallet");
+                        return;
+                      case "ai-wallet":
+                        focusApp("ai-wallet");
                         return;
                       case "research":
                         focusApp("research");

@@ -39,6 +39,7 @@ import {
   type TranscriptSegment,
   allow as allowTranscript,
   append as appendTranscript,
+  clear as clearTranscript,
   recent as recentTranscript,
   subscribe as subscribeTranscript,
 } from "./transcript.js";
@@ -955,6 +956,15 @@ app.get("/admin/transcript", async (req, reply) => {
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   reply.header("cache-control", "no-store");
   return { segments: recentTranscript() };
+});
+
+// Manual wipe — for blowing away pre-show test segments. Finalize also
+// clears automatically once the manifest pins, so this is mainly for the
+// "I dinked around and want a clean slate before going live" case.
+app.delete("/admin/transcript", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return clearTranscript();
 });
 
 // --- Episode flags (STT toggle, etc.) ---------------------------------------
