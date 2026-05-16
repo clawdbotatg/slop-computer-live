@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import { type Address as AddressType, type Hex, decodeEventLog, formatEther } from "viem";
+import { type Address as AddressType, type Hex, decodeEventLog, formatEther, parseEther } from "viem";
 import { base, mainnet } from "viem/chains";
 import {
   useAccount,
   useChainId,
+  usePublicClient,
   useReadContract,
   useSignMessage,
   useSwitchChain,
@@ -16,7 +17,7 @@ import {
 import { Button, LoadingBar, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
-import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
+import { computeExecHash, defaultDeadline, saltFromLabel, sortSignatures } from "~~/utils/multisig";
 
 export type WalletWindowProps = {
   mesh: PeerMeshState;
@@ -541,6 +542,7 @@ const WalletDashboard = ({ mesh, wallet, myAddress }: DashboardProps) => {
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14 }}>
       <WalletHeader wallet={wallet} onArchive={() => mesh.walletNewEpisode()} />
       <WalletBalances address={wallet.address} />
+      <WalletSendForm wallet={wallet} mesh={mesh} />
 
       <Section title={`Pending (${pendingTxs.length})`}>
         {pendingTxs.length === 0 ? (
@@ -721,6 +723,196 @@ const WalletBalances = ({ address }: { address: string }) => {
           )}
         </div>
       )}
+    </Section>
+  );
+};
+
+// ----------------------------------------------------------------------------
+// Send form — propose a manual outgoing tx for signers to approve.
+// Reads the multisig's current on-chain nonce, computes the execHash, and
+// hands the result to the relay via walletProposeTx. The tx then shows up
+// in "Pending" below where signers can sign + execute through TxCard.
+// ----------------------------------------------------------------------------
+
+const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMeshState }) => {
+  const publicClient = usePublicClient({ chainId: wallet.chainId });
+  const [open, setOpen] = useState(false);
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [data, setData] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const targetOk = /^0x[a-fA-F0-9]{40}$/.test(recipient.trim());
+  const dataOk = !data.trim() || /^0x([a-fA-F0-9]{2})*$/.test(data.trim());
+  let amountWei: bigint | null = null;
+  let amountErr: string | null = null;
+  if (amount.trim()) {
+    try {
+      amountWei = parseEther(amount.trim() as `${number}`);
+    } catch {
+      amountErr = "invalid amount";
+    }
+  } else {
+    amountWei = 0n;
+  }
+
+  const onPropose = useCallback(async () => {
+    setErr(null);
+    if (!publicClient) {
+      setErr("no RPC client for this chain");
+      return;
+    }
+    if (!targetOk) {
+      setErr("enter a valid recipient");
+      return;
+    }
+    if (amountErr || amountWei === null) {
+      setErr(amountErr ?? "invalid amount");
+      return;
+    }
+    if (!dataOk) {
+      setErr("calldata must be 0x-prefixed hex");
+      return;
+    }
+    if (amountWei === 0n && (!data.trim() || data.trim() === "0x")) {
+      setErr("send 0 ETH with no calldata? add an amount or some data");
+      return;
+    }
+    setBusy(true);
+    try {
+      const nonce = (await publicClient.readContract({
+        address: wallet.address as AddressType,
+        abi: MultisigAbi,
+        functionName: "nonce",
+      })) as bigint;
+      const deadline = defaultDeadline();
+      const target = recipient.trim() as AddressType;
+      const calldata = (data.trim() || "0x") as Hex;
+      const execHash = computeExecHash({
+        chainId: wallet.chainId,
+        multisig: wallet.address as AddressType,
+        nonce,
+        deadline,
+        target,
+        value: amountWei,
+        data: calldata,
+      });
+      mesh.walletProposeTx({
+        target,
+        value: amountWei.toString(),
+        data: calldata,
+        deadline: deadline.toString(),
+        nonce: nonce.toString(),
+        execHash,
+        source: "manual",
+        browserId: null,
+      });
+      setRecipient("");
+      setAmount("");
+      setData("");
+      setShowAdvanced(false);
+      setOpen(false);
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    } finally {
+      setBusy(false);
+    }
+  }, [publicClient, targetOk, amountErr, amountWei, dataOk, data, recipient, wallet, mesh]);
+
+  if (!open) {
+    return (
+      <Button variant="primary" onClick={() => setOpen(true)}>
+        Send
+      </Button>
+    );
+  }
+
+  return (
+    <Section title="Send">
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <Field label="Recipient">
+          <AddressInput
+            value={recipient}
+            placeholder="0x… or vitalik.eth"
+            disabled={busy}
+            onChange={next => setRecipient(next ?? "")}
+          />
+        </Field>
+        <Field label="Amount (ETH)">
+          <TextField
+            inputMode="decimal"
+            value={amount}
+            placeholder="0.01"
+            disabled={busy}
+            onChange={e => setAmount(e.target.value)}
+          />
+          {amountErr ? <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>{amountErr}</div> : null}
+        </Field>
+        {showAdvanced ? (
+          <Field label="Calldata (hex, optional)">
+            <TextField
+              value={data}
+              placeholder="0x"
+              disabled={busy}
+              onChange={e => setData(e.target.value)}
+              style={{ fontFamily: "monospace", fontSize: 11 }}
+            />
+            {!dataOk ? (
+              <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>must be 0x-prefixed hex</div>
+            ) : null}
+          </Field>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(true)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--slop-text-muted)",
+              fontSize: 10,
+              textDecoration: "underline",
+              cursor: "pointer",
+              alignSelf: "flex-start",
+              padding: 0,
+            }}
+          >
+            + add calldata
+          </button>
+        )}
+        {err ? (
+          <div
+            style={{
+              fontSize: 11,
+              color: "#ff7676",
+              padding: 6,
+              background: "rgba(255,118,118,0.08)",
+              borderRadius: 3,
+            }}
+          >
+            {err}
+          </div>
+        ) : null}
+        <div style={{ display: "flex", gap: 6 }}>
+          <Button variant="primary" onClick={onPropose} disabled={busy || !targetOk || !!amountErr || !dataOk}>
+            {busy ? "Proposing…" : "Propose"}
+          </Button>
+          <Button
+            onClick={() => {
+              setOpen(false);
+              setErr(null);
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+          This queues the tx in Pending. {wallet.threshold} of {wallet.signers.length} signer
+          {wallet.signers.length === 1 ? "" : "s"} must sign before it can execute.
+        </div>
+      </div>
     </Section>
   );
 };
