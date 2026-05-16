@@ -7,6 +7,7 @@ import type { Address as AddressType } from "viem";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
 import { PasswordGate } from "~~/components/PasswordGate";
+import { AIWalletWindow } from "~~/components/desktop/AIWalletWindow";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
@@ -18,14 +19,20 @@ import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
+import { HeadlinesBar } from "~~/components/desktop/HeadlinesBar";
+import { IncomingTxModal } from "~~/components/desktop/IncomingTxModal";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { NewsWindow } from "~~/components/desktop/NewsWindow";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
+import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
+import { TickerBar } from "~~/components/desktop/TickerBar";
+import { TimelineBar } from "~~/components/desktop/TimelineBar";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
@@ -84,7 +91,9 @@ type AppEntry = {
     | "glossary"
     | "gas"
     | "clock"
-    | "wallet";
+    | "wallet"
+    | "research"
+    | "news";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -179,19 +188,18 @@ const Desktop: NextPage = () => {
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
       mesh.publish(h.stream, h.kind, myLabel);
-      const r = readResume();
-      writeResume({ ...r, [h.kind]: true });
+      // Only screen-share is resumable across reloads (via a click-to-resume
+      // placeholder, since browsers require a user gesture for
+      // getDisplayMedia). Camera + mic are explicit opt-in every session —
+      // we don't want a returning user's hardware lighting up silently.
+      if (h.kind === "screen") {
+        const r = readResume();
+        writeResume({ ...r, screen: true });
+      }
     },
     [mesh, myLabel],
   );
 
-  // Track current streams in a ref so stopStream can read them without
-  // triggering a callback rebuild on every streams change. The previous
-  // version assigned `stoppedKind` inside a setStreams updater and read it
-  // afterward — but React 18 doesn't run updaters synchronously, so the
-  // resume-flag cleanup ran with stoppedKind still null. Net effect:
-  // closing the audio/camera window stopped the stream but left the
-  // localStorage resume flag set, so a reload picked the stream back up.
   const streamsRef = useRef<LocalStreamHandle[]>([]);
   streamsRef.current = streams;
 
@@ -202,9 +210,11 @@ const Desktop: NextPage = () => {
       mesh.unpublish(id);
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
-      const r = readResume();
-      delete r[target.kind];
-      writeResume(r);
+      if (target.kind === "screen") {
+        const r = readResume();
+        delete r.screen;
+        writeResume(r);
+      }
     },
     [mesh],
   );
@@ -634,36 +644,12 @@ const Desktop: NextPage = () => {
     return () => window.removeEventListener("resize", onResize);
   }, [meshUpdateSlot]);
 
-  // ---- Auto-resume publishing on reload ----------------------------------
-  // Camera + mic permissions are sticky in Chrome once granted, so the next
-  // mount can call getUserMedia silently. Screen share requires a user
-  // gesture so we render a placeholder "RESUME SCREEN SHARE" window instead.
-  //
-  // Both resumes route through useLocalMedia.startX so activeIds gets
-  // populated — calling getUserMedia directly leaves media.activeCamera
-  // false and the Share menu reads "Video" instead of "Stop video".
-  const sessionAuth = session.authenticated;
-  useEffect(() => {
-    if (!sessionAuth) return;
-    if (!mesh.connected) return;
-    const r = readResume();
-    if (r.camera) {
-      media.startCamera().catch(() => {
-        const cur = readResume();
-        delete cur.camera;
-        writeResume(cur);
-      });
-    }
-    if (r.audio) {
-      media.startAudio().catch(() => {
-        const cur = readResume();
-        delete cur.audio;
-        writeResume(cur);
-      });
-    }
-    // run once when the WS is up; media deps would re-fire
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionAuth, mesh.connected]);
+  // Camera + audio are explicit opt-in every session — the user has to
+  // click Share Video / Share Audio. We don't auto-grab the hardware on
+  // reload even though Chrome's permission is sticky; nobody wants their
+  // mic and camera lighting up silently the moment they land on the page.
+  // Screen share IS resumable, but only via the click-to-resume placeholder
+  // below (browsers require a user gesture for getDisplayMedia).
 
   // ---- Manual screen share resumption ------------------------------------
   // Route through media.startScreen (the same path the Share menu uses) so
@@ -792,9 +778,11 @@ const Desktop: NextPage = () => {
         const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
         else mesh.unpublish(pub.streamId);
-        const r = readResume();
-        delete r[pub.kind];
-        writeResume(r);
+        if (pub.kind === "screen") {
+          const r = readResume();
+          delete r.screen;
+          writeResume(r);
+        }
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
@@ -829,9 +817,11 @@ const Desktop: NextPage = () => {
         (s.kind === "screen" && media.activeScreen);
       if (tracked) media.stop(s.kind);
       else stopStream(s.id);
-      const r = readResume();
-      delete r[s.kind];
-      writeResume(r);
+      if (s.kind === "screen") {
+        const r = readResume();
+        delete r.screen;
+        writeResume(r);
+      }
     }
     prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
@@ -1161,6 +1151,7 @@ const Desktop: NextPage = () => {
   return (
     <>
       <DesktopBackground />
+      <IncomingTxModal incomingForwards={mesh.incomingForwards} dismissIncomingForward={mesh.dismissIncomingForward} />
       <MenuBar
         menus={[fileMenu, editMenu, viewMenu]}
         meshConnected={mesh.connected}
@@ -1280,6 +1271,12 @@ const Desktop: NextPage = () => {
                         return;
                       case "wallet":
                         focusApp("wallet");
+                        return;
+                      case "research":
+                        focusApp("research");
+                        return;
+                      case "news":
+                        focusApp("news");
                         return;
                       case "audio":
                         // Already publishing? No-op — the existing window's
@@ -1532,6 +1529,8 @@ const Desktop: NextPage = () => {
                 peers={mesh.peers}
                 selfAddress={session.authenticated ? session.address : null}
                 selfLabel={session.authenticated ? (session.handle ?? null) : null}
+                selfPeerId={mesh.myId}
+                forwardTxToPeer={mesh.forwardTxToPeer}
               />
             </Window>
           );
@@ -1724,6 +1723,36 @@ const Desktop: NextPage = () => {
             >
               <WalletWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
             </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="ai-wallet"
+              title="AI WALLET"
+              defaultSlot={{ x: 440, y: 140, width: 720, height: 620 }}
+              minWidth={520}
+              minHeight={420}
+            >
+              <AIWalletWindow mesh={mesh} myAddress={session.address} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="research"
+              title="RESEARCH"
+              defaultSlot={{ x: 420, y: 120, width: 560, height: 620 }}
+              minWidth={420}
+              minHeight={420}
+            >
+              <ResearchWindow />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="news"
+              title="NEWS"
+              defaultSlot={{ x: 360, y: 100, width: 620, height: 640 }}
+              minWidth={420}
+              minHeight={360}
+            >
+              <NewsWindow mesh={mesh} />
+            </SharedAppWindow>
           </>
         ) : null}
 
@@ -1734,6 +1763,20 @@ const Desktop: NextPage = () => {
             visible on the sign-in screen. */}
         {session.authenticated ? <SlopBackdrop /> : null}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
+        {/* Timeline bar — top of the three-bar stack. Host's Twitter
+            home feed (ranked by engagement on the relay). Scrolls
+            fastest so the visual hierarchy reads "fastest at top,
+            slowest at bottom". */}
+        <TimelineBar mesh={mesh} />
+        {/* Headlines bar — middle band, between timeline and ticker.
+            Crypto + AI news headlines. */}
+        <HeadlinesBar mesh={mesh} />
+        {/* Ticker bar — pinned to the very bottom of the desktop on
+            every peer. Reads the shared `tickerState` polled by the
+            relay (crypto + AI stocks + private AI valuations +
+            $CLAWD). Visible pre-auth too so the entry/join screens
+            still feel "alive". */}
+        <TickerBar mesh={mesh} />
         {/* Always-visible "who's here" panel pinned to the top-right
             (per-peer viewport position, not in the shared slot system,
             like the trash). Sign-out / power dropdowns from the menubar

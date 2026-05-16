@@ -1,1 +1,19 @@
+#!/usr/bin/env sh
+
+# Secret scan FIRST — runs before lint-staged so a leaked key blocks the
+# commit even if lint would otherwise pass. Config: .gitleaks.toml at
+# repo root. The default ruleset plus repo-specific Ethereum rules
+# (private key assignments, Wallet constructors, mnemonics).
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --config .gitleaks.toml || {
+    echo
+    echo "❌ gitleaks blocked the commit — a secret was detected in staged changes."
+    echo "   If this is a false positive, add an allowlist entry to .gitleaks.toml."
+    echo "   NEVER commit Ethereum private keys, API tokens, or mnemonics."
+    exit 1
+  }
+else
+  echo "⚠️  gitleaks not installed — secret scan skipped. Install with: brew install gitleaks"
+fi
+
 yarn lint-staged --verbose

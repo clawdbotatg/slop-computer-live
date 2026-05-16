@@ -12,7 +12,11 @@ import { useEffect, useRef, useState } from "react";
 // while dragging" highlight.
 
 export const TRASH_SIZE = 88;
+// Horizontal margin from the right edge. Vertical offset clears the
+// three stacked bars at the bottom: timeline (24) + headlines (24) +
+// ticker (28) = 76, plus a little breathing room.
 const TRASH_MARGIN = 24;
+const TRASH_BOTTOM = 92;
 
 export type TrashCanProps = {
   /** Forwarded ref so the parent can compute bounding-box overlap with
@@ -66,7 +70,7 @@ export const TrashCan = ({ trashRef }: TrashCanProps) => {
       style={{
         position: "fixed",
         right: TRASH_MARGIN,
-        bottom: TRASH_MARGIN,
+        bottom: TRASH_BOTTOM,
         width: TRASH_SIZE,
         height: TRASH_SIZE,
         zIndex: 50, // above icons (z=1) but below windows (z>=4-500)

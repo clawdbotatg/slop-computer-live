@@ -1,0 +1,249 @@
+{
+  "model": "gpt-image-1",
+  "style": "./style-ref.png",
+  "outDir": "./out",
+  "size": "1024x1024",
+  "quality": "medium",
+  "background": "transparent",
+  "concurrency": 2,
+  "skipExisting": true,
+  "styleHint": "STYLE: classic Mac OS 9 desktop icon, 3/4 isometric perspective, chunky soft-3D rendering with hard silhouette. PALETTE: deep purple (#1a0524) and black base, hot magenta (#ff2bd6) primary, electric cyan (#3df0ff) and lime (#aaff3d) accents, occasional bone white highlights. TEXTURE: subtle CRT scanline overlay, faint magenta bloom on bright pixels, 1-bit ordered dithering in shadows and gradients, slight RGB channel split on edges. RIM: thin 1-pixel neon magenta outline glow around the silhouette. CYPHERPUNK FLAVOR: feels like a retrofuture terminal-era operating system mascot — early-internet, BBS, vaporwave Y2K cyberdelic. Transparent background. Single icon, centered, no label, no caption, no border, no shadow plate.",
+  "bootstrapPrompt": "A chunky 3D folder icon, Mac OS 9 manila-folder shape but recolored in deep purple and black with a hot magenta tab, slightly open showing a pink interior, edges glowing magenta.",
+  "items": [
+    {
+      "name": "finder",
+      "prompt": "A chunky folder icon, slightly open, with a pixelated magnifying-glass overlay on the front."
+    },
+    {
+      "name": "browser",
+      "prompt": "A small globe icon wrapped with a circular orbital ring, latitude and longitude lines, pixelated continents."
+    },
+    {
+      "name": "terminal",
+      "prompt": "A small CRT monitor icon with a curved screen showing a glowing prompt: 'C:\\>_' with a blinking cursor."
+    },
+    {
+      "name": "mail",
+      "prompt": "A sealed paper envelope icon, front-facing, with a magenta wax seal stamped with a lambda symbol."
+    },
+    {
+      "name": "text-editor",
+      "prompt": "A single sheet of paper with three horizontal text lines, a pixelated quill or pencil resting diagonally across it."
+    },
+    {
+      "name": "notes",
+      "prompt": "A spiral-bound notepad icon, top-spiral visible, top page peeling at the corner."
+    },
+    {
+      "name": "paint",
+      "prompt": "An artist's paint-palette icon with three paint blobs (magenta, cyan, lime) and a paintbrush sticking out."
+    },
+    {
+      "name": "music",
+      "prompt": "A retro audio cassette tape icon, front-facing, with a small pixel music note hovering above the right reel."
+    },
+    {
+      "name": "wallet",
+      "prompt": "A chunky bifold leather wallet icon, partially open, an Ethereum diamond-shaped coin peeking out the top."
+    },
+    {
+      "name": "keys",
+      "prompt": "Two crossed keys forming an X, one a brass skeleton key with bow handle, the other a stylized PGP-style key with sharp teeth."
+    },
+    {
+      "name": "lock",
+      "prompt": "A heavy padlock icon, closed, the keyhole carved in the shape of an Ethereum diamond."
+    },
+    {
+      "name": "block-explorer",
+      "prompt": "Three pixelated translucent cubes in a line, connected by short chain links, slight isometric stagger."
+    },
+    {
+      "name": "calculator",
+      "prompt": "A handheld pocket calculator icon, chunky square buttons in a 4x4 grid, small black LCD strip at the top showing '1337'."
+    },
+    {
+      "name": "clock",
+      "prompt": "An analog wall-clock icon, round face, hour and minute hands at 9:41, twelve dot markers, no numbers."
+    },
+    {
+      "name": "trash",
+      "prompt": "A cylindrical trash bin icon with vertical ridges, lid tilted slightly off, a single crumpled paper ball poking out the top."
+    },
+    {
+      "name": "settings",
+      "prompt": "Three interlocking gears icon, the largest gear centered with a hex socket in its hub, two smaller gears top-right and bottom-left."
+    },
+    {
+      "name": "search",
+      "prompt": "A standalone magnifying glass icon, chunky handle pointing down-right, large round lens with a faint cyan reflection arc."
+    },
+    {
+      "name": "modem",
+      "prompt": "A retro dial-up modem icon, low rectangular box with two tiny LEDs glowing magenta and cyan, a coiled phone cord curling out the back."
+    },
+    {
+      "name": "floppy",
+      "prompt": "A 3.5-inch floppy disk icon, front-facing, metal shutter at the top, square paper label across the middle."
+    },
+    {
+      "name": "hard-drive",
+      "prompt": "A chunky external hard drive icon, slightly rounded box with a single status LED glowing magenta, ridged grill on the front."
+    },
+    {
+      "name": "cd",
+      "prompt": "A CD-ROM disc icon, slightly tilted in 3/4 view, iridescent rainbow sheen across the surface, central hole."
+    },
+    {
+      "name": "printer",
+      "prompt": "A desktop inkjet printer icon, paper sheet emerging from the top tray, small control panel with magenta button."
+    },
+    {
+      "name": "camera",
+      "prompt": "A chunky compact photo camera icon, large round lens dominating the front, small viewfinder square top-right."
+    },
+    {
+      "name": "video",
+      "prompt": "A video recorder icon: a chunky retro shoulder-mount camcorder in 3/4 view, large cylindrical lens barrel on the front with a cyan glass element, a small fold-out viewfinder square on the side, a glowing magenta REC dot on top, a single tape-cartridge bulge on the body."
+    },
+    {
+      "name": "screen-sharing",
+      "prompt": "A retro CRT monitor icon front-facing with a curved screen, a chunky upward-pointing share arrow rising out of the screen, two faint concentric broadcast arcs radiating outward above the monitor."
+    },
+    {
+      "name": "code",
+      "prompt": "A small code-editor window icon, three traffic-light dots top-left, monospace text inside showing 'function() { }' in cyan and magenta."
+    },
+    {
+      "name": "chat",
+      "prompt": "Two overlapping rounded speech bubbles, one larger magenta, one smaller cyan, a tiny ellipsis '...' inside the front bubble."
+    },
+    {
+      "name": "calendar",
+      "prompt": "A desk calendar icon, top binding rings, large date number '13' on the page in chunky cyan type, tiny magenta corner curl."
+    },
+    {
+      "name": "todo",
+      "prompt": "A checklist icon, a small clipboard with three lines of text and three checkmark boxes, the top two boxes ticked with magenta checkmarks."
+    },
+    {
+      "name": "vault",
+      "prompt": "A heavy bank-vault safe icon, front-facing, large circular combination dial in the center, small handle on the right, four corner bolts."
+    },
+    {
+      "name": "onion",
+      "prompt": "A stylized layered onion icon, three concentric translucent layers in deep purple, magenta, and cyan, suggesting the Tor logo without text."
+    },
+    {
+      "name": "multisig",
+      "prompt": "Three keys arranged in a triangle pointing inward toward a central glowing diamond, all three key bows visible at the outer corners."
+    },
+    {
+      "name": "nft",
+      "prompt": "An ornate gilt picture frame icon, front-facing, inside the frame a tiny pixelated avatar silhouette, a magenta corner ribbon labeled with a star."
+    },
+    {
+      "name": "wifi",
+      "prompt": "A wifi signal icon: a small dot at the bottom with three concentric arc waves expanding upward and outward."
+    },
+    {
+      "name": "battery",
+      "prompt": "A battery cell icon, horizontal, four segment bars filled inside in cyan and magenta, small positive nub on the right end."
+    },
+    {
+      "name": "speaker",
+      "prompt": "An audio speaker icon, conical speaker driver front-facing with two concentric ridges, soundwave arcs emitting outward to the right."
+    },
+    {
+      "name": "mic",
+      "prompt": "A handheld microphone icon, ball-shaped mesh head, slim cylindrical handle, a thin coiled wire trailing off the bottom-left."
+    },
+    {
+      "name": "eject",
+      "prompt": "A media eject button icon: a chunky upward-pointing triangle resting on a thick horizontal bar beneath it."
+    },
+    {
+      "name": "usb",
+      "prompt": "A USB flash drive icon, rectangular body with a magenta cap pulled off to one side, exposed silver metal connector visible."
+    },
+    {
+      "name": "ipfs",
+      "prompt": "A decentralized network icon: a central glowing magenta orb connected by thin cyan lines to six smaller orbs arranged in a hexagonal pattern around it."
+    },
+    {
+      "name": "ens",
+      "prompt": "An ENS domain nameplate icon: a small rectangular metal plaque with the text '.eth' engraved on its face, a tiny chain link attached to the top edge."
+    },
+    {
+      "name": "gas",
+      "prompt": "A gas pump icon, classic squat pump shape with a hose curling up to a magenta nozzle, small rectangular display screen on the front showing chunky cyan pixel digits."
+    },
+    {
+      "name": "bridge",
+      "prompt": "A cross-chain bridge icon: two cubes on either side connected by a high arched bridge, a small glowing cyan token traveling along the arc midway across."
+    },
+    {
+      "name": "dao",
+      "prompt": "A round committee table icon, top-down 3/4 perspective, six small chairs spaced evenly around the table, a glowing magenta diamond hovering above the table center."
+    },
+    {
+      "name": "spreadsheet",
+      "prompt": "A spreadsheet window icon: a grid of small cells filled with chunky pixel numbers and short bar charts, the top-left cell highlighted magenta with a thicker outline."
+    },
+    {
+      "name": "ebook",
+      "prompt": "An ebook icon: a hardcover book standing upright slightly open, a magenta ribbon bookmark draping out the bottom, a glowing cyan title bar across the spine."
+    },
+    {
+      "name": "joystick",
+      "prompt": "An arcade joystick icon, chunky magenta ball-top, slim chrome metal shaft, square base with a single round cyan button next to the shaft."
+    },
+    {
+      "name": "chess",
+      "prompt": "A chess icon: a chunky knight chess piece in 3/4 view facing right, carved horse-head silhouette, standing on a small black-and-magenta checkered board square base, a faint cyan rim highlight along the mane."
+    },
+    {
+      "name": "qr-code",
+      "prompt": "A QR code icon: a chunky square QR code tile in 3/4 view, three position-detection squares in the top-left, top-right, and bottom-left corners, a dense pattern of small magenta and cyan modules across the rest of the grid, slight cyan glow along the edges."
+    },
+    {
+      "name": "ninja",
+      "prompt": "A ninja icon: a chunky 3/4 view bust of a masked ninja, only the eyes visible above a wrapped black hood and face cloth, glowing cyan slit eyes, a magenta headband tied at the side with two trailing ends, a single crossed shuriken pin on the headband."
+    },
+    {
+      "name": "glossary",
+      "prompt": "A glossary icon: a chunky hardcover dictionary book in 3/4 view, slightly open in the middle, alphabetical thumb-index tabs running down the right edge each labeled with a single chunky letter (A, B, C, D...), a magenta ribbon bookmark draping from the top, deep purple cover with a glowing cyan 'A–Z' badge on the spine."
+    },
+    {
+      "name": "weather",
+      "prompt": "A weather icon: a chunky cumulus cloud overlapping a partial sun behind it on the upper-right, a few stylized rain dots dripping from the cloud's bottom edge."
+    },
+    {
+      "name": "d20",
+      "prompt": "A twenty-sided die icon, faceted polyhedron in 3/4 view, the top face glowing magenta and showing a chunky '20', deep purple and cyan accents on adjacent facets."
+    },
+    {
+      "name": "research",
+      "prompt": "A research dossier icon: a folded manila folder with a magnifying glass and a small portrait photo clipped to the front. The folder is open just enough to reveal a stack of papers and notes inside."
+    },
+    {
+      "name": "news",
+      "prompt": "vintage newspaper folded with bold pixelated headlines, retro pixel art style, magenta and cyan accents, dark background, slop computer aesthetic"
+    },
+    {
+      "name": "ai-wallet",
+      "prompt": "A robot or AI assistant head merged with a wallet/billfold — magenta and cyan accents, retro pixel art, 8-bit feel, dark purple background. Like the existing slop-computer wallet icon but with neural-network or chat-bubble overlay to signal AI."
+    }
+  ],
+  "sheet": {
+    "cols": 8,
+    "cell": 256,
+    "padding": 24,
+    "bg": {
+      "r": 26,
+      "g": 5,
+      "b": 36,
+      "alpha": 1
+    }
+  }
+}

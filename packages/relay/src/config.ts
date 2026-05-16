@@ -46,4 +46,13 @@ export const config = {
   turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),
   jamendoClientId: env("JAMENDO_CLIENT_ID", ""),
   jamendoClientSecret: env("JAMENDO_CLIENT_SECRET", ""),
+  // Twitter OAuth 1.0a (User Context auth — required for
+  // timelines/reverse_chronological). Used by the "Timeline" ticker
+  // bar; missing creds → the timeline poll skips and the bar stays in
+  // a loading state.
+  twitterUserId: env("TWITTER_USER_ID", ""),
+  twitterConsumerKey: env("TWITTER_CONSUMER_KEY", ""),
+  twitterConsumerSecret: env("TWITTER_CONSUMER_SECRET", ""),
+  twitterAccessToken: env("TWITTER_ACCESS_TOKEN", ""),
+  twitterAccessTokenSecret: env("TWITTER_ACCESS_TOKEN_SECRET", ""),
 };

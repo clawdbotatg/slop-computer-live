@@ -116,6 +116,34 @@ export type TxRequest = {
   receivedAt: number;
 };
 
+/** A captured eth_sendTransaction (or other write method) that another peer
+ *  forwarded to us because they're impersonating our wallet address. The
+ *  receiver-side modal renders these and asks the user to sign+broadcast
+ *  through their actually-connected wagmi wallet. */
+export type ForwardedTx = {
+  /** Server-issued id (relay tags the message). Used as the React key
+   *  and the dismiss handle. */
+  id: string;
+  /** Peer id of the sender — useful for dedupe, debugging. */
+  fromPeerId: string;
+  /** Sender's address + handle, if known. Display-only. */
+  fromAddress: string | null;
+  fromHandle: string | null;
+  /** Originating browser-host window (so the receiver knows which dapp
+   *  generated this tx). */
+  browserId: string;
+  /** RPC method — currently only "eth_sendTransaction" is actionable;
+   *  other methods are surfaced but disabled. */
+  method: string;
+  params: unknown[];
+  /** Chain the captured tx belongs to. Sender derives this from the
+   *  browser-host's configured chain (or an explicit `chainId` in tx
+   *  params). Receiver compares to wagmi's current chain and offers a
+   *  switch when they differ. `null` = sender didn't know. */
+  chainId: number | null;
+  receivedAt: number;
+};
+
 /** Session-wallet (multisig) records — mirrors
  *  `packages/relay/src/wallet.ts`. */
 export type WalletSigner = {
@@ -229,6 +257,83 @@ export type GasState = {
   fastGwei: number;
   ethUsd: number;
   updatedAt: number;
+};
+
+/** Slop ticker — crypto + AI stocks + private AI lab valuations,
+ *  polled on the relay every 60s. Mirrors `packages/relay/src/ticker.ts`. */
+export type TickerItem = {
+  symbol: string;
+  label: string;
+  price: number;
+  changePct: number;
+  kind: "crypto" | "stock" | "private" | "meme";
+  url?: string;
+};
+export type TickerState = {
+  items: TickerItem[];
+  updatedAt: number;
+};
+
+/** Headlines feed — crypto + AI news, polled on the relay every 5 min.
+ *  Mirrors `packages/relay/src/headlines.ts`. */
+export type Headline = {
+  title: string;
+  url: string;
+  source: string;
+  publishedAt: number;
+  kind: "crypto" | "ai";
+};
+export type HeadlinesState = {
+  items: Headline[];
+  updatedAt: number;
+};
+
+/** Twitter timeline feed — host's home timeline ranked by engagement.
+ *  Mirrors `packages/relay/src/timeline.ts`. */
+export type TimelineItem = {
+  id: string;
+  text: string;
+  authorUsername: string;
+  authorName: string;
+  authorVerified: boolean;
+  authorFollowers: number;
+  likes: number;
+  retweets: number;
+  replies: number;
+  createdAt: number;
+  url: string;
+};
+export type TimelineState = {
+  items: TimelineItem[];
+  updatedAt: number;
+};
+
+/** News-digest item — unified shape for crypto headlines, AI headlines,
+ *  and tweets, used by the News app. Mirrors
+ *  `packages/relay/src/news-digest.ts`. */
+export type NewsDigestItem = {
+  kind: "crypto-headline" | "ai-headline" | "tweet" | "polymarket";
+  title: string;
+  url: string;
+  source: string;
+  publishedAt: number;
+  authorUsername?: string;
+  authorFollowers?: number;
+  likes?: number;
+  retweets?: number;
+  replies?: number;
+  pmVolume24h?: number;
+  pmTopOutcomeLabel?: string;
+  pmTopOutcomeProb?: number;
+  pmTags?: string[];
+  featured?: boolean;
+  featuredReason?: string;
+};
+export type NewsDigestState = {
+  feed: NewsDigestItem[];
+  featured: NewsDigestItem[];
+  updatedAt: number;
+  aiRanAt: number;
 };
 
 /** Shared clock app state — mirrors `packages/relay/src/clock.ts`.
@@ -432,6 +537,16 @@ export type PeerMeshState = {
   /** Latest gas snapshot from the relay's poll loop. `null` until the
    *  first successful Alchemy + Chainlink read lands. */
   gasState: GasState | null;
+  /** Latest ticker snapshot (crypto + AI stocks + private valuations).
+   *  `null` until the relay's first poll completes. */
+  tickerState: TickerState | null;
+  /** Latest headlines snapshot (crypto + AI). `null` until first poll. */
+  headlinesState: HeadlinesState | null;
+  /** Latest Twitter timeline snapshot. `null` until first poll. */
+  timelineState: TimelineState | null;
+  /** Curated news digest (interleaved crypto/AI/tweets + AI featured
+   *  picks). `null` until the first rebuild lands. */
+  newsDigestState: NewsDigestState | null;
   /** Files dropped onto the shared desktop. Mirrors the relay's
    *  /var/lib/slop-relay/files store, broadcast on every add/remove. */
   files: FileEntry[];
@@ -461,6 +576,20 @@ export type PeerMeshState = {
   removeFromMusicCustom: (jamendoId: string) => void;
   reorderMusicCustom: (orderedIds: string[]) => void;
   broadcastTxRequest: (req: Omit<TxRequest, "from" | "receivedAt">) => void;
+  /** Captured txs sent to *us* directly because someone is impersonating
+   *  our wallet address. Newest first; receiver dismisses each as they
+   *  send or reject. */
+  incomingForwards: ForwardedTx[];
+  /** Send a captured tx to a specific peer (the wallet we're impersonating).
+   *  Fire-and-forget — the relay routes it via sendTo, and the receiver's
+   *  mesh hook surfaces it through `incomingForwards`. */
+  forwardTxToPeer: (
+    peerId: string,
+    payload: { browserId: string; method: string; params: unknown[]; chainId: number | null },
+  ) => void;
+  /** Remove an entry from `incomingForwards` once it's been handled
+   *  (sent, rejected, or otherwise resolved). Local-only. */
+  dismissIncomingForward: (id: string) => void;
   /** Currently-deployed session multisig. `null` until someone hits
    *  "Deploy wallet" in the wallet window. */
   wallet: WalletRecord | null;
@@ -502,6 +631,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const clickIdRef = useRef(0);
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
+  const [incomingForwards, setIncomingForwards] = useState<ForwardedTx[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
@@ -510,6 +640,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [notes, setNotes] = useState<Note[]>([]);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [gasState, setGasState] = useState<GasState | null>(null);
+  const [tickerState, setTickerState] = useState<TickerState | null>(null);
+  const [headlinesState, setHeadlinesState] = useState<HeadlinesState | null>(null);
+  const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
+  const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
   const [musicGenre, setMusicGenreLocal] = useState<string | null>(null);
@@ -1015,6 +1149,24 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     [send],
   );
 
+  const forwardTxToPeer = useCallback(
+    (peerId: string, payload: { browserId: string; method: string; params: unknown[]; chainId: number | null }) => {
+      send({
+        type: "tx_forward",
+        to: peerId,
+        browserId: payload.browserId,
+        method: payload.method,
+        params: payload.params,
+        chainId: payload.chainId,
+      });
+    },
+    [send],
+  );
+
+  const dismissIncomingForward = useCallback((id: string) => {
+    setIncomingForwards(prev => prev.filter(f => f.id !== id));
+  }, []);
+
   const walletDeploy = useCallback(
     (rec: WalletRecord) => {
       send({ type: "wallet_deploy", wallet: rec });
@@ -1217,6 +1369,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
           if (msg.gasState && typeof msg.gasState === "object") {
             setGasState(msg.gasState as GasState);
+          }
+          if (msg.tickerState && typeof msg.tickerState === "object") {
+            setTickerState(msg.tickerState as TickerState);
+          }
+          if (msg.headlinesState && typeof msg.headlinesState === "object") {
+            setHeadlinesState(msg.headlinesState as HeadlinesState);
+          }
+          if (msg.timelineState && typeof msg.timelineState === "object") {
+            setTimelineState(msg.timelineState as TimelineState);
+          }
+          if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
+            setNewsDigestState(msg.newsDigestState as NewsDigestState);
           }
           if (Array.isArray(msg.files)) {
             setFiles(msg.files as FileEntry[]);
@@ -1483,6 +1647,26 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           return;
         }
 
+        if (msg.type === "ticker" && msg.state && typeof msg.state === "object") {
+          setTickerState(msg.state as TickerState);
+          return;
+        }
+
+        if (msg.type === "headlines" && msg.state && typeof msg.state === "object") {
+          setHeadlinesState(msg.state as HeadlinesState);
+          return;
+        }
+
+        if (msg.type === "timeline" && msg.state && typeof msg.state === "object") {
+          setTimelineState(msg.state as TimelineState);
+          return;
+        }
+
+        if (msg.type === "news_digest" && msg.state && typeof msg.state === "object") {
+          setNewsDigestState(msg.state as NewsDigestState);
+          return;
+        }
+
         if (msg.type === "file_added" && msg.item && typeof (msg.item as FileEntry).id === "string") {
           const f = msg.item as FileEntry;
           setFiles(prev => (prev.some(x => x.id === f.id) ? prev : [...prev, f]));
@@ -1538,6 +1722,26 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           };
           // Cap history at 50 to stop unbounded growth on long sessions.
           setTxRequests(prev => [req, ...prev].slice(0, 50));
+          return;
+        }
+
+        // Directed: another peer captured a tx targeting our wallet address.
+        // Stash it for the IncomingTxModal to render. We don't validate the
+        // payload here — the modal decides whether to act on it.
+        if (msg.type === "tx_forward" && typeof msg.id === "string" && typeof msg.browserId === "string") {
+          const next: ForwardedTx = {
+            id: msg.id,
+            fromPeerId: typeof msg.from === "string" ? msg.from : "",
+            fromAddress: typeof msg.fromAddress === "string" ? msg.fromAddress : null,
+            fromHandle: typeof msg.fromHandle === "string" ? msg.fromHandle : null,
+            browserId: msg.browserId,
+            method: typeof msg.method === "string" ? msg.method : "",
+            params: Array.isArray(msg.params) ? msg.params : [],
+            chainId: typeof msg.chainId === "number" ? msg.chainId : null,
+            receivedAt: Date.now(),
+          };
+          // Dedupe by id in case the relay double-delivers on reconnect.
+          setIncomingForwards(prev => (prev.some(f => f.id === next.id) ? prev : [next, ...prev].slice(0, 20)));
           return;
         }
       };
@@ -1649,6 +1853,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     glossaryRegenerate,
     glossaryDelete,
     gasState,
+    tickerState,
+    headlinesState,
+    timelineState,
+    newsDigestState,
     files,
     deleteFile,
     musicGenres,
@@ -1661,6 +1869,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
     clockState,
     setClockState,
     broadcastTxRequest,
+    incomingForwards,
+    forwardTxToPeer,
+    dismissIncomingForward,
     wallet,
     walletHistory,
     walletTxs,

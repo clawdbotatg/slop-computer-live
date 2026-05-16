@@ -1,0 +1,14 @@
+{
+  "name": "@slop/icon-gen",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen": "node generate.mjs icons.json",
+    "add": "node add-icon.mjs"
+  },
+  "dependencies": {
+    "openai": "^4.80.0",
+    "sharp": "^0.33.5"
+  }
+}

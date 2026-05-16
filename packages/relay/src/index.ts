@@ -90,6 +90,32 @@ import {
   subscribe as subscribeGlossary,
 } from "./glossary.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
+import {
+  type TickerState,
+  getState as getTickerState,
+  start as startTicker,
+  subscribe as subscribeTicker,
+} from "./ticker.js";
+import {
+  type HeadlinesState,
+  getState as getHeadlinesState,
+  start as startHeadlines,
+  subscribe as subscribeHeadlines,
+} from "./headlines.js";
+import {
+  type TimelineState,
+  getState as getTimelineState,
+  setResearchFocus as setTimelineResearchFocus,
+  start as startTimeline,
+  subscribe as subscribeTimeline,
+} from "./timeline.js";
+import {
+  type NewsDigestState,
+  getState as getNewsDigestState,
+  start as startNewsDigest,
+  subscribe as subscribeNewsDigest,
+} from "./news-digest.js";
+import { start as startPolymarket } from "./polymarket.js";
 import { resolveEns } from "./ens.js";
 import {
   FILES_DIR_PATH,
@@ -140,6 +166,7 @@ import {
   wipeAll as walletWipeAll,
 } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
+import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
 
 // Shared music-player state — singleton across the mesh. When any peer
 // presses play/pause/seek/next, they push a snapshot here; we rebroadcast
@@ -281,6 +308,11 @@ app.get("/health", async () => ({
 // `icon` can be a relative path (served by Next.js, e.g. "/icons/foo.png")
 // or an absolute URL. `url` is what the SharedBrowser will load when the
 // icon is double-clicked.
+//
+// Adding a new app? Generate its icon FIRST so the style stays consistent:
+//   yarn icon:add <id> "<prompt>"
+// Lands at packages/nextjs/public/icons/<id>.png (= "/icons/<id>.png").
+// See packages/icon-gen/README.md and CLAUDE.md for details.
 
 import { readFileSync as _readFileSync, readdirSync as _readdirSync } from "node:fs";
 import { mkdir as _mkdir, writeFile as _writeFile } from "node:fs/promises";
@@ -306,10 +338,16 @@ type AppEntry = {
     | "notes"
     | "gas"
     | "clock"
-    | "wallet";
+    | "wallet"
+    | "ai-wallet"
+    | "research"
+    | "news";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
+  // ⚠️ Adding a new app here? Generate its icon FIRST:
+  //     yarn icon:add <id> "<prompt>"
+  // Don't ship an entry whose `icon:` path doesn't exist in public/icons.
   {
     id: "browser",
     label: "Browser",
@@ -387,6 +425,24 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Wallet",
     icon: "/icons/wallet.png",
     kind: "wallet",
+  },
+  {
+    id: "ai-wallet",
+    label: "AI Wallet",
+    icon: "/icons/ai-wallet.png",
+    kind: "ai-wallet",
+  },
+  {
+    id: "research",
+    label: "Research",
+    icon: "/icons/research.png",
+    kind: "research",
+  },
+  {
+    id: "news",
+    label: "News",
+    icon: "/icons/news.png",
+    kind: "news",
   },
 ];
 
@@ -489,6 +545,10 @@ app.get("/v1/state", async (req, reply) => {
     notes: noteList(),
     glossary: glossaryList(),
     gasState: getGasState(),
+    tickerState: getTickerState(),
+    headlinesState: getHeadlinesState(),
+    timelineState: getTimelineState(),
+    newsDigestState: getNewsDigestState(),
     files: fileList(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
     musicGenre: getCurrentGenre(),
@@ -708,6 +768,40 @@ subscribeGas(state => {
   broadcast({ type: "gas", state });
 });
 startGas();
+
+// Slop ticker (crypto + AI stocks + private valuations + $CLAWD).
+// Same pattern as gas — relay polls upstream feeds once a minute and
+// fans the snapshot out to every connected peer.
+subscribeTicker(state => {
+  broadcast({ type: "ticker", state });
+});
+startTicker();
+
+// Headlines feed (crypto + AI). Same broadcast pattern; cadence is
+// slow (5 min) because headline lists don't churn fast.
+subscribeHeadlines(state => {
+  broadcast({ type: "headlines", state });
+});
+startHeadlines();
+
+// Twitter timeline (host's home feed, ranked by engagement). 5 min
+// poll fits inside the endpoint's 15-req/15-min limit with margin.
+subscribeTimeline(state => {
+  broadcast({ type: "timeline", state });
+});
+startTimeline();
+
+// Polymarket — top events by 24h volume, tag-filtered to crypto / AI /
+// macro / geopolitics. Feeds the news digest as a 4th source.
+startPolymarket();
+
+// News digest — interleaved crypto + AI + tweets + polymarket, with an
+// AI-ranked "featured" top tier picked by Claude. Rebuilds whenever
+// any upstream source updates (debounce inside the module).
+subscribeNewsDigest(state => {
+  broadcast({ type: "news_digest", state });
+});
+startNewsDigest();
 
 // Desktop file system: broadcast every add/remove so all peers see new
 // file icons appear / disappear in real time. Bulk-list events aren't
@@ -1627,6 +1721,67 @@ app.delete<{ Params: { id: string } }>("/v1/glossary/:id", async (req, reply) =>
   return { ok: true };
 });
 
+// --- Guest research --------------------------------------------------------
+// AI dossier for an upcoming interview / live guest. Any authenticated
+// peer can call it — the host typically pulls it up on stream so the
+// whole room sees the questions and tweets. Stateless: the result is
+// not stored on the relay; the UI is local-only in each viewer.
+
+type GuestResearchBody = {
+  name?: unknown;
+  socials?: unknown;
+  notes?: unknown;
+};
+
+function readSocials(raw: unknown): ResearchQuery["socials"] {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as Record<string, unknown>;
+  const pick = (k: string): string | undefined => {
+    const v = r[k];
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  };
+  return {
+    twitter: pick("twitter"),
+    github: pick("github"),
+    linkedin: pick("linkedin"),
+    website: pick("website"),
+    other: pick("other"),
+  };
+}
+
+app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name) return reply.code(400).send({ error: "missing-name" });
+  const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : undefined;
+  const socials = readSocials(req.body?.socials);
+  // If the host included a Twitter handle in the research query,
+  // tell the Timeline module to over-index on that account's recent
+  // tweets for the next 4h. Done before the (slow) Anthropic call so
+  // the focus is set even if the AI dossier fails.
+  if (socials.twitter) setTimelineResearchFocus(socials.twitter);
+  const result = await researchGuest({ name, socials, notes });
+  reply.header("cache-control", "no-store");
+  return result;
+});
+
+// Quick first-pass lookup: takes "@handle" or "Some Name" and returns a
+// best-guess identity card the UI uses to prefill the full form. Cheap
+// single Claude call so the host can iterate fast before kicking off
+// the deeper /v1/guest-research dossier.
+type GuestLookupBody = { query?: unknown };
+
+app.post<{ Body: GuestLookupBody }>("/v1/guest-lookup", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) return reply.code(400).send({ error: "missing-query" });
+  const result = await lookupGuest(query);
+  reply.header("cache-control", "no-store");
+  return result;
+});
+
 // --- Jamendo genre playlists -----------------------------------------------
 // Shared genre selection that drives the music player. The current
 // genre is broadcast over the mesh; selecting a genre also triggers an
@@ -2351,6 +2506,10 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "browser_navigate", id, url }                      // any peer; sets URL of an existing browser
 //   { type: "browser_close", id }                              // any peer; closes a shared browser
 //   { type: "tx_request", browserId, calldata, to, value, chainId }  // captured impersonator tx
+//   { type: "tx_forward", to: peerId, browserId, method, params, chainId }    // directed: send captured tx
+//                                                                    //   to a specific peer (whose
+//                                                                    //   wallet is being impersonated)
+//                                                                    //   so they can sign+broadcast
 //   { type: "ping" }
 // Server → client:
 //   { type: "hello", id, peers, publications, slots, browsers }
@@ -2363,6 +2522,9 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "browser", browser }                               // browser opened or navigated
 //   { type: "browser_closed", id }
 //   { type: "tx_request", from, browserId, calldata, to, value, chainId }
+//   { type: "tx_forward", from, fromAddress, fromHandle, id, browserId, method, params, chainId }
+//                                                                    // directed: only the targeted
+//                                                                    // peer sees this
 //   { type: "pong" }
 //   { type: "error", error }
 
@@ -2441,6 +2603,10 @@ app.register(async function signalRoutes(fastify) {
       notes: noteList(),
       glossary: glossaryList(),
       gasState: getGasState(),
+      tickerState: getTickerState(),
+      headlinesState: getHeadlinesState(),
+      timelineState: getTimelineState(),
+    newsDigestState: getNewsDigestState(),
       files: fileList(),
       musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
       musicGenre: getCurrentGenre(),
@@ -2772,6 +2938,28 @@ app.register(async function signalRoutes(fastify) {
             value: typeof msg.value === "string" ? msg.value : null,
             chainId: typeof msg.chainId === "number" ? msg.chainId : null,
           });
+          return;
+        }
+        case "tx_forward": {
+          // Directed delivery: SharedBrowser captured a tx and the impersonated
+          // address belongs to a specific connected peer's wallet. Forward to
+          // that peer so they can sign+broadcast with their own wagmi wallet.
+          // We don't validate the payload — receiver decides whether to act.
+          if (typeof msg.to !== "string" || typeof msg.browserId !== "string" || typeof msg.method !== "string") {
+            return send(socket, { type: "error", error: "bad_tx_forward" });
+          }
+          const ok = sendTo(msg.to, {
+            type: "tx_forward",
+            from: peerId,
+            fromAddress: info.address ?? null,
+            fromHandle: info.handle ?? null,
+            id: typeof msg.id === "string" ? msg.id : `${peerId}-${Date.now()}`,
+            browserId: msg.browserId,
+            method: msg.method,
+            params: Array.isArray(msg.params) ? msg.params : [],
+            chainId: typeof msg.chainId === "number" ? msg.chainId : null,
+          });
+          if (!ok) send(socket, { type: "error", error: "peer_not_found", to: msg.to });
           return;
         }
         case "wallet_deploy": {

@@ -37,3 +37,7 @@ packages/nextjs/public/music/
 # TypeScript incremental build cache — regenerated on every `tsc`,
 # should never land in git.
 *.tsbuildinfo
+
+# Icon generator local cache (full-res PNGs from OpenAI). Published icons
+# live in packages/nextjs/public/icons/ — those ARE committed.
+packages/icon-gen/out/

@@ -1,0 +1,102 @@
+# Gitleaks config — extends the default ruleset and adds explicit
+# Ethereum-private-key patterns. The default ruleset is excellent for
+# AWS/Stripe/GitHub tokens but does not catch raw `0x` + 64 hex
+# strings, which is the #1 leak vector in this repo.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Ethereum private key — assignment form. High-confidence signal.
+# Matches:   PRIVATE_KEY="0xabc...", DEPLOYER_KEY=0xabc..., privateKey: "0xabc..."
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "ethereum-private-key-assignment"
+description = "Ethereum private key assigned to a variable"
+regex = '''(?i)(private[_-]?key|deployer[_-]?key|wallet[_-]?key|signer[_-]?key|privkey|priv_key|secret[_-]?key|eth[_-]?key)['"\s]*[:=]\s*['"]?(0x)?[a-f0-9]{64}['"]?'''
+tags = ["ethereum", "private-key", "secret"]
+keywords = ["private", "key", "deployer", "wallet", "privkey"]
+
+# ---------------------------------------------------------------------------
+# Ethereum private key — Wallet / Account constructor form.
+# Matches:   new Wallet("0xabc..."),  privateKeyToAccount("0xabc..."),
+#            new ethers.Wallet("0xabc..."),  Account.fromPrivateKey("0xabc...")
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "ethereum-private-key-constructor"
+description = "Ethereum private key passed to Wallet/Account constructor"
+regex = '''(?i)(new\s+(ethers\.)?wallet|privatekeytoaccount|fromprivatekey|Wallet\.fromPrivateKey)\s*\(\s*['"](0x)?[a-f0-9]{64}['"]'''
+tags = ["ethereum", "private-key", "secret"]
+keywords = ["wallet", "privatekeytoaccount", "fromprivatekey"]
+
+# ---------------------------------------------------------------------------
+# Ethereum private key — CLI flag form.
+# Matches:   --private-key 0xabc...,  -k 0xabc..., cast send --private-key ...
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "ethereum-private-key-cli"
+description = "Ethereum private key on a CLI flag"
+regex = '''(?i)--(private[_-]?key|priv[_-]?key)[=\s]+['"]?(0x)?[a-f0-9]{64}['"]?'''
+tags = ["ethereum", "private-key", "secret"]
+keywords = ["private-key", "priv-key"]
+
+# ---------------------------------------------------------------------------
+# Ethereum private key — bare 0x + 64 hex in source. Lower confidence
+# (also matches tx hashes, block hashes, message hashes, keccak digests),
+# so this rule is intentionally narrower: it only fires when the hex sits
+# inside quotes on a line that does NOT look like a hash assignment.
+# Whitelisted via the allowlist below where context proves it's a hash.
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "ethereum-private-key-bare"
+description = "Bare 0x + 64-hex string in source — review for private key"
+regex = '''['"]0x[a-f0-9]{64}['"]'''
+tags = ["ethereum", "private-key", "review"]
+keywords = ["0x"]
+
+  # Don't flag in test fixtures / hash-shaped contexts. Tune as we hit
+  # false positives — adding paths/strings here is cheaper than letting
+  # a real key through.
+  [rules.allowlist]
+  description = "Hash-shaped constants in tests and known-public addresses"
+  paths = [
+    '''.*\.test\.(ts|tsx|js|jsx)$''',
+    '''.*__tests__/.*''',
+    '''.*\.spec\.(ts|tsx|js|jsx)$''',
+    # generated artifacts — never source-of-truth for a secret
+    '''.*\.lock$''',
+    '''yarn\.lock$''',
+    '''package-lock\.json$''',
+  ]
+  # Allow specific anvil/hardhat well-known test accounts (these are
+  # public, intentionally burned keys baked into every dev environment).
+  regexes = [
+    # anvil default account #0
+    '''ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+    # anvil default account #1
+    '''59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+  ]
+
+# ---------------------------------------------------------------------------
+# BIP-39 mnemonic phrase (12 or 24 lowercase English words).
+# Heuristic only — gitleaks already has a generic mnemonic rule via
+# useDefault=true, but this adds an explicit project-tagged version.
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "bip39-mnemonic"
+description = "Possible BIP-39 mnemonic phrase (12 or 24 words)"
+regex = '''(\b[a-z]{3,8}\s+){11,23}\b[a-z]{3,8}\b'''
+tags = ["ethereum", "mnemonic", "secret"]
+keywords = ["mnemonic", "seed"]
+
+# ---------------------------------------------------------------------------
+# Global allowlist — files that legitimately ship example values.
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Global allowlist"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''.*\.env\.example$''',
+  # this memory/test file describes the patterns; matching itself is fine
+  '''.*feedback_no_eth_private_keys\.md$''',
+]

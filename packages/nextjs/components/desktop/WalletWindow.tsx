@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
+import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
 import { type Address as AddressType, type Hex, decodeEventLog, formatEther, parseEther } from "viem";
 import { base, mainnet } from "viem/chains";
 import {
   useAccount,
+  useBalance,
   useChainId,
   usePublicClient,
   useReadContract,
@@ -736,6 +738,17 @@ const WalletBalances = ({ address }: { address: string }) => {
 
 const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMeshState }) => {
   const publicClient = usePublicClient({ chainId: wallet.chainId });
+  // ETH price for the live USD readout under the amount field. The hook
+  // reads Uniswap V2 on mainnet — same price applies whether the wallet's
+  // on Base or mainnet since both use ETH as the native asset.
+  const { price: ethPrice } = useFetchNativeCurrencyPrice();
+  // Multisig's own native balance — drives the [Max] button. The multisig
+  // pays the `value` portion of the tx; gas is paid by the executor's
+  // wallet, so "max" really is the full balance here.
+  const { data: balance } = useBalance({
+    address: wallet.address as AddressType,
+    chainId: wallet.chainId,
+  });
   const [open, setOpen] = useState(false);
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
@@ -748,15 +761,19 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
   const dataOk = !data.trim() || /^0x([a-fA-F0-9]{2})*$/.test(data.trim());
   let amountWei: bigint | null = null;
   let amountErr: string | null = null;
+  let amountFloat: number | null = null;
   if (amount.trim()) {
     try {
       amountWei = parseEther(amount.trim() as `${number}`);
+      amountFloat = parseFloat(amount.trim());
+      if (!Number.isFinite(amountFloat)) amountFloat = null;
     } catch {
       amountErr = "invalid amount";
     }
   } else {
     amountWei = 0n;
   }
+  const amountUsd = amountFloat !== null && ethPrice > 0 && !amountErr ? amountFloat * ethPrice : null;
 
   const onPropose = useCallback(async () => {
     setErr(null);
@@ -841,14 +858,54 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
           />
         </Field>
         <Field label="Amount (ETH)">
-          <TextField
-            inputMode="decimal"
-            value={amount}
-            placeholder="0.01"
-            disabled={busy}
-            onChange={e => setAmount(e.target.value)}
-          />
-          {amountErr ? <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>{amountErr}</div> : null}
+          <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
+            <div style={{ flex: 1 }}>
+              <TextField
+                inputMode="decimal"
+                value={amount}
+                placeholder="0.01"
+                disabled={busy}
+                onChange={e => setAmount(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              disabled={busy || !balance || balance.value === 0n}
+              onClick={() => {
+                if (!balance) return;
+                setAmount(formatEther(balance.value));
+              }}
+              title={balance ? `Max: ${formatEther(balance.value)} ETH` : "loading balance…"}
+              style={{
+                padding: "0 12px",
+                fontSize: 10,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                background:
+                  !balance || balance.value === 0n ? "rgba(255,255,255,0.06)" : "var(--slop-magenta, #ff3ec9)",
+                color: !balance || balance.value === 0n ? "var(--slop-text-muted)" : "#06030d",
+                border: "none",
+                borderRadius: 4,
+                cursor: !balance || balance.value === 0n ? "not-allowed" : "pointer",
+                fontWeight: 700,
+              }}
+            >
+              Max
+            </button>
+          </div>
+          {amountErr ? (
+            <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>{amountErr}</div>
+          ) : amountUsd !== null ? (
+            <div style={{ fontSize: 11, color: "var(--slop-text-muted)", marginTop: 4 }}>
+              ≈ $
+              {amountUsd.toLocaleString(undefined, {
+                minimumFractionDigits: amountUsd < 1 ? 4 : 2,
+                maximumFractionDigits: amountUsd < 1 ? 4 : 2,
+              })}{" "}
+              USD
+            </div>
+          ) : null}
         </Field>
         {showAdvanced ? (
           <Field label="Calldata (hex, optional)">
