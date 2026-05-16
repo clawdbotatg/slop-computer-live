@@ -3,15 +3,28 @@
 // topics, chapters }. Output is folded into the manifest so the per-episode
 // page on slop.computer can render real metadata instead of "Untitled".
 //
-// Plumbing mirrors glossary-ai.ts: direct fetch to Anthropic, no SDK,
-// graceful fallback to `null` when ANTHROPIC_API_KEY is unset so local
-// dev finalizes still work.
+// Two providers, tried in order:
+//   1) Bankr's OpenClaw gateway (https://llm.bankr.bot/v1) — same gateway
+//      already used by ai-players.ts / ai-mover.ts. OpenAI-compatible shape
+//      with an X-API-Key header. Preferred because billing / observability /
+//      key rotation already live there.
+//   2) Direct Anthropic /v1/messages — fallback for local dev (where only
+//      ANTHROPIC_API_KEY is typically set) so finalize still works without
+//      pointing at the bankr gateway.
 //
-// Cost: one Opus call per finalize. A 2hr show with dense transcript is
-// ~500KB of input + ~3KB out = pennies. Worth the quality.
+// If neither key is set, the call returns null and finalizeRecording ships
+// a manifest without `meta`. Best-effort: an AI hiccup never tanks finalize.
+//
+// Cost: one Opus call per finalize. A 2hr dense show is ~500KB in + ~3KB
+// out = pennies either way. Worth the quality.
+
+const BANKR_API_KEY = process.env.BANKR_API_KEY ?? "";
+const BANKR_MODEL = process.env.BANKR_META_MODEL ?? "claude-opus-4.7";
+const BANKR_URL = "https://llm.bankr.bot/v1/chat/completions";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 type TranscriptLine = {
   ts: number;
@@ -143,25 +156,60 @@ function isEpisodeMetaShape(x: unknown): x is Omit<EpisodeMeta, "generatedBy" | 
   return true;
 }
 
-/**
- * Generate episode metadata from raw transcript + chat JSONL strings.
- * Returns null on any failure (missing key, API error, malformed JSON) —
- * caller treats meta as optional so a flaky AI call never blocks finalize.
- */
-export async function generateEpisodeMeta(opts: {
-  transcriptJsonl: string;
-  chatJsonl?: string;
-}): Promise<EpisodeMeta | null> {
-  if (!ANTHROPIC_API_KEY) return null;
+// Pull a clean JSON string out of the model's raw text. The instruction says
+// "OUTPUT ONLY THE JSON" but Opus occasionally still wraps it in ```json
+// fences or prefixes a sentence — strip both.
+function extractJsonText(raw: string): string {
+  return raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
 
-  const transcript = parseJsonl<TranscriptLine>(opts.transcriptJsonl);
-  if (transcript.length < 3) return null; // not enough to summarize meaningfully
-
-  const chat = opts.chatJsonl ? parseJsonl<ChatLine>(opts.chatJsonl) : [];
-  const { prompt } = buildPrompt({ transcript, chat });
-
+/** Bankr OpenClaw gateway — OpenAI /chat/completions shape, X-API-Key auth. */
+async function callBankr(prompt: string): Promise<{ text: string; model: string } | null> {
+  if (!BANKR_API_KEY) return null;
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch(BANKR_URL, {
+      method: "POST",
+      headers: {
+        "x-api-key": BANKR_API_KEY,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: BANKR_MODEL,
+        max_tokens: 4096,
+        // Slight temperature so titles aren't bone-dry; description is the
+        // long form anyway and benefits from a little voice.
+        temperature: 0.4,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      // eslint-disable-next-line no-console
+      console.error("[meta-ai] bankr", res.status, text.slice(0, 200));
+      return null;
+    }
+    const data = (await res.json().catch(() => null)) as
+      | { choices?: Array<{ message?: { content?: string } }> }
+      | null;
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (!text) return null;
+    return { text, model: `bankr:${BANKR_MODEL}` };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[meta-ai] bankr fetch error", String(err).slice(0, 200));
+    return null;
+  }
+}
+
+/** Direct Anthropic /v1/messages — used as a fallback if Bankr isn't
+ *  configured or returns nothing. */
+async function callAnthropic(prompt: string): Promise<{ text: string; model: string } | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
       method: "POST",
       headers: {
         "x-api-key": ANTHROPIC_API_KEY,
@@ -169,7 +217,7 @@ export async function generateEpisodeMeta(opts: {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: ANTHROPIC_MODEL,
         max_tokens: 4096,
         messages: [{ role: "user", content: prompt }],
       }),
@@ -181,37 +229,60 @@ export async function generateEpisodeMeta(opts: {
       return null;
     }
     const json = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-    const raw = (json.content ?? [])
+    const text = (json.content ?? [])
       .filter(c => c.type === "text")
       .map(c => c.text ?? "")
       .join("")
       .trim();
-    // The model occasionally wraps in ```json fences despite instructions.
-    const stripped = raw
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(stripped);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[meta-ai] JSON parse failed:", String(err).slice(0, 200));
-      return null;
-    }
-    if (!isEpisodeMetaShape(parsed)) {
-      // eslint-disable-next-line no-console
-      console.error("[meta-ai] unexpected shape", JSON.stringify(parsed).slice(0, 200));
-      return null;
-    }
-    return {
-      ...parsed,
-      generatedBy: MODEL,
-      generatedAt: Date.now(),
-    };
+    if (!text) return null;
+    return { text, model: `anthropic:${ANTHROPIC_MODEL}` };
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[meta-ai] fetch error", String(err).slice(0, 200));
+    console.error("[meta-ai] anthropic fetch error", String(err).slice(0, 200));
     return null;
   }
+}
+
+/**
+ * Generate episode metadata from raw transcript + chat JSONL strings.
+ * Returns null on any failure (no keys, API error, malformed JSON) —
+ * caller treats meta as optional so a flaky AI call never blocks finalize.
+ */
+export async function generateEpisodeMeta(opts: {
+  transcriptJsonl: string;
+  chatJsonl?: string;
+}): Promise<EpisodeMeta | null> {
+  if (!BANKR_API_KEY && !ANTHROPIC_API_KEY) return null;
+
+  const transcript = parseJsonl<TranscriptLine>(opts.transcriptJsonl);
+  if (transcript.length < 3) return null; // not enough to summarize meaningfully
+
+  const chat = opts.chatJsonl ? parseJsonl<ChatLine>(opts.chatJsonl) : [];
+  const { prompt } = buildPrompt({ transcript, chat });
+
+  // Prefer Bankr; fall back to direct Anthropic if it's not configured or
+  // the call fails. The fallback matters for local dev where typically only
+  // ANTHROPIC_API_KEY is set.
+  const result = (await callBankr(prompt)) ?? (await callAnthropic(prompt));
+  if (!result) return null;
+
+  const stripped = extractJsonText(result.text);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[meta-ai] JSON parse failed:", String(err).slice(0, 200));
+    return null;
+  }
+  if (!isEpisodeMetaShape(parsed)) {
+    // eslint-disable-next-line no-console
+    console.error("[meta-ai] unexpected shape", JSON.stringify(parsed).slice(0, 200));
+    return null;
+  }
+  return {
+    ...parsed,
+    generatedBy: result.model,
+    generatedAt: Date.now(),
+  };
 }
