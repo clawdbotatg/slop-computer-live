@@ -116,10 +116,10 @@ export const AudioShareDialog = ({
     setUploadingAvatar(true);
     try {
       const { url } = await uploadAvatar(file);
-      // Cache-bust: relay writes to a deterministic path keyed by owner,
-      // so a re-upload returns the same URL — without a query suffix the
-      // <img> would keep showing the previous bytes.
-      setUploadedAvatar(`${url}?t=${Date.now()}`);
+      // The relay's URL already carries `?v=<Date.now()>` as a cache
+      // buster — re-busting with `?t=...` here produced `?v=...?t=...`
+      // (two query starts), a malformed URL the browser 404'd on.
+      setUploadedAvatar(url);
       // Uploading clears the hidden marker — server already does this,
       // local state mirrors so the preview reflects immediately.
       setHidden(false);
