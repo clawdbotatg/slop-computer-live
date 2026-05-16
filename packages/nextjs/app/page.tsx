@@ -1445,7 +1445,12 @@ const Desktop: NextPage = () => {
               {stream ? (
                 pub.kind === "audio" ? (
                   <AudioDropZone
-                    isMine={pub.peerId === mesh.myId}
+                    // Owner-key match (not peer-id) so a user with the
+                    // wallet open in multiple tabs / devices can drag a
+                    // new PFP onto ANY of their audio windows — relay
+                    // auth keys avatars on the session's owner, not the
+                    // publishing peer.
+                    isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
                     onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
                   >
                     <AudioVisualizer
