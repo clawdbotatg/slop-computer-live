@@ -95,6 +95,14 @@ export type SharedBrowserProps = {
    *  an impersonator option so you can act as yourself without typing. */
   selfAddress?: string | null;
   selfLabel?: string | null;
+  /** Local peer id — when the impersonator is the local user, we forward
+   *  the captured tx to ourselves so the incoming modal pops on our own
+   *  screen. */
+  selfPeerId?: string | null;
+  /** Pass captured eth_sendTransaction requests to a specific peer (the
+   *  wallet that's being impersonated). The receiver shows a modal and,
+   *  if accepted, broadcasts via their real wagmi wallet. */
+  forwardTxToPeer?: PeerMeshState["forwardTxToPeer"];
 };
 
 export const SharedBrowser = ({
@@ -107,6 +115,8 @@ export const SharedBrowser = ({
   peers,
   selfAddress,
   selfLabel,
+  selfPeerId,
+  forwardTxToPeer,
 }: SharedBrowserProps) => {
   const [draft, setDraft] = useState(browser.url);
   const lastSeenUrlRef = useRef(browser.url);
@@ -126,15 +136,28 @@ export const SharedBrowser = ({
   // re-subscribing on every wallet mutation.
   const walletRef = useRef<WalletRecord | null>(wallet ?? null);
   const proposeRef = useRef<PeerMeshState["walletProposeTx"] | null>(walletProposeTx ?? null);
+  const forwardRef = useRef<PeerMeshState["forwardTxToPeer"] | null>(forwardTxToPeer ?? null);
+  const peersRef = useRef<Peer[]>(peers ?? []);
+  const selfPeerIdRef = useRef<string | null>(selfPeerId ?? null);
+  const selfAddressRef = useRef<string | null>(selfAddress ?? null);
   useEffect(() => {
     walletRef.current = wallet ?? null;
     proposeRef.current = walletProposeTx ?? null;
-  }, [wallet, walletProposeTx]);
+    forwardRef.current = forwardTxToPeer ?? null;
+    peersRef.current = peers ?? [];
+    selfPeerIdRef.current = selfPeerId ?? null;
+    selfAddressRef.current = selfAddress ?? null;
+  }, [wallet, walletProposeTx, forwardTxToPeer, peers, selfPeerId, selfAddress]);
   // Set when the host tells us the page navigated on its own (link click,
   // window.location, popup-redirect). We mirror that URL into mesh state
   // so all peers' URL bars update, but we must NOT echo it back as a
   // "navigate" — that'd re-fetch the same URL and waste a round trip.
   const incomingUrlRef = useRef<string | null>(null);
+  // ChainId the headless browser-host is configured for — sent in `hello`.
+  // The injected provider reports this back to the dapp, so any captured
+  // eth_sendTransaction implicitly belongs to this chain unless the tx
+  // params override it.
+  const hostChainIdRef = useRef<number | null>(null);
 
   // ---- Impersonator picker --------------------------------------------------
   // Dropdown lets you act as: the deployed session wallet, any other
@@ -263,7 +286,10 @@ export const SharedBrowser = ({
       // so our dropdown should match. We avoid feedback by only syncing
       // when the message address doesn't already equal our effective.
       if ((msg.type === "hello" || msg.type === "impersonator_changed") && typeof msg.impersonated === "string") {
-        if (msg.type === "hello") setHelloReceived(true);
+        if (msg.type === "hello") {
+          setHelloReceived(true);
+          if (typeof msg.chainId === "number") hostChainIdRef.current = msg.chainId;
+        }
         const incoming = msg.impersonated;
         if (!ADDRESS_RE.test(incoming)) {
           /* fall through to other hello handling */
@@ -372,6 +398,48 @@ export const SharedBrowser = ({
               console.warn("[wallet] failed to enqueue browser tx", err);
             }
           })();
+        }
+
+        // Also: if the impersonator address belongs to a connected peer's
+        // real wagmi wallet (or our own), forward the captured tx to that
+        // peer so they can sign+broadcast it. Only eth_sendTransaction is
+        // wired through to the receiver's IncomingTxModal today; sign
+        // methods would need their own UI path.
+        const forward = forwardRef.current;
+        if (forward && method === "eth_sendTransaction") {
+          const impLower = imp.toLowerCase();
+          // selfPeerId is preferred for the self case (avoid scanning
+          // peers if we already know who we are). Otherwise scan peers
+          // for an address match — first hit wins. Skip when the
+          // impersonator is the session wallet, which is a contract
+          // (no peer at that address) and is already handled above.
+          const isWalletAddr = !!w && impLower === w.address.toLowerCase();
+          let targetPeerId: string | null = null;
+          if (!isWalletAddr) {
+            const selfAddr = selfAddressRef.current?.toLowerCase() ?? null;
+            const selfId = selfPeerIdRef.current ?? null;
+            if (selfAddr && selfAddr === impLower && selfId) {
+              targetPeerId = selfId;
+            } else {
+              const match = peersRef.current.find(
+                p => typeof p.address === "string" && p.address.toLowerCase() === impLower,
+              );
+              if (match) targetPeerId = match.id;
+            }
+          }
+          if (targetPeerId) {
+            // Prefer an explicit chainId in the tx params; otherwise fall
+            // back to the host's configured chain. The receiver compares
+            // this to wagmi's current chainId and offers a switch.
+            let chainId: number | null = hostChainIdRef.current;
+            const p0 = params[0];
+            if (p0 && typeof p0 === "object") {
+              const cid = (p0 as { chainId?: unknown }).chainId;
+              if (typeof cid === "string" && cid.startsWith("0x")) chainId = parseInt(cid, 16);
+              else if (typeof cid === "number") chainId = cid;
+            }
+            forward(targetPeerId, { browserId: browser.id, method, params, chainId });
+          }
         }
         return;
       }

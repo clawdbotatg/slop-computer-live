@@ -608,7 +608,7 @@ app.register(async function (fastify) {
       }
       cancelShutdown(tab);
       tab.subscribers.add(socket);
-      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress });
+      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress, chainId: config.chainId });
 
       socket.on("message", (raw: Buffer | string) => {
         let msg: { type?: string; [k: string]: unknown };
