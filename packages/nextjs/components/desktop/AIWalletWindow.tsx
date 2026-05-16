@@ -16,10 +16,11 @@ import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 // the tx lands in the wallet app's pending queue.
 //
 // The AI wallet URL is set via NEXT_PUBLIC_AI_WALLET_URL at build time.
-// Defaults to http://localhost:3001 for dev; in prod set to e.g.
-// https://wallet.slop.computer.
+// Defaults to the production deploy (wallet.slop.computer); override
+// locally by setting NEXT_PUBLIC_AI_WALLET_URL=http://localhost:3001 in
+// packages/nextjs/.env.local when iterating against a local fork.
 
-const AI_WALLET_URL = process.env.NEXT_PUBLIC_AI_WALLET_URL || "http://localhost:3001";
+const AI_WALLET_URL = process.env.NEXT_PUBLIC_AI_WALLET_URL || "https://wallet.slop.computer";
 
 type SlopProposeTxMessage = {
   type: "slop:propose_tx";
