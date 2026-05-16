@@ -16,7 +16,7 @@ live.slop.computer {
     # `/files/*` and `/avatars/*` are PUBLIC download endpoints (no auth
     # gate; ids are unguessable). Without them here, dropped images load
     # as `<img src="…/files/<id>">` → Caddy → Next.js → 404 → broken icon.
-    @relay path /signal* /auth/* /admin/* /turn/* /internal/* /v1/* /apps /files/* /avatars/*
+    @relay path /signal* /auth/* /admin/* /turn/* /internal/* /v1/* /apps /files/* /avatars/* /jamendo-music/* /music/*
     reverse_proxy @relay localhost:8081
 
     # Browser-host: shared headless Chrome with frame streaming + impersonator.
