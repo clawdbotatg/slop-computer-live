@@ -35,6 +35,14 @@ import {
   subscribe as subscribeChat,
 } from "./chat.js";
 import {
+  MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
+  type TranscriptSegment,
+  allow as allowTranscript,
+  append as appendTranscript,
+  recent as recentTranscript,
+  subscribe as subscribeTranscript,
+} from "./transcript.js";
+import {
   SESSION_COOKIE,
   consumeNonce,
   createAgentSession,
@@ -801,6 +809,73 @@ app.get("/v1/chat/stream", async (req, reply) => {
   write("init", { messages: recentChat() });
   const unsub = subscribeChat(msg => write("chat", msg));
   // Heartbeat — some proxies drop idle connections after ~60s.
+  const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsub();
+    try {
+      reply.raw.end();
+    } catch {
+      /* already closed */
+    }
+  });
+});
+
+// --- Live transcript ---------------------------------------------------------
+// Browsers run Web Speech locally and POST final-result segments here. Server
+// stamps `ts` + identity (so a peer can't forge another peer's words) and
+// persists via ./transcript.js. Same auth path as chat.
+type TranscriptBody = { text?: unknown };
+
+app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const raw = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!raw.trim()) return reply.code(400).send({ error: "empty" });
+  if (raw.length > TRANSCRIPT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
+  if (!allowTranscript(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
+  const inMesh = findPeersBySessionToken(a.session.token).length > 0;
+  const source: TranscriptSegment["source"] =
+    a.via === "bearer" ? "agent" : inMesh ? "live" : "spectator";
+  const seg = appendTranscript({
+    address: a.session.address,
+    handle: a.session.handle,
+    text: raw,
+    source,
+  });
+  if (!seg) return reply.code(400).send({ error: "empty" });
+  return { ok: true, seg };
+});
+
+// --- Admin transcript viewer -------------------------------------------------
+// Host-only. JSON for one-shot inspection, SSE for live tailing — open either
+// in a browser to verify per-peer STT is flowing and correctly attributed.
+app.get("/admin/transcript", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  reply.header("cache-control", "no-store");
+  return { segments: recentTranscript() };
+});
+
+app.get("/admin/transcript/stream", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) {
+    reply.code(401);
+    return { error: auth.error };
+  }
+  // Host-authed (cookie or bearer), same-origin from the admin UI — no
+  // cross-origin CORS gymnastics needed, just plain SSE.
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  const write = (event: string, data: unknown) => {
+    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  write("init", { segments: recentTranscript() });
+  const unsub = subscribeTranscript(seg => write("transcript", seg));
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
   req.raw.on("close", () => {
     clearInterval(heartbeat);

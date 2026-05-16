@@ -10,6 +10,8 @@ import * as nodeFs from "node:fs";
 const openAsBlob = (nodeFs as unknown as { openAsBlob: (path: string) => Promise<Blob> }).openAsBlob;
 
 import { readArchive as readChatArchive } from "./chat.js";
+import { readArchive as readTranscriptArchive } from "./transcript.js";
+import { type EpisodeMeta, generateEpisodeMeta } from "./meta-ai.js";
 
 // Post-stream archival: MediaMTX writes the live session to disk
 // (see deploy/mediamtx.yml `record:` block); this module finds the
@@ -53,6 +55,8 @@ export type FinalizeEvent =
   | { phase: "remuxing" }
   | { phase: "uploading"; bytes: number; totalBytes: number }
   | { phase: "pinning-chat"; messageCount: number }
+  | { phase: "pinning-transcript"; segmentCount: number }
+  | { phase: "generating-meta" }
   | { phase: "pinning-manifest" }
   | {
       phase: "done";
@@ -283,15 +287,57 @@ export async function finalizeRecording(opts: {
         // per-episode manifest point at its own snapshot CID. JSONL is pinned
         // as-is (no JSON wrapper) since the frontpage just opens the raw CID.
         let chatPin: { cid: string; messageCount: number } | null = null;
-        const archive = readChatArchive();
-        if (archive && archive.messageCount > 0) {
-          emit({ phase: "pinning-chat", messageCount: archive.messageCount });
+        const chatArchive = readChatArchive();
+        if (chatArchive && chatArchive.messageCount > 0) {
+          emit({ phase: "pinning-chat", messageCount: chatArchive.messageCount });
           const chatCid = await pinBlobToLocalIpfs({
             apiUrl: opts.ipfsApiUrl,
-            blob: new Blob([archive.content], { type: "application/x-ndjson" }),
+            blob: new Blob([chatArchive.content], { type: "application/x-ndjson" }),
             filename: "chat.jsonl",
           });
-          chatPin = { cid: chatCid, messageCount: archive.messageCount };
+          chatPin = { cid: chatCid, messageCount: chatArchive.messageCount };
+        }
+
+        // Snapshot the live transcript JSONL the same way as chat. Each line
+        // is one server-stamped Web Speech "final" segment; merged across
+        // peers and sorted by `ts` to form the canonical episode transcript.
+        let transcriptPin: { cid: string; segmentCount: number } | null = null;
+        const transcriptArchive = readTranscriptArchive();
+        if (transcriptArchive && transcriptArchive.segmentCount > 0) {
+          emit({
+            phase: "pinning-transcript",
+            segmentCount: transcriptArchive.segmentCount,
+          });
+          const transcriptCid = await pinBlobToLocalIpfs({
+            apiUrl: opts.ipfsApiUrl,
+            blob: new Blob([transcriptArchive.content], {
+              type: "application/x-ndjson",
+            }),
+            filename: "transcript.jsonl",
+          });
+          transcriptPin = {
+            cid: transcriptCid,
+            segmentCount: transcriptArchive.segmentCount,
+          };
+        }
+
+        // Best-effort AI pass: title, one-liner, description, topics, chapters
+        // from the transcript + chat. Wrapped in try/catch and returns null on
+        // any failure (no key, API down, malformed JSON) — finalize never fails
+        // because of this, the manifest just ships without `meta` and the host
+        // can re-finalize or fill it in manually later.
+        let aiMeta: EpisodeMeta | null = null;
+        if (transcriptArchive && transcriptArchive.segmentCount >= 3) {
+          emit({ phase: "generating-meta" });
+          try {
+            aiMeta = await generateEpisodeMeta({
+              transcriptJsonl: transcriptArchive.content,
+              chatJsonl: chatArchive?.content,
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[finalize] meta generation threw", err);
+          }
         }
 
         // Build + pin the minimal manifest. The host UI can later issue a
@@ -303,6 +349,8 @@ export async function finalizeRecording(opts: {
           version: 1;
           video: { cid: string; sizeBytes: number; format: string };
           chat?: { cid: string; messageCount: number };
+          transcript?: { cid: string; segmentCount: number };
+          meta?: EpisodeMeta;
         } = {
           version: 1,
           video: {
@@ -312,6 +360,8 @@ export async function finalizeRecording(opts: {
           },
         };
         if (chatPin) manifestJson.chat = chatPin;
+        if (transcriptPin) manifestJson.transcript = transcriptPin;
+        if (aiMeta) manifestJson.meta = aiMeta;
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
 
         const result: FinalizeResult = {
