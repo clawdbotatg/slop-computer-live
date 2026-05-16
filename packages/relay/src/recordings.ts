@@ -9,6 +9,8 @@ import { basename, join } from "node:path";
 import * as nodeFs from "node:fs";
 const openAsBlob = (nodeFs as unknown as { openAsBlob: (path: string) => Promise<Blob> }).openAsBlob;
 
+import { readArchive as readChatArchive } from "./chat.js";
+
 // Post-stream archival: MediaMTX writes the live session to disk
 // (see deploy/mediamtx.yml `record:` block); this module finds the
 // newest recording for a path and pins it to the LOCAL kubo daemon
@@ -50,6 +52,7 @@ export type FinalizeEvent =
   | { phase: "starting"; file: string; name: string; totalBytes: number }
   | { phase: "remuxing" }
   | { phase: "uploading"; bytes: number; totalBytes: number }
+  | { phase: "pinning-chat"; messageCount: number }
   | { phase: "pinning-manifest" }
   | {
       phase: "done";
@@ -157,24 +160,38 @@ export async function pinToLocalIpfs(opts: {
 }
 
 /**
- * Pin an in-memory JSON blob to kubo via /api/v0/add. Returns the CID.
- * Used to publish a tiny manifest alongside the (much larger) video.
+ * Pin a small in-memory Blob to kubo via /api/v0/add. Returns the CID.
+ * Shared by the JSON manifest and the chat-archive JSONL pins — both
+ * are tiny enough to buffer fully in memory, so the streaming/progress
+ * machinery in `pinToLocalIpfs` isn't worth the noise here.
  */
-export async function pinJsonToLocalIpfs(opts: { apiUrl: string; json: unknown }): Promise<string> {
-  const body = new Blob([JSON.stringify(opts.json, null, 2)], { type: "application/json" });
+async function pinBlobToLocalIpfs(opts: {
+  apiUrl: string;
+  blob: Blob;
+  filename: string;
+}): Promise<string> {
   const form = new FormData();
-  form.append("file", body, "manifest.json");
+  form.append("file", opts.blob, opts.filename);
   const res = await fetch(`${opts.apiUrl}/api/v0/add?pin=true`, { method: "POST", body: form });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`kubo /api/v0/add (manifest) ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`kubo /api/v0/add (${opts.filename}) ${res.status}: ${text.slice(0, 200)}`);
   }
   // kubo returns one JSON object on the final line for a single small file.
   const text = await res.text();
   const lastLine = text.trim().split("\n").pop() || "";
   const parsed = JSON.parse(lastLine) as { Hash?: string };
-  if (!parsed.Hash) throw new Error(`kubo: manifest pin returned no Hash: ${text.slice(0, 200)}`);
+  if (!parsed.Hash) throw new Error(`kubo: ${opts.filename} pin returned no Hash: ${text.slice(0, 200)}`);
   return parsed.Hash;
+}
+
+/**
+ * Pin an in-memory JSON blob to kubo via /api/v0/add. Returns the CID.
+ * Used to publish a tiny manifest alongside the (much larger) video.
+ */
+export async function pinJsonToLocalIpfs(opts: { apiUrl: string; json: unknown }): Promise<string> {
+  const blob = new Blob([JSON.stringify(opts.json, null, 2)], { type: "application/json" });
+  return pinBlobToLocalIpfs({ apiUrl: opts.apiUrl, blob, filename: "manifest.json" });
 }
 
 /**
@@ -260,12 +277,33 @@ export async function finalizeRecording(opts: {
           onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes: latest.sizeBytes }),
         });
 
+        // Snapshot the chat archive and pin it before the manifest so its CID
+        // can be referenced from `manifest.chat`. The on-disk JSONL is global
+        // across all episodes; we pin the full file each finalize and let the
+        // per-episode manifest point at its own snapshot CID. JSONL is pinned
+        // as-is (no JSON wrapper) since the frontpage just opens the raw CID.
+        let chatPin: { cid: string; messageCount: number } | null = null;
+        const archive = readChatArchive();
+        if (archive && archive.messageCount > 0) {
+          emit({ phase: "pinning-chat", messageCount: archive.messageCount });
+          const chatCid = await pinBlobToLocalIpfs({
+            apiUrl: opts.ipfsApiUrl,
+            blob: new Blob([archive.content], { type: "application/x-ndjson" }),
+            filename: "chat.jsonl",
+          });
+          chatPin = { cid: chatCid, messageCount: archive.messageCount };
+        }
+
         // Build + pin the minimal manifest. The host UI can later issue a
         // setManifest tx with a richer manifest CID (description, transcript,
         // etc.) — we just guarantee a valid v1 manifest exists out of the gate
         // so the on-chain reference is never half-baked.
         emit({ phase: "pinning-manifest" });
-        const manifestJson = {
+        const manifestJson: {
+          version: 1;
+          video: { cid: string; sizeBytes: number; format: string };
+          chat?: { cid: string; messageCount: number };
+        } = {
           version: 1,
           video: {
             cid,
@@ -273,6 +311,7 @@ export async function finalizeRecording(opts: {
             format: "video/mp4",
           },
         };
+        if (chatPin) manifestJson.chat = chatPin;
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
 
         const result: FinalizeResult = {

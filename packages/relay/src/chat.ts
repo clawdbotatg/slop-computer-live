@@ -102,6 +102,23 @@ export function recent(): ChatMessage[] {
   return [...buffer];
 }
 
+// Read the full on-disk JSONL log + count of non-empty lines. Used at
+// finalize time to pin a snapshot to IPFS; the in-memory `buffer` only
+// holds the last MAX_HISTORY messages so we go to disk for the archive.
+export function readArchive(): { content: string; messageCount: number } | null {
+  let raw: string;
+  try {
+    raw = readFileSync(CHAT_LOG_FILE, "utf8");
+  } catch {
+    return null;
+  }
+  let messageCount = 0;
+  for (const line of raw.split("\n")) {
+    if (line.trim()) messageCount++;
+  }
+  return { content: raw, messageCount };
+}
+
 // Soft per-address rate limit — allow a small burst then 1 msg/sec sustained.
 // Tracked in memory; a relay restart resets it (acceptable, it's a soft cap).
 const lastBy = new Map<string, { ts: number; tokens: number }>();
