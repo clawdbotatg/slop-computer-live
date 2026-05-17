@@ -10,7 +10,7 @@ import { PasswordGate } from "~~/components/PasswordGate";
 import { AIWalletWindow } from "~~/components/desktop/AIWalletWindow";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
-import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { AUDIO_MUTED_STORAGE_KEY, AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
@@ -146,15 +146,21 @@ const writeResume = (state: ResumeState) => {
   }
 };
 
-// Camera-pause persistence rides alongside the resume flags — keep it
-// tied to the same publication lifecycle. When the camera publication
-// is fully stopped (Stop Video, close button, peer-initiated close,
-// reconcile-cleanup), the pause flag is meaningless and must clear so
-// a fresh share starts unpaused.
-const clearCameraPause = () => {
-  if (typeof window === "undefined") return;
+// Per-kind persisted UI state rides alongside the resume flags — keep
+// each entry tied to its publication's lifecycle. When a publication
+// is fully stopped (Stop, close button, peer-initiated close, reconcile
+// cleanup), the corresponding flag is meaningless and must clear so a
+// fresh share starts in the default state.
+const PER_KIND_PERSIST_KEYS: Partial<Record<StreamKind, string>> = {
+  camera: VIDEO_PAUSED_STORAGE_KEY,
+  audio: AUDIO_MUTED_STORAGE_KEY,
+};
+
+const clearKindPersistedState = (kind: StreamKind) => {
+  const key = PER_KIND_PERSIST_KEYS[kind];
+  if (!key || typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(VIDEO_PAUSED_STORAGE_KEY);
+    window.localStorage.removeItem(key);
   } catch {
     /* quota / private mode */
   }
@@ -229,7 +235,7 @@ const Desktop: NextPage = () => {
       const r = readResume();
       delete r[target.kind];
       writeResume(r);
-      if (target.kind === "camera") clearCameraPause();
+      clearKindPersistedState(target.kind);
     },
     [mesh],
   );
@@ -872,7 +878,7 @@ const Desktop: NextPage = () => {
         const r = readResume();
         delete r[pub.kind];
         writeResume(r);
-        if (pub.kind === "camera") clearCameraPause();
+        clearKindPersistedState(pub.kind);
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
@@ -910,7 +916,7 @@ const Desktop: NextPage = () => {
       const r = readResume();
       delete r[s.kind];
       writeResume(r);
-      if (s.kind === "camera") clearCameraPause();
+      clearKindPersistedState(s.kind);
     }
     prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
@@ -1625,6 +1631,7 @@ const Desktop: NextPage = () => {
                       address={peer?.address ?? null}
                       hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
                       onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
+                      persistMute={pub.peerId === mesh.myId}
                     />
                   </AudioDropZone>
                 ) : pub.kind === "camera" ? (

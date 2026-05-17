@@ -5,6 +5,12 @@ import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import type { Bands } from "~~/utils/blockieBands";
 
+// Persisted alongside the resume flags so reload preserves the
+// publisher's self-mute state. Cleared by page.tsx when the audio
+// publication is fully stopped (not when it's merely re-acquired by
+// auto-resume).
+export const AUDIO_MUTED_STORAGE_KEY = "slop-audio-muted-v1";
+
 export type AudioVisualizerProps = {
   stream: MediaStream;
   bands: Bands;
@@ -27,6 +33,11 @@ export type AudioVisualizerProps = {
    *  mute toggle. Click handler should re-open the share dialog in edit
    *  mode so the user can hot-swap mic / avatar without dropping the call. */
   onSettings?: () => void;
+  /** When true, hydrate the publisher's self-mute state from
+   *  AUDIO_MUTED_STORAGE_KEY on mount and write changes back so reload
+   *  preserves it. Only set for the publisher's own audio publication;
+   *  remote views use ephemeral local-only state. */
+  persistMute?: boolean;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -46,6 +57,7 @@ export const AudioVisualizer = ({
   hidden = false,
   isMine = false,
   onSettings,
+  persistMute = false,
 }: AudioVisualizerProps) => {
   const ensAvatar = useEnsAvatarFromAddress(address);
   const effectiveAvatar = hidden ? null : avatarUrl || ensAvatar;
@@ -61,11 +73,31 @@ export const AudioVisualizer = ({
   // For *someone else's* publication: mute = my local <audio> element
   // is muted via the JSX prop below — their stream is unchanged; only I
   // stop hearing it. Two mechanisms, single UI affordance.
-  const [selfMuted, setSelfMuted] = useState(false);
+  //
+  // Lazy init from localStorage when persistence is on, so the initial
+  // track.enabled effect below sees the resumed selfMuted=true and
+  // mutes the just-re-acquired mic before peers hear a sample.
+  const [selfMuted, setSelfMuted] = useState<boolean>(() => {
+    if (!persistMute || typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(AUDIO_MUTED_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   useEffect(() => {
     if (!isMine) return;
     for (const t of stream.getAudioTracks()) t.enabled = !selfMuted;
   }, [stream, selfMuted, isMine]);
+  useEffect(() => {
+    if (!persistMute || typeof window === "undefined") return;
+    try {
+      if (selfMuted) window.localStorage.setItem(AUDIO_MUTED_STORAGE_KEY, "1");
+      else window.localStorage.removeItem(AUDIO_MUTED_STORAGE_KEY);
+    } catch {
+      /* quota / private mode */
+    }
+  }, [selfMuted, persistMute]);
 
   useEffect(() => {
     if (audioRef.current && audioRef.current.srcObject !== stream) {
