@@ -14,10 +14,11 @@ import type { Headline, PeerMeshState } from "~~/hooks/usePeerMesh";
 
 export const HEADLINES_HEIGHT = 24;
 
-// Three-bar speed hierarchy: ticker 120s, headlines 115s, timeline
-// 110s. Headlines is barely faster than the prices, distinctly
-// slower than the timeline above it.
-const SCROLL_DURATION_S = 115;
+// Headlines is a slow read — a touch faster than the prices but not
+// rushed. Timeline (above) auto-scales by item count via its own
+// per-item budget, so the hierarchy is enforced by visual feel, not
+// by strict numeric ordering of these constants.
+const SCROLL_DURATION_S = 135;
 
 export type HeadlinesBarProps = {
   mesh: PeerMeshState;

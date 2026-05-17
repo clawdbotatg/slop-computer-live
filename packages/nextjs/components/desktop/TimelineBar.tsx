@@ -14,17 +14,16 @@ export const TIMELINE_HEIGHT = 24;
 
 // The marquee animates `transform: translateX(-50%)`, so the visual
 // pixels-per-second depends on the track width — which depends on
-// item count. If we hard-code a single duration and double the item
-// count, the scroll speed visibly doubles ("light speed" complaint).
+// item count. We scale duration with count so a 50-tweet bar doesn't
+// scroll at 2× the pace of a 25-tweet bar.
 //
-// We solve this by scaling the duration with item count: aim for the
-// same px/sec as headlines (115s for ~20 items), but a touch faster.
-//   per_item_seconds_target = 115 / 20 * 0.95 ≈ 5.46 s/item
-// With 50 items → ~273s. With 100 items → ~545s. Caps below stop the
-// duration from getting silly in either direction.
-const SECONDS_PER_ITEM = 5.46;
-const MIN_DURATION_S = 90;
-const MAX_DURATION_S = 600;
+// Tuned by feel: each tweet needs ~8s on screen to be readable as it
+// crosses the viewport.
+//   50 items × 8s/item = 400s ≈ 6.7 min loop
+//   25 items × 8s/item = 200s ≈ 3.3 min loop
+const SECONDS_PER_ITEM = 8;
+const MIN_DURATION_S = 120;
+const MAX_DURATION_S = 720;
 
 const MAX_TEXT_LEN = 140;
 
