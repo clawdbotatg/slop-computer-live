@@ -217,6 +217,7 @@
   align-items: center;
   justify-content: center;
   align-self: stretch;
+  position: relative;
   width: 28px;
   font-family: var(--slop-font-display);
   font-size: 18px;
@@ -233,6 +234,19 @@
   background: #ff5f57;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
   user-select: none;
+}
+
+/* Extend the clickable area 1px below the dot. The titlebar bottom
+   border / pixel-gap below the dot resolves to data-grab="true" and
+   flips the cursor to grab for that one row, which felt like the
+   hitbox was off when aiming for the very bottom edge of the X. */
+.slop-titlebar__dot::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
 }
 
 .slop-titlebar__dot--minimize {
