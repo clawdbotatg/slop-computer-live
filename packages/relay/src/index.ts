@@ -401,16 +401,16 @@ const DEFAULT_APPS: AppEntry[] = [
     kind: "music",
   },
   {
-    id: "browser",
-    label: "Browser",
-    icon: "/icons/browser.png",
-    url: "https://clawd-slop-landing-nextjs.vercel.app/",
-  },
-  {
     id: "chess",
     label: "Chess",
     icon: "/icons/chess.png",
     kind: "chess",
+  },
+  {
+    id: "browser",
+    label: "Browser",
+    icon: "/icons/browser.png",
+    url: "https://clawd-slop-landing-nextjs.vercel.app/",
   },
   {
     id: "qr",
