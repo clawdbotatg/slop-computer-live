@@ -205,10 +205,14 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
         onErrorRef.current?.(err);
       }
     } else {
-      // stop() flushes any in-flight final; abort() drops everything.
-      // We prefer stop() so a half-spoken sentence still lands.
+      // abort() drops in-flight results; stop() would flush them. We
+      // pick abort because the most common reason `enabled` flips to
+      // false is "user just muted themselves" — and the whole point of
+      // muting is for peers (and the archive) not to hear what they're
+      // saying right now. A half-uttered sentence finalized AFTER the
+      // mute click would defeat that.
       try {
-        rec.stop();
+        rec.abort();
       } catch {
         /* not running */
       }

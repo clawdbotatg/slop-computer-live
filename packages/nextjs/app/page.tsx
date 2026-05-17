@@ -225,13 +225,40 @@ const Desktop: NextPage = () => {
   const media = useLocalMedia(addStream, stopStream);
 
   // Live transcript: Web Speech runs locally in the browser whenever the
-  // user has a published mic AND the host has flipped STT on for the
-  // episode (so dinking around pre-air doesn't pollute the archive).
-  // Final-result segments POST to /v1/transcript and land in the episode
-  // manifest at finalize time.
+  // user is actually broadcasting audio (mic publication exists AND at
+  // least one audio track is unmuted) AND the host has flipped STT on
+  // for the episode. Web Speech reads from the mic hardware directly —
+  // not from the WebRTC track — so muting in AudioVisualizer (which
+  // flips track.enabled=false) silences peers but would NOT stop STT
+  // unless we gate on it here. If peers can't hear it, we don't
+  // transcribe it either.
+  //
+  // track.enabled doesn't fire an event when toggled, so we poll the
+  // self streams at 500ms. Cheap (few-element loop) and the latency on
+  // start/stop is imperceptible.
+  const [liveMicOpen, setLiveMicOpen] = useState(false);
+  useEffect(() => {
+    const compute = () => {
+      let open = false;
+      for (const s of streamsRef.current) {
+        if (s.kind !== "audio" && s.kind !== "camera") continue;
+        for (const t of s.stream.getAudioTracks()) {
+          if (t.enabled && t.readyState === "live") {
+            open = true;
+            break;
+          }
+        }
+        if (open) break;
+      }
+      setLiveMicOpen(prev => (prev === open ? prev : open));
+    };
+    compute();
+    const id = setInterval(compute, 500);
+    return () => clearInterval(id);
+  }, []);
   const episode = useEpisodeState(RELAY_HTTP);
   useLiveTranscript({
-    enabled: media.activeAudio || media.activeCamera,
+    enabled: liveMicOpen,
     episodeSttOn: episode.sttOn,
     relayHttpUrl: RELAY_HTTP,
   });
