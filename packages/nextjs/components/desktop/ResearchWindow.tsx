@@ -7,8 +7,8 @@ import { LoadingBar } from "~~/components/ui";
 // which felt twitchy. Instead we drive the bar with a fixed assumed
 // duration. Calls usually finish before 95% and the bar disappears; if a
 // call runs longer the bar just holds at 95% rather than overflowing.
-const LOOKUP_ASSUMED_MS = 6_000;
-const RESEARCH_ASSUMED_MS = 120_000;
+const LOOKUP_ASSUMED_MS = 15_000;
+const RESEARCH_ASSUMED_MS = 100_000;
 const PROGRESS_TICK_MS = 100;
 const PROGRESS_CAP = 95;
 

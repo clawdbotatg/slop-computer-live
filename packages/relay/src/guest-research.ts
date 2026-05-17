@@ -53,14 +53,17 @@ export type ResearchResult = {
   errors: { vanilla?: string; researched?: string };
 };
 
-function describeQuery(q: ResearchQuery): string {
+// `includeNotes` is false for the vanilla pass: the vanilla call must
+// reflect ONLY the model's training-data knowledge, never regurgitate
+// the host's own notes back at us padded with "based on what you said".
+function describeQuery(q: ResearchQuery, includeNotes = true): string {
   const lines: string[] = [`Name: ${q.name}`];
   if (q.socials.twitter) lines.push(`Twitter / X: ${q.socials.twitter}`);
   if (q.socials.github) lines.push(`GitHub: ${q.socials.github}`);
   if (q.socials.linkedin) lines.push(`LinkedIn: ${q.socials.linkedin}`);
   if (q.socials.website) lines.push(`Website: ${q.socials.website}`);
   if (q.socials.other) lines.push(`Other: ${q.socials.other}`);
-  if (q.notes) lines.push(`Host notes: ${q.notes}`);
+  if (includeNotes && q.notes) lines.push(`Host notes: ${q.notes}`);
   return lines.join("\n");
 }
 
@@ -101,15 +104,14 @@ async function callAnthropic(body: Record<string, unknown>): Promise<AnthropicRe
 // already know about this person from its training data?" so the host
 // can spot stale facts vs. fresh research.
 async function vanillaKnowledge(q: ResearchQuery): Promise<string> {
-  const prompt = `You're prepping the host for an interview. Based ONLY on your training data (do NOT make anything up, do NOT speculate), describe what you know about this person:
+  const prompt = `Based ONLY on your training data (NOT host notes, NOT speculation, NOT inference from handles), what do you know about this person?
 
-${describeQuery(q)}
+${describeQuery(q, false)}
 
-Rules:
-- 2–5 short paragraphs.
-- If you don't recognize them or only weakly recognize them, SAY SO plainly in one line (e.g. "I don't have reliable information about this person in my training data.").
-- Don't hedge with weasel words. Either you know it or you don't.
-- No bullet lists, no headings. Prose.`;
+Output rules — follow exactly:
+- If you do not have reliable training-data knowledge of this specific person, respond with EXACTLY this one sentence and NOTHING ELSE: "I don't have knowledge of them in my training data."
+- If you do have knowledge, respond with 1–3 short prose paragraphs of what you actually know. No bullets, no headings, no preamble like "Based on my training data…", no closing summary, no caveats about recommending the host ask them directly. Just the facts.
+- Never combine the two modes. Never say "I don't have reliable info BUT…". You either know them or you don't.`;
   const json = await callAnthropic({
     model: MODEL,
     max_tokens: 800,
@@ -119,8 +121,17 @@ Rules:
 }
 
 // Researched pass — web_search tool enabled. Claude does multiple
-// searches, reads tweets, and returns structured JSON. We parse the
-// JSON out of the final text block.
+// searches, reads tweets, and emits XML-style tags we extract with
+// per-tag regex. We *chose* tags over JSON because:
+//   • Prose with raw newlines in JSON strings breaks JSON.parse.
+//     Tagged sections survive any text content as long as the tag
+//     names themselves don't appear inside the prose.
+//   • Web-search runs interleave model narration ("let me search for…")
+//     between tool calls — that prose ends up in the response. With
+//     per-tag extractors, leading narration just gets ignored.
+//   • If the response truncates mid-output (max_tokens hit), already-
+//     emitted tags are still recoverable; with a single JSON object
+//     you lose everything.
 async function researchedReport(q: ResearchQuery): Promise<{
   researched: string;
   questions: string[];
@@ -132,7 +143,7 @@ async function researchedReport(q: ResearchQuery): Promise<{
     ? `Their Twitter/X handle is @${twitterHandle}. Search "@${twitterHandle}", "${twitterHandle} twitter", and "site:twitter.com ${twitterHandle}" or "site:x.com ${twitterHandle}". Pull out 5–15 actual recent tweets if you can find them.`
     : `No Twitter handle was provided — try to discover one if possible, otherwise focus on other sources.`;
 
-  const prompt = `You're prepping a podcast/show host for an interview with this guest. Research them on the public web and return a JSON report.
+  const prompt = `You're prepping a podcast/show host for an interview with this guest. Research them on the public web and return a dossier.
 
 Guest:
 ${describeQuery(q)}
@@ -144,26 +155,32 @@ Also search for:
 - news mentions in the last 6–12 months
 - what they're currently working on or excited about
 
-When you're done researching, respond with EXACTLY ONE fenced \`\`\`json … \`\`\` code block (no prose before or after) matching this schema:
+When done, emit ONLY the following XML-style tags. No JSON, no code fences, no preamble, no summary. Just the tags. Plain text inside tags is fine (newlines OK). Never invent URLs, handles, or quotes — omit a tag if you don't have real content for it.
 
-{
-  "researched": "2–4 paragraphs of prose describing who they are, what they're known for, what they're working on right now, and their general vibe / interests. Cite specific recent things. No bullet lists.",
-  "questions": [
-    "8 to 10 interview questions — slow-pitch, conversation-starting, things THIS person would clearly enjoy talking about based on what they've recently tweeted / posted / built. Make them specific to this guest, not generic."
-  ],
-  "tweets": [
-    { "text": "verbatim tweet text", "url": "https://x.com/handle/status/...", "date": "YYYY-MM-DD or approximate" }
-  ],
-  "sources": [
-    { "title": "page title", "url": "https://…", "snippet": "1-line takeaway" }
-  ]
-}
+<researched>
+2–4 paragraphs of prose describing who they are, what they're known for, what they're working on right now, and their general vibe / interests. Cite specific recent things. No bullet lists.
+</researched>
 
-If you can't find tweets, return an empty array — don't invent them. Same for sources. Never fabricate URLs or quotes.`;
+<questions>
+1. First question
+2. Second question
+…
+8–10 questions total. Slow-pitch, conversation-starting, things THIS guest would clearly enjoy talking about based on their recent tweets / posts / work. Specific to them, not generic.
+</questions>
+
+<tweet date="YYYY-MM-DD" url="https://x.com/handle/status/123">
+Verbatim tweet text. Multiple <tweet> tags are fine — emit 5–15 if you found them.
+</tweet>
+
+<source url="https://…" title="Page title">
+1-line takeaway. One <source> tag per cited page.
+</source>
+
+Final reminder: emit nothing outside these tags. Don't wrap them in markdown or code fences. Don't summarize after.`;
 
   const json = await callAnthropic({
     model: MODEL,
-    max_tokens: 4096,
+    max_tokens: 8000,
     tools: [
       {
         type: "web_search_20250305",
@@ -175,37 +192,77 @@ If you can't find tweets, return an empty array — don't invent them. Same for 
   });
 
   const text = extractText(json);
-  const parsed = parseJsonBlock(text);
-  if (!parsed) {
-    return {
-      researched: text || "(no research output)",
-      questions: [],
-      tweets: [],
-      sources: [],
-    };
+  return parseDossierTags(text);
+}
+
+// Lowercased attribute lookup. Models sometimes emit Title="…" or URL="…"
+// — fold both cases so we don't lose data over capitalization.
+function attr(attrs: string, key: string): string | undefined {
+  const re = new RegExp(`\\b${key}\\s*=\\s*"([^"]*)"`, "i");
+  const m = attrs.match(re);
+  const val = m?.[1]?.trim();
+  return val ? val : undefined;
+}
+
+// Split a <questions> block into individual questions. Accepts either
+// "1. text" / "1) text" numbered list or one-per-line plain text.
+function splitQuestions(block: string): string[] {
+  const lines = block
+    .split(/\n+/)
+    .map(l => l.replace(/^\s*(?:\d+\s*[.)\-:]\s*|[-*]\s+)/, "").trim())
+    .filter(l => l.length > 0);
+  return lines;
+}
+
+function parseDossierTags(text: string): {
+  researched: string;
+  questions: string[];
+  tweets: TweetSnippet[];
+  sources: ResearchSource[];
+} {
+  const researched = (text.match(/<researched>([\s\S]*?)<\/researched>/i)?.[1] ?? "").trim();
+  const questionsBlock = (text.match(/<questions>([\s\S]*?)<\/questions>/i)?.[1] ?? "").trim();
+  const questions = questionsBlock ? splitQuestions(questionsBlock) : [];
+
+  const tweets: TweetSnippet[] = [];
+  const tweetRe = /<tweet\b([^>]*)>([\s\S]*?)<\/tweet>/gi;
+  let tm: RegExpExecArray | null;
+  while ((tm = tweetRe.exec(text))) {
+    const attrs = tm[1] ?? "";
+    const body = (tm[2] ?? "").trim();
+    if (!body) continue;
+    tweets.push({
+      text: body,
+      url: attr(attrs, "url"),
+      date: attr(attrs, "date"),
+    });
   }
-  return {
-    researched: typeof parsed.researched === "string" ? parsed.researched : "",
-    questions: Array.isArray(parsed.questions) ? parsed.questions.filter((x: unknown): x is string => typeof x === "string") : [],
-    tweets: Array.isArray(parsed.tweets) ? parsed.tweets.filter(isTweetSnippet) : [],
-    sources: Array.isArray(parsed.sources) ? parsed.sources.filter(isResearchSource) : [],
-  };
-}
 
-function isTweetSnippet(x: unknown): x is TweetSnippet {
-  if (!x || typeof x !== "object") return false;
-  const t = x as Record<string, unknown>;
-  return typeof t.text === "string" && t.text.length > 0;
-}
+  const sources: ResearchSource[] = [];
+  const sourceRe = /<source\b([^>]*)>([\s\S]*?)<\/source>/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = sourceRe.exec(text))) {
+    const attrs = sm[1] ?? "";
+    const url = attr(attrs, "url") ?? "";
+    const title = attr(attrs, "title") ?? "";
+    if (!url || !title) continue;
+    const snippet = (sm[2] ?? "").trim();
+    sources.push({ url, title, snippet: snippet || undefined });
+  }
 
-function isResearchSource(x: unknown): x is ResearchSource {
-  if (!x || typeof x !== "object") return false;
-  const s = x as Record<string, unknown>;
-  return typeof s.title === "string" && typeof s.url === "string";
+  // If the model emitted no recognizable tags at all, surface the raw
+  // text in the researched section so the host at least sees what the
+  // model said rather than an empty UI.
+  if (!researched && questions.length === 0 && tweets.length === 0 && sources.length === 0) {
+    return { researched: text.trim() || "(no research output)", questions: [], tweets: [], sources: [] };
+  }
+
+  return { researched, questions, tweets, sources };
 }
 
 // Pulls the first ```json … ``` block out of the model's reply.
 // Falls back to the first bare {…} if the model forgot the fence.
+// Used by lookupGuest below — the dossier call uses XML tags instead.
 function parseJsonBlock(text: string): Record<string, unknown> | null {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : text;
