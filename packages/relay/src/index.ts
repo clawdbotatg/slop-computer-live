@@ -352,6 +352,7 @@ type AppEntry = {
     | "qr"
     | "todo"
     | "notes"
+    | "glossary"
     | "gas"
     | "clock"
     | "wallet"
@@ -423,6 +424,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Notes",
     icon: "/icons/notes.png",
     kind: "notes",
+  },
+  {
+    id: "glossary",
+    label: "Glossary",
+    icon: "/icons/glossary.png",
+    kind: "glossary",
   },
   {
     id: "gas",
