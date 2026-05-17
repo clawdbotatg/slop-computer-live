@@ -308,13 +308,22 @@ app.get("/health", async () => ({
 }));
 
 // --- Apps registry ----------------------------------------------------------
-// JSON-driven desktop app catalog. Edit /var/lib/slop-relay/apps.json on the
-// box and the next page load picks it up — no rebuild, no restart. Schema:
-//   { "apps": [{ "id", "label", "icon", "url" }] }
+// Two layers, single resolved list:
+//   1. DEFAULT_APPS (this file)  — the authoritative built-in catalog. Ships
+//      with every deploy. Add a permanent app here, commit, deploy.
+//   2. hot-apps.json on the box  — optional, appended at read time. Schema:
+//      { "apps": [{ "id", "label", "icon", "url", "kind?" }] }. Same `id` as
+//      a built-in = the hot entry overrides at request time (lets you patch
+//      a broken built-in without redeploy). Missing file = empty list.
 //
-// `icon` can be a relative path (served by Next.js, e.g. "/icons/foo.png")
-// or an absolute URL. `url` is what the SharedBrowser will load when the
-// icon is double-clicked.
+// Why two layers? DEFAULT_APPS is the single source of truth for what ships;
+// hot-apps is the small escape hatch for runtime additions (one-off episode
+// apps) or hot-patches (override a built-in's URL/icon without a build).
+//
+// Read on every `GET /apps` — no restart needed after editing hot-apps.json.
+//
+// `icon` is a relative path (served by Next.js, e.g. "/icons/foo.png") or
+// an absolute URL. `url` is what the SharedBrowser loads on double-click.
 //
 // Adding a new app? Generate its icon FIRST so the style stays consistent:
 //   yarn icon:add <id> "<prompt>"
@@ -325,7 +334,7 @@ import { readFileSync as _readFileSync, readdirSync as _readdirSync } from "node
 import { mkdir as _mkdir, writeFile as _writeFile } from "node:fs/promises";
 import { dirname as _dirname, resolve as _resolve } from "node:path";
 
-const APPS_PATH = process.env.APPS_PATH ?? "/var/lib/slop-relay/apps.json";
+const HOT_APPS_PATH = process.env.HOT_APPS_PATH ?? "/var/lib/slop-relay/hot-apps.json";
 
 type AppEntry = {
   id: string;
@@ -453,19 +462,33 @@ const DEFAULT_APPS: AppEntry[] = [
   },
 ];
 
-function readApps(): AppEntry[] {
+// Load the hot-apps overlay. Missing/bad file = empty list, never throws.
+function readHotApps(): AppEntry[] {
   try {
-    const raw = _readFileSync(APPS_PATH, "utf8");
+    const raw = _readFileSync(HOT_APPS_PATH, "utf8");
     const parsed = JSON.parse(raw) as { apps?: unknown };
-    return Array.isArray(parsed.apps) ? (parsed.apps as AppEntry[]) : DEFAULT_APPS;
+    return Array.isArray(parsed.apps) ? (parsed.apps as AppEntry[]) : [];
   } catch {
-    return DEFAULT_APPS;
+    return [];
   }
 }
 
-async function writeApps(apps: AppEntry[]): Promise<void> {
-  await _mkdir(_dirname(APPS_PATH), { recursive: true });
-  await _writeFile(APPS_PATH, JSON.stringify({ apps }, null, 2));
+async function writeHotApps(apps: AppEntry[]): Promise<void> {
+  await _mkdir(_dirname(HOT_APPS_PATH), { recursive: true });
+  await _writeFile(HOT_APPS_PATH, JSON.stringify({ apps }, null, 2));
+}
+
+// Resolved catalog: DEFAULT_APPS as the base, then for each hot entry
+// either override the built-in with the same id, or append. Preserves
+// DEFAULT_APPS order so the icon grid layout is stable across deploys.
+function readApps(): AppEntry[] {
+  const hot = readHotApps();
+  if (hot.length === 0) return DEFAULT_APPS.slice();
+  const hotById = new Map(hot.map(a => [a.id, a]));
+  const out: AppEntry[] = DEFAULT_APPS.map(a => hotById.get(a.id) ?? a);
+  const builtInIds = new Set(DEFAULT_APPS.map(a => a.id));
+  for (const a of hot) if (!builtInIds.has(a.id)) out.push(a);
+  return out;
 }
 
 app.get("/apps", async (_req, reply) => {
@@ -609,24 +632,35 @@ app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   if (!/^[a-z0-9-]{1,40}$/.test(id)) {
     return reply.code(400).send({ error: "bad-id", note: "lowercase letters, digits, dashes, 1-40 chars" });
   }
-  const apps = readApps();
-  const idx = apps.findIndex(a => a.id === id);
+  // Only mutate hot-apps. Built-ins are code; submitting one here creates
+  // an override (same id) that wins at read time.
+  const hot = readHotApps();
+  const idx = hot.findIndex(a => a.id === id);
   const next: AppEntry = { id, label, icon, url };
-  if (idx >= 0) apps[idx] = next;
-  else apps.push(next);
-  await writeApps(apps);
-  return { ok: true, app: next, total: apps.length };
+  if (idx >= 0) hot[idx] = next;
+  else hot.push(next);
+  await writeHotApps(hot);
+  const total = readApps().length;
+  return { ok: true, app: next, total };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/apps/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!a.isHost) return reply.code(403).send({ error: "host-only" });
-  const apps = readApps();
-  const next = apps.filter(a => a.id !== req.params.id);
-  if (next.length === apps.length) return reply.code(404).send({ error: "no-such-app" });
-  await writeApps(next);
-  return { ok: true, removed: req.params.id, total: next.length };
+  const id = req.params.id;
+  // We can only remove from hot-apps. If id is purely a built-in (no hot
+  // override), there's nothing to delete — say so explicitly.
+  const hot = readHotApps();
+  const filtered = hot.filter(a => a.id !== id);
+  if (filtered.length === hot.length) {
+    const isBuiltIn = DEFAULT_APPS.some(a => a.id === id);
+    return reply
+      .code(isBuiltIn ? 409 : 404)
+      .send({ error: isBuiltIn ? "built-in-app-not-removable" : "no-such-app", id });
+  }
+  await writeHotApps(filtered);
+  return { ok: true, removed: id, total: readApps().length };
 });
 
 // --- Slots: any authenticated peer can rearrange the shared layout ----------
