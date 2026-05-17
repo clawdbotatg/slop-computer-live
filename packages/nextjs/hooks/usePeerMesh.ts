@@ -894,6 +894,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
           }
         }
       }
+      // Optimistic local removal so the window unmounts immediately on
+      // the X click. Without this, the publication stays in
+      // `publications` until the relay echoes "unpublished" back over
+      // the WS — ~RTT of latency where the window looks unresponsive
+      // and users hammer the X two or three times before they see it
+      // close. App windows already do this in closeWindow above;
+      // bringing publications up to parity. The filter is idempotent
+      // so the eventual relay broadcast is a harmless no-op.
+      setPublications(prev => prev.filter(p => p.streamId !== streamId));
       send({ type: "unpublish", streamId });
     },
     [send],
