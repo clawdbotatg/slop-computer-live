@@ -202,7 +202,25 @@ export const Window = ({
       // to close.
       cancel=".slop-titlebar__dot"
       disableDragging={isDocked}
-      enableResizing={!isDocked}
+      // Only allow resizing from the bottom + right edges and the
+      // bottom-right grip. react-rnd's default top/left/topLeft/topRight
+      // handles are positioned at -10px and span 20px, so their inner
+      // half sits on top of the titlebar — which made the corner of the
+      // close (X) button silently eat clicks meant for closing the window.
+      enableResizing={
+        isDocked
+          ? false
+          : {
+              top: false,
+              left: false,
+              topLeft: false,
+              topRight: false,
+              bottomLeft: false,
+              right: true,
+              bottom: true,
+              bottomRight: true,
+            }
+      }
       className="slop-window"
       style={{
         zIndex,
