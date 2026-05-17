@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 
+// Persisted alongside the resume flags so reload preserves the pause
+// state. Cleared by page.tsx when the camera publication is fully
+// stopped (not when it's merely re-acquired by auto-resume).
+export const VIDEO_PAUSED_STORAGE_KEY = "slop-video-paused-v1";
+
 export type VideoViewProps = {
   stream: MediaStream;
   /** Mute local playback on self streams (audio rides on a separate audio
@@ -15,15 +20,45 @@ export type VideoViewProps = {
    *  pause toggle. Click handler should re-open the share dialog in edit
    *  mode so the user can hot-swap camera without dropping the publication. */
   onSettings?: () => void;
+  /** When true, hydrate the pause toggle from VIDEO_PAUSED_STORAGE_KEY on
+   *  mount and write changes back so reload preserves the paused state.
+   *  Only set for the publisher's own camera. Screen-share and remote
+   *  views keep ephemeral local-only state. */
+  persistPause?: boolean;
 };
 
 // Camera / screen-share renderer with a publisher-only pause toggle in the
 // top-right. Pausing flips track.enabled = false on every video track —
 // peers see the last frame freeze and the publisher's preview goes black.
 // Doesn't unpublish, so unpause is instant (no permission re-prompt).
-export const VideoView = ({ stream, muted = false, isMine = false, onSettings }: VideoViewProps) => {
+export const VideoView = ({
+  stream,
+  muted = false,
+  isMine = false,
+  onSettings,
+  persistPause = false,
+}: VideoViewProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [paused, setPaused] = useState(false);
+  // Lazy init from localStorage when persistence is on, so the initial
+  // track.enabled effect below sees the resumed paused=true and freezes
+  // the just-re-acquired camera immediately — no one-frame flash.
+  const [paused, setPaused] = useState<boolean>(() => {
+    if (!persistPause || typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(VIDEO_PAUSED_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (!persistPause || typeof window === "undefined") return;
+    try {
+      if (paused) window.localStorage.setItem(VIDEO_PAUSED_STORAGE_KEY, "1");
+      else window.localStorage.removeItem(VIDEO_PAUSED_STORAGE_KEY);
+    } catch {
+      /* quota / private mode */
+    }
+  }, [paused, persistPause]);
   // Per-user "mute on my side" for remote streams. Doesn't touch the
   // upstream — only my local <video> element goes silent. Same model
   // as the music player + AudioVisualizer.

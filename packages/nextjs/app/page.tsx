@@ -36,7 +36,7 @@ import { TimelineBar } from "~~/components/desktop/TimelineBar";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
-import { VideoView } from "~~/components/desktop/VideoView";
+import { VIDEO_PAUSED_STORAGE_KEY, VideoView } from "~~/components/desktop/VideoView";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import {
   BandFlag,
@@ -146,6 +146,20 @@ const writeResume = (state: ResumeState) => {
   }
 };
 
+// Camera-pause persistence rides alongside the resume flags — keep it
+// tied to the same publication lifecycle. When the camera publication
+// is fully stopped (Stop Video, close button, peer-initiated close,
+// reconcile-cleanup), the pause flag is meaningless and must clear so
+// a fresh share starts unpaused.
+const clearCameraPause = () => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(VIDEO_PAUSED_STORAGE_KEY);
+  } catch {
+    /* quota / private mode */
+  }
+};
+
 const Desktop: NextPage = () => {
   const { session, loading, refresh: refreshSession } = useSession();
 
@@ -215,6 +229,7 @@ const Desktop: NextPage = () => {
       const r = readResume();
       delete r[target.kind];
       writeResume(r);
+      if (target.kind === "camera") clearCameraPause();
     },
     [mesh],
   );
@@ -857,6 +872,7 @@ const Desktop: NextPage = () => {
         const r = readResume();
         delete r[pub.kind];
         writeResume(r);
+        if (pub.kind === "camera") clearCameraPause();
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
@@ -894,6 +910,7 @@ const Desktop: NextPage = () => {
       const r = readResume();
       delete r[s.kind];
       writeResume(r);
+      if (s.kind === "camera") clearCameraPause();
     }
     prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
@@ -1097,6 +1114,21 @@ const Desktop: NextPage = () => {
       meshUpdateSlot(patch);
     },
     [meshOpenWindowForFocus, meshUpdateSlot],
+  );
+
+  // Publication-window counterpart of focusApp. Slot ids for media
+  // publications are owner-keyed (slotIdFor()), so double-clicking the
+  // video icon while already publishing can summon the existing camera
+  // window to the front instead of being a no-op. Audio + screen icons
+  // follow the same pattern.
+  const focusPub = useCallback(
+    (kind: StreamKind) => {
+      if (!myOwnerKey) return;
+      const slotId = `owner-${myOwnerKey}-${kind}`;
+      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z));
+      meshUpdateSlot({ id: slotId, z: maxZ + 1 });
+    },
+    [myOwnerKey, meshUpdateSlot],
   );
 
   // HARD RULE: any newly-visible window comes to the front, regardless
@@ -1406,16 +1438,20 @@ const Desktop: NextPage = () => {
                         focusApp("news");
                         return;
                       case "audio":
-                        // Already publishing? No-op — the existing window's
-                        // close button is how you stop. Keeps the icon
-                        // semantics consistent with the other apps.
-                        if (!media.activeAudio) setAudioDialog("create");
+                        // Not publishing yet → open the share dialog.
+                        // Already publishing → bring the existing window
+                        // to the front, mirroring how the app icons
+                        // behave when their window is already open.
+                        if (media.activeAudio) focusPub("audio");
+                        else setAudioDialog("create");
                         return;
                       case "video":
-                        if (!media.activeCamera) setVideoDialog("create");
+                        if (media.activeCamera) focusPub("camera");
+                        else setVideoDialog("create");
                         return;
                       case "screen":
-                        if (!media.activeScreen && !wantScreenResume) void media.startScreen();
+                        if (media.activeScreen || wantScreenResume) focusPub("screen");
+                        else void media.startScreen();
                         return;
                       default:
                         if (app.url) spawnBrowser(app.url);
@@ -1597,6 +1633,7 @@ const Desktop: NextPage = () => {
                     muted={pub.peerId === mesh.myId}
                     isMine={pub.peerId === mesh.myId}
                     onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
+                    persistPause={pub.peerId === mesh.myId}
                   />
                 ) : (
                   <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
