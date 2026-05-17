@@ -66,7 +66,16 @@ export const VideoView = ({
 
   useEffect(() => {
     if (!isMine) return;
+    // Camera publications bundle audio (the mic rides on the same stream
+    // as the camera — useLocalMedia.startCamera requests both); screen
+    // share can carry system audio. "Pause my video" reads as "I'm
+    // off" — flipping only video would freeze the frame but leave my
+    // bundled mic broadcasting, which is exactly the leak users
+    // complain about. Disable both track kinds in lockstep so paused
+    // means silent + frozen, full stop. A standalone Share-Audio
+    // publication (separate stream) is independent and unaffected.
     for (const t of stream.getVideoTracks()) t.enabled = !paused;
+    for (const t of stream.getAudioTracks()) t.enabled = !paused;
   }, [stream, paused, isMine]);
 
   // Reload-without-gesture can leave an unmuted <video> paused (Chrome's
