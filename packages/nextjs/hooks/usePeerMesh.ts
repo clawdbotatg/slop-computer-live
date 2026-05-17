@@ -658,6 +658,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
   const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
 
+  // Mirror of `slots` for synchronous reads inside callbacks (so
+  // updateSlot's "new windows come to the front" rule can compute the
+  // current max z without re-creating the callback on every slot
+  // change). Kept in sync via the effect below.
+  const slotsRef = useRef<Record<string, SlotPosition>>({});
+  useEffect(() => {
+    slotsRef.current = slots;
+  }, [slots]);
+
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -1228,21 +1237,30 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
 
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
+      // HARD RULE: every brand-new window comes to the front. If no slot
+      // exists yet for this id, override whatever z the caller passed
+      // with one above every existing slot. One rule, one place — no
+      // defaultSlot site has to know the current max, no app-vs-pub
+      // mismatch can spawn a window underneath another.
+      const cur = slotsRef.current[patch.id];
+      const finalPatch: Partial<SlotPosition> & { id: string } = cur
+        ? patch
+        : { ...patch, z: Math.max(0, ...Object.values(slotsRef.current).map(s => s.z)) + 1 };
       // Optimistic local update so a controlled <Rnd> doesn't snap back
       // while waiting for the server echo. Relay broadcast then confirms.
       setSlots(prev => {
-        const cur = prev[patch.id];
+        const existing = prev[finalPatch.id];
         const merged: SlotPosition = {
-          id: patch.id,
-          x: patch.x ?? cur?.x ?? 80,
-          y: patch.y ?? cur?.y ?? 280,
-          width: patch.width ?? cur?.width ?? 360,
-          height: patch.height ?? cur?.height ?? 260,
-          z: patch.z ?? cur?.z ?? 5,
+          id: finalPatch.id,
+          x: finalPatch.x ?? existing?.x ?? 80,
+          y: finalPatch.y ?? existing?.y ?? 280,
+          width: finalPatch.width ?? existing?.width ?? 360,
+          height: finalPatch.height ?? existing?.height ?? 260,
+          z: finalPatch.z ?? existing?.z ?? 5,
         };
-        return { ...prev, [patch.id]: merged };
+        return { ...prev, [finalPatch.id]: merged };
       });
-      send({ type: "slot_update", ...patch });
+      send({ type: "slot_update", ...finalPatch });
     },
     [send],
   );
