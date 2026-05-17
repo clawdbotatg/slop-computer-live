@@ -191,13 +191,14 @@ const Desktop: NextPage = () => {
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
       mesh.publish(h.stream, h.kind, myLabel);
-      // Only screen-share is resumable across reloads (via a click-to-resume
-      // placeholder, since browsers require a user gesture for
-      // getDisplayMedia). Camera + mic are explicit opt-in every session —
-      // we don't want a returning user's hardware lighting up silently.
-      if (h.kind === "screen") {
+      // Audio + screen are resumable across reloads. Audio auto-restarts
+      // (mic permission is sticky in Chrome). Screen needs a click — the
+      // browser requires a fresh gesture for getDisplayMedia — so its
+      // window is a placeholder until the user re-acquires. Camera stays
+      // explicit every session.
+      if (h.kind === "screen" || h.kind === "audio") {
         const r = readResume();
-        writeResume({ ...r, screen: true });
+        writeResume({ ...r, [h.kind]: true });
       }
     },
     [mesh, myLabel],
@@ -213,9 +214,9 @@ const Desktop: NextPage = () => {
       mesh.unpublish(id);
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
-      if (target.kind === "screen") {
+      if (target.kind === "screen" || target.kind === "audio") {
         const r = readResume();
-        delete r.screen;
+        delete r[target.kind];
         writeResume(r);
       }
     },
@@ -687,12 +688,25 @@ const Desktop: NextPage = () => {
     return () => window.removeEventListener("resize", onResize);
   }, [meshUpdateSlot]);
 
-  // Camera + audio are explicit opt-in every session — the user has to
-  // click Share Video / Share Audio. We don't auto-grab the hardware on
-  // reload even though Chrome's permission is sticky; nobody wants their
-  // mic and camera lighting up silently the moment they land on the page.
-  // Screen share IS resumable, but only via the click-to-resume placeholder
-  // below (browsers require a user gesture for getDisplayMedia).
+  // Audio auto-resumes on reload — mic permission is sticky in Chrome
+  // so this won't prompt. The publication that was live before the
+  // reload silently re-attaches. Camera stays explicit every session
+  // (no auto re-light). Screen share is resumable too, but via the
+  // click-to-resume placeholder below — getDisplayMedia requires a
+  // fresh user gesture so we can't restart silently.
+  useEffect(() => {
+    if (!session.authenticated || !mesh.connected) return;
+    if (!readResume().audio) return;
+    void media.startAudio().catch(() => {
+      const cur = readResume();
+      delete cur.audio;
+      writeResume(cur);
+    });
+    // Fire once when both auth + WS are up. media is the live ref and
+    // startAudio is idempotent (acquire() bails when activeIds.audio is
+    // set), so a reconnect re-fire is a no-op.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.authenticated, mesh.connected]);
 
   // ---- Manual screen share resumption ------------------------------------
   // Route through media.startScreen (the same path the Share menu uses) so
@@ -821,9 +835,9 @@ const Desktop: NextPage = () => {
         const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
         else mesh.unpublish(pub.streamId);
-        if (pub.kind === "screen") {
+        if (pub.kind === "screen" || pub.kind === "audio") {
           const r = readResume();
-          delete r.screen;
+          delete r[pub.kind];
           writeResume(r);
         }
       }
@@ -860,9 +874,9 @@ const Desktop: NextPage = () => {
         (s.kind === "screen" && media.activeScreen);
       if (tracked) media.stop(s.kind);
       else stopStream(s.id);
-      if (s.kind === "screen") {
+      if (s.kind === "screen" || s.kind === "audio") {
         const r = readResume();
-        delete r.screen;
+        delete r[s.kind];
         writeResume(r);
       }
     }
