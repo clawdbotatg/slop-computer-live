@@ -365,12 +365,11 @@ const DEFAULT_APPS: AppEntry[] = [
   // ⚠️ Adding a new app here? Generate its icon FIRST:
   //     yarn icon:add <id> "<prompt>"
   // Don't ship an entry whose `icon:` path doesn't exist in public/icons.
-  {
-    id: "browser",
-    label: "Browser",
-    icon: "/icons/browser.png",
-    url: "https://clawd-slop-landing-nextjs.vercel.app/",
-  },
+  //
+  // Order matters: this is the cascade order for icons that have never
+  // been dragged (defaultIconPosition in nextjs/app/page.tsx). Reordering
+  // here only takes visual effect on prod after slots.json's icon-*
+  // entries are cleared (or the host triggers Auto Arrange).
   {
     id: "chat",
     label: "Chat",
@@ -378,16 +377,16 @@ const DEFAULT_APPS: AppEntry[] = [
     kind: "chat",
   },
   {
-    id: "audio",
-    label: "Audio",
-    icon: "/icons/mic.png",
-    kind: "audio",
-  },
-  {
     id: "video",
     label: "Video",
     icon: "/icons/video.png",
     kind: "video",
+  },
+  {
+    id: "audio",
+    label: "Audio",
+    icon: "/icons/mic.png",
+    kind: "audio",
   },
   {
     id: "screen",
@@ -400,6 +399,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Music",
     icon: "/icons/music.png",
     kind: "music",
+  },
+  {
+    id: "browser",
+    label: "Browser",
+    icon: "/icons/browser.png",
+    url: "https://clawd-slop-landing-nextjs.vercel.app/",
   },
   {
     id: "chess",
