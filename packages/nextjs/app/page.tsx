@@ -191,15 +191,13 @@ const Desktop: NextPage = () => {
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
       mesh.publish(h.stream, h.kind, myLabel);
-      // Audio + screen are resumable across reloads. Audio auto-restarts
-      // (mic permission is sticky in Chrome). Screen needs a click — the
-      // browser requires a fresh gesture for getDisplayMedia — so its
-      // window is a placeholder until the user re-acquires. Camera stays
-      // explicit every session.
-      if (h.kind === "screen" || h.kind === "audio") {
-        const r = readResume();
-        writeResume({ ...r, [h.kind]: true });
-      }
+      // All publication kinds are resumable across reloads. Audio +
+      // camera auto-restart (mic/cam permissions are sticky in Chrome
+      // so no prompt). Screen needs a click — getDisplayMedia requires
+      // a fresh user gesture — so its window comes back as a
+      // placeholder until the user re-acquires.
+      const r = readResume();
+      writeResume({ ...r, [h.kind]: true });
     },
     [mesh, myLabel],
   );
@@ -214,44 +212,56 @@ const Desktop: NextPage = () => {
       mesh.unpublish(id);
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
-      if (target.kind === "screen" || target.kind === "audio") {
-        const r = readResume();
-        delete r[target.kind];
-        writeResume(r);
-      }
+      const r = readResume();
+      delete r[target.kind];
+      writeResume(r);
     },
     [mesh],
   );
 
   const media = useLocalMedia(addStream, stopStream);
 
-  // Live transcript: Web Speech runs locally in the browser whenever the
-  // user is actually broadcasting audio (mic publication exists AND at
-  // least one audio track is unmuted) AND the host has flipped STT on
-  // for the episode. Web Speech reads from the mic hardware directly —
-  // not from the WebRTC track — so muting in AudioVisualizer (which
-  // flips track.enabled=false) silences peers but would NOT stop STT
-  // unless we gate on it here. If peers can't hear it, we don't
-  // transcribe it either.
+  // Live transcript gate. STT flows ONLY when the user is actively
+  // presenting:
+  //   - audio publication exists AND at least one audio track is
+  //     unmuted (AudioVisualizer flips audio-track.enabled), OR
+  //   - camera publication exists AND at least one video track is
+  //     unpaused (VideoView flips video-track.enabled).
   //
-  // track.enabled doesn't fire an event when toggled, so we poll the
-  // self streams at 500ms. Cheap (few-element loop) and the latency on
-  // start/stop is imperceptible.
-  const [liveMicOpen, setLiveMicOpen] = useState(false);
+  // We deliberately check VIDEO-track.enabled on the camera stream
+  // (not its bundled audio track) so that "pause video" — the user's
+  // explicit "I'm off" signal — kills STT even though the camera's mic
+  // sub-track may still be live to peers. The rule: if you're not
+  // visibly on the show, you don't get transcribed.
+  //
+  // Web Speech reads from the mic hardware directly (not the WebRTC
+  // track), so muting peers in the UI doesn't stop the recognizer
+  // unless we gate it here. track.enabled has no change event, so we
+  // poll the self streams at 500ms. Cheap, and the start/stop latency
+  // is imperceptible.
+  const [sttEligible, setSttEligible] = useState(false);
   useEffect(() => {
     const compute = () => {
-      let open = false;
+      let on = false;
       for (const s of streamsRef.current) {
-        if (s.kind !== "audio" && s.kind !== "camera") continue;
-        for (const t of s.stream.getAudioTracks()) {
-          if (t.enabled && t.readyState === "live") {
-            open = true;
-            break;
+        if (s.kind === "audio") {
+          for (const t of s.stream.getAudioTracks()) {
+            if (t.enabled && t.readyState === "live") {
+              on = true;
+              break;
+            }
+          }
+        } else if (s.kind === "camera") {
+          for (const t of s.stream.getVideoTracks()) {
+            if (t.enabled && t.readyState === "live") {
+              on = true;
+              break;
+            }
           }
         }
-        if (open) break;
+        if (on) break;
       }
-      setLiveMicOpen(prev => (prev === open ? prev : open));
+      setSttEligible(prev => (prev === on ? prev : on));
     };
     compute();
     const id = setInterval(compute, 500);
@@ -259,7 +269,7 @@ const Desktop: NextPage = () => {
   }, []);
   const episode = useEpisodeState(RELAY_HTTP);
   useLiveTranscript({
-    enabled: liveMicOpen,
+    enabled: sttEligible,
     episodeSttOn: episode.sttOn,
     relayHttpUrl: RELAY_HTTP,
   });
@@ -688,23 +698,32 @@ const Desktop: NextPage = () => {
     return () => window.removeEventListener("resize", onResize);
   }, [meshUpdateSlot]);
 
-  // Audio auto-resumes on reload — mic permission is sticky in Chrome
-  // so this won't prompt. The publication that was live before the
-  // reload silently re-attaches. Camera stays explicit every session
-  // (no auto re-light). Screen share is resumable too, but via the
-  // click-to-resume placeholder below — getDisplayMedia requires a
-  // fresh user gesture so we can't restart silently.
+  // Audio + camera auto-resume on reload — mic/cam permissions are
+  // sticky in Chrome so this won't prompt. Publications that were
+  // live before the reload silently re-attach. Screen share is
+  // resumable too, but via the click-to-resume placeholder below
+  // (getDisplayMedia requires a fresh user gesture, so we can't
+  // restart silently).
   useEffect(() => {
     if (!session.authenticated || !mesh.connected) return;
-    if (!readResume().audio) return;
-    void media.startAudio().catch(() => {
-      const cur = readResume();
-      delete cur.audio;
-      writeResume(cur);
-    });
+    const r = readResume();
+    if (r.audio) {
+      void media.startAudio().catch(() => {
+        const cur = readResume();
+        delete cur.audio;
+        writeResume(cur);
+      });
+    }
+    if (r.camera) {
+      void media.startCamera().catch(() => {
+        const cur = readResume();
+        delete cur.camera;
+        writeResume(cur);
+      });
+    }
     // Fire once when both auth + WS are up. media is the live ref and
-    // startAudio is idempotent (acquire() bails when activeIds.audio is
-    // set), so a reconnect re-fire is a no-op.
+    // startAudio/startCamera are idempotent (acquire() bails when
+    // activeIds[kind] is set), so a reconnect re-fire is a no-op.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.authenticated, mesh.connected]);
 
@@ -835,11 +854,9 @@ const Desktop: NextPage = () => {
         const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
         else mesh.unpublish(pub.streamId);
-        if (pub.kind === "screen" || pub.kind === "audio") {
-          const r = readResume();
-          delete r[pub.kind];
-          writeResume(r);
-        }
+        const r = readResume();
+        delete r[pub.kind];
+        writeResume(r);
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
@@ -874,11 +891,9 @@ const Desktop: NextPage = () => {
         (s.kind === "screen" && media.activeScreen);
       if (tracked) media.stop(s.kind);
       else stopStream(s.id);
-      if (s.kind === "screen" || s.kind === "audio") {
-        const r = readResume();
-        delete r[s.kind];
-        writeResume(r);
-      }
+      const r = readResume();
+      delete r[s.kind];
+      writeResume(r);
     }
     prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
@@ -1083,6 +1098,58 @@ const Desktop: NextPage = () => {
     },
     [meshOpenWindowForFocus, meshUpdateSlot],
   );
+
+  // HARD RULE: any newly-visible window comes to the front, regardless
+  // of which mechanism made it appear (Share Audio/Video/Screen, app
+  // icon double-click, browser open, file preview, screen-resume
+  // placeholder). Diff the union of visible slot ids each render
+  // against the previous snapshot; bump every new entry's z to the top
+  // in arrival order. This catches the cases the per-mechanism rules
+  // miss — chiefly re-opening a window whose slot already exists from
+  // a prior session (the slot's persisted z would otherwise win and
+  // the new window would spawn underneath whatever the user has
+  // raised on top of it).
+  //
+  // First post-bootstrap pass takes a baseline snapshot WITHOUT
+  // bumping, so the user's z-ordering from the last session survives
+  // the reload instead of being reshuffled into render order.
+  const prevVisibleSlotIdsRef = useRef<Set<string>>(new Set());
+  const visibilityBaselineRef = useRef(false);
+  const meshUpdateSlotForVis = mesh.updateSlot;
+  useEffect(() => {
+    if (!mesh.bootstrapped) return;
+    const visible = new Set<string>();
+    for (const pub of mesh.publications) visible.add(slotIdFor(pub));
+    for (const id of mesh.openWindowIds) visible.add(`app-${id}`);
+    for (const browser of Object.values(mesh.browsers)) visible.add(`browser-${browser.id}`);
+    if (wantScreenResume && screenResumeSlotId) visible.add(screenResumeSlotId);
+
+    if (!visibilityBaselineRef.current) {
+      prevVisibleSlotIdsRef.current = visible;
+      visibilityBaselineRef.current = true;
+      return;
+    }
+
+    const newlyVisible: string[] = [];
+    for (const sid of visible) {
+      if (!prevVisibleSlotIdsRef.current.has(sid)) newlyVisible.push(sid);
+    }
+    prevVisibleSlotIdsRef.current = visible;
+    if (newlyVisible.length === 0) return;
+    let top = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z));
+    for (const sid of newlyVisible) {
+      top += 1;
+      meshUpdateSlotForVis({ id: sid, z: top });
+    }
+  }, [
+    mesh.bootstrapped,
+    mesh.publications,
+    mesh.openWindowIds,
+    mesh.browsers,
+    wantScreenResume,
+    screenResumeSlotId,
+    meshUpdateSlotForVis,
+  ]);
 
   // File previews — opened on double-click of a desktop file. SHARED
   // across the mesh exactly like every other singleton window: the
