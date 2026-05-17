@@ -331,8 +331,24 @@ const AdminPage: NextPage = () => {
     }
   };
   const [transcriptClearBusy, setTranscriptClearBusy] = useState(false);
+  // Two-click confirm instead of window.confirm — Chrome silently blocks
+  // repeated native dialogs from the same origin (returns false
+  // instantly with no UI), which made the previous version unusable.
+  const [transcriptClearArmed, setTranscriptClearArmed] = useState(false);
+  const transcriptClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmTranscriptClear = () => {
+    if (transcriptClearTimer.current) clearTimeout(transcriptClearTimer.current);
+    transcriptClearTimer.current = null;
+    setTranscriptClearArmed(false);
+  };
   const clearTranscript = async () => {
-    if (!window.confirm("Wipe the on-box transcript log? This can't be undone.")) return;
+    if (!transcriptClearArmed) {
+      setTranscriptClearArmed(true);
+      if (transcriptClearTimer.current) clearTimeout(transcriptClearTimer.current);
+      transcriptClearTimer.current = setTimeout(() => setTranscriptClearArmed(false), 5000);
+      return;
+    }
+    disarmTranscriptClear();
     setTranscriptClearBusy(true);
     try {
       const res = await fetch(`${RELAY_BASE}/admin/transcript`, {
@@ -719,8 +735,12 @@ const AdminPage: NextPage = () => {
             >
               view raw ↗
             </a>
-            <Button onClick={clearTranscript} disabled={transcriptClearBusy}>
-              Clear
+            <Button
+              onClick={clearTranscript}
+              disabled={transcriptClearBusy}
+              style={transcriptClearArmed ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" } : undefined}
+            >
+              {transcriptClearBusy ? "Clearing…" : transcriptClearArmed ? "Click again to confirm" : "Clear"}
             </Button>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
