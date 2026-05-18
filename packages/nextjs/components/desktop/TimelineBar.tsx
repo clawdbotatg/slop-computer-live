@@ -202,7 +202,6 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
             border: "none",
             cursor: refreshing ? "wait" : "pointer",
             pointerEvents: "auto",
-            font: "inherit",
             appearance: "none",
             WebkitAppearance: "none",
             // The badge is hidden-on-purpose UI — no hover affordance,

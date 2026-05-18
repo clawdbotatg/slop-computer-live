@@ -1,13 +1,17 @@
 "use client";
 
+import { useState } from "react";
 import type { Headline, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
+
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
 // Headlines marquee — sits directly above the price ticker. Crypto +
 // AI news interleaved, scrolling left a touch faster than the prices
 // so the two bars don't feel locked together but the text still has
 // time to read. Data comes from `mesh.headlinesState` which the relay
-// refreshes every 5 min.
+// refreshes every hour; clicking the HEADLINES badge forces an
+// immediate refresh (host-only).
 //
 // Implementation mirrors TickerBar: duplicated track + CSS translate
 // for a seamless loop, no rAF.
@@ -103,6 +107,22 @@ function Item({ headline, onOpenUrl }: { headline: Headline; onOpenUrl: (url: st
 
 export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
   const items = mesh.headlinesState?.items ?? [];
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Hidden host-only refresh: clicking the HEADLINES badge POSTs to the
+  // relay. Non-host clicks return 403 silently — the bar just flashes
+  // the reload glyph and stops.
+  const onBadgeClick = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await fetch(`${RELAY_HTTP}/v1/headlines/refresh`, { method: "POST", credentials: "include" });
+    } catch {
+      /* network error — silent, badge will just stop flashing */
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <>
@@ -126,8 +146,13 @@ export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
         }}
       >
         {/* Left badge — counterpart to the ticker's CLAWD tile. Plain
-            "HEADLINES" label so this band's purpose is obvious. */}
-        <span
+            "HEADLINES" label so this band's purpose is obvious. Hidden
+            host affordance: clicking the badge forces a fresh pull. */}
+        <button
+          type="button"
+          onClick={onBadgeClick}
+          aria-label="Refresh headlines"
+          title="Refresh headlines"
           style={{
             position: "absolute",
             left: 0,
@@ -135,6 +160,7 @@ export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
             bottom: 0,
             display: "flex",
             alignItems: "center",
+            gap: 8,
             padding: "0 24px 0 14px",
             background:
               "linear-gradient(90deg, rgba(63,207,255,0.85) 0%, rgba(124,77,255,0.7) 70%, rgba(124,77,255,0.0) 100%)",
@@ -147,10 +173,30 @@ export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
             zIndex: 2,
             maskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
             WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
+            border: "none",
+            cursor: refreshing ? "wait" : "pointer",
+            pointerEvents: "auto",
+            appearance: "none",
+            WebkitAppearance: "none",
           }}
         >
           HEADLINES
-        </span>
+          {refreshing && (
+            <span
+              aria-hidden
+              className="slop-headlines-refresh-glyph"
+              style={{
+                display: "inline-block",
+                fontFamily: "var(--slop-font-mono)",
+                fontSize: 12,
+                color: "var(--slop-cyan)",
+                letterSpacing: 0,
+              }}
+            >
+              ↻
+            </span>
+          )}
+        </button>
 
         {items.length === 0 ? (
           <span
@@ -205,12 +251,31 @@ export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
           text-decoration: underline;
           text-underline-offset: 2px;
         }
+        .slop-headlines-refresh-glyph {
+          animation:
+            slop-headlines-spin 0.8s linear infinite,
+            slop-headlines-flash 0.8s ease-in-out infinite;
+        }
         @keyframes slop-headlines-scroll {
           0% {
             transform: translateX(0);
           }
           100% {
             transform: translateX(-50%);
+          }
+        }
+        @keyframes slop-headlines-spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        @keyframes slop-headlines-flash {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.3;
           }
         }
       `}</style>

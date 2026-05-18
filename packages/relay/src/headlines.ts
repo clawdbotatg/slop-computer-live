@@ -10,6 +10,9 @@
 
 const POLL_INTERVAL_MS = 60 * 60_000;
 const ERROR_RETRY_MS = 60_000;
+// Min spacing between manual refreshes — host clicks the HEADLINES
+// badge to force a fresh pull; this caps how fast that can spam.
+const MANUAL_REFRESH_MIN_MS = 60_000;
 
 // Per-source caps. The bar shows a marquee of all of these so the
 // total budget is "what comfortably fits in ~60s of scroll" not "how
@@ -188,21 +191,54 @@ async function pollOnce(): Promise<void> {
   }
 }
 
+let lastManualRefreshAt = 0;
+let inflightRefresh: Promise<HeadlinesState | null> | null = null;
+
+/** Manual refresh triggered by the host clicking the HEADLINES badge.
+ *  Headlines APIs are free but we still debounce to keep concurrent /
+ *  spammed clicks coalesced onto a single fetch. */
+export async function refreshNow(): Promise<
+  { ok: true; state: HeadlinesState | null } | { ok: false; reason: "rate-limited"; retryAfterMs: number }
+> {
+  if (inflightRefresh) {
+    const next = await inflightRefresh;
+    return { ok: true, state: next };
+  }
+  const now = Date.now();
+  const elapsed = now - lastManualRefreshAt;
+  if (lastManualRefreshAt && elapsed < MANUAL_REFRESH_MIN_MS) {
+    return { ok: false, reason: "rate-limited", retryAfterMs: MANUAL_REFRESH_MIN_MS - elapsed };
+  }
+  lastManualRefreshAt = now;
+  inflightRefresh = (async () => {
+    try {
+      await pollOnce();
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
+      }
+      return state;
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+  return { ok: true, state: await inflightRefresh };
+}
+
+async function scheduledLoop(): Promise<void> {
+  try {
+    await pollOnce();
+    pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
+  } catch (err) {
+    console.warn("[headlines] poll failed", err);
+    pollTimer = setTimeout(() => void scheduledLoop(), ERROR_RETRY_MS);
+  }
+}
+
 export function start(): void {
   if (started) return;
   started = true;
-
-  const loop = async () => {
-    try {
-      await pollOnce();
-      pollTimer = setTimeout(() => void loop(), POLL_INTERVAL_MS);
-    } catch (err) {
-      console.warn("[headlines] poll failed", err);
-      pollTimer = setTimeout(() => void loop(), ERROR_RETRY_MS);
-    }
-  };
-
-  void loop();
+  void scheduledLoop();
 }
 
 export function stop(): void {

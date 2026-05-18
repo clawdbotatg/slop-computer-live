@@ -101,6 +101,7 @@ import {
 import {
   type HeadlinesState,
   getState as getHeadlinesState,
+  refreshNow as refreshHeadlinesNow,
   start as startHeadlines,
   subscribe as subscribeHeadlines,
 } from "./headlines.js";
@@ -827,6 +828,21 @@ app.post("/v1/timeline/refresh", async (req, reply) => {
       return reply.code(429).send({ error: "rate-limited", retryAfterMs: result.retryAfterMs });
     }
     return reply.code(503).send({ error: result.reason });
+  }
+  return { ok: true, state: result.state };
+});
+
+// --- Headlines: host-only manual refresh ------------------------------------
+// Auto-poll runs hourly. Host clicks the HEADLINES badge to force a
+// fresh pull right before going live. APIs are free, debounce just
+// prevents spammed clicks from stacking concurrent fetches.
+app.post("/v1/headlines/refresh", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const result = await refreshHeadlinesNow();
+  if (!result.ok) {
+    return reply.code(429).send({ error: "rate-limited", retryAfterMs: result.retryAfterMs });
   }
   return { ok: true, state: result.state };
 });
