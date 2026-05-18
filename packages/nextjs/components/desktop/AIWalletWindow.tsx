@@ -43,6 +43,20 @@ function isProposeTxMessage(v: unknown): v is SlopProposeTxMessage {
   );
 }
 
+type SlopCursorMessage = { type: "slop:cursor"; x: number; y: number };
+type SlopCursorLeaveMessage = { type: "slop:cursor:leave" };
+
+function isCursorMessage(v: unknown): v is SlopCursorMessage {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return m.type === "slop:cursor" && typeof m.x === "number" && typeof m.y === "number";
+}
+
+function isCursorLeaveMessage(v: unknown): v is SlopCursorLeaveMessage {
+  if (!v || typeof v !== "object") return false;
+  return (v as Record<string, unknown>).type === "slop:cursor:leave";
+}
+
 export type AIWalletWindowProps = {
   mesh: PeerMeshState;
   myAddress: string | null;
@@ -118,6 +132,31 @@ export const AIWalletWindow = ({ mesh, myAddress }: AIWalletWindowProps) => {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [wallet, publicClient, mesh]);
+
+  // Cursor bridge: the iframe posts {type:"slop:cursor", x, y} on every
+  // mousemove (iframe-viewport coords). We translate to parent-viewport
+  // coords using the iframe's bounding rect and dispatch a synthetic
+  // mousemove on window so useLocalCursor's capture-phase listener picks
+  // it up and the custom cursor keeps tracking over the iframe. The
+  // iframe also hides the system cursor on its side so nothing leaks
+  // through. See slop-computer-ai-wallet's EmbeddedCursorBridge.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
+      if (isCursorMessage(e.data)) {
+        const rect = iframeRef.current.getBoundingClientRect();
+        const clientX = rect.left + e.data.x;
+        const clientY = rect.top + e.data.y;
+        window.dispatchEvent(new MouseEvent("mousemove", { clientX, clientY, bubbles: false }));
+      } else if (isCursorLeaveMessage(e.data)) {
+        // Iframe lost the pointer (e.g. mouse exited the iframe's document
+        // bounds). No-op — the parent's native mousemove will fire as soon
+        // as the pointer re-enters the parent's chrome.
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   if (!wallet) {
     return (
