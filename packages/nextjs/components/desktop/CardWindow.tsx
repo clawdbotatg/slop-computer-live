@@ -81,7 +81,7 @@ export const CardWindow = () => {
       setProgress(0);
       return;
     }
-    const FAKE_DURATION_MS = 30_000;
+    const FAKE_DURATION_MS = 60_000;
     const CAP = 95;
     const start = Date.now();
     let raf = 0;
@@ -321,15 +321,30 @@ export const CardWindow = () => {
       if (!ctx) throw new Error("canvas-2d unavailable");
       ctx.drawImage(img, 0, 0);
 
-      const text = (titleText || "").trim();
+      // Pull the live text + computed font off the on-screen title body
+      // so the bake matches what the host actually sees. Two reasons:
+      //   1. `ctx.font` cannot parse CSS `var(...)` — assigning a string
+      //      with `var(--slop-font-display)` is silently rejected and
+      //      canvas keeps the default `10px sans-serif`, so the text was
+      //      rendering as a tiny speck (looked missing).
+      //   2. If the user clicks DOWNLOAD while still editing (no blur
+      //      yet), `titleText` state hasn't committed — but the DOM
+      //      `innerText` has the latest characters.
+      const titleEl = titleBodyRef.current;
+      const text = ((titleEl?.innerText ?? titleText) || "").replace(/\n/g, " ").trim();
       if (text) {
+        // Make sure all @font-face / next/font Silkscreen is ready
+        // before we draw — first-bake might fire before the font loads.
+        await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+
         const sizePx = titleSizeFrac * img.naturalWidth;
         const x = titlePos.x * img.naturalWidth;
         const y = titlePos.y * img.naturalHeight;
-        // Slop's display font (Silkscreen) is loaded via next/font; the
-        // canvas can use it if the page already rendered it once. Fall
-        // back to a monospace stack otherwise.
-        ctx.font = `${sizePx}px var(--slop-font-display), "Silkscreen", "Courier New", monospace`;
+        // next/font registers Silkscreen under a generated family name
+        // (e.g. `__Silkscreen_abc123`). Read the live computed value so
+        // we get whatever the title element is actually rendering with.
+        const fontFamily = titleEl ? getComputedStyle(titleEl).fontFamily : '"Silkscreen", "Courier New", monospace';
+        ctx.font = `${sizePx}px ${fontFamily}`;
         ctx.fillStyle = TITLE_COLOR;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
