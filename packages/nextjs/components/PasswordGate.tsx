@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bevel, Button } from "~~/components/ui";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -21,9 +21,10 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const submit = async () => {
+  const submit = async (value: string) => {
     if (busy) return;
-    if (!password.trim()) {
+    const trimmed = value.trim();
+    if (!trimmed) {
       setError("password required");
       return;
     }
@@ -34,7 +35,7 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password: password.trim() }),
+        body: JSON.stringify({ password: trimmed }),
       });
       if (!res.ok) {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
@@ -48,6 +49,21 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
       setBusy(false);
     }
   };
+
+  // Auto-submit when the gate mounts with a pre-filled password (i.e.
+  // the user arrived via `?invite=...`). They've already "clicked"
+  // by following the invite link — making them click again here is
+  // pointless friction. Bad codes still surface the error inline so
+  // they can edit and retry. Guarded by a ref so React StrictMode's
+  // double-mount doesn't fire two requests.
+  const autoFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoFiredRef.current) return;
+    if (!defaultPassword.trim()) return;
+    autoFiredRef.current = true;
+    void submit(defaultPassword);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Bevel style={{ padding: 22, maxWidth: 360, width: "100%", textAlign: "center" }}>
@@ -80,7 +96,7 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         value={password}
         onChange={e => setPassword(e.target.value)}
         onKeyDown={e => {
-          if (e.key === "Enter") void submit();
+          if (e.key === "Enter") void submit(password);
         }}
         placeholder="password"
         spellCheck={false}
@@ -101,7 +117,7 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         <p style={{ color: "var(--slop-magenta, #ff3ec9)", fontSize: 11, marginTop: 8, marginBottom: 0 }}>{error}</p>
       ) : null}
       <div style={{ marginTop: 14 }}>
-        <Button variant="primary" onClick={() => void submit()} disabled={busy}>
+        <Button variant="primary" onClick={() => void submit(password)} disabled={busy}>
           {busy ? "Checking…" : "Continue"}
         </Button>
       </div>

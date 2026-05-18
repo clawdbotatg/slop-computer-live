@@ -34,9 +34,10 @@ function writeToDisk(value: string): void {
 }
 
 function freshPassword(): string {
-  // 6 url-safe characters — short enough to type, plenty entropy for
-  // a "share with the group" gate (not a high-value credential).
-  return randomBytes(6).toString("base64url");
+  // 12 url-safe characters (9 random bytes → 12 base64url chars). Bumped
+  // from 8 — invites are usually clicked through a URL, not typed, so the
+  // extra width is free and the entropy is comfortable for a shared gate.
+  return randomBytes(9).toString("base64url");
 }
 
 /**
