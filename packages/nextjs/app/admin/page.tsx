@@ -104,7 +104,6 @@ const AdminPage: NextPage = () => {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [status, setStatus] = useState<string>("");
   const [invite, setInvite] = useState<string>("");
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     if (!mounted) return;
@@ -149,27 +148,6 @@ const AdminPage: NextPage = () => {
   };
 
   const isHost = auth.authenticated && auth.role === "host";
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!isHost) return;
-    async function startCam() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        if (cancelled) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch (err) {
-        setStatus(`Webcam unavailable: ${(err as Error).message}`);
-      }
-    }
-    startCam();
-    return () => {
-      cancelled = true;
-    };
-  }, [isHost]);
 
   useEffect(() => {
     if (!isHost) return;
@@ -526,6 +504,29 @@ const AdminPage: NextPage = () => {
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Invite link</h2>
+        <p style={{ color: "var(--slop-text-muted)" }}>
+          Anyone with this link can reach the sign-in screen and connect a wallet or passkey. Regenerate to invalidate
+          all outstanding invite cookies.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+          <TextField placeholder="(no password set)" value={invite} readOnly style={{ minWidth: 180 }} />
+          <Button onClick={regenerateInvite}>Regenerate</Button>
+          <Button
+            onClick={() => {
+              if (inviteUrl) void navigator.clipboard?.writeText(inviteUrl);
+            }}
+            disabled={!inviteUrl}
+          >
+            Copy link
+          </Button>
+        </div>
+        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)", wordBreak: "break-all" }}>
+          <code>{inviteUrl}</code>
+        </p>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Services</h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
           live status · refreshes every 5s
@@ -627,25 +628,6 @@ const AdminPage: NextPage = () => {
             </a>
           ) : null}
         </div>
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-          Webcam preview
-        </h2>
-        <video
-          ref={videoRef}
-          autoPlay
-          muted
-          playsInline
-          style={{
-            width: 360,
-            height: 240,
-            background: "#000",
-            marginTop: 8,
-            border: "1px solid var(--slop-bevel-dark)",
-          }}
-        />
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
@@ -833,43 +815,6 @@ const AdminPage: NextPage = () => {
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-          Session wallet
-        </h2>
-        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 13 }}>
-          Per-episode multisig lives in <code>.slop-data/wallet.json</code> on the relay. Resetting clears the deployed
-          address + history + every pending tx so the wallet window goes back to the deploy form. The on-chain contract
-          itself is unaffected.
-        </p>
-        <Button onClick={resetSessionWallet} disabled={!isHost || walletResetBusy}>
-          {walletResetBusy ? "Resetting…" : "Reset session wallet"}
-        </Button>
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Invite link</h2>
-        <p style={{ color: "var(--slop-text-muted)" }}>
-          Anyone with this link can reach the sign-in screen and connect a wallet or passkey. Regenerate to invalidate
-          all outstanding invite cookies.
-        </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
-          <TextField placeholder="(no password set)" value={invite} readOnly style={{ minWidth: 180 }} />
-          <Button onClick={regenerateInvite}>Regenerate</Button>
-          <Button
-            onClick={() => {
-              if (inviteUrl) void navigator.clipboard?.writeText(inviteUrl);
-            }}
-            disabled={!inviteUrl}
-          >
-            Copy link
-          </Button>
-        </div>
-        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)", wordBreak: "break-all" }}>
-          <code>{inviteUrl}</code>
-        </p>
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
           Connected guests
         </h2>
         <p style={{ marginTop: 4, color: "var(--slop-text-muted)", fontSize: 12 }}>refreshes every 3s</p>
@@ -911,6 +856,20 @@ const AdminPage: NextPage = () => {
             </tbody>
           </table>
         )}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Session wallet
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 13 }}>
+          Per-episode multisig lives in <code>.slop-data/wallet.json</code> on the relay. Resetting clears the deployed
+          address + history + every pending tx so the wallet window goes back to the deploy form. The on-chain contract
+          itself is unaffected.
+        </p>
+        <Button onClick={resetSessionWallet} disabled={!isHost || walletResetBusy}>
+          {walletResetBusy ? "Resetting…" : "Reset session wallet"}
+        </Button>
       </Bevel>
     </>
   );
