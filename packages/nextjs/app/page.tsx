@@ -437,9 +437,9 @@ const Desktop: NextPage = () => {
 
   const meshOpenBrowser = mesh.openBrowser;
   const spawnBrowser = useCallback(
-    (url = "https://clawd-slop-landing-nextjs.vercel.app/") => {
+    (url = "https://clawd-slop-landing-nextjs.vercel.app/", appId?: string) => {
       const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
-      meshOpenBrowser(id, url);
+      meshOpenBrowser(id, url, appId);
     },
     [meshOpenBrowser],
   );
@@ -460,6 +460,10 @@ const Desktop: NextPage = () => {
       let target: { id: string; slotId: string } | null = null;
       let bestZ = -Infinity;
       for (const b of browsers) {
+        // Skip windows pinned to a fixed dapp (e.g. abi-ninja) — they
+        // shouldn't get hijacked by a "navigate to URL" intent fired
+        // from another app like News.
+        if (b.appId) continue;
         const slotId = `browser-${b.id}`;
         const z = slots[slotId]?.z ?? 0;
         if (z > bestZ) {
@@ -1505,7 +1509,7 @@ const Desktop: NextPage = () => {
                         else void media.startScreen();
                         return;
                       default:
-                        if (app.url) spawnBrowser(app.url);
+                        if (app.url) spawnBrowser(app.url, app.id);
                     }
                   }}
                 />
@@ -1722,10 +1726,17 @@ const Desktop: NextPage = () => {
             z: 6,
           };
           const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
+          // Apps that pin the window to a fixed dapp (abi-ninja) hide the
+          // URL bar so users can't navigate away; the title swaps to the
+          // app's label instead of echoing the current URL.
+          const lockedToApp = browser.appId === "abi-ninja";
+          const windowTitle = lockedToApp
+            ? "ABININJA"
+            : `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
           return (
             <Window
               key={slotId}
-              title={`BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`}
+              title={windowTitle}
               x={slot.x}
               y={slot.y}
               width={slot.width}
@@ -1752,6 +1763,7 @@ const Desktop: NextPage = () => {
                 selfLabel={session.authenticated ? (session.handle ?? null) : null}
                 selfPeerId={mesh.myId}
                 forwardTxToPeer={mesh.forwardTxToPeer}
+                hideUrlBar={lockedToApp}
               />
             </Window>
           );

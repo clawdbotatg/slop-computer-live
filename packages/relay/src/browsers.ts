@@ -13,6 +13,10 @@ export type Browser = {
   url: string;
   openedBy: string; // peerId who opened it
   openedAt: number;
+  // App that spawned this browser (matches a DEFAULT_APPS / hot-apps id).
+  // Lets the frontend lock chrome to that app — e.g. abi-ninja hides the
+  // URL bar so the window is permanently pinned to abi.ninja.
+  appId?: string;
 };
 
 const BROWSERS_PATH = process.env.BROWSERS_PATH ?? "/var/lib/slop-relay/browsers.json";
@@ -72,9 +76,11 @@ export function openBrowser(
   id: string,
   url: string,
   openedBy: string,
+  appId?: string,
 ): Browser {
   const b = bucket(hostAddress);
   const browser: Browser = { id, url, openedBy, openedAt: Date.now() };
+  if (appId) browser.appId = appId;
   b.set(id, browser);
   scheduleSave();
   return browser;

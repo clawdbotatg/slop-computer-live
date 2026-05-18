@@ -104,6 +104,10 @@ export type Browser = {
   url: string;
   openedBy: string;
   openedAt: number;
+  // Set when the window was launched from a specific app entry. Frontend
+  // uses this to lock chrome to that app — e.g. abi-ninja hides the URL
+  // bar so the window stays pinned to abi.ninja.
+  appId?: string;
 };
 
 export type TxRequest = {
@@ -491,7 +495,7 @@ export type PeerMeshState = {
    *  for developer-initiated calls, so we hand back a new object. */
   replaceTrack: (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack) => Promise<MediaStream | null>;
   updateSlot: (patch: Partial<SlotPosition> & { id: string }) => void;
-  openBrowser: (id: string, url: string) => void;
+  openBrowser: (id: string, url: string, appId?: string) => void;
   navigateBrowser: (id: string, url: string) => void;
   closeBrowser: (id: string) => void;
   /** Singleton apps whose visibility is shared across the mesh — opened
@@ -909,10 +913,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
   );
 
   const openBrowser = useCallback(
-    (id: string, url: string) => {
+    (id: string, url: string, appId?: string) => {
       // Optimistic local insert so the window pops in instantly.
-      setBrowsers(prev => ({ ...prev, [id]: { id, url, openedBy: myIdRef.current ?? "", openedAt: Date.now() } }));
-      send({ type: "browser_open", id, url });
+      setBrowsers(prev => ({
+        ...prev,
+        [id]: { id, url, openedBy: myIdRef.current ?? "", openedAt: Date.now(), ...(appId ? { appId } : {}) },
+      }));
+      send({ type: "browser_open", id, url, ...(appId ? { appId } : {}) });
     },
     [send],
   );

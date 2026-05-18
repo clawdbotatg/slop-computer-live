@@ -103,6 +103,10 @@ export type SharedBrowserProps = {
    *  wallet that's being impersonated). The receiver shows a modal and,
    *  if accepted, broadcasts via their real wagmi wallet. */
   forwardTxToPeer?: PeerMeshState["forwardTxToPeer"];
+  /** Hide the URL bar (reload + address input + Go button). Used by apps
+   *  that pin the window to a fixed dapp — e.g. ABINinja locks the
+   *  iframe to abi.ninja and doesn't surface address controls. */
+  hideUrlBar?: boolean;
 };
 
 export const SharedBrowser = ({
@@ -117,6 +121,7 @@ export const SharedBrowser = ({
   selfLabel,
   selfPeerId,
   forwardTxToPeer,
+  hideUrlBar,
 }: SharedBrowserProps) => {
   const [draft, setDraft] = useState(browser.url);
   const lastSeenUrlRef = useRef(browser.url);
@@ -683,31 +688,33 @@ export const SharedBrowser = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0a0612" }}>
-      <form
-        onSubmit={submit}
-        style={{
-          display: "flex",
-          gap: 6,
-          padding: 6,
-          background: "var(--slop-panel)",
-          borderBottom: "1px solid rgba(255,62,201,0.2)",
-        }}
-      >
-        <Button onClick={reload} aria-label="Reload">
-          ↻
-        </Button>
-        <TextField
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          placeholder="https://example.com"
-          spellCheck={false}
-          style={{ flex: 1 }}
-          disabled={!canControl}
-        />
-        <Button variant="primary" type="submit" disabled={!canControl}>
-          Go
-        </Button>
-      </form>
+      {hideUrlBar ? null : (
+        <form
+          onSubmit={submit}
+          style={{
+            display: "flex",
+            gap: 6,
+            padding: 6,
+            background: "var(--slop-panel)",
+            borderBottom: "1px solid rgba(255,62,201,0.2)",
+          }}
+        >
+          <Button onClick={reload} aria-label="Reload">
+            ↻
+          </Button>
+          <TextField
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="https://example.com"
+            spellCheck={false}
+            style={{ flex: 1 }}
+            disabled={!canControl}
+          />
+          <Button variant="primary" type="submit" disabled={!canControl}>
+            Go
+          </Button>
+        </form>
+      )}
 
       <div
         style={{

@@ -416,6 +416,12 @@ const DEFAULT_APPS: AppEntry[] = [
     url: "https://clawd-slop-landing-nextjs.vercel.app/",
   },
   {
+    id: "abi-ninja",
+    label: "ABINinja",
+    icon: "/icons/ninja.png",
+    url: "https://abi.ninja",
+  },
+  {
     id: "qr",
     label: "QR",
     icon: "/icons/qr.png",
@@ -713,7 +719,7 @@ app.post<{ Body: SlotBody }>("/v1/slots", async (req, reply) => {
 
 // --- Browsers: open / navigate / close --------------------------------------
 
-type OpenBrowserBody = { id?: unknown; url?: unknown };
+type OpenBrowserBody = { id?: unknown; url?: unknown; appId?: unknown };
 
 app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
   const a = v1AuthFromReq(req);
@@ -723,7 +729,8 @@ app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
   if (!url) return reply.code(400).send({ error: "missing-url" });
   const id =
     typeof body.id === "string" && body.id.trim() ? body.id.trim() : `browser-${Math.random().toString(36).slice(2, 8)}`;
-  const browser = openSharedBrowser(PRIMARY_HOST_ADDR, id, url, "agent");
+  const appId = typeof body.appId === "string" && body.appId.trim() ? body.appId.trim() : undefined;
+  const browser = openSharedBrowser(PRIMARY_HOST_ADDR, id, url, "agent", appId);
   broadcast({ type: "browser", browser });
   return { ok: true, browser };
 });
@@ -2977,7 +2984,8 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.id !== "string" || typeof msg.url !== "string") {
             return send(socket, { type: "error", error: "bad_browser_open" });
           }
-          const browser = openSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url, peerId);
+          const appId = typeof msg.appId === "string" && msg.appId.trim() ? msg.appId.trim() : undefined;
+          const browser = openSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url, peerId, appId);
           broadcast({ type: "browser", browser });
           return;
         }
