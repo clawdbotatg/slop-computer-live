@@ -33,6 +33,31 @@ export const PROVIDER_INJECT_SCRIPT = (
     "eth_signTypedData_v4",
   ]);
 
+  // EIP-3326: forward the requested chainId to the host via the
+  // __slopChainSwitch binding. The host validates against its
+  // supported-chain registry and destroys+recreates this tab with the
+  // new chain. We return null per spec on success; the dapp will see
+  // the new chain after the recreate (fresh inject, fresh connect
+  // event with the new CHAIN_ID_HEX).
+  function requestChainSwitch(params) {
+    const target = params && params[0] && params[0].chainId;
+    if (typeof target !== "string") {
+      const err = new Error("wallet_switchEthereumChain: missing chainId");
+      err.code = -32602;
+      throw err;
+    }
+    const targetNum = parseInt(target, 16);
+    if (!Number.isFinite(targetNum)) {
+      const err = new Error("wallet_switchEthereumChain: invalid chainId");
+      err.code = -32602;
+      throw err;
+    }
+    if (typeof globalThis.__slopChainSwitch === "function") {
+      try { globalThis.__slopChainSwitch(String(targetNum)); } catch (e) { /* ignore */ }
+    }
+    return null;
+  }
+
   // Methods served locally without round-tripping to the upstream.
   const LOCAL_METHODS = {
     eth_accounts: () => [IMPERSONATED],
@@ -47,8 +72,13 @@ export const PROVIDER_INJECT_SCRIPT = (
       parentCapability: "eth_accounts",
       caveats: [{ type: "restrictReturnedAccounts", value: [IMPERSONATED] }],
     }],
-    wallet_switchEthereumChain: () => null,
-    wallet_addEthereumChain: () => null,
+    wallet_switchEthereumChain: requestChainSwitch,
+    // EIP-3085: dapps "add" a chain before switching to it. We don't
+    // dynamically learn new chains (only the host's SUPPORTED_CHAINS),
+    // so route this the same way — if the chainId is one we know, the
+    // host will accept the recreate; otherwise it logs + ignores and
+    // the dapp's follow-up switch will hit the unsupported path.
+    wallet_addEthereumChain: requestChainSwitch,
     wallet_revokePermissions: () => null,
   };
 

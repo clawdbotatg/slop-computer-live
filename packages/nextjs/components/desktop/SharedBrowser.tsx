@@ -14,6 +14,16 @@ import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 // dapp will gracefully degrade against.
 export const IMPERSONATED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" as AddressType;
 
+// Networks the impersonator can sit on. Must stay in sync with
+// SUPPORTED_CHAINS in packages/browser-host/src/config.ts — the host
+// rejects set_chain / wallet_switchEthereumChain for any chainId not in
+// its registry. Add a new chain to *both* lists.
+const SUPPORTED_NETWORKS: { chainId: number; label: string }[] = [
+  { chainId: 1, label: "Ethereum" },
+  { chainId: 8453, label: "Base" },
+];
+const DEFAULT_CHAIN_ID = 1;
+
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 const BROWSER_HOST_URL = process.env.NEXT_PUBLIC_BROWSER_HOST_URL ?? "ws://localhost:8090";
@@ -158,11 +168,18 @@ export const SharedBrowser = ({
   // so all peers' URL bars update, but we must NOT echo it back as a
   // "navigate" — that'd re-fetch the same URL and waste a round trip.
   const incomingUrlRef = useRef<string | null>(null);
-  // ChainId the headless browser-host is configured for — sent in `hello`.
-  // The injected provider reports this back to the dapp, so any captured
-  // eth_sendTransaction implicitly belongs to this chain unless the tx
-  // params override it.
-  const hostChainIdRef = useRef<number | null>(null);
+  // ChainId the headless tab is currently on. Sourced from `hello` /
+  // `chain_changed` (host is authoritative); user-driven picks from the
+  // selector flow back via `set_chain`. The injected provider reports
+  // this to the dapp so any captured eth_sendTransaction implicitly
+  // belongs to this chain unless the tx params override it.
+  const [chainId, setChainId] = useState<number>(DEFAULT_CHAIN_ID);
+  // Ref mirror for the tx-capture path (which reads chainId outside the
+  // render cycle); kept in sync below.
+  const hostChainIdRef = useRef<number>(DEFAULT_CHAIN_ID);
+  useEffect(() => {
+    hostChainIdRef.current = chainId;
+  }, [chainId]);
 
   // ---- Impersonator picker --------------------------------------------------
   // Dropdown lets you act as: the deployed session wallet, any other
@@ -241,6 +258,12 @@ export const SharedBrowser = ({
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
+  // Read-only mirror so the WS open effect (keyed on browser.id only)
+  // can pick up the latest chainId on reconnect without re-subscribing.
+  const chainIdRef = useRef(chainId);
+  useEffect(() => {
+    chainIdRef.current = chainId;
+  }, [chainId]);
 
   // Keep the URL bar in sync with shared state, but don't clobber what the
   // user is in the middle of typing.
@@ -261,7 +284,8 @@ export const SharedBrowser = ({
     const url =
       `${BROWSER_HOST_URL}/stream/${encodeURIComponent(browser.id)}` +
       `?url=${encodeURIComponent(browser.url)}` +
-      `&impersonated=${encodeURIComponent(impersonatorRef.current)}`;
+      `&impersonated=${encodeURIComponent(impersonatorRef.current)}` +
+      `&chainId=${encodeURIComponent(String(chainIdRef.current))}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => setConnState("open");
@@ -271,6 +295,7 @@ export const SharedBrowser = ({
       // local pick doesn't override whatever the tab is now impersonating.
       setHelloReceived(false);
       lastSentImpRef.current = null;
+      lastSentChainRef.current = null;
       if (wsRef.current === ws) wsRef.current = null;
     };
     ws.onerror = () => setConnState("closed");
@@ -290,10 +315,16 @@ export const SharedBrowser = ({
       // differs from our local pick we sync UP: another peer changed it,
       // so our dropdown should match. We avoid feedback by only syncing
       // when the message address doesn't already equal our effective.
+      if ((msg.type === "hello" || msg.type === "chain_changed") && typeof msg.chainId === "number") {
+        // Server's authoritative chain — mirror into UI state, and mark
+        // as "already sent" so the push-effect doesn't bounce it right
+        // back to the host.
+        lastSentChainRef.current = msg.chainId;
+        setChainId(msg.chainId);
+      }
       if ((msg.type === "hello" || msg.type === "impersonator_changed") && typeof msg.impersonated === "string") {
         if (msg.type === "hello") {
           setHelloReceived(true);
-          if (typeof msg.chainId === "number") hostChainIdRef.current = msg.chainId;
         }
         const incoming = msg.impersonated;
         if (!ADDRESS_RE.test(incoming)) {
@@ -468,6 +499,8 @@ export const SharedBrowser = ({
   // set_impersonator. A blank lastSentRef means we haven't sent yet —
   // first non-matching value triggers the swap.
   const lastSentImpRef = useRef<string | null>(null);
+  // Same pattern for the chain selector.
+  const lastSentChainRef = useRef<number | null>(null);
   // Wait for `hello` before sending set_impersonator: on reconnect to an
   // existing tab, our local pick may be stale and the server's value is
   // authoritative. The `hello` handler updates lastSentImpRef and may
@@ -485,6 +518,19 @@ export const SharedBrowser = ({
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "set_impersonator", address: effectiveImpersonator }));
   }, [effectiveImpersonator, connState, helloReceived]);
+
+  // Same shape for the chain selector. The hello/chain_changed handler
+  // primes lastSentChainRef from the server's value, so the first user
+  // pick that differs is what triggers a set_chain.
+  useEffect(() => {
+    if (!helloReceived) return;
+    if (connState !== "open") return;
+    if (lastSentChainRef.current === chainId) return;
+    lastSentChainRef.current = chainId;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "set_chain", chainId }));
+  }, [chainId, connState, helloReceived]);
 
   // Reflect URL changes from the shared mesh state to the headless tab.
   // Skip when the URL change *originated* on the host (in-page link click,
@@ -769,6 +815,37 @@ export const SharedBrowser = ({
         ) : (
           <Address address={effectiveImpersonator} size="xs" onlyEnsOrAddress />
         )}
+        <span style={{ width: 12 }} />
+        <span title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain.">
+          Network
+        </span>
+        <select
+          value={chainId}
+          onChange={e => setChainId(Number(e.target.value))}
+          disabled={!canControl}
+          style={{
+            background: "rgba(0,0,0,0.4)",
+            color: "var(--slop-text)",
+            border: "1px solid rgba(255,62,201,0.3)",
+            borderRadius: 3,
+            font: "inherit",
+            padding: "1px 4px",
+            cursor: canControl ? "pointer" : "not-allowed",
+          }}
+        >
+          {SUPPORTED_NETWORKS.map(n => (
+            <option key={n.chainId} value={n.chainId}>
+              {n.label}
+            </option>
+          ))}
+          {SUPPORTED_NETWORKS.some(n => n.chainId === chainId) ? null : (
+            // Cover the edge case where the host comes back with a chain
+            // not in our local list (e.g. dapp added a custom one we
+            // don't have a label for yet) — show the bare id so the
+            // selector still reflects reality.
+            <option value={chainId}>chain {chainId}</option>
+          )}
+        </select>
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--slop-text-muted)" }}>{connState}</span>
         <button

@@ -43,17 +43,23 @@ export const config = {
   relayTxBroadcastSecret: env("RELAY_TX_BROADCAST_SECRET", ""),
 };
 
-export const upstreamRpcUrl = (): string => {
-  if (config.rpcUrl) return config.rpcUrl;
+// Chains the impersonator knows how to proxy. The frontend picks from
+// this set in its network selector, and `wallet_switchEthereumChain`
+// calls validate against it. To add a chain: append { chainId,
+// alchemySubdomain, label } and the rest works automatically.
+export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label: string }> = {
+  1: { alchemySubdomain: "eth-mainnet", label: "Ethereum" },
+  8453: { alchemySubdomain: "base-mainnet", label: "Base" },
+  11155111: { alchemySubdomain: "eth-sepolia", label: "Sepolia" },
+};
+
+export const isSupportedChain = (chainId: number): boolean => chainId in SUPPORTED_CHAINS;
+
+export const upstreamRpcUrl = (chainId: number): string => {
+  if (config.rpcUrl && chainId === config.chainId) return config.rpcUrl;
   if (config.alchemyApiKey) {
-    const subdomain = config.chainId === 1
-      ? "eth-mainnet"
-      : config.chainId === 8453
-        ? "base-mainnet"
-        : config.chainId === 11155111
-          ? "eth-sepolia"
-          : "eth-mainnet";
-    return `https://${subdomain}.g.alchemy.com/v2/${config.alchemyApiKey}`;
+    const sub = SUPPORTED_CHAINS[chainId]?.alchemySubdomain ?? "eth-mainnet";
+    return `https://${sub}.g.alchemy.com/v2/${config.alchemyApiKey}`;
   }
   // Last-resort public fallback. Per the user's RPC rule we should never
   // ship without an Alchemy key, but local dev with no key gets a working

@@ -28,7 +28,7 @@ const StealthPluginMod = (await import("puppeteer-extra-plugin-stealth")) as unk
 const puppeteer = puppeteerExtraMod.default;
 puppeteer.use(StealthPluginMod.default());
 import type { WebSocket } from "ws";
-import { config, upstreamRpcUrl } from "./config.js";
+import { config, isSupportedChain, upstreamRpcUrl } from "./config.js";
 import { PROVIDER_INJECT_SCRIPT } from "./inject.js";
 
 const app = Fastify({
@@ -97,6 +97,12 @@ type Tab = {
    *  address, custom). Changed by the `set_impersonator` WS message,
    *  which destroys + recreates the tab with a new value. */
   impersonatedAddress: string;
+  /** Chain the injected provider reports + RPC proxy targets. Per-tab so
+   *  each window can sit on a different network. Changed by the
+   *  `set_chain` WS message (user-initiated from the selector) or by
+   *  the dapp calling `wallet_switchEthereumChain` (EIP-3326), both of
+   *  which destroy + recreate the tab. */
+  chainId: number;
   subscribers: Set<WebSocket>;
   shutdownTimer: NodeJS.Timeout | null;
   /** Wall-clock ms when the most recent frame was emitted. Used by
@@ -216,7 +222,7 @@ async function forwardTxToRelay(tab: Tab, payload: unknown): Promise<void> {
   }
 }
 
-async function createTab(id: string, url: string, impersonatedAddress: string): Promise<Tab> {
+async function createTab(id: string, url: string, impersonatedAddress: string, chainId: number): Promise<Tab> {
   const b = await getBrowser();
   const page = await b.newPage();
 
@@ -229,7 +235,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string): 
   // Inject window.ethereum *before* any of the dapp's scripts. This is the
   // whole point of the browser-host — same-origin code runs against our
   // fake provider before MetaMask, EIP-6963 listeners, etc. ever fire.
-  await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(impersonatedAddress, config.chainId));
+  await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(impersonatedAddress, chainId));
 
   // Pin all navigations to this same tab. Without this:
   //   - window.open(url) creates a new puppeteer Page we're not streaming →
@@ -313,9 +319,13 @@ async function createTab(id: string, url: string, impersonatedAddress: string): 
     const reqUrl = req.url();
     if (reqUrl.endsWith("/__slop_rpc")) {
       const post = req.postData() ?? "{}";
+      // Tab may have switched chains since this listener captured `id` —
+      // look up the current chainId so the proxy follows the switch.
+      const t = tabs.get(id);
+      const tabChain = t?.chainId ?? chainId;
       void (async () => {
         try {
-          const upstream = await fetch(upstreamRpcUrl(), {
+          const upstream = await fetch(upstreamRpcUrl(tabChain), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: post,
@@ -347,19 +357,52 @@ async function createTab(id: string, url: string, impersonatedAddress: string): 
   // optionally POST to the relay so peers in other tabs see the calldata.
   await cdp.send("Runtime.enable");
   await cdp.send("Runtime.addBinding", { name: "__slopTxRequest" });
+  // Sibling binding for EIP-3326 — the dapp calls
+  // wallet_switchEthereumChain, our injected provider relays the target
+  // chainId here, we validate + destroy+recreate the tab with the new
+  // chain (same dance as the user-driven `set_chain` WS message).
+  await cdp.send("Runtime.addBinding", { name: "__slopChainSwitch" });
   cdp.on("Runtime.bindingCalled", evt => {
-    if (evt.name !== "__slopTxRequest") return;
-    let parsed: { method?: string; params?: unknown } = {};
-    try {
-      parsed = JSON.parse(evt.payload);
-    } catch {
+    if (evt.name === "__slopTxRequest") {
+      let parsed: { method?: string; params?: unknown } = {};
+      try {
+        parsed = JSON.parse(evt.payload);
+      } catch {
+        return;
+      }
+      const tab = tabs.get(id);
+      if (!tab) return;
+      app.log.info({ id, method: parsed.method }, "tx_request captured");
+      broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params });
+      void forwardTxToRelay(tab, parsed);
       return;
     }
-    const tab = tabs.get(id);
-    if (!tab) return;
-    app.log.info({ id, method: parsed.method }, "tx_request captured");
-    broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params });
-    void forwardTxToRelay(tab, parsed);
+    if (evt.name === "__slopChainSwitch") {
+      const targetChain = Number(evt.payload);
+      if (!Number.isFinite(targetChain) || !isSupportedChain(targetChain)) {
+        app.log.warn({ id, payload: evt.payload }, "chain switch rejected — unsupported");
+        return;
+      }
+      const t = tabs.get(id);
+      if (!t || targetChain === t.chainId) return;
+      const url = t.url;
+      const impersonator = t.impersonatedAddress;
+      app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "wallet_switchEthereumChain");
+      void (async () => {
+        const oldSubs = [...t.subscribers];
+        await destroyTab(t.id);
+        try {
+          const created = await createTab(t.id, url, impersonator, targetChain);
+          for (const ws of oldSubs) {
+            created.subscribers.add(ws);
+            send(ws, { type: "chain_changed", chainId: targetChain });
+          }
+        } catch (err) {
+          app.log.error({ id: t.id, err: (err as Error).message }, "chain switch recreate failed");
+        }
+      })();
+      return;
+    }
   });
 
   await cdp.send("Page.enable");
@@ -420,6 +463,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string): 
     cdp,
     url,
     impersonatedAddress,
+    chainId,
     subscribers: new Set(),
     shutdownTimer: null,
     lastFrameAt: Date.now(),
@@ -516,10 +560,11 @@ setInterval(() => {
     void (async () => {
       const url = t.url;
       const impersonator = t.impersonatedAddress;
+      const tabChain = t.chainId;
       const oldSubs = [...t.subscribers];
       await destroyTab(t.id);
       try {
-        const next = await createTab(t.id, url, impersonator);
+        const next = await createTab(t.id, url, impersonator, tabChain);
         for (const ws of oldSubs) next.subscribers.add(ws);
       } catch (err) {
         app.log.error({ id: t.id, err: (err as Error).message }, "watchdog recreate failed");
@@ -577,7 +622,7 @@ app.get<{ Params: { id: string } }>("/diag/:id", async (req, reply) => {
 // ---- WS /stream/:id -------------------------------------------------------
 
 app.register(async function (fastify) {
-  fastify.get<{ Params: { id: string }; Querystring: { url?: string; impersonated?: string } }>(
+  fastify.get<{ Params: { id: string }; Querystring: { url?: string; impersonated?: string; chainId?: string } }>(
     "/stream/:id",
     { websocket: true },
     async (socket, req) => {
@@ -588,13 +633,18 @@ app.register(async function (fastify) {
       // inherit whatever it's currently impersonating — they can
       // change it later via `set_impersonator`.
       const initialImpersonator = sanitizeImpersonator(req.query.impersonated);
+      // Same first-subscriber-wins semantics as impersonator. Querystring
+      // is always strings; coerce + validate against the supported chain
+      // set, otherwise fall back to the host's configured default.
+      const requestedChain = Number(req.query.chainId);
+      const initialChain = Number.isFinite(requestedChain) && isSupportedChain(requestedChain) ? requestedChain : config.chainId;
       let tab = tabs.get(id);
       if (!tab) {
         // Coalesce concurrent subscribers so we don't launch N tabs for the
         // same browser id. The first subscriber wins; everyone else awaits.
         let boot = tabBoots.get(id);
         if (!boot) {
-          boot = createTab(id, initialUrl, initialImpersonator).finally(() => tabBoots.delete(id));
+          boot = createTab(id, initialUrl, initialImpersonator, initialChain).finally(() => tabBoots.delete(id));
           tabBoots.set(id, boot);
         }
         try {
@@ -608,7 +658,7 @@ app.register(async function (fastify) {
       }
       cancelShutdown(tab);
       tab.subscribers.add(socket);
-      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress, chainId: config.chainId });
+      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress, chainId: tab.chainId });
 
       socket.on("message", (raw: Buffer | string) => {
         let msg: { type?: string; [k: string]: unknown };
@@ -633,13 +683,14 @@ app.register(async function (fastify) {
             // giving them a fresh tab on click one.
             const url = tab.url;
             const impersonator = tab.impersonatedAddress;
+            const tabChain = tab.chainId;
             const t = tab;
             app.log.info({ id: t.id, url }, "reload — destroy+recreate");
             void (async () => {
               const oldSubs = [...t.subscribers];
               await destroyTab(t.id);
               try {
-                const next = await createTab(t.id, url, impersonator);
+                const next = await createTab(t.id, url, impersonator, tabChain);
                 for (const ws of oldSubs) next.subscribers.add(ws);
               } catch (err) {
                 app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
@@ -656,13 +707,14 @@ app.register(async function (fastify) {
             const next = sanitizeImpersonator(msg.address);
             if (next.toLowerCase() === tab.impersonatedAddress.toLowerCase()) return;
             const url = tab.url;
+            const tabChain = tab.chainId;
             const t = tab;
             app.log.info({ id: t.id, from: t.impersonatedAddress, to: next }, "set_impersonator");
             void (async () => {
               const oldSubs = [...t.subscribers];
               await destroyTab(t.id);
               try {
-                const created = await createTab(t.id, url, next);
+                const created = await createTab(t.id, url, next, tabChain);
                 for (const ws of oldSubs) {
                   created.subscribers.add(ws);
                   // Each subscribed peer's UI tracks the current
@@ -672,6 +724,38 @@ app.register(async function (fastify) {
                 }
               } catch (err) {
                 app.log.error({ id: t.id, err: (err as Error).message }, "impersonator recreate failed");
+              }
+            })();
+            return;
+          }
+          case "set_chain": {
+            // Same destroy+recreate dance as set_impersonator. The chain
+            // is baked into the injected provider, so the only way to
+            // change it is to re-inject on a fresh page. Triggered by
+            // the user picking from the SharedBrowser selector, or by
+            // the dapp calling wallet_switchEthereumChain via the
+            // __slopChainSwitch CDP binding (see Runtime.bindingCalled
+            // handler below).
+            const targetChain = Number(msg.chainId);
+            if (!Number.isFinite(targetChain) || !isSupportedChain(targetChain)) {
+              return send(socket, { type: "error", error: "unsupported_chain" });
+            }
+            if (targetChain === tab.chainId) return;
+            const url = tab.url;
+            const impersonator = tab.impersonatedAddress;
+            const t = tab;
+            app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "set_chain");
+            void (async () => {
+              const oldSubs = [...t.subscribers];
+              await destroyTab(t.id);
+              try {
+                const created = await createTab(t.id, url, impersonator, targetChain);
+                for (const ws of oldSubs) {
+                  created.subscribers.add(ws);
+                  send(ws, { type: "chain_changed", chainId: targetChain });
+                }
+              } catch (err) {
+                app.log.error({ id: t.id, err: (err as Error).message }, "chain recreate failed");
               }
             })();
             return;
