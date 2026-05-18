@@ -107,6 +107,7 @@ import {
 import {
   type TimelineState,
   getState as getTimelineState,
+  refreshNow as refreshTimelineNow,
   setResearchFocus as setTimelineResearchFocus,
   start as startTimeline,
   subscribe as subscribeTimeline,
@@ -812,6 +813,24 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
   return { ok: true };
 });
 
+// --- Timeline: host-only manual refresh -------------------------------------
+// Auto-poll runs once every 24h (Twitter reads are metered). The host
+// triggers this right before going live by clicking the TIMELINE badge
+// on the bottom marquee. Debounced inside timeline.ts to 1/min.
+app.post("/v1/timeline/refresh", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const result = await refreshTimelineNow();
+  if (!result.ok) {
+    if (result.reason === "rate-limited") {
+      return reply.code(429).send({ error: "rate-limited", retryAfterMs: result.retryAfterMs });
+    }
+    return reply.code(503).send({ error: result.reason });
+  }
+  return { ok: true, state: result.state };
+});
+
 // --- Chat -------------------------------------------------------------------
 // Three readers: live WS peers (broadcast inside the existing mesh socket),
 // SSE subscribers (slop.computer spectators), and the REST GET /v1/chat poll.
@@ -865,8 +884,10 @@ subscribeHeadlines(state => {
 });
 startHeadlines();
 
-// Twitter timeline (host's home feed, ranked by engagement). 5 min
-// poll fits inside the endpoint's 15-req/15-min limit with margin.
+// Twitter timeline (host's home feed, ranked by engagement). Auto-poll
+// runs once every 24h to keep Twitter API spend down; the host triggers
+// a fresh crawl on-demand via POST /v1/timeline/refresh (clicking the
+// TIMELINE badge in the bottom marquee) right before going live.
 subscribeTimeline(state => {
   broadcast({ type: "timeline", state });
 });

@@ -5,9 +5,10 @@
 //   - AI: HN Algolia search filtered by AI keywords (HN's frontpage is
 //     opinionated about AI so we get the genuinely-discussed stories)
 //
-// Poll cadence is slow (5 min); headline lists don't churn fast.
+// Poll cadence is slow (1h); headline lists don't churn fast and we'd
+// rather be polite to the upstream free APIs than chase fresh-by-5min.
 
-const POLL_INTERVAL_MS = 5 * 60_000;
+const POLL_INTERVAL_MS = 60 * 60_000;
 const ERROR_RETRY_MS = 60_000;
 
 // Per-source caps. The bar shows a marquee of all of these so the

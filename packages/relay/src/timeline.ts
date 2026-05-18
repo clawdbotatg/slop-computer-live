@@ -11,14 +11,15 @@ import { config } from "./config.js";
 // the past few hours float to the top, and broadcast a trimmed list to
 // the client. The TimelineBar marquee renders them as scrolling chips.
 //
-// Rate limit: 15 req / 15 min per user on this endpoint. 5-min poll
-// gives us a 3× safety margin.
+// Twitter API reads are metered/billed, so the auto-poll runs only
+// once a day. The host triggers an on-demand `refreshNow()` from the
+// client (click the TIMELINE badge) right before going live.
 
-// Slow poll cadence (15 min) — paginated fetch costs 8 API calls per
-// poll, Twitter's home-timeline rate limit is 15 req/15 min. 8 reqs
-// every 15 min sits right at the budget with a small safety margin.
-const POLL_INTERVAL_MS = 15 * 60_000;
+const POLL_INTERVAL_MS = 24 * 60 * 60_000;
 const ERROR_RETRY_MS = 60_000;
+// Min spacing between manual refreshes — protects against double-clicks
+// or accidental button-mashing turning into a burst of paginated reads.
+const MANUAL_REFRESH_MIN_MS = 60_000;
 
 // Wide window so accounts that post once a day still get a fair shot
 // at appearing. The mega-accounts (Saylor, Cointelegraph, news orgs)
@@ -366,6 +367,8 @@ async function fetchUserTweets(username: string): Promise<TimelineItem[]> {
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
+let lastManualRefreshAt = 0;
+let inflightRefresh: Promise<TimelineState | null> | null = null;
 
 async function pollOnce(): Promise<void> {
   const items = await fetchTimeline();
@@ -377,6 +380,55 @@ async function pollOnce(): Promise<void> {
     } catch {
       /* one bad sub shouldn't kill the rest */
     }
+  }
+}
+
+/** Manual refresh triggered by the host clicking the TIMELINE badge.
+ *  Coalesces concurrent callers onto the same in-flight fetch, and
+ *  rate-limits to one refresh per MANUAL_REFRESH_MIN_MS so accidental
+ *  button-mashing doesn't burst paginated reads. Also resets the daily
+ *  auto-poll timer so the next scheduled crawl is 24h *after* this
+ *  refresh, not 24h after the last scheduled tick. */
+export async function refreshNow(): Promise<
+  { ok: true; state: TimelineState | null } | { ok: false; reason: "rate-limited" | "no-creds"; retryAfterMs?: number }
+> {
+  if (!config.twitterUserId || !config.twitterConsumerKey) {
+    return { ok: false, reason: "no-creds" };
+  }
+  if (inflightRefresh) {
+    const next = await inflightRefresh;
+    return { ok: true, state: next };
+  }
+  const now = Date.now();
+  const elapsed = now - lastManualRefreshAt;
+  if (lastManualRefreshAt && elapsed < MANUAL_REFRESH_MIN_MS) {
+    return { ok: false, reason: "rate-limited", retryAfterMs: MANUAL_REFRESH_MIN_MS - elapsed };
+  }
+  lastManualRefreshAt = now;
+  inflightRefresh = (async () => {
+    try {
+      await pollOnce();
+      // Push the next auto-poll out by a full interval — we just
+      // crawled, no need to crawl again sooner than that.
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
+      }
+      return state;
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+  return { ok: true, state: await inflightRefresh };
+}
+
+async function scheduledLoop(): Promise<void> {
+  try {
+    await pollOnce();
+    pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
+  } catch (err) {
+    console.warn("[timeline] poll failed", err);
+    pollTimer = setTimeout(() => void scheduledLoop(), ERROR_RETRY_MS);
   }
 }
 
@@ -392,17 +444,7 @@ export function start(): void {
     return;
   }
 
-  const loop = async () => {
-    try {
-      await pollOnce();
-      pollTimer = setTimeout(() => void loop(), POLL_INTERVAL_MS);
-    } catch (err) {
-      console.warn("[timeline] poll failed", err);
-      pollTimer = setTimeout(() => void loop(), ERROR_RETRY_MS);
-    }
-  };
-
-  void loop();
+  void scheduledLoop();
 }
 
 export function stop(): void {

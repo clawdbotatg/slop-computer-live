@@ -1,15 +1,18 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { PeerMeshState, TimelineItem } from "~~/hooks/usePeerMesh";
 import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+
 // Twitter timeline marquee — top of the three-bar stack. Reads the
-// host's home timeline (polled on the relay every 5 min, ranked by
-// engagement), and scrolls noticeably faster than headlines + ticker
-// so the visual hierarchy is "fastest at the top, slowest at the
-// bottom". Same duplicated-track + CSS translate pattern as the other
-// two bars.
+// host's home timeline (auto-polled on the relay once every 24h, with
+// a manual host-triggered refresh by clicking the TIMELINE badge),
+// ranked by engagement. Scrolls noticeably faster than headlines +
+// ticker so the visual hierarchy is "fastest at the top, slowest at
+// the bottom". Same duplicated-track + CSS translate pattern as the
+// other two bars.
 
 export const TIMELINE_HEIGHT = 24;
 
@@ -111,6 +114,24 @@ function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: stri
 
 export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
   const items = mesh.timelineState?.items ?? [];
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Hidden host-only refresh: clicking the TIMELINE badge POSTs to the
+  // relay, which runs a fresh Twitter pull and broadcasts the new state.
+  // 403 (non-host) and 429 (rate-limit) are both silent — the bar's
+  // existing live state stays on screen, the click just flashes the
+  // reload glyph and resolves.
+  const onBadgeClick = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await fetch(`${RELAY_HTTP}/v1/timeline/refresh`, { method: "POST", credentials: "include" });
+    } catch {
+      /* network error — silent, badge will just stop flashing */
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   // Lock the animation duration on the FIRST non-empty poll and keep
   // it for the lifetime of the component. If we recomputed it every
@@ -147,7 +168,11 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
           pointerEvents: "none",
         }}
       >
-        <span
+        <button
+          type="button"
+          onClick={onBadgeClick}
+          aria-label="Refresh timeline"
+          title="Refresh timeline"
           style={{
             position: "absolute",
             left: 0,
@@ -155,6 +180,7 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
             bottom: 0,
             display: "flex",
             alignItems: "center",
+            gap: 8,
             padding: "0 24px 0 14px",
             // Dark grey → transparent gradient, matching X's dark
             // brand-mark vibe. The bar's own backdrop is already
@@ -173,10 +199,33 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
             zIndex: 2,
             maskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
             WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
+            border: "none",
+            cursor: refreshing ? "wait" : "pointer",
+            pointerEvents: "auto",
+            font: "inherit",
+            appearance: "none",
+            WebkitAppearance: "none",
+            // The badge is hidden-on-purpose UI — no hover affordance,
+            // host knows it's clickable.
           }}
         >
           TIMELINE
-        </span>
+          {refreshing && (
+            <span
+              aria-hidden
+              className="slop-timeline-refresh-glyph"
+              style={{
+                display: "inline-block",
+                fontFamily: "var(--slop-font-mono)",
+                fontSize: 12,
+                color: "var(--slop-magenta)",
+                letterSpacing: 0,
+              }}
+            >
+              ↻
+            </span>
+          )}
+        </button>
 
         {items.length === 0 ? (
           <span
@@ -227,12 +276,31 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
           text-decoration: underline;
           text-underline-offset: 2px;
         }
+        .slop-timeline-refresh-glyph {
+          animation:
+            slop-timeline-spin 0.8s linear infinite,
+            slop-timeline-flash 0.8s ease-in-out infinite;
+        }
         @keyframes slop-timeline-scroll {
           0% {
             transform: translateX(0);
           }
           100% {
             transform: translateX(-50%);
+          }
+        }
+        @keyframes slop-timeline-spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        @keyframes slop-timeline-flash {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.3;
           }
         }
       `}</style>
