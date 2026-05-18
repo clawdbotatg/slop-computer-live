@@ -14,7 +14,11 @@ type TranscriptSegment = {
   source: "live" | "spectator" | "agent";
 };
 
-const POLL_MS = 7000;
+// SharedAppWindow only mounts this component while the window is open,
+// so polling is automatically scoped to "when the user is looking at it".
+// Closed windows generate no traffic — pick the cadence based purely on
+// how live it should feel when someone has it on screen.
+const POLL_MS = 1500;
 
 export type TranscriptWindowProps = {
   relayHttpUrl: string;
