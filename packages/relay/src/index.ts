@@ -358,7 +358,8 @@ type AppEntry = {
     | "wallet"
     | "ai-wallet"
     | "research"
-    | "news";
+    | "news"
+    | "transcript";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -471,6 +472,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "News",
     icon: "/icons/news.png",
     kind: "news",
+  },
+  {
+    id: "transcript",
+    label: "Transcript",
+    icon: "/icons/transcript.png",
+    kind: "transcript",
   },
 ];
 
@@ -992,6 +999,15 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
   });
   if (!seg) return reply.code(400).send({ error: "empty" });
   return { ok: true, seg };
+});
+
+// Public read — mirrors GET /v1/chat. Anyone can pull the recent transcript
+// (the live show is already streaming the speakers' words to every peer +
+// the spectator chat firehose, so there's nothing to gate). The Transcript
+// desktop app polls this every few seconds.
+app.get("/v1/transcript", async (_req, reply) => {
+  reply.header("cache-control", "no-store");
+  return { segments: recentTranscript() };
 });
 
 // --- Admin transcript viewer -------------------------------------------------

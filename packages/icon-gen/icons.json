@@ -233,6 +233,10 @@
     {
       "name": "ai-wallet",
       "prompt": "A robot or AI assistant head merged with a wallet/billfold — magenta and cyan accents, retro pixel art, 8-bit feel, dark purple background. Like the existing slop-computer wallet icon but with neural-network or chat-bubble overlay to signal AI."
+    },
+    {
+      "name": "transcript",
+      "prompt": "A retro scroll of paper with wavy lines of text and a vintage microphone leaning against it, representing a live speech-to-text transcript of a show."
     }
   ],
   "sheet": {

@@ -34,6 +34,7 @@ import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
 import { TickerBar } from "~~/components/desktop/TickerBar";
 import { TimelineBar } from "~~/components/desktop/TimelineBar";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
+import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VIDEO_PAUSED_STORAGE_KEY, VideoView } from "~~/components/desktop/VideoView";
@@ -96,7 +97,8 @@ type AppEntry = {
     | "wallet"
     | "ai-wallet"
     | "research"
-    | "news";
+    | "news"
+    | "transcript";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -1443,6 +1445,9 @@ const Desktop: NextPage = () => {
                       case "news":
                         focusApp("news");
                         return;
+                      case "transcript":
+                        focusApp("transcript");
+                        return;
                       case "audio":
                         // Not publishing yet → open the share dialog.
                         // Already publishing → bring the existing window
@@ -1928,6 +1933,16 @@ const Desktop: NextPage = () => {
               minHeight={360}
             >
               <NewsWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="transcript"
+              title="TRANSCRIPT"
+              defaultSlot={{ x: 380, y: 120, width: 480, height: 520 }}
+              minWidth={320}
+              minHeight={280}
+            >
+              <TranscriptWindow relayHttpUrl={RELAY_HTTP} />
             </SharedAppWindow>
           </>
         ) : null}
