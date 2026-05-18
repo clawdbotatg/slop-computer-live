@@ -846,6 +846,25 @@ export const SharedBrowser = ({
             <option value={chainId}>chain {chainId}</option>
           )}
         </select>
+        <button
+          type="button"
+          onClick={reload}
+          disabled={!canControl}
+          title="Reload the page (force-refresh after a chain switch, or just unstick a frozen dapp)"
+          aria-label="Reload"
+          style={{
+            background: "transparent",
+            border: "1px solid rgba(255,62,201,0.3)",
+            color: "var(--slop-text)",
+            borderRadius: 3,
+            font: "inherit",
+            padding: "1px 6px",
+            cursor: canControl ? "pointer" : "not-allowed",
+            marginLeft: 4,
+          }}
+        >
+          ↻
+        </button>
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--slop-text-muted)" }}>{connState}</span>
         <button

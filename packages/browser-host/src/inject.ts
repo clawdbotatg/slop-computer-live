@@ -16,10 +16,15 @@
 export const PROVIDER_INJECT_SCRIPT = (
   impersonatedAddress: string,
   chainId: number,
+  supportedChainIds: number[],
 ): string => `
 (() => {
   const IMPERSONATED = ${JSON.stringify(impersonatedAddress.toLowerCase())};
   const CHAIN_ID_HEX = ${JSON.stringify("0x" + chainId.toString(16))};
+  // Mirror of the host's SUPPORTED_CHAINS so we can reject unknown
+  // chains synchronously per EIP-3326 (error code 4902) — CDP bindings
+  // are fire-and-forget, so the page can't await a host validation.
+  const SUPPORTED_CHAIN_IDS_HEX = ${JSON.stringify(supportedChainIds.map(c => "0x" + c.toString(16).toLowerCase()))};
 
   // Methods we never sign for; we capture and emit calldata instead.
   const WRITE_METHODS = new Set([
@@ -34,11 +39,9 @@ export const PROVIDER_INJECT_SCRIPT = (
   ]);
 
   // EIP-3326: forward the requested chainId to the host via the
-  // __slopChainSwitch binding. The host validates against its
-  // supported-chain registry and destroys+recreates this tab with the
-  // new chain. We return null per spec on success; the dapp will see
-  // the new chain after the recreate (fresh inject, fresh connect
-  // event with the new CHAIN_ID_HEX).
+  // __slopChainSwitch binding. The host destroys+recreates this tab on
+  // the new chain — after which the fresh inject reports the new
+  // CHAIN_ID_HEX and the dapp re-initializes naturally.
   function requestChainSwitch(params) {
     const target = params && params[0] && params[0].chainId;
     if (typeof target !== "string") {
@@ -52,9 +55,29 @@ export const PROVIDER_INJECT_SCRIPT = (
       err.code = -32602;
       throw err;
     }
+    // EIP-3326 4902: chain not added to the wallet. We validate against
+    // our pre-baked supported list (CDP bindings can't return a value,
+    // so we can't ask the host synchronously) — keeping this list in
+    // sync with the host's SUPPORTED_CHAINS is the price of admission.
+    const targetHex = "0x" + targetNum.toString(16).toLowerCase();
+    if (!SUPPORTED_CHAIN_IDS_HEX.includes(targetHex)) {
+      const err = new Error("Unrecognized chain ID — call wallet_addEthereumChain first");
+      err.code = 4902;
+      throw err;
+    }
+    // No-op if the page is already on the requested chain. Spec says
+    // return null in that case — same as a successful switch.
+    if (targetHex === CHAIN_ID_HEX) return null;
     if (typeof globalThis.__slopChainSwitch === "function") {
       try { globalThis.__slopChainSwitch(String(targetNum)); } catch (e) { /* ignore */ }
     }
+    // Emit chainChanged for any listeners attached before the imminent
+    // page reload. The reload itself will destroy these listeners, but
+    // firing now means a synchronous dapp ("got success → wait for
+    // chainChanged → update UI") gets the update before its context
+    // dies. After the reload, the dapp re-initializes against the
+    // fresh provider with the new CHAIN_ID_HEX.
+    setTimeout(() => emit("chainChanged", targetHex), 0);
     return null;
   }
 

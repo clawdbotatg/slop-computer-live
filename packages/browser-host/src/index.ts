@@ -28,7 +28,7 @@ const StealthPluginMod = (await import("puppeteer-extra-plugin-stealth")) as unk
 const puppeteer = puppeteerExtraMod.default;
 puppeteer.use(StealthPluginMod.default());
 import type { WebSocket } from "ws";
-import { config, isSupportedChain, upstreamRpcUrl } from "./config.js";
+import { config, isSupportedChain, SUPPORTED_CHAINS, upstreamRpcUrl } from "./config.js";
 import { PROVIDER_INJECT_SCRIPT } from "./inject.js";
 
 const app = Fastify({
@@ -235,7 +235,9 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
   // Inject window.ethereum *before* any of the dapp's scripts. This is the
   // whole point of the browser-host — same-origin code runs against our
   // fake provider before MetaMask, EIP-6963 listeners, etc. ever fire.
-  await page.evaluateOnNewDocument(PROVIDER_INJECT_SCRIPT(impersonatedAddress, chainId));
+  await page.evaluateOnNewDocument(
+    PROVIDER_INJECT_SCRIPT(impersonatedAddress, chainId, Object.keys(SUPPORTED_CHAINS).map(Number)),
+  );
 
   // Pin all navigations to this same tab. Without this:
   //   - window.open(url) creates a new puppeteer Page we're not streaming →
