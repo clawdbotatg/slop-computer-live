@@ -16,6 +16,11 @@ import type { NewsDigestItem, PeerMeshState } from "~~/hooks/usePeerMesh";
 
 export type NewsWindowProps = {
   mesh: PeerMeshState;
+  /** Hand a URL to the shared in-desktop browser instead of letting the
+   *  click leave the slop computer. Plain left-clicks call this;
+   *  cmd/ctrl/shift-click and middle-click fall through to the normal
+   *  anchor (new-tab) behavior as an escape hatch. */
+  onOpenUrl: (url: string) => void;
 };
 
 function timeAgo(ts: number): string {
@@ -85,13 +90,32 @@ function KindBadge({ kind }: { kind: NewsDigestItem["kind"] }) {
   );
 }
 
+// Allow cmd/ctrl/shift-click and middle-click to escape to a real new
+// tab; intercept plain left-click and route into the in-desktop browser.
+function shouldIntercept(e: React.MouseEvent): boolean {
+  return !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey);
+}
+
 // Featured row — big, with the AI's reason underneath.
-function FeaturedRow({ item, rank }: { item: NewsDigestItem; rank: number }) {
+function FeaturedRow({
+  item,
+  rank,
+  onOpenUrl,
+}: {
+  item: NewsDigestItem;
+  rank: number;
+  onOpenUrl: (url: string) => void;
+}) {
   return (
     <a
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={e => {
+        if (!shouldIntercept(e)) return;
+        e.preventDefault();
+        onOpenUrl(item.url);
+      }}
       className="slop-news-row slop-news-featured"
       style={{
         display: "flex",
@@ -191,12 +215,17 @@ function FeaturedRow({ item, rank }: { item: NewsDigestItem; rank: number }) {
 
 // Compact feed row — used for non-featured items. Featured items in
 // the feed get a subtle gold tint so they're recognizable here too.
-function FeedRow({ item }: { item: NewsDigestItem }) {
+function FeedRow({ item, onOpenUrl }: { item: NewsDigestItem; onOpenUrl: (url: string) => void }) {
   return (
     <a
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={e => {
+        if (!shouldIntercept(e)) return;
+        e.preventDefault();
+        onOpenUrl(item.url);
+      }}
       className="slop-news-row"
       style={{
         display: "flex",
@@ -332,7 +361,7 @@ function SectionHeader({ label, count, sub }: { label: string; count?: number; s
   );
 }
 
-export const NewsWindow = ({ mesh }: NewsWindowProps) => {
+export const NewsWindow = ({ mesh, onOpenUrl }: NewsWindowProps) => {
   const digest = mesh.newsDigestState;
   const featured = digest?.featured ?? [];
   const feed = digest?.feed ?? [];
@@ -372,7 +401,7 @@ export const NewsWindow = ({ mesh }: NewsWindowProps) => {
             {digest ? "AI hasn't picked featured items yet…" : "loading digest…"}
           </div>
         ) : (
-          featured.map((item, i) => <FeaturedRow key={item.url} item={item} rank={i + 1} />)
+          featured.map((item, i) => <FeaturedRow key={item.url} item={item} rank={i + 1} onOpenUrl={onOpenUrl} />)
         )}
 
         <SectionHeader label="THE FEED" count={feed.length} sub="crypto · ai · tweets" />
@@ -389,7 +418,7 @@ export const NewsWindow = ({ mesh }: NewsWindowProps) => {
             building feed…
           </div>
         ) : (
-          feed.map(item => <FeedRow key={item.url} item={item} />)
+          feed.map(item => <FeedRow key={item.url} item={item} onOpenUrl={onOpenUrl} />)
         )}
 
         <div

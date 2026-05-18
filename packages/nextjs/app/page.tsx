@@ -444,6 +444,41 @@ const Desktop: NextPage = () => {
     [meshOpenBrowser],
   );
 
+  // Click target for in-desktop links (e.g. NewsWindow rows). Reuses the
+  // topmost existing browser if one is open so we don't pile up windows;
+  // otherwise spawns a fresh one. Either way, raise it to the front.
+  const meshNavigateBrowser = mesh.navigateBrowser;
+  const meshSlotsRefForOpenUrl = useRef(mesh.slots);
+  meshSlotsRefForOpenUrl.current = mesh.slots;
+  const meshBrowsersRefForOpenUrl = useRef(mesh.browsers);
+  meshBrowsersRefForOpenUrl.current = mesh.browsers;
+  const meshUpdateSlotForOpenUrl = mesh.updateSlot;
+  const openUrlInBrowser = useCallback(
+    (url: string) => {
+      const browsers = Object.values(meshBrowsersRefForOpenUrl.current);
+      const slots = meshSlotsRefForOpenUrl.current;
+      let target: { id: string; slotId: string } | null = null;
+      let bestZ = -Infinity;
+      for (const b of browsers) {
+        const slotId = `browser-${b.id}`;
+        const z = slots[slotId]?.z ?? 0;
+        if (z > bestZ) {
+          bestZ = z;
+          target = { id: b.id, slotId };
+        }
+      }
+      if (target) {
+        meshNavigateBrowser(target.id, url);
+        const maxZ = Math.max(0, ...Object.values(slots).map(s => s.z), 5);
+        meshUpdateSlotForOpenUrl({ id: target.slotId, z: maxZ + 1 });
+        return;
+      }
+      const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
+      meshOpenBrowser(id, url);
+    },
+    [meshOpenBrowser, meshNavigateBrowser, meshUpdateSlotForOpenUrl],
+  );
+
   // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
   // who lands on the page (signed in or not) eventually sees the right
   // set; positions of each icon are still slot-synced like before.
@@ -1937,7 +1972,7 @@ const Desktop: NextPage = () => {
               minWidth={420}
               minHeight={360}
             >
-              <NewsWindow mesh={mesh} />
+              <NewsWindow mesh={mesh} onOpenUrl={openUrlInBrowser} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
