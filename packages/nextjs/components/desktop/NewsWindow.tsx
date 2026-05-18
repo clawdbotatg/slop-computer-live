@@ -1,6 +1,7 @@
 "use client";
 
 import type { NewsDigestItem, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
 // "News" app — the curated front page. Two sections:
 //   1. ⭐ FEATURED — 3-5 items the relay's AI pass picked as the most
@@ -90,12 +91,6 @@ function KindBadge({ kind }: { kind: NewsDigestItem["kind"] }) {
   );
 }
 
-// Allow cmd/ctrl/shift-click and middle-click to escape to a real new
-// tab; intercept plain left-click and route into the in-desktop browser.
-function shouldIntercept(e: React.MouseEvent): boolean {
-  return !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey);
-}
-
 // Featured row — big, with the AI's reason underneath.
 function FeaturedRow({
   item,
@@ -112,7 +107,7 @@ function FeaturedRow({
       target="_blank"
       rel="noopener noreferrer"
       onClick={e => {
-        if (!shouldIntercept(e)) return;
+        if (!shouldInterceptClick(e)) return;
         e.preventDefault();
         onOpenUrl(item.url);
       }}
@@ -222,7 +217,7 @@ function FeedRow({ item, onOpenUrl }: { item: NewsDigestItem; onOpenUrl: (url: s
       target="_blank"
       rel="noopener noreferrer"
       onClick={e => {
-        if (!shouldIntercept(e)) return;
+        if (!shouldInterceptClick(e)) return;
         e.preventDefault();
         onOpenUrl(item.url);
       }}

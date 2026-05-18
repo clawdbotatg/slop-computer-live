@@ -2008,16 +2008,16 @@ const Desktop: NextPage = () => {
             home feed (ranked by engagement on the relay). Scrolls
             fastest so the visual hierarchy reads "fastest at top,
             slowest at bottom". */}
-        <TimelineBar mesh={mesh} />
+        <TimelineBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
         {/* Headlines bar — middle band, between timeline and ticker.
             Crypto + AI news headlines. */}
-        <HeadlinesBar mesh={mesh} />
+        <HeadlinesBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
         {/* Ticker bar — pinned to the very bottom of the desktop on
             every peer. Reads the shared `tickerState` polled by the
             relay (crypto + AI stocks + private AI valuations +
             $CLAWD). Visible pre-auth too so the entry/join screens
             still feel "alive". */}
-        <TickerBar mesh={mesh} />
+        <TickerBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
         {/* Always-visible "who's here" panel pinned to the top-right
             (per-peer viewport position, not in the shared slot system,
             like the trash). Sign-out / power dropdowns from the menubar

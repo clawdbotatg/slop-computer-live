@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import type { PeerMeshState, TimelineItem } from "~~/hooks/usePeerMesh";
+import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
 // Twitter timeline marquee — top of the three-bar stack. Reads the
 // host's home timeline (polled on the relay every 5 min, ranked by
@@ -29,6 +30,9 @@ const MAX_TEXT_LEN = 140;
 
 export type TimelineBarProps = {
   mesh: PeerMeshState;
+  /** Route plain left-clicks into the shared slop browser instead of a
+   *  new tab. Modifier-clicks fall through to the anchor's `_blank`. */
+  onOpenUrl: (url: string) => void;
 };
 
 function truncate(s: string, n: number): string {
@@ -47,12 +51,17 @@ function compact(n: number): string {
   return String(n);
 }
 
-function Item({ tweet }: { tweet: TimelineItem }) {
+function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: string) => void }) {
   return (
     <a
       href={tweet.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={e => {
+        if (!shouldInterceptClick(e)) return;
+        e.preventDefault();
+        onOpenUrl(tweet.url);
+      }}
       className="slop-timeline-item"
       style={{
         display: "inline-flex",
@@ -100,7 +109,7 @@ function Item({ tweet }: { tweet: TimelineItem }) {
   );
 }
 
-export const TimelineBar = ({ mesh }: TimelineBarProps) => {
+export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
   const items = mesh.timelineState?.items ?? [];
 
   // Lock the animation duration on the FIRST non-empty poll and keep
@@ -197,10 +206,10 @@ export const TimelineBar = ({ mesh }: TimelineBarProps) => {
                 every cell and restart the marquee. With id-based keys
                 React just shuffles the existing DOM nodes in place. */}
             {items.map(tw => (
-              <Item key={`${tw.id}-a`} tweet={tw} />
+              <Item key={`${tw.id}-a`} tweet={tw} onOpenUrl={onOpenUrl} />
             ))}
             {items.map(tw => (
-              <Item key={`${tw.id}-b`} tweet={tw} />
+              <Item key={`${tw.id}-b`} tweet={tw} onOpenUrl={onOpenUrl} />
             ))}
           </div>
         )}

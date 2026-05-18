@@ -1,6 +1,7 @@
 "use client";
 
 import type { PeerMeshState, TickerItem } from "~~/hooks/usePeerMesh";
+import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
 // Render a sub-cent USD price using the "0.0₍N₎digits" subscript-zeros
 // convention common in DEX UIs (Uniswap, DexScreener) for tokens where
@@ -44,6 +45,9 @@ export const TICKER_HEIGHT = 28;
 
 export type TickerBarProps = {
   mesh: PeerMeshState;
+  /** Route plain left-clicks into the shared slop browser instead of a
+   *  new tab. Modifier-clicks fall through to the anchor's `_blank`. */
+  onOpenUrl: (url: string) => void;
 };
 
 // Compact USD formatter. Stock prices want $123.45 precision; private
@@ -94,18 +98,24 @@ function kindColor(kind: TickerItem["kind"]): string {
   }
 }
 
-function Cell({ item }: { item: TickerItem }) {
+function Cell({ item, onOpenUrl }: { item: TickerItem; onOpenUrl: (url: string) => void }) {
   // Render as a link when we have a destination (CoinGecko / Yahoo
   // Finance / DexScreener). Private valuations get rendered as plain
   // spans because there's no canonical "what does this number even
   // mean" page to send users to.
   const Tag = (item.url ? "a" : "span") as "a" | "span";
-  const linkProps = item.url
+  const url = item.url;
+  const linkProps = url
     ? ({
-        href: item.url,
+        href: url,
         target: "_blank",
         rel: "noopener noreferrer",
         className: "slop-ticker-cell",
+        onClick: (e: React.MouseEvent) => {
+          if (!shouldInterceptClick(e)) return;
+          e.preventDefault();
+          onOpenUrl(url);
+        },
       } as const)
     : {};
   return (
@@ -164,7 +174,7 @@ function Cell({ item }: { item: TickerItem }) {
 // badge. Uses the DEX subscript-zeros convention for sub-cent prices
 // (e.g. $0.00002012 → $0.0₍4₎20). Clickable when the relay has
 // populated `item.url` (the DexScreener page for CLAWD on Base).
-function ClawdBadge({ item }: { item: TickerItem | null }) {
+function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (url: string) => void }) {
   // Always render the badge shell, even while item is null, so the
   // ticker's left-edge always has the right width and doesn't reflow
   // when the first poll lands.
@@ -175,8 +185,20 @@ function ClawdBadge({ item }: { item: TickerItem | null }) {
   const isDown = change < -0.005;
   const changeColorVal = isUp ? "var(--slop-lime)" : isDown ? "var(--slop-red)" : "var(--slop-text-muted)";
 
-  const Tag = (item?.url ? "a" : "span") as "a" | "span";
-  const linkProps = item?.url ? ({ href: item.url, target: "_blank", rel: "noopener noreferrer" } as const) : {};
+  const badgeUrl = item?.url;
+  const Tag = (badgeUrl ? "a" : "span") as "a" | "span";
+  const linkProps = badgeUrl
+    ? ({
+        href: badgeUrl,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        onClick: (e: React.MouseEvent) => {
+          if (!shouldInterceptClick(e)) return;
+          e.preventDefault();
+          onOpenUrl(badgeUrl);
+        },
+      } as const)
+    : {};
   return (
     <Tag
       {...linkProps}
@@ -281,7 +303,7 @@ function ClawdBadge({ item }: { item: TickerItem | null }) {
   );
 }
 
-export const TickerBar = ({ mesh }: TickerBarProps) => {
+export const TickerBar = ({ mesh, onOpenUrl }: TickerBarProps) => {
   const allItems = mesh.tickerState?.items ?? [];
   // CLAWD lives in the left-edge badge (live price + 24h change),
   // featured separately from the rest of the strip. Pull it out of the
@@ -313,7 +335,7 @@ export const TickerBar = ({ mesh }: TickerBarProps) => {
             the ticker bar AND the headline price feature — CLAWD is a
             real ERC-20 on Base; the relay pulls the deepest-liquidity
             pair from DexScreener every 60s. */}
-        <ClawdBadge item={clawd} />
+        <ClawdBadge item={clawd} onOpenUrl={onOpenUrl} />
 
         {items.length === 0 ? (
           // No data yet (relay still on first poll). Show a static
@@ -345,10 +367,10 @@ export const TickerBar = ({ mesh }: TickerBarProps) => {
                 cell in place instead of remounting — the CSS animation
                 keeps running and the marquee never jumps back to 0. */}
             {items.map(item => (
-              <Cell key={`${item.symbol}-a`} item={item} />
+              <Cell key={`${item.symbol}-a`} item={item} onOpenUrl={onOpenUrl} />
             ))}
             {items.map(item => (
-              <Cell key={`${item.symbol}-b`} item={item} />
+              <Cell key={`${item.symbol}-b`} item={item} onOpenUrl={onOpenUrl} />
             ))}
           </div>
         )}

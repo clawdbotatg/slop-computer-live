@@ -1,6 +1,7 @@
 "use client";
 
 import type { Headline, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
 // Headlines marquee — sits directly above the price ticker. Crypto +
 // AI news interleaved, scrolling left a touch faster than the prices
@@ -22,6 +23,9 @@ const SCROLL_DURATION_S = 260;
 
 export type HeadlinesBarProps = {
   mesh: PeerMeshState;
+  /** Route plain left-clicks into the shared slop browser instead of a
+   *  new tab. Modifier-clicks fall through to the anchor's `_blank`. */
+  onOpenUrl: (url: string) => void;
 };
 
 function badgeColor(kind: Headline["kind"]): string {
@@ -32,12 +36,17 @@ function badgeLabel(kind: Headline["kind"]): string {
   return kind === "crypto" ? "CRYPTO" : "AI";
 }
 
-function Item({ headline }: { headline: Headline }) {
+function Item({ headline, onOpenUrl }: { headline: Headline; onOpenUrl: (url: string) => void }) {
   return (
     <a
       href={headline.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={e => {
+        if (!shouldInterceptClick(e)) return;
+        e.preventDefault();
+        onOpenUrl(headline.url);
+      }}
       className="slop-headline-item"
       style={{
         display: "inline-flex",
@@ -92,7 +101,7 @@ function Item({ headline }: { headline: Headline }) {
   );
 }
 
-export const HeadlinesBar = ({ mesh }: HeadlinesBarProps) => {
+export const HeadlinesBar = ({ mesh, onOpenUrl }: HeadlinesBarProps) => {
   const items = mesh.headlinesState?.items ?? [];
 
   return (
@@ -169,10 +178,10 @@ export const HeadlinesBar = ({ mesh }: HeadlinesBarProps) => {
                 refresh reuses DOM nodes instead of remounting them
                 and the CSS marquee keeps its scroll position. */}
             {items.map(h => (
-              <Item key={`${h.url}-a`} headline={h} />
+              <Item key={`${h.url}-a`} headline={h} onOpenUrl={onOpenUrl} />
             ))}
             {items.map(h => (
-              <Item key={`${h.url}-b`} headline={h} />
+              <Item key={`${h.url}-b`} headline={h} onOpenUrl={onOpenUrl} />
             ))}
           </div>
         )}
