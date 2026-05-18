@@ -103,6 +103,14 @@ type AppEntry = {
     | "card";
 };
 
+// App ids whose SharedBrowser window is pinned to a single dapp — URL
+// bar is hidden, in-desktop "navigate to URL" intents skip it. Value
+// is the chunky uppercase title shown on the window chrome.
+const LOCKED_APP_TITLES: Record<string, string> = {
+  "abi-ninja": "ABININJA",
+  "nifty-ink": "NIFTYINK",
+};
+
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
 // stack vertically down the left edge, then wrap to a new column 100px
 // to the right.
@@ -1726,13 +1734,12 @@ const Desktop: NextPage = () => {
             z: 6,
           };
           const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
-          // Apps that pin the window to a fixed dapp (abi-ninja) hide the
-          // URL bar so users can't navigate away; the title swaps to the
-          // app's label instead of echoing the current URL.
-          const lockedToApp = browser.appId === "abi-ninja";
-          const windowTitle = lockedToApp
-            ? "ABININJA"
-            : `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
+          // Apps that pin the window to a fixed dapp hide the URL bar
+          // so users can't navigate away; the title swaps to the app's
+          // label instead of echoing the current URL.
+          const lockedAppTitle = browser.appId ? LOCKED_APP_TITLES[browser.appId] : undefined;
+          const lockedToApp = lockedAppTitle !== undefined;
+          const windowTitle = lockedAppTitle ?? `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
           return (
             <Window
               key={slotId}

@@ -422,6 +422,12 @@ const DEFAULT_APPS: AppEntry[] = [
     url: "https://abi.ninja",
   },
   {
+    id: "nifty-ink",
+    label: "NiftyINK",
+    icon: "/icons/paint.png",
+    url: "https://nifty.ink/",
+  },
+  {
     id: "qr",
     label: "QR",
     icon: "/icons/qr.png",
