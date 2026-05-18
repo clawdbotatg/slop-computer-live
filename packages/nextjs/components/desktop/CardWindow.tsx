@@ -36,7 +36,14 @@ export const CardWindow = () => {
   const rootRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<null | { startClientX: number; startClientY: number; startPos: Frac; moved: boolean }>(null);
+  const titleBodyRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<null | {
+    startClientX: number;
+    startClientY: number;
+    startPos: Frac;
+    moved: boolean;
+    startedOnBody: boolean;
+  }>(null);
 
   useEffect(() => {
     if (!loading) {
@@ -168,18 +175,23 @@ export const CardWindow = () => {
   };
 
   // Title drag — pointer-based so it works the same on mouse + touch.
-  // Drag threshold: < 4px movement counts as a click (focus to edit),
-  // otherwise we move the title.
+  // Drag threshold: < 4px movement counts as a click; whether that
+  // click enters edit mode depends on which zone was hit:
+  // - body  → enter edit mode
+  // - title bar → no-op (it's just a handle)
   const onTitlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (titleEditing) return; // already editing → let normal text interactions happen
     e.preventDefault();
     e.stopPropagation();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const body = titleBodyRef.current;
+    const startedOnBody = !!body && (e.target === body || body.contains(e.target as Node));
     dragRef.current = {
       startClientX: e.clientX,
       startClientY: e.clientY,
       startPos: titlePos,
       moved: false,
+      startedOnBody,
     };
   };
   const onTitlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -200,12 +212,12 @@ export const CardWindow = () => {
     const d = dragRef.current;
     dragRef.current = null;
     (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    // Treat as click → enter edit mode, focus + place caret at end.
-    if (d && !d.moved) {
+    // Treat as click on body → enter edit mode, focus + place caret at end.
+    // Clicks on the title bar are no-ops (just used as a drag handle).
+    if (d && !d.moved && d.startedOnBody) {
       setTitleEditing(true);
-      // defer so the contentEditable is focusable after re-render
       requestAnimationFrame(() => {
-        const el = titleRef.current;
+        const el = titleBodyRef.current;
         if (!el) return;
         el.focus();
         const range = document.createRange();
@@ -230,19 +242,19 @@ export const CardWindow = () => {
 
   const onTitleBlur = () => {
     setTitleEditing(false);
-    const el = titleRef.current;
+    const el = titleBodyRef.current;
     if (el) setTitleText(el.innerText.replace(/\n/g, " ").trim() || " ");
   };
   const onTitleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      titleRef.current?.blur();
+      titleBodyRef.current?.blur();
     }
     if (e.key === "Escape") {
       e.preventDefault();
       // Reset edits + blur.
-      if (titleRef.current) titleRef.current.innerText = titleText;
-      titleRef.current?.blur();
+      if (titleBodyRef.current) titleBodyRef.current.innerText = titleText;
+      titleBodyRef.current?.blur();
     }
   };
 
@@ -311,28 +323,30 @@ export const CardWindow = () => {
   const imgSrc = resultUrl ?? TEMPLATE_SRC;
 
   // Compute live screen-position for the title overlay based on the
-  // current image rect. Falls back to off-screen until we have measured.
+  // current image rect. Falls back to hidden until we have measured.
   const imgRect = getImageRect();
-  const titleStyle: React.CSSProperties = imgRect
+  const titleFontPx = imgRect ? titleSizeFrac * imgRect.width : 0;
+  // Title-bar height scales with the body font but stays in a comfy
+  // range so a tiny title still has a touchable handle.
+  const titleBarHeight = Math.max(14, Math.min(28, titleFontPx * 0.42));
+  const titleWindowStyle: React.CSSProperties = imgRect
     ? {
         position: "absolute",
         left: imgRect.left + titlePos.x * imgRect.width,
         top: imgRect.top + titlePos.y * imgRect.height,
         transform: "translate(-50%, -50%)",
-        fontSize: titleSizeFrac * imgRect.width,
-        color: TITLE_COLOR,
-        fontFamily: "var(--slop-font-display)",
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        textShadow: "0 2px 6px rgba(0,0,0,0.7)",
-        whiteSpace: "pre",
+        display: "flex",
+        flexDirection: "column",
+        border: "1px solid var(--slop-magenta, #ff3ec9)",
+        boxShadow: "0 4px 14px rgba(0,0,0,0.45), 0 0 8px rgba(255,62,201,0.25)",
+        background: "rgba(10, 4, 30, 0.32)",
+        backdropFilter: "blur(2px)",
+        cursor: titleEditing ? "auto" : "grab",
         userSelect: titleEditing ? "text" : "none",
-        cursor: titleEditing ? "text" : "grab",
-        padding: "4px 8px",
-        outline: titleEditing ? `2px solid ${TITLE_COLOR}` : "1px dashed transparent",
-        outlineOffset: 2,
-        background: titleEditing ? "rgba(0,0,0,0.35)" : "transparent",
         zIndex: 8,
+        // Just enough min-width so even an empty title is a clickable
+        // window, not a sliver.
+        minWidth: Math.max(80, titleFontPx * 3),
       }
     : { display: "none" };
 
@@ -367,76 +381,66 @@ export const CardWindow = () => {
         draggable={false}
       />
 
-      {/* Editable title — visible on the template too so you can prep
-          the guest's name before dropping. Baked into the PNG only at
-          download time. Drag to move, click to edit, wheel to resize. */}
+      {/* Editable title — a tiny faux window with a magenta title bar
+          and a translucent body holding cyan editable text. Visible on
+          the template too so the host can prep the guest's name before
+          drop. The window decoration is UI only; the canvas bake at
+          download time renders just the text. Drag from the title bar
+          (or unfocused body) to move; click body to edit; wheel to
+          resize. */}
       <div
         ref={titleRef}
-        contentEditable={titleEditing}
-        suppressContentEditableWarning
         onPointerDown={onTitlePointerDown}
         onPointerMove={onTitlePointerMove}
         onPointerUp={onTitlePointerUp}
         onWheel={onTitleWheel}
-        onBlur={onTitleBlur}
-        onKeyDown={onTitleKeyDown}
-        style={titleStyle}
-        onMouseEnter={e => {
-          if (!titleEditing) (e.currentTarget as HTMLDivElement).style.outline = `1px dashed ${TITLE_COLOR}`;
-        }}
-        onMouseLeave={e => {
-          if (!titleEditing) (e.currentTarget as HTMLDivElement).style.outline = "1px dashed transparent";
-        }}
+        style={titleWindowStyle}
       >
-        {titleText}
-      </div>
-
-      {!loading ? (
         <div
           aria-hidden
           style={{
-            position: "absolute",
-            left: 12,
-            bottom: 12,
+            height: titleBarHeight,
             display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            pointerEvents: "none",
-            zIndex: 7,
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0 8px",
+            background: "var(--slop-titlebar-active)",
+            borderBottom: "1px solid rgba(255,62,201,0.6)",
+            color: "#fff",
+            fontFamily: "var(--slop-font-display)",
+            fontSize: Math.max(8, titleBarHeight * 0.55),
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            cursor: titleEditing ? "default" : "grab",
+            userSelect: "none",
           }}
         >
-          {!resultUrl ? (
-            <div
-              style={{
-                padding: "6px 10px",
-                background: "rgba(0,0,0,0.55)",
-                border: "1px solid var(--slop-magenta, #ff3ec9)",
-                color: "#fff",
-                fontFamily: "var(--slop-font-display)",
-                fontSize: 11,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-              }}
-            >
-              drop a guest pfp →
-            </div>
-          ) : null}
-          <div
-            style={{
-              padding: "6px 10px",
-              background: "rgba(0,0,0,0.55)",
-              border: "1px solid var(--slop-cyan, #3fcfff)",
-              color: "var(--slop-cyan, #3fcfff)",
-              fontFamily: "var(--slop-font-display)",
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-            }}
-          >
-            click title to edit · drag to move · wheel to resize
-          </div>
+          title
         </div>
-      ) : null}
+        <div
+          ref={titleBodyRef}
+          contentEditable={titleEditing}
+          suppressContentEditableWarning
+          onBlur={onTitleBlur}
+          onKeyDown={onTitleKeyDown}
+          style={{
+            padding: `${Math.max(4, titleFontPx * 0.18)}px ${Math.max(10, titleFontPx * 0.32)}px`,
+            background: titleEditing ? "rgba(0,0,0,0.42)" : "rgba(0,0,0,0.28)",
+            color: TITLE_COLOR,
+            fontFamily: "var(--slop-font-display)",
+            fontSize: titleFontPx,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+            outline: "none",
+            cursor: titleEditing ? "text" : "grab",
+            textAlign: "center",
+            textShadow: "0 2px 6px rgba(0,0,0,0.7)",
+          }}
+        >
+          {titleText}
+        </div>
+      </div>
 
       {hover ? (
         <div
