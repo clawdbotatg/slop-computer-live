@@ -631,21 +631,30 @@ export const CardWindow = () => {
         <div
           style={{
             position: "absolute",
-            right: 12,
-            bottom: 12,
+            top: 8,
+            right: 8,
             display: "flex",
-            gap: 8,
+            gap: 6,
             zIndex: 12,
           }}
         >
-          <button onClick={reset} style={buttonStyle}>
-            reset
+          <button
+            type="button"
+            onClick={reset}
+            aria-label="reset card"
+            title="reset card"
+            style={overlayBtnStyle(false)}
+          >
+            <ResetIcon />
           </button>
           <button
+            type="button"
             onClick={() => void download()}
-            style={{ ...buttonStyle, background: "var(--slop-magenta, #ff3ec9)", color: "#0b0420" }}
+            aria-label="download PNG"
+            title="download PNG"
+            style={overlayBtnStyle(false)}
           >
-            download
+            <DownloadIcon />
           </button>
         </div>
       ) : null}
@@ -653,16 +662,59 @@ export const CardWindow = () => {
   );
 };
 
-const buttonStyle: React.CSSProperties = {
-  padding: "8px 14px",
-  background: "rgba(0,0,0,0.7)",
-  border: "1px solid var(--slop-magenta, #ff3ec9)",
+// Matches the VideoView / AudioVisualizer overlay button — translucent
+// dark bg, backdrop blur, magenta border on active.
+const overlayBtnStyle = (active: boolean): React.CSSProperties => ({
+  width: 32,
+  height: 32,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  background: active ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
+  border: `1px solid ${active ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
   color: "#fff",
-  fontFamily: "var(--slop-font-display)",
-  fontSize: 12,
-  letterSpacing: "0.12em",
-  textTransform: "uppercase",
   cursor: "pointer",
-};
+  backdropFilter: "blur(4px)",
+});
+
+// Mac OS 9-flavored monochrome icons. ~16px viewBox, currentColor.
+const ResetIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    {/* Circular arrow — start of the loop near top-right, sweeping
+        counter-clockwise to a downward arrowhead on the left. */}
+    <path d="M13 8 A 5 5 0 1 1 8 3" />
+    <polyline points="8 1 8 3 10 3" />
+  </svg>
+);
+
+const DownloadIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    {/* Down arrow into a tray. */}
+    <line x1="8" y1="2" x2="8" y2="10" />
+    <polyline points="4.5 7 8 10.5 11.5 7" />
+    <polyline points="2.5 12 2.5 14 13.5 14 13.5 12" />
+  </svg>
+);
 
 export default CardWindow;
