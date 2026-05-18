@@ -26,6 +26,7 @@ import {
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import { addPeer, broadcast, findPeersBySessionToken, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
+import { generateCard } from "./card.js";
 import {
   MAX_TEXT_LEN as CHAT_MAX_TEXT,
   type ChatMessage,
@@ -478,6 +479,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Transcript",
     icon: "/icons/transcript.png",
     kind: "transcript",
+  },
+  {
+    id: "card",
+    label: "Card",
+    icon: "/icons/card.png",
+    kind: "card",
   },
 ];
 
@@ -1335,6 +1342,38 @@ app.delete("/v1/avatars", async (req, reply) => {
   if (removed) broadcast({ type: "avatar_removed", ownerKey: key });
   return { ok: true, removed, key };
 });
+
+// --- Title card generator --------------------------------------------------
+// POST raw PFP bytes (image/jpeg|png|webp) -> gpt-image-2 composites the
+// guest face into the green circle on the template. Returns PNG bytes.
+// Ephemeral: nothing persisted server-side. ~10MB cap on the PFP.
+const CARD_PFP_MAX_BYTES = 10 * 1024 * 1024;
+app.post(
+  "/v1/card",
+  { bodyLimit: CARD_PFP_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply.code(400).send({ error: "empty-body", note: "POST raw image bytes with image/jpeg, image/png, or image/webp" });
+    }
+    if (body.length > CARD_PFP_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
+
+    const ct = String(req.headers["content-type"] ?? "");
+    try {
+      const { png } = await generateCard(body, ct);
+      reply.header("content-type", "image/png");
+      reply.header("cache-control", "no-store");
+      return reply.send(png);
+    } catch (err) {
+      req.log.error({ err }, "card generation failed");
+      const msg = err instanceof Error ? err.message : "unknown";
+      return reply.code(500).send({ error: "card-generation-failed", detail: msg });
+    }
+  },
+);
 
 // --- Music files (static) --------------------------------------------------
 // MP3s + playlist.json live in MUSIC_DIR (default `/var/lib/slop-relay/music`

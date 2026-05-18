@@ -55,4 +55,5 @@ export const config = {
   twitterConsumerSecret: env("TWITTER_CONSUMER_SECRET", ""),
   twitterAccessToken: env("TWITTER_ACCESS_TOKEN", ""),
   twitterAccessTokenSecret: env("TWITTER_ACCESS_TOKEN_SECRET", ""),
+  openAiApiKey: env("OPENAI_API_KEY", ""),
 };

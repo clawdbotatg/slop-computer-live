@@ -237,6 +237,10 @@
     {
       "name": "transcript",
       "prompt": "A retro scroll of paper with wavy lines of text and a vintage microphone leaning against it, representing a live speech-to-text transcript of a show."
+    },
+    {
+      "name": "card",
+      "prompt": "A retro Mac OS 9-style guest title card icon: a glowing magenta-bordered rectangular card with a circular profile portrait silhouette centered, plus three small horizontal text bars beneath suggesting a name caption."
     }
   ],
   "sheet": {

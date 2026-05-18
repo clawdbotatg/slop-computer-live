@@ -11,6 +11,7 @@ import { AIWalletWindow } from "~~/components/desktop/AIWalletWindow";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AUDIO_MUTED_STORAGE_KEY, AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { CardWindow } from "~~/components/desktop/CardWindow";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
@@ -98,7 +99,8 @@ type AppEntry = {
     | "ai-wallet"
     | "research"
     | "news"
-    | "transcript";
+    | "transcript"
+    | "card";
 };
 
 // Default cascade for icons whose slot hasn't been saved yet — 6 icons
@@ -1448,6 +1450,9 @@ const Desktop: NextPage = () => {
                       case "transcript":
                         focusApp("transcript");
                         return;
+                      case "card":
+                        focusApp("card");
+                        return;
                       case "audio":
                         // Not publishing yet → open the share dialog.
                         // Already publishing → bring the existing window
@@ -1943,6 +1948,16 @@ const Desktop: NextPage = () => {
               minHeight={280}
             >
               <TranscriptWindow relayHttpUrl={RELAY_HTTP} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="card"
+              title="CARD"
+              defaultSlot={{ x: 220, y: 120, width: 780, height: 500 }}
+              minWidth={480}
+              minHeight={320}
+            >
+              <CardWindow />
             </SharedAppWindow>
           </>
         ) : null}

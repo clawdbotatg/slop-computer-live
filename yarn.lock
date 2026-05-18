@@ -3238,6 +3238,7 @@ __metadata:
     chess.js: "npm:^1.4.0"
     dotenv: "npm:^17.0.0"
     fastify: "npm:^5.2.1"
+    openai: "npm:^6.37.0"
     tsx: "npm:^4.20.0"
     typescript: "npm:~5.8.2"
     viem: "npm:2.39.0"
@@ -12225,6 +12226,23 @@ __metadata:
   bin:
     openai: bin/cli
   checksum: 10/e1bdfea7b58f6d6cc0c2787254e9ae0395c7cb78b6ad4383c2777fd929ff43d2cb614c12ff7aaef04e260a6b48f3bc15f3c864abb9df35cfc7594e6aa46d4858
+  languageName: node
+  linkType: hard
+
+"openai@npm:^6.37.0":
+  version: 6.37.0
+  resolution: "openai@npm:6.37.0"
+  peerDependencies:
+    ws: ^8.18.0
+    zod: ^3.25 || ^4.0
+  peerDependenciesMeta:
+    ws:
+      optional: true
+    zod:
+      optional: true
+  bin:
+    openai: bin/cli
+  checksum: 10/06eb2aea7813502e7b517b64d369f389e162f9de739f05f1f68f9165e9f2d9826ad277d8eb83345fc7bf563083573b1c37d2ccc9f663960340221f858fc5113e
   languageName: node
   linkType: hard
 
