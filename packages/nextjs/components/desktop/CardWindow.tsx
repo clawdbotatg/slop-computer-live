@@ -298,10 +298,14 @@ export const CardWindow = () => {
     setError(null);
   };
 
-  // Bake the title text onto the result image at its NATURAL resolution
-  // and trigger a PNG download. We use fractions-of-image-rect for
-  // position and size so the on-screen layout maps 1:1 onto the
-  // natural-size canvas (no display-px math).
+  // Bake the title — including the magenta-bordered mini-window chrome
+  // around it — onto the result image at its NATURAL resolution. We
+  // measure the live DOM (window outer rect, title bar, body) and scale
+  // each rect + computed style into canvas natural-pixel space so the
+  // bake is WYSIWYG: whatever the host sees on screen is what lands in
+  // the PNG. Backdrop-filter blur isn't reproducible on canvas but the
+  // translucent fills still composite over the card image so the visual
+  // result is close.
   const download = async () => {
     if (!resultUrl) return;
     try {
@@ -321,36 +325,104 @@ export const CardWindow = () => {
       if (!ctx) throw new Error("canvas-2d unavailable");
       ctx.drawImage(img, 0, 0);
 
-      // Pull the live text + computed font off the on-screen title body
-      // so the bake matches what the host actually sees. Two reasons:
-      //   1. `ctx.font` cannot parse CSS `var(...)` — assigning a string
-      //      with `var(--slop-font-display)` is silently rejected and
-      //      canvas keeps the default `10px sans-serif`, so the text was
-      //      rendering as a tiny speck (looked missing).
-      //   2. If the user clicks DOWNLOAD while still editing (no blur
-      //      yet), `titleText` state hasn't committed — but the DOM
-      //      `innerText` has the latest characters.
-      const titleEl = titleBodyRef.current;
-      const text = ((titleEl?.innerText ?? titleText) || "").replace(/\n/g, " ").trim();
-      if (text) {
-        // Make sure all @font-face / next/font Silkscreen is ready
-        // before we draw — first-bake might fire before the font loads.
-        await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+      // Wait for any pending Silkscreen / next-font loads before we
+      // measure-and-bake — first download after open used to render a
+      // tiny default-font speck because the font wasn't ready yet.
+      await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
 
-        const sizePx = titleSizeFrac * img.naturalWidth;
-        const x = titlePos.x * img.naturalWidth;
-        const y = titlePos.y * img.naturalHeight;
-        // next/font registers Silkscreen under a generated family name
-        // (e.g. `__Silkscreen_abc123`). Read the live computed value so
-        // we get whatever the title element is actually rendering with.
-        const fontFamily = titleEl ? getComputedStyle(titleEl).fontFamily : '"Silkscreen", "Courier New", monospace';
-        ctx.font = `${sizePx}px ${fontFamily}`;
-        ctx.fillStyle = TITLE_COLOR;
+      const titleWindowEl = titleRef.current;
+      const titleBarEl = titleWindowEl?.firstElementChild as HTMLElement | null;
+      const bodyEl = titleBodyRef.current;
+      const rootEl = rootRef.current;
+      const imgRect = getImageRect();
+      const rawText = ((bodyEl?.innerText ?? titleText) || "").replace(/\n/g, " ").trim();
+
+      if (titleWindowEl && titleBarEl && bodyEl && rootEl && imgRect && rawText) {
+        // Translate viewport-relative DOM rects into canvas (natural
+        // image-pixel) coordinates. getImageRect is root-relative; rects
+        // from getBoundingClientRect are viewport-relative — so anchor
+        // off the root's viewport position.
+        const rootViewport = rootEl.getBoundingClientRect();
+        const imgVx = rootViewport.left + imgRect.left;
+        const imgVy = rootViewport.top + imgRect.top;
+        const scale = img.naturalWidth / imgRect.width;
+
+        const wRect = titleWindowEl.getBoundingClientRect();
+        const tbRect = titleBarEl.getBoundingClientRect();
+        const bdRect = bodyEl.getBoundingClientRect();
+
+        const wStyle = getComputedStyle(titleWindowEl);
+        const tbStyle = getComputedStyle(titleBarEl);
+        const bdStyle = getComputedStyle(bodyEl);
+
+        const toCanvas = (r: DOMRect) => ({
+          x: (r.left - imgVx) * scale,
+          y: (r.top - imgVy) * scale,
+          w: r.width * scale,
+          h: r.height * scale,
+        });
+        const W = toCanvas(wRect);
+        const TB = toCanvas(tbRect);
+        const BD = toCanvas(bdRect);
+
+        // Window outer drop shadow (matches inline boxShadow):
+        // "0 4px 14px rgba(0,0,0,0.45), 0 0 8px rgba(255,62,201,0.25)"
+        ctx.save();
+        ctx.fillStyle = wStyle.backgroundColor || "rgba(10,4,30,0.32)";
+        ctx.shadowColor = "rgba(0,0,0,0.45)";
+        ctx.shadowBlur = 14 * scale;
+        ctx.shadowOffsetY = 4 * scale;
+        ctx.fillRect(W.x, W.y, W.w, W.h);
+        ctx.restore();
+        // Magenta outer glow pass.
+        ctx.save();
+        ctx.shadowColor = "rgba(255,62,201,0.25)";
+        ctx.shadowBlur = 8 * scale;
+        ctx.strokeStyle = "rgba(255,62,201,0.001)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(W.x, W.y, W.w, W.h);
+        ctx.restore();
+
+        // Title bar fill + bottom border.
+        ctx.fillStyle = tbStyle.backgroundColor || "var(--slop-titlebar-active)";
+        ctx.fillRect(TB.x, TB.y, TB.w, TB.h);
+        ctx.fillStyle = "rgba(255,62,201,0.6)";
+        ctx.fillRect(TB.x, TB.y + TB.h - Math.max(1, scale), TB.w, Math.max(1, scale));
+
+        // Title bar text — uppercase "TITLE" (CSS text-transform happens
+        // visually; canvas needs the rendered glyphs).
+        const tbFontPx = parseFloat(tbStyle.fontSize) * scale;
+        ctx.font = `${tbFontPx}px ${tbStyle.fontFamily}`;
+        ctx.fillStyle = tbStyle.color;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.shadowColor = "rgba(0,0,0,0.8)";
-        ctx.shadowBlur = sizePx * 0.18;
-        ctx.fillText(text, x, y);
+        (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+          `${(parseFloat(tbStyle.letterSpacing) || 0) * scale}px`;
+        ctx.fillText("TITLE", TB.x + TB.w / 2, TB.y + TB.h / 2);
+
+        // Body fill (translucent black).
+        ctx.fillStyle = bdStyle.backgroundColor || "rgba(0,0,0,0.28)";
+        ctx.fillRect(BD.x, BD.y, BD.w, BD.h);
+
+        // Body text — cyan title, drop shadow for legibility.
+        const bdFontPx = parseFloat(bdStyle.fontSize) * scale;
+        ctx.save();
+        ctx.font = `${bdFontPx}px ${bdStyle.fontFamily}`;
+        ctx.fillStyle = bdStyle.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+          `${(parseFloat(bdStyle.letterSpacing) || 0) * scale}px`;
+        ctx.shadowColor = "rgba(0,0,0,0.7)";
+        ctx.shadowBlur = bdFontPx * 0.18;
+        ctx.shadowOffsetY = bdFontPx * 0.08;
+        ctx.fillText(rawText.toUpperCase(), BD.x + BD.w / 2, BD.y + BD.h / 2);
+        ctx.restore();
+
+        // Window outer border last so it sits on top of all fills.
+        ctx.strokeStyle = wStyle.borderColor || "#ff3ec9";
+        ctx.lineWidth = Math.max(1, scale);
+        ctx.strokeRect(W.x, W.y, W.w, W.h);
       }
 
       const blob = await new Promise<Blob | null>(res => canvas.toBlob(b => res(b), "image/png"));
