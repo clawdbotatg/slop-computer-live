@@ -90,21 +90,63 @@ const ACCENT = "var(--slop-magenta, #ff3ec9)";
 
 const EMPTY_SOCIALS: Socials = { twitter: "", github: "", linkedin: "", website: "", other: "" };
 
+// Module-scope store so a completed research dossier (and the form that
+// produced it) survives the window being closed and reopened in the same
+// page session. SharedAppWindow unmounts the body on close, which would
+// otherwise blow away an expensive ~30s research result. We rehydrate
+// from here on mount and write through on every change. Loading/error
+// flags are intentionally NOT persisted — an in-flight fetch ends when
+// the body unmounts, so reopening should not show a stuck "loading".
+const researchStore: {
+  phase: Phase;
+  lookupQuery: string;
+  name: string;
+  socials: Socials;
+  notes: string;
+  result: ResearchResult | null;
+} = {
+  phase: "lookup",
+  lookupQuery: "",
+  name: "",
+  socials: EMPTY_SOCIALS,
+  notes: "",
+  result: null,
+};
+
 export const ResearchWindow = () => {
-  const [phase, setPhase] = useState<Phase>("lookup");
+  const [phase, setPhase] = useState<Phase>(researchStore.phase);
 
   // Phase 1 state
-  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupQuery, setLookupQuery] = useState(researchStore.lookupQuery);
   const [looking, setLooking] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
 
   // Phase 2 state (form + research output)
-  const [name, setName] = useState("");
-  const [socials, setSocials] = useState<Socials>(EMPTY_SOCIALS);
-  const [notes, setNotes] = useState("");
+  const [name, setName] = useState(researchStore.name);
+  const [socials, setSocials] = useState<Socials>(researchStore.socials);
+  const [notes, setNotes] = useState(researchStore.notes);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ResearchResult | null>(null);
+  const [result, setResult] = useState<ResearchResult | null>(researchStore.result);
+
+  useEffect(() => {
+    researchStore.phase = phase;
+  }, [phase]);
+  useEffect(() => {
+    researchStore.lookupQuery = lookupQuery;
+  }, [lookupQuery]);
+  useEffect(() => {
+    researchStore.name = name;
+  }, [name]);
+  useEffect(() => {
+    researchStore.socials = socials;
+  }, [socials]);
+  useEffect(() => {
+    researchStore.notes = notes;
+  }, [notes]);
+  useEffect(() => {
+    researchStore.result = result;
+  }, [result]);
 
   const setSocialField = (k: keyof Socials, v: string) => setSocials(s => ({ ...s, [k]: v }));
 

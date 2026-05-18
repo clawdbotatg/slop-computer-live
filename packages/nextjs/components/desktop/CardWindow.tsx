@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { LoadingBar } from "~~/components/ui";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const TEMPLATE_SRC = "/card-template.png";
@@ -19,18 +20,48 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 type Frac = { x: number; y: number };
 
+// Module-scope store so the generated card + title overlay survive the
+// window being closed and reopened in the same page session.
+// SharedAppWindow unmounts the body on close, which would otherwise wipe
+// the result blob URL and the host's typed-in name. We rehydrate from
+// here on mount and write through on every change.
+const cardStore: {
+  resultUrl: string | null;
+  titleText: string;
+  titlePos: Frac;
+  titleSizeFrac: number;
+} = {
+  resultUrl: null,
+  titleText: "GUEST NAME",
+  titlePos: { x: 0.5, y: 0.93 },
+  titleSizeFrac: 0.055,
+};
+
 export const CardWindow = () => {
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(cardStore.resultUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
   const [progress, setProgress] = useState(0);
 
   // Title overlay state.
-  const [titleText, setTitleText] = useState("GUEST NAME");
-  const [titlePos, setTitlePos] = useState<Frac>({ x: 0.5, y: 0.93 }); // fraction of image rect
-  const [titleSizeFrac, setTitleSizeFrac] = useState(0.055); // font-size as fraction of image width
+  const [titleText, setTitleText] = useState(cardStore.titleText);
+  const [titlePos, setTitlePos] = useState<Frac>(cardStore.titlePos); // fraction of image rect
+  const [titleSizeFrac, setTitleSizeFrac] = useState(cardStore.titleSizeFrac); // font-size as fraction of image width
   const [titleEditing, setTitleEditing] = useState(false);
+
+  useEffect(() => {
+    cardStore.resultUrl = resultUrl;
+  }, [resultUrl]);
+  useEffect(() => {
+    cardStore.titleText = titleText;
+  }, [titleText]);
+  useEffect(() => {
+    cardStore.titlePos = titlePos;
+  }, [titlePos]);
+  useEffect(() => {
+    cardStore.titleSizeFrac = titleSizeFrac;
+  }, [titleSizeFrac]);
 
   const abortRef = useRef<AbortController | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -64,12 +95,15 @@ export const CardWindow = () => {
     return () => cancelAnimationFrame(raf);
   }, [loading]);
 
+  // Only abort an in-flight generation on unmount — DON'T revoke the
+  // blob URL here. The cardStore keeps the URL alive across close/reopen;
+  // explicit replacement (`handleFile`) and `reset()` are the only paths
+  // that revoke old URLs.
   useEffect(() => {
     return () => {
-      if (resultUrl) URL.revokeObjectURL(resultUrl);
       abortRef.current?.abort();
     };
-  }, [resultUrl]);
+  }, []);
 
   // Compute where inside the wrapper the image is actually drawn
   // (object-fit: contain leaves letterbox bars). Returns null until
@@ -473,56 +507,13 @@ export const CardWindow = () => {
             position: "absolute",
             inset: 0,
             display: "flex",
-            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: 14,
-            color: "#fff",
-            fontFamily: "var(--slop-font-display)",
             pointerEvents: "none",
             zIndex: 9,
           }}
         >
-          <div
-            style={{
-              fontSize: 18,
-              letterSpacing: "0.22em",
-              textTransform: "uppercase",
-              textShadow: "0 0 12px rgba(255,62,201,0.7)",
-            }}
-          >
-            generating
-          </div>
-          <div
-            style={{
-              width: "min(340px, 60%)",
-              height: 14,
-              background: "rgba(0,0,0,0.65)",
-              border: "1px solid var(--slop-magenta, #ff3ec9)",
-              boxShadow: "0 0 12px rgba(255,62,201,0.5)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${progress}%`,
-                height: "100%",
-                background: "var(--slop-magenta, #ff3ec9)",
-                boxShadow: "0 0 10px rgba(255,62,201,0.9) inset",
-                transition: "width 80ms linear",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              fontSize: 10,
-              letterSpacing: "0.18em",
-              textTransform: "uppercase",
-              opacity: 0.7,
-            }}
-          >
-            {Math.round(progress)}%
-          </div>
+          <LoadingBar cells={20} progress={progress} caption="generating" />
         </div>
       ) : null}
 
