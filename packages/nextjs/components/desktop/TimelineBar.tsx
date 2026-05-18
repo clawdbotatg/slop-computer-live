@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useRef } from "react";
 import type { PeerMeshState, TimelineItem } from "~~/hooks/usePeerMesh";
 
 // Twitter timeline marquee — top of the three-bar stack. Reads the
@@ -103,10 +103,18 @@ function Item({ tweet }: { tweet: TimelineItem }) {
 export const TimelineBar = ({ mesh }: TimelineBarProps) => {
   const items = mesh.timelineState?.items ?? [];
 
-  const track = useMemo(() => items.concat(items), [items]);
-  // Per-item duration × count = total loop time, so the visual speed
-  // stays roughly constant whether we surface 25 tweets or 100.
-  const durationS = Math.min(MAX_DURATION_S, Math.max(MIN_DURATION_S, items.length * SECONDS_PER_ITEM));
+  // Lock the animation duration on the FIRST non-empty poll and keep
+  // it for the lifetime of the component. If we recomputed it every
+  // time `items.length` shifted (timeline is engagement-ranked and the
+  // size can drift between polls), the CSS animation property would
+  // change and the browser would restart the marquee from 0 — a
+  // visible jump. Per-item budget is still the source of truth; we
+  // just freeze it once the first batch arrives.
+  const lockedDurationRef = useRef<number | null>(null);
+  if (lockedDurationRef.current === null && items.length > 0) {
+    lockedDurationRef.current = Math.min(MAX_DURATION_S, Math.max(MIN_DURATION_S, items.length * SECONDS_PER_ITEM));
+  }
+  const durationS = lockedDurationRef.current ?? MIN_DURATION_S;
 
   return (
     <>
@@ -183,8 +191,16 @@ export const TimelineBar = ({ mesh }: TimelineBarProps) => {
               willChange: "transform",
             }}
           >
-            {track.map((tw, i) => (
-              <Item key={`${tw.id}-${i}`} tweet={tw} />
+            {/* Two halves (-a / -b) keyed by tweet id, not by array
+                index. Timeline is engagement-ranked so the order can
+                shuffle between polls; index-based keys would remount
+                every cell and restart the marquee. With id-based keys
+                React just shuffles the existing DOM nodes in place. */}
+            {items.map(tw => (
+              <Item key={`${tw.id}-a`} tweet={tw} />
+            ))}
+            {items.map(tw => (
+              <Item key={`${tw.id}-b`} tweet={tw} />
             ))}
           </div>
         )}

@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import type { PeerMeshState, TickerItem } from "~~/hooks/usePeerMesh";
 
 // Render a sub-cent USD price using the "0.0₍N₎digits" subscript-zeros
@@ -288,12 +287,7 @@ export const TickerBar = ({ mesh }: TickerBarProps) => {
   // featured separately from the rest of the strip. Pull it out of the
   // scrolling track so it isn't shown twice.
   const clawd = allItems.find(i => i.symbol === "$CLAWD") ?? null;
-  const items = useMemo(() => allItems.filter(i => i.symbol !== "$CLAWD"), [allItems]);
-
-  // Render the track twice with a -50% translate animation so the loop
-  // is seamless. Memoize so we're not building a new array on every
-  // render — items only change once a minute.
-  const track = useMemo(() => items.concat(items), [items]);
+  const items = allItems.filter(i => i.symbol !== "$CLAWD");
 
   return (
     <>
@@ -345,8 +339,16 @@ export const TickerBar = ({ mesh }: TickerBarProps) => {
               willChange: "transform",
             }}
           >
-            {track.map((item, i) => (
-              <Cell key={`${item.symbol}-${i}`} item={item} />
+            {/* Track is rendered as two halves (-a / -b) with keys
+                derived from a stable id, not the array index. That way
+                when the relay pushes a new poll, React reconciles each
+                cell in place instead of remounting — the CSS animation
+                keeps running and the marquee never jumps back to 0. */}
+            {items.map(item => (
+              <Cell key={`${item.symbol}-a`} item={item} />
+            ))}
+            {items.map(item => (
+              <Cell key={`${item.symbol}-b`} item={item} />
             ))}
           </div>
         )}

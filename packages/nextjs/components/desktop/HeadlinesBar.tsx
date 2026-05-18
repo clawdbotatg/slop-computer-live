@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import type { Headline, PeerMeshState } from "~~/hooks/usePeerMesh";
 
 // Headlines marquee — sits directly above the price ticker. Crypto +
@@ -96,9 +95,6 @@ function Item({ headline }: { headline: Headline }) {
 export const HeadlinesBar = ({ mesh }: HeadlinesBarProps) => {
   const items = mesh.headlinesState?.items ?? [];
 
-  // Duplicate the track so a -50% translate gives a seamless loop.
-  const track = useMemo(() => items.concat(items), [items]);
-
   return (
     <>
       <div
@@ -169,8 +165,14 @@ export const HeadlinesBar = ({ mesh }: HeadlinesBarProps) => {
               willChange: "transform",
             }}
           >
-            {track.map((h, i) => (
-              <Item key={`${h.url}-${i}`} headline={h} />
+            {/* Two halves (-a / -b) keyed by url, not index, so a
+                refresh reuses DOM nodes instead of remounting them
+                and the CSS marquee keeps its scroll position. */}
+            {items.map(h => (
+              <Item key={`${h.url}-a`} headline={h} />
+            ))}
+            {items.map(h => (
+              <Item key={`${h.url}-b`} headline={h} />
             ))}
           </div>
         )}
