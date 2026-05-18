@@ -360,7 +360,8 @@ type AppEntry = {
     | "ai-wallet"
     | "research"
     | "news"
-    | "transcript";
+    | "transcript"
+    | "card";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
