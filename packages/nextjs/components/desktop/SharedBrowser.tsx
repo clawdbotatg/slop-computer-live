@@ -71,6 +71,27 @@ async function resolveEnsName(name: string, pathSuffix: string): Promise<string 
 const SERVER_W = 1280;
 const SERVER_H = 800;
 
+// Tiny "open in new window" glyph: a small square with an arrow
+// breaking out of the top-right corner. 14px to match the surrounding
+// button text height.
+const ExternalLinkIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M12 9.5 V 12 A 1 1 0 0 1 11 13 H 4 A 1 1 0 0 1 3 12 V 5 A 1 1 0 0 1 4 4 H 6.5" />
+    <path d="M9.5 3 H 13 V 6.5" />
+    <path d="M13 3 L 8 8" />
+  </svg>
+);
+
 const isHttpUrl = (raw: string): boolean => {
   try {
     const u = new URL(raw);
@@ -567,6 +588,21 @@ export const SharedBrowser = ({
     onNavigate(next);
   };
 
+  // Pop the URL out of the shared headless tab into the user's own
+  // browser. Mirrors the submit() ENS-resolution path so a typed
+  // `.eth` name lands at the same gateway URL the slop browser
+  // would've navigated to — keeps eth.link out of the picture.
+  const ejectToLocalBrowser = async () => {
+    const ens = extractEnsTarget(draft);
+    let target: string | null = null;
+    if (ens) {
+      target = await resolveEnsName(ens.name, ens.pathSuffix);
+    }
+    if (!target) target = normaliseUrl(draft);
+    if (target === "about:blank") return;
+    window.open(target, "_blank", "noopener,noreferrer");
+  };
+
   const reload = () => {
     if (!canControl) return;
     // Send `reload` directly over the host WS — onNavigate(browser.url)
@@ -776,6 +812,16 @@ export const SharedBrowser = ({
           <Button variant="primary" type="submit" disabled={!canControl}>
             Go
           </Button>
+          <button
+            type="button"
+            onClick={() => void ejectToLocalBrowser()}
+            className="slop-button"
+            aria-label="Open in your own browser"
+            title="Open the URL in a new tab on your machine instead of inside the slop browser"
+            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+          >
+            <ExternalLinkIcon />
+          </button>
         </form>
       )}
 
