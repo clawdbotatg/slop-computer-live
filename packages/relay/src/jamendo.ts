@@ -1,23 +1,22 @@
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { config } from "./config.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 // Jamendo-backed genre playlists. Each supported genre maps to a Jamendo
 // `tags` query; we pull the top trending-this-week tracks, download the
 // MP3 bytes to /var/lib/slop-relay/jamendo-music/<genre>/<trackId>.mp3,
 // and write a playlist.json next to them.
 //
-// Dedupe: filenames are keyed by Jamendo trackId, so a track that's
-// still trending next week is recognized on disk and not re-downloaded.
-// We rebuild the playlist.json every refresh (this week's order may
-// differ even when all tracks are cached).
-//
-// State stays on disk — the relay can restart mid-show and the genre
-// each peer has selected is reloaded from the persisted current-genre
-// pointer. No in-memory authoritative store.
+// The MP3 cache + the per-genre last-fetched-at pointer are
+// **process-global** — a rock track downloaded for room A is reused by
+// room B (same files, same CDN cost, same content). Only the
+// "currently-selected genre" and the user-curated "custom" playlist are
+// **per-room**, owned by JamendoRoomState below.
 
-const JAMENDO_DIR = process.env.JAMENDO_DIR ?? "./.slop-data/jamendo-music";
-const STATE_FILE = `${JAMENDO_DIR}/state.json`;
+export const JAMENDO_DIR = process.env.JAMENDO_DIR ?? "./.slop-data/jamendo-music";
+const GLOBAL_STATE_FILE = `${JAMENDO_DIR}/state.json`;
 const TRACKS_PER_GENRE = 20;
 const REFRESH_TTL_MS = 60 * 60 * 1000; // re-poll Jamendo at most once per hour
 const FETCH_TIMEOUT_MS = 30_000;
@@ -37,10 +36,10 @@ export const GENRES: Record<string, { label: string; tag: string }> = {
   house: { label: "House", tag: "house" },
   // "custom" is special — not Jamendo-backed, never auto-refreshed.
   // Tracks land here when a user clicks [+] on any other genre. Stored
-  // separately (custom-playlist.json) so refreshing other genres can't
-  // touch it. The underlying MP3 files are reused from whatever genre
-  // they were originally fetched into — refreshGenre never deletes,
-  // only appends, so once a file is on disk it stays.
+  // **per-room** so each room curates its own list. The underlying MP3
+  // files are reused from whatever genre they were originally fetched
+  // into — refreshGenre never deletes, only appends, so once a file is
+  // on disk it stays.
   custom: { label: "Custom", tag: "" },
 };
 
@@ -78,93 +77,39 @@ export type GenrePlaylist = {
   tracks: JamendoTrack[];
 };
 
-// --- Persistent state -------------------------------------------------------
+// --- Global cache state (last-fetched-at per genre) -----------------------
 
 type GenreState = { lastFetchedAt: number; lastError?: string };
-type StateFile = { currentGenre: string | null; genres: Record<string, GenreState> };
+type GlobalStateFile = { genres: Record<string, GenreState> };
 
-function loadState(): StateFile {
+function loadGlobalState(): GlobalStateFile {
   try {
-    const raw = readFileSync(STATE_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Partial<StateFile>;
+    const raw = readFileSync(GLOBAL_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as Partial<GlobalStateFile>;
     return {
-      currentGenre: typeof parsed.currentGenre === "string" ? parsed.currentGenre : null,
       genres: parsed.genres && typeof parsed.genres === "object" ? (parsed.genres as Record<string, GenreState>) : {},
     };
   } catch {
-    return { currentGenre: null, genres: {} };
+    return { genres: {} };
   }
 }
 
-function saveState(state: StateFile): void {
+function saveGlobalState(state: GlobalStateFile): void {
   try {
-    mkdirSync(JAMENDO_DIR, { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+    writeFileAtomic(GLOBAL_STATE_FILE, JSON.stringify(state, null, 2));
   } catch (err) {
-    console.warn("[jamendo] saveState failed", err);
+    console.warn("[jamendo] saveGlobalState failed", err);
   }
-}
-
-// --- Subscribers ------------------------------------------------------------
-
-type Subscriber = (event: { type: "genre_changed"; genre: string | null }) => void;
-const subscribers = new Set<Subscriber>();
-export function subscribe(fn: Subscriber): () => void {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
-}
-function emit(genre: string | null): void {
-  for (const fn of subscribers) {
-    try {
-      fn({ type: "genre_changed", genre });
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-// --- Public read -----------------------------------------------------------
-
-export function getCurrentGenre(): string | null {
-  return loadState().currentGenre;
-}
-
-const CUSTOM_FILE = `${JAMENDO_DIR}/custom-playlist.json`;
-
-function loadCustomTracks(): JamendoTrack[] {
-  try {
-    const raw = readFileSync(CUSTOM_FILE, "utf8");
-    const parsed = JSON.parse(raw) as { tracks?: unknown };
-    return Array.isArray(parsed.tracks) ? (parsed.tracks as JamendoTrack[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCustomTracks(tracks: JamendoTrack[]): void {
-  try {
-    mkdirSync(JAMENDO_DIR, { recursive: true });
-    writeFileSync(CUSTOM_FILE, JSON.stringify({ tracks }, null, 2), "utf8");
-  } catch (err) {
-    console.warn("[jamendo] saveCustom failed", err);
-  }
-}
-
-export function getCustomPlaylist(): GenrePlaylist {
-  return {
-    genre: CUSTOM_GENRE,
-    label: GENRES[CUSTOM_GENRE]!.label,
-    tag: "",
-    fetchedAt: Date.now(),
-    tracks: loadCustomTracks(),
-  };
 }
 
 export function readPlaylist(genre: string): GenrePlaylist | null {
   if (!isGenre(genre)) return null;
-  // Custom playlist lives in its own file — never auto-refreshed, never
-  // overwritten by a genre fetch.
-  if (isCustom(genre)) return getCustomPlaylist();
+  if (isCustom(genre)) {
+    // Custom is per-room — callers must use the JamendoRoomState's
+    // method directly. Returning null here flags misuse rather than
+    // silently mixing up rooms.
+    return null;
+  }
   const path = `${JAMENDO_DIR}/${genre}/playlist.json`;
   try {
     const raw = readFileSync(path, "utf8");
@@ -174,86 +119,13 @@ export function readPlaylist(genre: string): GenrePlaylist | null {
   }
 }
 
-// --- Custom playlist mutations ---------------------------------------------
+// --- Refresh from Jamendo (global, shared MP3 cache) ----------------------
 
-type CustomSubscriber = (tracks: JamendoTrack[]) => void;
-const customSubscribers = new Set<CustomSubscriber>();
-export function subscribeCustom(fn: CustomSubscriber): () => void {
-  customSubscribers.add(fn);
-  return () => customSubscribers.delete(fn);
-}
-function emitCustom(tracks: JamendoTrack[]): void {
-  for (const fn of customSubscribers) {
-    try {
-      fn(tracks);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-const CUSTOM_MAX_TRACKS = 200;
-
-export function addToCustom(track: JamendoTrack): JamendoTrack[] {
-  const tracks = loadCustomTracks();
-  // Dedupe by jamendoId — clicking [+] on a track that's already in
-  // custom is a no-op rather than an error.
-  if (tracks.some(t => t.jamendoId === track.jamendoId)) return tracks;
-  tracks.push(track);
-  if (tracks.length > CUSTOM_MAX_TRACKS) tracks.splice(0, tracks.length - CUSTOM_MAX_TRACKS);
-  saveCustomTracks(tracks);
-  emitCustom(tracks);
-  return tracks;
-}
-
-export function removeFromCustom(jamendoId: string): JamendoTrack[] {
-  const tracks = loadCustomTracks();
-  const next = tracks.filter(t => t.jamendoId !== jamendoId);
-  if (next.length === tracks.length) return tracks; // no-op
-  saveCustomTracks(next);
-  emitCustom(next);
-  return next;
-}
-
-export function reorderCustom(orderedIds: string[]): JamendoTrack[] {
-  const tracks = loadCustomTracks();
-  const byId = new Map(tracks.map(t => [t.jamendoId, t]));
-  const out: JamendoTrack[] = [];
-  const used = new Set<string>();
-  for (const id of orderedIds) {
-    const t = byId.get(id);
-    if (t && !used.has(id)) {
-      out.push(t);
-      used.add(id);
-    }
-  }
-  // Defensive: any track not in `orderedIds` (e.g. raced with concurrent
-  // add) gets appended at the end so we don't lose anything.
-  for (const t of tracks) {
-    if (!used.has(t.jamendoId)) out.push(t);
-  }
-  const sameOrder = out.length === tracks.length && out.every((t, i) => t.jamendoId === tracks[i]?.jamendoId);
-  if (sameOrder) return tracks;
-  saveCustomTracks(out);
-  emitCustom(out);
-  return out;
-}
-
-// --- Refresh from Jamendo --------------------------------------------------
-
-// Fetch the trending-this-week list for `genre` from Jamendo and download
-// any new tracks. Returns the resulting playlist.
-//
-// Concurrency: multiple POSTs racing on the same genre would re-fetch
-// and re-write the same playlist. We guard with a per-genre in-flight
-// promise map so the second caller awaits the first.
 const inFlight = new Map<string, Promise<GenrePlaylist>>();
 
 export async function refreshGenre(genre: string, opts: { force?: boolean } = {}): Promise<GenrePlaylist> {
   if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
-  // Custom is user-curated, never fetched from Jamendo. Just hand back
-  // whatever's on disk.
-  if (isCustom(genre)) return getCustomPlaylist();
+  if (isCustom(genre)) throw new Error("custom-genre-not-refreshable");
   const cached = inFlight.get(genre);
   if (cached) return cached;
   const p = doRefresh(genre, opts).finally(() => inFlight.delete(genre));
@@ -266,7 +138,7 @@ async function doRefresh(genre: string, opts: { force?: boolean }): Promise<Genr
     throw new Error("jamendo-client-id-missing");
   }
   const entry = GENRES[genre]!;
-  const state = loadState();
+  const state = loadGlobalState();
   const genreState = state.genres[genre];
   const now = Date.now();
   const fresh = !opts.force && genreState && now - genreState.lastFetchedAt < REFRESH_TTL_MS;
@@ -275,9 +147,6 @@ async function doRefresh(genre: string, opts: { force?: boolean }): Promise<Genr
     return existing;
   }
 
-  // Pull the top trending-this-week tracks. `audiodownload_allowed=true`
-  // filters out streaming-only items at the API layer so we don't waste
-  // a download attempt on something the CDN will 403 us on.
   const params = new URLSearchParams({
     client_id: config.jamendoClientId,
     format: "json",
@@ -356,9 +225,9 @@ async function doRefresh(genre: string, opts: { force?: boolean }): Promise<Genr
     fetchedAt: Date.now(),
     tracks,
   };
-  writeFileSync(`${JAMENDO_DIR}/${genre}/playlist.json`, JSON.stringify(playlist, null, 2), "utf8");
+  writeFileAtomic(`${JAMENDO_DIR}/${genre}/playlist.json`, JSON.stringify(playlist, null, 2));
   state.genres[genre] = { lastFetchedAt: playlist.fetchedAt };
-  saveState(state);
+  saveGlobalState(state);
   return playlist;
 }
 
@@ -369,46 +238,204 @@ async function downloadTrack(url: string, dest: string): Promise<void> {
     const res = await fetch(url, { signal: ctl.signal, redirect: "follow" });
     if (!res.ok) throw new Error(`http-${res.status}`);
     if (!res.body) throw new Error("no-body");
-    // Pipe the response straight to disk to avoid buffering whole MP3s
-    // in memory (some Jamendo tracks are 8+ MB).
     await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(dest));
   } finally {
     clearTimeout(timer);
   }
 }
 
-// --- Genre selection -------------------------------------------------------
+// --- Per-room jamendo state -----------------------------------------------
 
-export async function setCurrentGenre(genre: string | null): Promise<{ genre: string | null }> {
-  const state = loadState();
-  if (genre === null) {
-    if (state.currentGenre !== null) {
-      state.currentGenre = null;
-      saveState(state);
-      emit(null);
+const CUSTOM_MAX_TRACKS = 200;
+
+type GenreSubscriber = (event: { type: "genre_changed"; genre: string | null }) => void;
+type CustomSubscriber = (tracks: JamendoTrack[]) => void;
+
+type RoomStateFile = {
+  currentGenre: string | null;
+  customTracks: JamendoTrack[];
+};
+
+export class JamendoRoomState {
+  private currentGenre: string | null = null;
+  private customTracks: JamendoTrack[] = [];
+  private loaded = false;
+  private genreSubscribers = new Set<GenreSubscriber>();
+  private customSubscribers = new Set<CustomSubscriber>();
+
+  constructor(
+    private readonly filePath: string,
+    /** Legacy paths (per-process before per-room) — checked in order. */
+    private readonly legacyState: string | null = null,
+    private readonly legacyCustom: string | null = null,
+  ) {}
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    // Prefer the canonical per-room file. Falls back to splitting the
+    // pre-room global state.json + custom-playlist.json into the room
+    // for the "main" room only.
+    try {
+      const raw = readFileSync(this.filePath, "utf8");
+      const parsed = JSON.parse(raw) as Partial<RoomStateFile>;
+      this.currentGenre = typeof parsed.currentGenre === "string" ? parsed.currentGenre : null;
+      this.customTracks = Array.isArray(parsed.customTracks) ? (parsed.customTracks as JamendoTrack[]) : [];
+      return;
+    } catch {
+      /* fall through to legacy */
     }
-    return { genre: null };
+    if (this.legacyState) {
+      try {
+        const raw = readFileSync(this.legacyState, "utf8");
+        const parsed = JSON.parse(raw) as { currentGenre?: unknown };
+        if (typeof parsed.currentGenre === "string") this.currentGenre = parsed.currentGenre;
+      } catch {
+        /* fresh */
+      }
+    }
+    if (this.legacyCustom) {
+      try {
+        const raw = readFileSync(this.legacyCustom, "utf8");
+        const parsed = JSON.parse(raw) as { tracks?: unknown };
+        if (Array.isArray(parsed.tracks)) this.customTracks = parsed.tracks as JamendoTrack[];
+      } catch {
+        /* fresh */
+      }
+    }
   }
-  if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
-  // Flip the pointer + broadcast IMMEDIATELY so every peer's UI shows
-  // the new genre as selected (with a "loading…" placeholder) within
-  // milliseconds. Then kick off the refresh in the background — the
-  // playlist endpoint joins the same in-flight promise so the first
-  // client to hit it gets the freshly-downloaded list. Cold downloads
-  // can take ~30s, but the user never sees an unresponsive UI.
-  if (state.currentGenre !== genre) {
-    state.currentGenre = genre;
-    saveState(state);
-    emit(genre);
-  }
-  // Kick off the refresh. We DON'T await it — the POST returns
-  // immediately so the client doesn't sit on a 30s connection. The
-  // background promise records errors via console.warn; the playlist
-  // endpoint a peer hits will await the same in-flight promise.
-  refreshGenre(genre).catch(err => {
-    console.warn(`[jamendo] background refresh failed for ${genre}:`, (err as Error).message);
-  });
-  return { genre };
-}
 
-export { JAMENDO_DIR };
+  private persist(): void {
+    try {
+      writeFileAtomic(
+        this.filePath,
+        JSON.stringify({ currentGenre: this.currentGenre, customTracks: this.customTracks }, null, 2),
+      );
+    } catch (err) {
+      console.warn("[jamendo] room persist failed", err);
+    }
+  }
+
+  private emitGenre(genre: string | null): void {
+    for (const fn of this.genreSubscribers) {
+      try {
+        fn({ type: "genre_changed", genre });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private emitCustom(): void {
+    for (const fn of this.customSubscribers) {
+      try {
+        fn(this.customTracks);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  subscribe(fn: GenreSubscriber): () => void {
+    this.genreSubscribers.add(fn);
+    return () => this.genreSubscribers.delete(fn);
+  }
+
+  subscribeCustom(fn: CustomSubscriber): () => void {
+    this.customSubscribers.add(fn);
+    return () => this.customSubscribers.delete(fn);
+  }
+
+  getCurrentGenre(): string | null {
+    this.load();
+    return this.currentGenre;
+  }
+
+  getCustomPlaylist(): GenrePlaylist {
+    this.load();
+    return {
+      genre: CUSTOM_GENRE,
+      label: GENRES[CUSTOM_GENRE]!.label,
+      tag: "",
+      fetchedAt: Date.now(),
+      tracks: [...this.customTracks],
+    };
+  }
+
+  async setCurrentGenre(genre: string | null): Promise<{ genre: string | null }> {
+    this.load();
+    if (genre === null) {
+      if (this.currentGenre !== null) {
+        this.currentGenre = null;
+        this.persist();
+        this.emitGenre(null);
+      }
+      return { genre: null };
+    }
+    if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
+    // Flip the pointer + broadcast IMMEDIATELY so every peer's UI shows
+    // the new genre as selected (with a "loading…" placeholder) within
+    // milliseconds. Then kick off the refresh in the background — the
+    // playlist endpoint joins the same in-flight promise so the first
+    // client to hit it gets the freshly-downloaded list. Cold downloads
+    // can take ~30s, but the user never sees an unresponsive UI.
+    if (this.currentGenre !== genre) {
+      this.currentGenre = genre;
+      this.persist();
+      this.emitGenre(genre);
+    }
+    if (!isCustom(genre)) {
+      refreshGenre(genre).catch(err => {
+        console.warn(`[jamendo] background refresh failed for ${genre}:`, (err as Error).message);
+      });
+    }
+    return { genre };
+  }
+
+  addToCustom(track: JamendoTrack): JamendoTrack[] {
+    this.load();
+    // Dedupe by jamendoId — clicking [+] on a track that's already in
+    // custom is a no-op rather than an error.
+    if (this.customTracks.some(t => t.jamendoId === track.jamendoId)) return [...this.customTracks];
+    this.customTracks.push(track);
+    if (this.customTracks.length > CUSTOM_MAX_TRACKS) {
+      this.customTracks.splice(0, this.customTracks.length - CUSTOM_MAX_TRACKS);
+    }
+    this.persist();
+    this.emitCustom();
+    return [...this.customTracks];
+  }
+
+  removeFromCustom(jamendoId: string): JamendoTrack[] {
+    this.load();
+    const next = this.customTracks.filter(t => t.jamendoId !== jamendoId);
+    if (next.length === this.customTracks.length) return [...this.customTracks];
+    this.customTracks = next;
+    this.persist();
+    this.emitCustom();
+    return [...this.customTracks];
+  }
+
+  reorderCustom(orderedIds: string[]): JamendoTrack[] {
+    this.load();
+    const byId = new Map(this.customTracks.map(t => [t.jamendoId, t]));
+    const out: JamendoTrack[] = [];
+    const used = new Set<string>();
+    for (const id of orderedIds) {
+      const t = byId.get(id);
+      if (t && !used.has(id)) {
+        out.push(t);
+        used.add(id);
+      }
+    }
+    for (const t of this.customTracks) {
+      if (!used.has(t.jamendoId)) out.push(t);
+    }
+    const sameOrder = out.length === this.customTracks.length && out.every((t, i) => t.jamendoId === this.customTracks[i]?.jamendoId);
+    if (sameOrder) return [...this.customTracks];
+    this.customTracks = out;
+    this.persist();
+    this.emitCustom();
+    return [...this.customTracks];
+  }
+}

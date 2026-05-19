@@ -1,4 +1,17 @@
 import type { WebSocket } from "ws";
+import { DEFAULT_SLUG, getOrCreateRoom, listRooms } from "./room.js";
+import { send } from "./ws-send.js";
+
+// Backwards-compat shim. The peers Map now lives on a Room instance
+// (see room.ts). During Phase 1 the rest of the codebase keeps calling
+// the free functions below; each one delegates to the DEFAULT_SLUG
+// room. Cross-room operations (kick, find-by-token, close-all,
+// targeted sendTo) iterate every room so a stale handle in any room
+// stays reachable.
+//
+// Phase 1d migrates subsystem-by-subsystem to taking an explicit Room
+// parameter, at which point this shim shrinks to just the cross-room
+// helpers + the `send` re-export.
 
 export type PeerInfo = {
   id: string;
@@ -8,59 +21,77 @@ export type PeerInfo = {
   connectedAt: number;
 };
 
-type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };
+export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };
 
-const peers = new Map<string, Peer>();
+// Re-export so existing `import { send } from "./peers.js"` callsites
+// keep working.
+export { send };
+
+const mainRoom = () => getOrCreateRoom(DEFAULT_SLUG);
 
 export function addPeer(peer: Peer): void {
-  peers.set(peer.id, peer);
+  mainRoom().addPeer(peer);
 }
 
 export function removePeer(id: string): void {
-  peers.delete(id);
+  for (const room of listRooms()) {
+    if (room.getPeer(id)) {
+      room.removePeer(id);
+      return;
+    }
+  }
 }
 
 export function getPeer(id: string): Peer | undefined {
-  return peers.get(id);
+  for (const room of listRooms()) {
+    const peer = room.getPeer(id);
+    if (peer) return peer;
+  }
+  return undefined;
 }
 
 export function listPeers(): PeerInfo[] {
-  return [...peers.values()].map(({ ws: _ws, sessionToken: _t, ...info }) => info);
+  return mainRoom().listPeers();
 }
 
 export function findPeersBySessionToken(token: string): Peer[] {
-  return [...peers.values()].filter(p => p.sessionToken === token);
-}
-
-export function send(ws: WebSocket, msg: unknown): void {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  const out: Peer[] = [];
+  for (const room of listRooms()) {
+    for (const peer of room.allPeers()) {
+      if (peer.sessionToken === token) out.push(peer);
+    }
+  }
+  return out;
 }
 
 export function broadcast(msg: unknown, exceptId?: string): void {
-  for (const [id, peer] of peers) {
-    if (exceptId && id === exceptId) continue;
-    send(peer.ws, msg);
-  }
+  mainRoom().broadcast(msg, exceptId);
 }
 
 export function sendTo(targetId: string, msg: unknown): boolean {
-  const peer = peers.get(targetId);
-  if (!peer) return false;
-  send(peer.ws, msg);
-  return true;
+  for (const room of listRooms()) {
+    const peer = room.getPeer(targetId);
+    if (!peer) continue;
+    send(peer.ws, msg);
+    return true;
+  }
+  return false;
 }
 
 export function kickById(id: string): boolean {
-  const peer = peers.get(id);
-  if (!peer) return false;
-  try {
-    send(peer.ws, { type: "kicked" });
-    peer.ws.close(4403, "kicked");
-  } catch {
-    /* ignore */
+  for (const room of listRooms()) {
+    const peer = room.getPeer(id);
+    if (!peer) continue;
+    try {
+      send(peer.ws, { type: "kicked" });
+      peer.ws.close(4403, "kicked");
+    } catch {
+      /* ignore */
+    }
+    room.removePeer(id);
+    return true;
   }
-  peers.delete(id);
-  return true;
+  return false;
 }
 
 /**
@@ -74,17 +105,19 @@ export function kickById(id: string): boolean {
  * close handshake).
  */
 export function closeAllPeers(): void {
-  for (const peer of peers.values()) {
-    try {
-      send(peer.ws, { type: "shutting_down" });
-    } catch {
-      /* ignore */
+  for (const room of listRooms()) {
+    for (const peer of room.allPeers()) {
+      try {
+        send(peer.ws, { type: "shutting_down" });
+      } catch {
+        /* ignore */
+      }
+      try {
+        peer.ws.terminate();
+      } catch {
+        /* ignore */
+      }
     }
-    try {
-      peer.ws.terminate();
-    } catch {
-      /* ignore */
-    }
+    room.clearPeers();
   }
-  peers.clear();
 }

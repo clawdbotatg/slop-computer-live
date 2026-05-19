@@ -2,15 +2,11 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-// Single global chat log. In-memory ring of the last MAX messages, mirrored
+// Per-room chat log. In-memory ring of the last MAX messages, mirrored
 // to an append-only JSONL file so a relay restart replays the recent
 // scrollback. No DB — the relay's other state (sessions, slots, avatars)
 // follows the same simple pattern.
-//
-// Persistence path is overridable via env so the systemd unit can pin it
-// to /var/lib/slop-relay/chat.jsonl on the box.
 
-const CHAT_LOG_FILE = process.env.CHAT_LOG_FILE ?? "./.slop-data/chat.jsonl";
 const MAX_HISTORY = 200;
 
 export type ChatMessage = {
@@ -30,123 +26,133 @@ export type ChatMessage = {
   source: "live" | "spectator" | "agent";
 };
 
-let buffer: ChatMessage[] = [];
-let loaded = false;
-
-function load(): void {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = readFileSync(CHAT_LOG_FILE, "utf8");
-    const lines = raw.split("\n").filter(l => l.trim());
-    // Take only the tail; older messages are kept on disk but not in memory.
-    const tail = lines.slice(-MAX_HISTORY);
-    for (const line of tail) {
-      try {
-        buffer.push(JSON.parse(line) as ChatMessage);
-      } catch {
-        /* skip corrupt line */
-      }
-    }
-  } catch {
-    /* fresh log */
-  }
-}
-
-function persist(msg: ChatMessage): void {
-  try {
-    mkdirSync(dirname(CHAT_LOG_FILE), { recursive: true });
-    appendFileSync(CHAT_LOG_FILE, JSON.stringify(msg) + "\n", "utf8");
-  } catch {
-    // Disk write failed — log stays in memory. We don't want a full disk
-    // to take down chat entirely.
-  }
-}
-
 export const MAX_TEXT_LEN = 500;
 
-// Caller is responsible for auth + rate limiting. This just normalizes the
-// payload, stamps server fields, persists, and returns the canonical message.
-export function append(input: {
-  address: string | null;
-  handle: string | null;
-  text: string;
-  source: ChatMessage["source"];
-}): ChatMessage | null {
-  load();
-  const text = input.text.trim().slice(0, MAX_TEXT_LEN);
-  if (!text) return null;
-  const msg: ChatMessage = {
-    id: cryptoRandomId(),
-    ts: Date.now(),
-    address: input.address ? input.address.toLowerCase() : null,
-    handle: input.handle ?? null,
-    text,
-    source: input.source,
-  };
-  buffer.push(msg);
-  if (buffer.length > MAX_HISTORY) buffer = buffer.slice(-MAX_HISTORY);
-  persist(msg);
-  for (const fn of subscribers) {
-    try {
-      fn(msg);
-    } catch {
-      /* one bad sub shouldn't kill the rest */
-    }
-  }
-  return msg;
-}
+type Subscriber = (msg: ChatMessage) => void;
 
-export function recent(): ChatMessage[] {
-  load();
-  return [...buffer];
-}
-
-// Read the full on-disk JSONL log + count of non-empty lines. Used at
-// finalize time to pin a snapshot to IPFS; the in-memory `buffer` only
-// holds the last MAX_HISTORY messages so we go to disk for the archive.
-export function readArchive(): { content: string; messageCount: number } | null {
-  let raw: string;
-  try {
-    raw = readFileSync(CHAT_LOG_FILE, "utf8");
-  } catch {
-    return null;
-  }
-  let messageCount = 0;
-  for (const line of raw.split("\n")) {
-    if (line.trim()) messageCount++;
-  }
-  return { content: raw, messageCount };
-}
-
-// Soft per-address rate limit — allow a small burst then 1 msg/sec sustained.
-// Tracked in memory; a relay restart resets it (acceptable, it's a soft cap).
-const lastBy = new Map<string, { ts: number; tokens: number }>();
 const BURST = 5;
 const REFILL_PER_SEC = 1;
 
-export function allow(addressOrTok: string): boolean {
-  const now = Date.now();
-  const entry = lastBy.get(addressOrTok) ?? { ts: now, tokens: BURST };
-  const elapsed = (now - entry.ts) / 1000;
-  const tokens = Math.min(BURST, entry.tokens + elapsed * REFILL_PER_SEC);
-  if (tokens < 1) {
-    lastBy.set(addressOrTok, { ts: now, tokens });
-    return false;
+export class ChatHistory {
+  private buffer: ChatMessage[] = [];
+  private loaded = false;
+  private subscribers = new Set<Subscriber>();
+  // Soft per-address rate limit — allow a small burst then 1 msg/sec sustained.
+  // Tracked in memory per room; a relay restart resets it (acceptable, it's a
+  // soft cap).
+  private lastBy = new Map<string, { ts: number; tokens: number }>();
+
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyPath: string | null = null,
+  ) {}
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath) this.readFrom(this.legacyPath);
   }
-  lastBy.set(addressOrTok, { ts: now, tokens: tokens - 1 });
-  return true;
-}
 
-type Subscriber = (msg: ChatMessage) => void;
-const subscribers = new Set<Subscriber>();
+  private readFrom(path: string): boolean {
+    try {
+      const raw = readFileSync(path, "utf8");
+      const lines = raw.split("\n").filter(l => l.trim());
+      // Take only the tail; older messages are kept on disk but not in memory.
+      const tail = lines.slice(-MAX_HISTORY);
+      for (const line of tail) {
+        try {
+          this.buffer.push(JSON.parse(line) as ChatMessage);
+        } catch {
+          /* skip corrupt line */
+        }
+      }
+      return this.buffer.length > 0;
+    } catch {
+      return false;
+    }
+  }
 
-export function subscribe(fn: Subscriber): () => void {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
-}
+  private persist(msg: ChatMessage): void {
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      appendFileSync(this.filePath, JSON.stringify(msg) + "\n", "utf8");
+    } catch {
+      // Disk write failed — log stays in memory. We don't want a full disk
+      // to take down chat entirely.
+    }
+  }
 
-function cryptoRandomId(): string {
-  // Match the existing convention (browsers/fanouts use hex ids).
-  return randomBytes(8).toString("hex");
+  // Caller is responsible for auth + rate limiting. This just normalizes
+  // the payload, stamps server fields, persists, and returns the canonical
+  // message.
+  append(input: {
+    address: string | null;
+    handle: string | null;
+    text: string;
+    source: ChatMessage["source"];
+  }): ChatMessage | null {
+    this.load();
+    const text = input.text.trim().slice(0, MAX_TEXT_LEN);
+    if (!text) return null;
+    const msg: ChatMessage = {
+      id: randomBytes(8).toString("hex"),
+      ts: Date.now(),
+      address: input.address ? input.address.toLowerCase() : null,
+      handle: input.handle ?? null,
+      text,
+      source: input.source,
+    };
+    this.buffer.push(msg);
+    if (this.buffer.length > MAX_HISTORY) this.buffer = this.buffer.slice(-MAX_HISTORY);
+    this.persist(msg);
+    for (const fn of this.subscribers) {
+      try {
+        fn(msg);
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
+    }
+    return msg;
+  }
+
+  recent(): ChatMessage[] {
+    this.load();
+    return [...this.buffer];
+  }
+
+  // Read the full on-disk JSONL log + count of non-empty lines. Used at
+  // finalize time to pin a snapshot to IPFS; the in-memory `buffer` only
+  // holds the last MAX_HISTORY messages so we go to disk for the archive.
+  readArchive(): { content: string; messageCount: number } | null {
+    let raw: string;
+    try {
+      raw = readFileSync(this.filePath, "utf8");
+    } catch {
+      return null;
+    }
+    let messageCount = 0;
+    for (const line of raw.split("\n")) {
+      if (line.trim()) messageCount++;
+    }
+    return { content: raw, messageCount };
+  }
+
+  allow(addressOrTok: string): boolean {
+    const now = Date.now();
+    const entry = this.lastBy.get(addressOrTok) ?? { ts: now, tokens: BURST };
+    const elapsed = (now - entry.ts) / 1000;
+    const tokens = Math.min(BURST, entry.tokens + elapsed * REFILL_PER_SEC);
+    if (tokens < 1) {
+      this.lastBy.set(addressOrTok, { ts: now, tokens });
+      return false;
+    }
+    this.lastBy.set(addressOrTok, { ts: now, tokens: tokens - 1 });
+    return true;
+  }
+
+  subscribe(fn: Subscriber): () => void {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
 }

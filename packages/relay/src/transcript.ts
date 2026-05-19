@@ -2,10 +2,11 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-// Live transcript stream. Each peer runs Web Speech in the browser and
-// POSTs final segments here; the relay stamps `ts` + identity and persists.
-// Mirrors chat.ts (same JSONL-on-disk + in-memory ring pattern) so the
-// finalize flow can snapshot it the same way.
+// Per-room live transcript stream. Each peer runs Web Speech in the
+// browser and POSTs final segments here; the relay stamps `ts` +
+// identity and persists. Mirrors chat.ts (same JSONL-on-disk +
+// in-memory ring pattern) so the finalize flow can snapshot it the
+// same way.
 //
 // Kept as its own module instead of folding into chat because:
 // 1) STT cadence is much higher than typed chat (a fast conversation can
@@ -17,8 +18,6 @@ import { dirname } from "node:path";
 //    manifest.chat) — keeping the on-disk file separate avoids a server-
 //    side filter step at pin time.
 
-const TRANSCRIPT_LOG_FILE =
-  process.env.TRANSCRIPT_LOG_FILE ?? "./.slop-data/transcript.jsonl";
 const MAX_HISTORY = 500;
 
 export type TranscriptSegment = {
@@ -37,143 +36,145 @@ export type TranscriptSegment = {
   source: "live" | "spectator" | "agent";
 };
 
-let buffer: TranscriptSegment[] = [];
-let loaded = false;
-
-function load(): void {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = readFileSync(TRANSCRIPT_LOG_FILE, "utf8");
-    const lines = raw.split("\n").filter(l => l.trim());
-    const tail = lines.slice(-MAX_HISTORY);
-    for (const line of tail) {
-      try {
-        buffer.push(JSON.parse(line) as TranscriptSegment);
-      } catch {
-        /* skip corrupt line */
-      }
-    }
-  } catch {
-    /* fresh log */
-  }
-}
-
-function persist(seg: TranscriptSegment): void {
-  try {
-    mkdirSync(dirname(TRANSCRIPT_LOG_FILE), { recursive: true });
-    appendFileSync(TRANSCRIPT_LOG_FILE, JSON.stringify(seg) + "\n", "utf8");
-  } catch {
-    // Disk write failed — segment stays in memory. We don't want a full
-    // disk to kill live transcription entirely.
-  }
-}
-
 // Larger than typed chat: STT can pop several finals per second across
 // multiple peers without being a flood.
 export const MAX_TEXT_LEN = 1000;
 
-export function append(input: {
-  address: string | null;
-  handle: string | null;
-  text: string;
-  source: TranscriptSegment["source"];
-}): TranscriptSegment | null {
-  load();
-  const text = input.text.trim().slice(0, MAX_TEXT_LEN);
-  if (!text) return null;
-  const seg: TranscriptSegment = {
-    id: cryptoRandomId(),
-    ts: Date.now(),
-    address: input.address ? input.address.toLowerCase() : null,
-    handle: input.handle ?? null,
-    text,
-    source: input.source,
-  };
-  buffer.push(seg);
-  if (buffer.length > MAX_HISTORY) buffer = buffer.slice(-MAX_HISTORY);
-  persist(seg);
-  for (const fn of subscribers) {
-    try {
-      fn(seg);
-    } catch {
-      /* one bad sub shouldn't kill the rest */
-    }
-  }
-  return seg;
-}
-
-export function recent(): TranscriptSegment[] {
-  load();
-  return [...buffer];
-}
-
-// Wipe the on-disk JSONL + in-memory ring. Called automatically at the
-// end of a successful finalize (the just-pinned manifest captured the
-// archive; next episode starts fresh) and exposed as DELETE /admin/transcript
-// so the host can wipe pre-show test segments.
-//
-// Notifies subscribers with a synthetic "cleared" marker so SSE viewers
-// can refresh — they should ignore the marker for archiving purposes
-// (it has no id/text).
-export function clear(): { clearedCount: number } {
-  load();
-  const clearedCount = buffer.length;
-  buffer = [];
-  try {
-    mkdirSync(dirname(TRANSCRIPT_LOG_FILE), { recursive: true });
-    writeFileSync(TRANSCRIPT_LOG_FILE, "", "utf8");
-  } catch {
-    /* disk write failed — ring is wiped, file may still hold old content */
-  }
-  return { clearedCount };
-}
-
-// Read the full on-disk JSONL log + segment count. Used at finalize time
-// to pin a snapshot to IPFS; the in-memory `buffer` only holds the last
-// MAX_HISTORY segments so we go to disk for the archive.
-export function readArchive(): { content: string; segmentCount: number } | null {
-  let raw: string;
-  try {
-    raw = readFileSync(TRANSCRIPT_LOG_FILE, "utf8");
-  } catch {
-    return null;
-  }
-  let segmentCount = 0;
-  for (const line of raw.split("\n")) {
-    if (line.trim()) segmentCount++;
-  }
-  return { content: raw, segmentCount };
-}
+type Subscriber = (seg: TranscriptSegment) => void;
 
 // Looser than chat: STT cadence can spike to 3-4 finals/sec briefly when
 // someone speaks quickly. 20-burst + 2/sec sustained absorbs that without
 // becoming an unbounded firehose.
-const lastBy = new Map<string, { ts: number; tokens: number }>();
 const BURST = 20;
 const REFILL_PER_SEC = 2;
 
-export function allow(addressOrTok: string): boolean {
-  const now = Date.now();
-  const entry = lastBy.get(addressOrTok) ?? { ts: now, tokens: BURST };
-  const elapsed = (now - entry.ts) / 1000;
-  const tokens = Math.min(BURST, entry.tokens + elapsed * REFILL_PER_SEC);
-  if (tokens < 1) {
-    lastBy.set(addressOrTok, { ts: now, tokens });
-    return false;
+export class Transcript {
+  private buffer: TranscriptSegment[] = [];
+  private loaded = false;
+  private subscribers = new Set<Subscriber>();
+  private lastBy = new Map<string, { ts: number; tokens: number }>();
+
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyPath: string | null = null,
+  ) {}
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath) this.readFrom(this.legacyPath);
   }
-  lastBy.set(addressOrTok, { ts: now, tokens: tokens - 1 });
-  return true;
-}
 
-type Subscriber = (seg: TranscriptSegment) => void;
-const subscribers = new Set<Subscriber>();
+  private readFrom(path: string): boolean {
+    try {
+      const raw = readFileSync(path, "utf8");
+      const lines = raw.split("\n").filter(l => l.trim());
+      const tail = lines.slice(-MAX_HISTORY);
+      for (const line of tail) {
+        try {
+          this.buffer.push(JSON.parse(line) as TranscriptSegment);
+        } catch {
+          /* skip corrupt line */
+        }
+      }
+      return this.buffer.length > 0;
+    } catch {
+      return false;
+    }
+  }
 
-export function subscribe(fn: Subscriber): () => void {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
-}
+  private persist(seg: TranscriptSegment): void {
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      appendFileSync(this.filePath, JSON.stringify(seg) + "\n", "utf8");
+    } catch {
+      // Disk write failed — segment stays in memory. We don't want a full
+      // disk to kill live transcription entirely.
+    }
+  }
 
-function cryptoRandomId(): string {
-  return randomBytes(8).toString("hex");
+  append(input: {
+    address: string | null;
+    handle: string | null;
+    text: string;
+    source: TranscriptSegment["source"];
+  }): TranscriptSegment | null {
+    this.load();
+    const text = input.text.trim().slice(0, MAX_TEXT_LEN);
+    if (!text) return null;
+    const seg: TranscriptSegment = {
+      id: randomBytes(8).toString("hex"),
+      ts: Date.now(),
+      address: input.address ? input.address.toLowerCase() : null,
+      handle: input.handle ?? null,
+      text,
+      source: input.source,
+    };
+    this.buffer.push(seg);
+    if (this.buffer.length > MAX_HISTORY) this.buffer = this.buffer.slice(-MAX_HISTORY);
+    this.persist(seg);
+    for (const fn of this.subscribers) {
+      try {
+        fn(seg);
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
+    }
+    return seg;
+  }
+
+  recent(): TranscriptSegment[] {
+    this.load();
+    return [...this.buffer];
+  }
+
+  // Wipe the on-disk JSONL + in-memory ring. Called automatically at the
+  // end of a successful finalize (the just-pinned manifest captured the
+  // archive; next episode starts fresh) and exposed as DELETE /admin/transcript
+  // so the host can wipe pre-show test segments.
+  clear(): { clearedCount: number } {
+    this.load();
+    const clearedCount = this.buffer.length;
+    this.buffer = [];
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(this.filePath, "", "utf8");
+    } catch {
+      /* disk write failed — ring is wiped, file may still hold old content */
+    }
+    return { clearedCount };
+  }
+
+  readArchive(): { content: string; segmentCount: number } | null {
+    let raw: string;
+    try {
+      raw = readFileSync(this.filePath, "utf8");
+    } catch {
+      return null;
+    }
+    let segmentCount = 0;
+    for (const line of raw.split("\n")) {
+      if (line.trim()) segmentCount++;
+    }
+    return { content: raw, segmentCount };
+  }
+
+  allow(addressOrTok: string): boolean {
+    const now = Date.now();
+    const entry = this.lastBy.get(addressOrTok) ?? { ts: now, tokens: BURST };
+    const elapsed = (now - entry.ts) / 1000;
+    const tokens = Math.min(BURST, entry.tokens + elapsed * REFILL_PER_SEC);
+    if (tokens < 1) {
+      this.lastBy.set(addressOrTok, { ts: now, tokens });
+      return false;
+    }
+    this.lastBy.set(addressOrTok, { ts: now, tokens: tokens - 1 });
+    return true;
+  }
+
+  subscribe(fn: Subscriber): () => void {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
 }

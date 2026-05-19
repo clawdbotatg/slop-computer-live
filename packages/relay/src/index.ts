@@ -5,54 +5,33 @@ import Fastify from "fastify";
 import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
-import {
-  type Publication,
-  type SlotKind,
-  type SlotPosition,
-  applySlotUpdate,
-  clearPeerPublications,
-  getSlots,
-  listPublications,
-  publish as publishStream,
-  findPublicationOwner,
-  unpublish as unpublishStream,
-} from "./desktop.js";
-import {
-  closeBrowser as closeSharedBrowser,
-  listBrowsers,
-  navigateBrowser as navigateSharedBrowser,
-  openBrowser as openSharedBrowser,
-} from "./browsers.js";
+import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
-  addPeer,
-  broadcast,
   closeAllPeers,
   findPeersBySessionToken,
   kickById,
   listPeers,
-  removePeer,
   send,
   sendTo,
 } from "./peers.js";
-import { generateCard } from "./card.js";
 import {
-  MAX_TEXT_LEN as CHAT_MAX_TEXT,
-  type ChatMessage,
-  allow as allowChat,
-  append as appendChat,
-  recent as recentChat,
-  subscribe as subscribeChat,
-} from "./chat.js";
+  DEFAULT_SLUG,
+  findPeerRoom,
+  getOrCreateRoom,
+  hibernateRoom,
+  isValidSlug,
+  listRooms,
+  parseSlug,
+  type Room,
+} from "./room.js";
+import { roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
+import { generateCard } from "./card.js";
+import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
   type TranscriptSegment,
-  allow as allowTranscript,
-  append as appendTranscript,
-  clear as clearTranscript,
-  recent as recentTranscript,
-  subscribe as subscribeTranscript,
 } from "./transcript.js";
 import {
   SESSION_COOKIE,
@@ -66,34 +45,8 @@ import {
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
-import { closeWindow as closeSingletonWindow, listOpenWindows, openWindow as openSingletonWindow } from "./windows.js";
-import {
-  applyMove as chessApplyMove,
-  clearGame as chessClearGame,
-  createGame as chessCreateGame,
-  getCurrentGame as chessGetCurrentGame,
-  getHistory as chessGetHistory,
-  resign as chessResign,
-} from "./chess.js";
+import type { ChessGame } from "./chess.js";
 import { listAvailableAIPlayers } from "./ai-players.js";
-import { maybeMoveAI } from "./ai-mover.js";
-import {
-  add as todoAdd,
-  clearDone as todoClearDone,
-  list as todoList,
-  remove as todoRemove,
-  reorder as todoReorder,
-  subscribe as subscribeTodos,
-  toggle as todoToggle,
-  update as todoUpdate,
-} from "./todos.js";
-import {
-  create as noteCreate,
-  list as noteList,
-  remove as noteRemove,
-  subscribe as subscribeNotes,
-  update as noteUpdate,
-} from "./notes.js";
 import {
   create as glossaryCreate,
   list as glossaryList,
@@ -131,157 +84,136 @@ import {
 } from "./news-digest.js";
 import { start as startPolymarket } from "./polymarket.js";
 import { resolveEns, reverseLookup as reverseLookupEns } from "./ens.js";
-import {
-  type EpisodeState,
-  getState as getEpisodeState,
-  setSttOn as setEpisodeSttOn,
-  subscribe as subscribeEpisode,
-} from "./episode.js";
-import {
-  FILES_DIR_PATH,
-  FILES_MAX_BYTES,
-  add as fileAdd,
-  get as fileGet,
-  list as fileList,
-  remove as fileRemove,
-  subscribe as subscribeFiles,
-} from "./files.js";
+import { type EpisodeState } from "./episode.js";
+import { FILES_MAX_BYTES } from "./files.js";
 import {
   GENRE_IDS,
   GENRES,
   JAMENDO_DIR,
   type JamendoTrack,
-  addToCustom,
-  getCurrentGenre,
-  getCustomPlaylist,
   isGenre,
   readPlaylist,
   refreshGenre,
-  removeFromCustom,
-  reorderCustom,
-  setCurrentGenre,
-  subscribeCustom,
-  subscribe as subscribeJamendo,
 } from "./jamendo.js";
-import {
-  type ClockState,
-  getState as getClockState,
-  setState as setClockState,
-  subscribe as subscribeClock,
-} from "./clock.js";
-import {
-  type WalletRecord,
-  type WalletTx,
-  addSignature as walletAddSignature,
-  archiveCurrent as walletArchiveCurrent,
-  findTx as walletFindTx,
-  listTxs as walletListTxs,
-  getCurrent as walletGetCurrent,
-  proposeTx as walletProposeTx,
-  removeTx as walletRemoveTx,
-  setCurrent as walletSetCurrent,
-  setTxStatus as walletSetTxStatus,
-  setTxSummary as walletSetTxSummary,
-  subscribe as subscribeWallet,
-  wipeAll as walletWipeAll,
-} from "./wallet.js";
+import { type ClockState } from "./clock.js";
+import type { WalletRecord, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
 
-// Shared music-player state — singleton across the mesh. When any peer
-// presses play/pause/seek/next, they push a snapshot here; we rebroadcast
-// it so every other peer can keep their local <audio> in lockstep. Not
-// persisted; transient session state, lost on relay restart.
-type MusicState = {
-  src: string | null;
-  index: number;
-  playing: boolean;
-  /** seconds into the track at `at` */
-  position: number;
-  /** Date.now() when this snapshot was captured */
-  at: number;
-  /** 0..1 master volume — shared so peers stay in lockstep */
-  volume: number;
-};
-let musicState: MusicState | null = null;
+// Room used by HTTP routes until Phase 3 wires slug-in-URL routing.
+// Single source of truth — when the URL convention changes, only this
+// helper has to learn how to parse a slug out of `req.params` or
+// `req.url`. WS handler resolves its room from `?slug=` separately.
+const httpRoom = () => getOrCreateRoom(DEFAULT_SLUG);
 
-// Music "state version" — bumped on every set. Lets an agent DJ-loop
-// (long-poll → react → set → poll again) wait cheaply for the track
-// to end or for another peer to change the snapshot.
-let musicStateVersion = 0;
-type MusicWaiter = { wake: () => void; cleanup: () => void };
-const musicWaiters: MusicWaiter[] = [];
+// Global feeds (ticker, gas, headlines, news-digest, timeline,
+// polymarket, glossary) poll external sources once and fan the snapshot
+// out to every hot room. Iterates the room registry on every push;
+// rooms instantiated after a feed's last tick still receive the next
+// one (and read the current cached state at room-connect time via the
+// hello payload).
+function broadcastToAllRooms(msg: unknown): void {
+  for (const r of listRooms()) r.broadcast(msg);
+}
 
-function bumpMusicVersion(): void {
-  musicStateVersion++;
-  const woke = musicWaiters.splice(0);
-  for (const w of woke) {
-    try {
-      w.cleanup();
-    } catch {
-      /* ignore */
-    }
-    try {
-      w.wake();
-    } catch {
-      /* ignore */
-    }
+// --- Hot/cold lifecycle ---------------------------------------------------
+// Rooms with no peers and no recent mutations get hibernated after
+// IDLE_HIBERNATE_MS. Hibernation drops the in-memory slice from `rooms`
+// and asks the browser-host to close that room's BrowserContext too;
+// on-disk state survives, so the next `/signal?slug=X` call lazily
+// reconstructs the room from disk.
+//
+// Free vs paid: rooms with no password set (unclaimed) and rooms
+// matching the configured HOST_WHITELIST are always free. Otherwise the
+// `verifyPaid()` stub gates revival. Phase 8 wires this to the Base
+// contract; for now it consults env (PAYMENTS_DISABLED / HOST_WHITELIST).
+const IDLE_HIBERNATE_MS = Number(process.env.IDLE_HIBERNATE_MS ?? 3 * 24 * 60 * 60 * 1000); // 3 days default
+const LIFECYCLE_TICK_MS = 5 * 60 * 1000;
+
+const HOST_WHITELIST = (process.env.HOST_WHITELIST ?? DEFAULT_SLUG)
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+const PAYMENTS_DISABLED = process.env.PAYMENTS_DISABLED === "1";
+
+/** Whether `slug` can be hot without a current payment receipt.
+ *  - PAYMENTS_DISABLED=1 → everything is free (dev mode)
+ *  - HOST_WHITELIST contains the slug → free (always-on rooms)
+ *  - Room has no password yet (unclaimed) → free (the slug hasn't
+ *    been picked up by anyone, the act of claiming sets a paidUntil)
+ * Otherwise, paidUntil must be > now to be hot. */
+function isRoomFreeOrPaid(room: Room): boolean {
+  if (PAYMENTS_DISABLED) return true;
+  if (HOST_WHITELIST.includes(room.id)) return true;
+  if (!room.auth.hasPassword()) return true;
+  return room.meta.isPaid();
+}
+
+/** Phase 7 stub. Phase 8 replaces this with an Alchemy-Base RPC call
+ *  that reads the SlopComputer payment contract for `slug` and returns
+ *  the unix-seconds the room is paid through. Today it just trusts an
+ *  optional admin-signed body OR a global PAYMENTS_DISABLED flag. */
+async function verifyPaid(_slug: string, _proof: unknown): Promise<{ paidUntil: number } | null> {
+  if (PAYMENTS_DISABLED) {
+    return { paidUntil: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 };
+  }
+  // No real verification path yet — explicit revive needs the real
+  // on-chain check that lands in Phase 8.
+  return null;
+}
+
+async function notifyBrowserHostHibernate(slug: string): Promise<void> {
+  const base = process.env.BROWSER_HOST_INGRESS_URL;
+  if (!base) return;
+  try {
+    await fetch(`${base.replace(/\/$/, "")}/admin/rooms/${encodeURIComponent(slug)}/close`, {
+      method: "POST",
+      headers: process.env.BROWSER_HOST_INGRESS_SECRET
+        ? { authorization: `Bearer ${process.env.BROWSER_HOST_INGRESS_SECRET}` }
+        : {},
+    });
+  } catch (err) {
+    app.log.warn({ slug, err: (err as Error).message }, "browser-host close-context call failed");
   }
 }
 
-// Chess "state version" — bumped every time the chess game changes
-// (create/move/resign/abort). Lets long-pollers wait cheaply for the
-// next change without us needing to keep diffs of the game itself.
-let chessStateVersion = 0;
-type ChessWaiter = { wake: () => void; cleanup: () => void };
-const chessWaiters: ChessWaiter[] = [];
-
-function bumpChessVersion(): void {
-  chessStateVersion++;
-  // Splice + iterate so wake handlers can't accidentally double-resolve
-  // by pushing themselves back into the queue.
-  const woke = chessWaiters.splice(0);
-  for (const w of woke) {
-    try {
-      w.cleanup();
-    } catch {
-      /* ignore */
-    }
-    try {
-      w.wake();
-    } catch {
-      /* ignore */
+setInterval(() => {
+  const now = Date.now();
+  for (const room of listRooms()) {
+    if (room.peerCount() > 0) continue;
+    if (HOST_WHITELIST.includes(room.id)) continue;
+    if (room.meta.isPaid()) continue;
+    if (now - room.meta.getLastSeenAt() < IDLE_HIBERNATE_MS) continue;
+    if (hibernateRoom(room.id)) {
+      app.log.info({ slug: room.id, idleMs: now - room.meta.getLastSeenAt() }, "hibernated");
+      void notifyBrowserHostHibernate(room.id);
     }
   }
-}
+}, LIFECYCLE_TICK_MS).unref();
+
+// Music player state is now per-room — see room.music (MusicState class).
 
 // Single broadcast helper for chess state changes — also bumps the
-// version counter so long-pollers wake up, AND nudges the AI mover
-// in case the new turn belongs to a server-side AI player. Use this
-// instead of calling broadcast({type:"chess_state"}) directly so we
-// never forget either side effect.
+// room's chess version (so /v1/chess/wait long-pollers wake up) AND
+// nudges that room's AI mover in case the new turn belongs to a
+// server-side AI player. Use this instead of calling broadcast
+// directly so we never forget either side effect.
 //
 // AI-vs-AI relies on the recursion at the bottom: when an AI's move
 // applies, `notifyAfterMove` calls broadcastChessState again with
 // the new state, which itself bumps the version + schedules another
-// maybeMoveAI tick. Each recursive call yields via setImmediate so
-// the stack never grows. Bounded by inFlight + lastVersionHandled
-// inside maybeMoveAI — no infinite loop possible.
-function broadcastChessState(game: import("./chess.js").ChessGame | null): void {
-  broadcast({ type: "chess_state", game });
-  bumpChessVersion();
+// AIMover.tick. Each recursive call yields via setImmediate so the
+// stack never grows. Bounded by inFlight + lastVersionHandled inside
+// AIMover — no infinite loop possible.
+function broadcastChessState(room: Room, game: ChessGame | null): void {
+  room.broadcast({ type: "chess_state", game });
+  room.chess.bumpVersion();
   setImmediate(() => {
-    maybeMoveAI(chessStateVersion, () => {
-      // After the AI's move applies, re-enter broadcastChessState so
-      // (a) peers see the move and (b) the next side gets nudged. The
-      // previous version of this callback only broadcast inline and
-      // forgot the nudge — fine for human-vs-AI (the human's next move
-      // re-enters via the WS handler) but AI-vs-AI got stuck because
-      // nobody scheduled the next side's tick.
-      const next = chessGetCurrentGame();
-      broadcastChessState(next);
+    room.aiMover.tick(room.chess.getVersion(), () => {
+      const next = room.chess.getCurrentGame();
+      broadcastChessState(room, next);
       if (next && next.status !== "active") {
-        broadcast({ type: "chess_history", history: chessGetHistory() });
+        room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
       }
     }).catch(err => console.error("[ai-mover] tick failed:", err));
   });
@@ -611,32 +543,32 @@ app.get("/v1/state", async (req, reply) => {
       ownerKey: (a.session.address ?? a.session.handle ?? "").toLowerCase() || null,
     },
     peers: listPeers(),
-    publications: listPublications(),
-    slots: getSlots(PRIMARY_HOST_ADDR),
-    browsers: listBrowsers(PRIMARY_HOST_ADDR),
+    publications: httpRoom().desktop.listPublications(),
+    slots: httpRoom().desktop.getSlots(),
+    browsers: httpRoom().browsers.list(),
     apps: readApps(),
     avatars: listAvatarsSync(),
     hiddenAvatars: listHiddenOwnersSync(),
-    openWindowIds: listOpenWindows(),
-    musicState,
-    chessGame: chessGetCurrentGame(),
-    chessHistory: chessGetHistory(),
+    openWindowIds: httpRoom().windows.list(),
+    musicState: httpRoom().music.current().state,
+    chessGame: httpRoom().chess.getCurrentGame(),
+    chessHistory: httpRoom().chess.getHistory(),
     aiPlayers: listAvailableAIPlayers(),
-    todos: todoList(),
-    notes: noteList(),
+    todos: httpRoom().todos.list(),
+    notes: httpRoom().notes.list(),
     glossary: glossaryList(),
     gasState: getGasState(),
     tickerState: getTickerState(),
     headlinesState: getHeadlinesState(),
     timelineState: getTimelineState(),
     newsDigestState: getNewsDigestState(),
-    files: fileList(),
+    files: httpRoom().files.list(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
-    musicGenre: getCurrentGenre(),
-    musicCustom: getCustomPlaylist().tracks,
-    clockState: getClockState(),
-    wallet: walletGetCurrent(),
-    walletTxs: walletListTxs(),
+    musicGenre: httpRoom().jamendo.getCurrentGenre(),
+    musicCustom: httpRoom().jamendo.getCustomPlaylist().tracks,
+    clockState: httpRoom().clock.getState(),
+    wallet: httpRoom().wallet.getCurrent(),
+    walletTxs: httpRoom().wallet.listTxs(),
   };
 });
 
@@ -727,11 +659,12 @@ app.post<{ Body: SlotBody }>("/v1/slots", async (req, reply) => {
   for (const key of ["x", "y", "width", "height", "z"] as const) {
     if (typeof body[key] === "number") (patch as Record<string, unknown>)[key] = body[key];
   }
-  const merged = applySlotUpdate(PRIMARY_HOST_ADDR, patch);
+  const room = httpRoom();
+  const merged = room.desktop.applySlotUpdate(patch);
   if (!merged) return reply.code(500).send({ error: "no-host-configured" });
   // Broadcast to live WS peers so they see the move in real time, same
   // as the existing slot_update WS handler.
-  broadcast({ type: "slot", slot: merged });
+  room.broadcast({ type: "slot", slot: merged });
   return { ok: true, slot: merged };
 });
 
@@ -748,8 +681,9 @@ app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
   const id =
     typeof body.id === "string" && body.id.trim() ? body.id.trim() : `browser-${Math.random().toString(36).slice(2, 8)}`;
   const appId = typeof body.appId === "string" && body.appId.trim() ? body.appId.trim() : undefined;
-  const browser = openSharedBrowser(PRIMARY_HOST_ADDR, id, url, "agent", appId);
-  broadcast({ type: "browser", browser });
+  const room = httpRoom();
+  const browser = room.browsers.open(id, url, "agent", appId);
+  room.broadcast({ type: "browser", browser });
   return { ok: true, browser };
 });
 
@@ -760,18 +694,20 @@ app.post<{ Params: { id: string }; Body: NavBody }>("/v1/browsers/:id/navigate",
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const url = typeof req.body?.url === "string" ? req.body.url : "";
   if (!url) return reply.code(400).send({ error: "missing-url" });
-  const browser = navigateSharedBrowser(PRIMARY_HOST_ADDR, req.params.id, url);
+  const room = httpRoom();
+  const browser = room.browsers.navigate(req.params.id, url);
   if (!browser) return reply.code(404).send({ error: "no-such-browser" });
-  broadcast({ type: "browser", browser });
+  room.broadcast({ type: "browser", browser });
   return { ok: true, browser };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/browsers/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const ok = closeSharedBrowser(PRIMARY_HOST_ADDR, req.params.id);
+  const room = httpRoom();
+  const ok = room.browsers.close(req.params.id);
   if (!ok) return reply.code(404).send({ error: "no-such-browser" });
-  broadcast({ type: "browser_closed", id: req.params.id });
+  room.broadcast({ type: "browser_closed", id: req.params.id });
   return { ok: true };
 });
 
@@ -796,7 +732,7 @@ app.post<{ Body: XYBody }>("/v1/cursor", async (req, reply) => {
   const x = Number(req.body?.x);
   const y = Number(req.body?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
-  broadcast({
+  httpRoom().broadcast({
     type: "cursor",
     from: agentPeerId(a.session.token),
     address: a.session.address,
@@ -813,7 +749,7 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
   const x = Number(req.body?.x);
   const y = Number(req.body?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
-  broadcast({
+  httpRoom().broadcast({
     type: "click",
     from: agentPeerId(a.session.token),
     address: a.session.address,
@@ -864,34 +800,22 @@ app.post("/v1/headlines/refresh", async (req, reply) => {
 // (cookie/bearer) and from the WS chat_send handler. Persistence is handled
 // inside chat.js (JSONL on disk, ring in memory).
 
-// Mirror every chat append onto the live peer mesh — the existing usePeerMesh
-// WS already opens a /signal connection for slot/avatar/presence, chat just
-// rides along on the same socket. Spectators (no WS) get the same payload via
-// SSE below.
-subscribeChat(msg => {
-  broadcast({ type: "chat", msg });
-});
+// Chat append → live peer mesh broadcast is wired in Room's constructor.
+// Spectators (no WS) get the same payload via SSE below.
 
-// Todo + notes: full-list broadcast on every mutation. The list is small
-// (capped at 200 items each), the change semantics include mutate+delete,
-// and full-state broadcast keeps reducer logic out of every client. If
-// the lists grow much larger we can switch to incremental events.
-subscribeTodos(items => {
-  broadcast({ type: "todos", items });
-});
-subscribeNotes(items => {
-  broadcast({ type: "notes", items });
-});
+// Todos + notes use the same per-room broadcast pattern, wired into
+// each Room's constructor (see room.ts).
+//
 // Glossary: term added or its TLDR resolved → full-list rebroadcast.
 // Same small-list trade-off as notes/todos.
 subscribeGlossary(items => {
-  broadcast({ type: "glossary", items });
+  broadcastToAllRooms({ type: "glossary", items });
 });
 
 // Gas tracker poll loop. Server-side polling keeps the Alchemy API key
 // off the client and shares one RPC budget across all connected peers.
 subscribeGas(state => {
-  broadcast({ type: "gas", state });
+  broadcastToAllRooms({ type: "gas", state });
 });
 startGas();
 
@@ -899,14 +823,14 @@ startGas();
 // Same pattern as gas — relay polls upstream feeds once a minute and
 // fans the snapshot out to every connected peer.
 subscribeTicker(state => {
-  broadcast({ type: "ticker", state });
+  broadcastToAllRooms({ type: "ticker", state });
 });
 startTicker();
 
 // Headlines feed (crypto + AI). Same broadcast pattern; cadence is
 // slow (5 min) because headline lists don't churn fast.
 subscribeHeadlines(state => {
-  broadcast({ type: "headlines", state });
+  broadcastToAllRooms({ type: "headlines", state });
 });
 startHeadlines();
 
@@ -915,7 +839,7 @@ startHeadlines();
 // a fresh crawl on-demand via POST /v1/timeline/refresh (clicking the
 // TIMELINE badge in the bottom marquee) right before going live.
 subscribeTimeline(state => {
-  broadcast({ type: "timeline", state });
+  broadcastToAllRooms({ type: "timeline", state });
 });
 startTimeline();
 
@@ -927,47 +851,26 @@ startPolymarket();
 // AI-ranked "featured" top tier picked by Claude. Rebuilds whenever
 // any upstream source updates (debounce inside the module).
 subscribeNewsDigest(state => {
-  broadcast({ type: "news_digest", state });
+  broadcastToAllRooms({ type: "news_digest", state });
 });
 startNewsDigest();
 
-// Desktop file system: broadcast every add/remove so all peers see new
-// file icons appear / disappear in real time. Bulk-list events aren't
-// emitted (none of the producers fire those) but the channel exists if
-// we later add e.g. a "delete all my files" admin endpoint.
-subscribeFiles(event => {
-  if (event.type === "added") broadcast({ type: "file_added", item: event.item });
-  else if (event.type === "removed") broadcast({ type: "file_removed", id: event.id });
-  else broadcast({ type: "files", items: event.items });
-});
+// Desktop file system — per-room. Each room's FileIndex broadcasts
+// add/remove events into that room's mesh (wired in Room's constructor)
+// so file icons appear / disappear in real time for the right audience.
 
-// Jamendo genre selection — shared across the mesh. When any peer
-// picks a genre, all peers' music players switch playlists.
-subscribeJamendo(event => {
-  broadcast({ type: "music_genre", genre: event.genre });
-});
+// Jamendo genre selection + custom playlist are per-room — each room's
+// JamendoRoomState fires `music_genre` and `music_custom` into that
+// room's broadcast. Wired in Room's constructor.
 
-// Custom playlist — shared across the mesh. Broadcast the full
-// track list on every add/remove/reorder so every peer's [+]/[-]
-// state stays in sync.
-subscribeCustom(tracks => {
-  broadcast({ type: "music_custom", tracks });
-});
-
-// Clock app state — shared across the mesh. Tab pick, timezone,
-// stopwatch + countdown all synchronized. Wall-clock-anchored fields
+// Clock app state — per-room shared. Wall-clock-anchored fields
 // (`startedAt`, `endAt`) mean every peer's UI computes the same
-// remaining/elapsed at any moment without us syncing per-tick.
-subscribeClock(state => {
-  broadcast({ type: "clock_state", state });
-});
+// remaining/elapsed at any moment without us syncing per-tick. The
+// per-room broadcast subscriber is wired in Room's constructor.
 
-// Session wallet — broadcast current/history + pending tx queue on
-// every mutation. Same full-state-replace pattern as todos/notes.
-subscribeWallet(state => {
-  broadcast({ type: "wallet", current: state.current, history: state.history });
-  broadcast({ type: "wallet_txs", txs: state.txs });
-});
+// Session wallet — per-room. Each room's WalletState fires
+// `wallet` + `wallet_txs` into that room's broadcast on every mutation;
+// wired in Room's constructor.
 
 type ChatBody = { text?: unknown };
 
@@ -979,13 +882,14 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   if (raw.length > CHAT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
   // Rate-limit by session token (covers both browser cookie and agent
   // bearer — each is one chatty actor).
-  if (!allowChat(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
+  const chat = httpRoom().chat;
+  if (!chat.allow(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
   // Source classification: bearer = agent (skill flow), cookie = browser.
   // Browser cookies that own a current WS peer are "live" desktop users;
   // those without an active WS are "spectator" (slop.computer SIWE).
   const inMesh = findPeersBySessionToken(a.session.token).length > 0;
   const source: ChatMessage["source"] = a.via === "bearer" ? "agent" : inMesh ? "live" : "spectator";
-  const msg = appendChat({
+  const msg = chat.append({
     address: a.session.address,
     handle: a.session.handle,
     text: raw,
@@ -997,7 +901,7 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
 
 app.get("/v1/chat", async (_req, reply) => {
   reply.header("cache-control", "no-store");
-  return { messages: recentChat() };
+  return { messages: httpRoom().chat.recent() };
 });
 
 // SSE stream for slop.computer spectators (and anyone who'd rather not open
@@ -1028,8 +932,9 @@ app.get("/v1/chat/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  write("init", { messages: recentChat() });
-  const unsub = subscribeChat(msg => write("chat", msg));
+  const chat = httpRoom().chat;
+  write("init", { messages: chat.recent() });
+  const unsub = chat.subscribe(msg => write("chat", msg));
   // Heartbeat — some proxies drop idle connections after ~60s.
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
   req.raw.on("close", () => {
@@ -1055,11 +960,12 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
   const raw = typeof req.body?.text === "string" ? req.body.text : "";
   if (!raw.trim()) return reply.code(400).send({ error: "empty" });
   if (raw.length > TRANSCRIPT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
-  if (!allowTranscript(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
+  const transcript = httpRoom().transcript;
+  if (!transcript.allow(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
   const inMesh = findPeersBySessionToken(a.session.token).length > 0;
   const source: TranscriptSegment["source"] =
     a.via === "bearer" ? "agent" : inMesh ? "live" : "spectator";
-  const seg = appendTranscript({
+  const seg = transcript.append({
     address: a.session.address,
     handle: a.session.handle,
     text: raw,
@@ -1075,7 +981,7 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
 // desktop app polls this every few seconds.
 app.get("/v1/transcript", async (_req, reply) => {
   reply.header("cache-control", "no-store");
-  return { segments: recentTranscript() };
+  return { segments: httpRoom().transcript.recent() };
 });
 
 // --- Admin transcript viewer -------------------------------------------------
@@ -1085,7 +991,7 @@ app.get("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   reply.header("cache-control", "no-store");
-  return { segments: recentTranscript() };
+  return { segments: httpRoom().transcript.recent() };
 });
 
 // Manual wipe — for blowing away pre-show test segments. Finalize also
@@ -1094,7 +1000,7 @@ app.get("/admin/transcript", async (req, reply) => {
 app.delete("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return clearTranscript();
+  return httpRoom().transcript.clear();
 });
 
 // --- Episode flags (STT toggle, etc.) ---------------------------------------
@@ -1104,7 +1010,7 @@ app.delete("/admin/transcript", async (req, reply) => {
 
 app.get("/v1/episode", async (_req, reply) => {
   reply.header("cache-control", "no-store");
-  return getEpisodeState();
+  return httpRoom().episode.getState();
 });
 
 app.get("/v1/episode/stream", async (req, reply) => {
@@ -1129,8 +1035,9 @@ app.get("/v1/episode/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  write("init", getEpisodeState());
-  const unsub = subscribeEpisode((s: EpisodeState) => write("episode", s));
+  const episode = httpRoom().episode;
+  write("init", episode.getState());
+  const unsub = episode.subscribe((s: EpisodeState) => write("episode", s));
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
   req.raw.on("close", () => {
     clearInterval(heartbeat);
@@ -1149,7 +1056,7 @@ app.post<{ Body: EpisodeSttBody }>("/admin/episode/stt", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   const on = req.body?.on === true;
-  return setEpisodeSttOn(on);
+  return httpRoom().episode.setSttOn(on);
 });
 
 app.get("/admin/transcript/stream", async (req, reply) => {
@@ -1169,8 +1076,9 @@ app.get("/admin/transcript/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  write("init", { segments: recentTranscript() });
-  const unsub = subscribeTranscript(seg => write("transcript", seg));
+  const transcript = httpRoom().transcript;
+  write("init", { segments: transcript.recent() });
+  const unsub = transcript.subscribe(seg => write("transcript", seg));
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
   req.raw.on("close", () => {
     clearInterval(heartbeat);
@@ -1347,7 +1255,11 @@ app.post(
     await _writeFile(`${AVATARS_DIR}/${filename}`, body);
 
     const url = avatarPublicUrl(filename, Date.now());
-    broadcast({ type: "avatar", ownerKey: key, url });
+    // Avatars are keyed by wallet address — the same image belongs to
+    // the same user no matter which room they're in. Fan out to every
+    // room so a user changing their avatar in ep0 immediately reflects
+    // for spectators sitting in ep1.
+    broadcastToAllRooms({ type: "avatar", ownerKey: key, url });
     return { ok: true, url, key };
   },
 );
@@ -1377,7 +1289,7 @@ app.post("/v1/avatars/hide", async (req, reply) => {
   }
   await _writeFile(`${AVATARS_DIR}/${key}.hidden`, "");
 
-  broadcast({ type: "avatar_hidden", ownerKey: key });
+  broadcastToAllRooms({ type: "avatar_hidden", ownerKey: key });
   return { ok: true, hidden: true, key };
 });
 
@@ -1400,7 +1312,7 @@ app.delete("/v1/avatars", async (req, reply) => {
   } catch {
     /* dir doesn't exist yet → nothing to remove */
   }
-  if (removed) broadcast({ type: "avatar_removed", ownerKey: key });
+  if (removed) broadcastToAllRooms({ type: "avatar_removed", ownerKey: key });
   return { ok: true, removed, key };
 });
 
@@ -1543,8 +1455,8 @@ app.get<{ Params: { filename: string } }>("/avatars/:filename", async (req, repl
 /** Build the response payload for /v1/chess and /v1/chess/wait. Includes
  *  derived fields the agent loop needs (toMove, yourTurn) so callers
  *  don't have to parse FEN to figure out whose turn it is. */
-function buildChessPayload(callerKey: string | null) {
-  const game = chessGetCurrentGame();
+function buildChessPayload(room: Room, callerKey: string | null) {
+  const game = room.chess.getCurrentGame();
   let toMove: "white" | "black" | null = null;
   let yourTurn = false;
   if (game && game.status === "active") {
@@ -1555,11 +1467,11 @@ function buildChessPayload(callerKey: string | null) {
     yourTurn = !!callerKey && callerKey === sideKey;
   }
   return {
-    version: chessStateVersion,
+    version: room.chess.getVersion(),
     game,
     toMove,
     yourTurn,
-    history: chessGetHistory(),
+    history: room.chess.getHistory(),
   };
 }
 
@@ -1568,14 +1480,14 @@ app.get("/v1/chess", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
-  return buildChessPayload(callerKey);
+  return buildChessPayload(httpRoom(), callerKey);
 });
 
 /** Long-poll the chess game. Pass `?since=<version>` (the `version`
- *  field from a previous /v1/chess response). If `chessStateVersion`
- *  is already greater, returns immediately. Otherwise blocks up to
- *  `?timeout=<sec>` seconds (default 25, max 60) waiting for the next
- *  change, then returns the current snapshot regardless.
+ *  field from a previous /v1/chess response). If the room's chess
+ *  version is already greater, returns immediately. Otherwise blocks
+ *  up to `?timeout=<sec>` seconds (default 25, max 60) waiting for the
+ *  next change, then returns the current snapshot regardless.
  *
  *  Lets an agent's autonomous-play loop wait cheaply for the opponent
  *  to move without polling on a fixed cadence. Wakes on every state
@@ -1584,12 +1496,13 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/chess/wait",
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
+  const room = httpRoom();
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
   const since = Number(req.query?.since ?? 0);
   const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
 
-  if (!Number.isFinite(since) || chessStateVersion > since) {
-    return buildChessPayload(callerKey);
+  if (!Number.isFinite(since) || room.chess.getVersion() > since) {
+    return buildChessPayload(room, callerKey);
   }
 
   return await new Promise<unknown>(resolve => {
@@ -1598,21 +1511,20 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/chess/wait",
       if (done) return;
       done = true;
       cleanup();
-      resolve(buildChessPayload(callerKey));
+      resolve(buildChessPayload(room, callerKey));
     };
     const timer = setTimeout(finish, timeoutSec * 1000);
     const cleanup = () => {
       clearTimeout(timer);
-      const idx = chessWaiters.findIndex(x => x === entry);
-      if (idx >= 0) chessWaiters.splice(idx, 1);
+      room.chess.removeWaiter(entry);
       try {
         reply.raw.off("close", finish);
       } catch {
         /* ignore */
       }
     };
-    const entry: ChessWaiter = { wake: finish, cleanup };
-    chessWaiters.push(entry);
+    const entry = { wake: finish, cleanup };
+    room.chess.pushWaiter(entry);
     // Client closed the request mid-wait → drop them so we don't
     // try to resolve a dead reply.
     reply.raw.on("close", finish);
@@ -1627,14 +1539,15 @@ app.post<{ Body: ChessCreateBody }>("/v1/chess/create", async (req, reply) => {
   if (typeof b.whiteKey !== "string" || typeof b.blackKey !== "string") {
     return reply.code(400).send({ error: "missing-player" });
   }
-  const result = chessCreateGame({
+  const room = httpRoom();
+  const result = room.chess.createGame({
     whiteKey: b.whiteKey,
     blackKey: b.blackKey,
     whiteLabel: typeof b.whiteLabel === "string" ? b.whiteLabel : b.whiteKey,
     blackLabel: typeof b.blackLabel === "string" ? b.blackLabel : b.blackKey,
   });
   if (!result.ok) return reply.code(409).send({ error: result.error });
-  broadcastChessState(result.game);
+  broadcastChessState(room, result.game);
   return { ok: true, game: result.game };
 });
 
@@ -1653,7 +1566,8 @@ app.post<{ Body: ChessMoveBody }>("/v1/chess/move", async (req, reply) => {
   // stored from the WS / client side.
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
-  const result = chessApplyMove(callerKey, {
+  const room = httpRoom();
+  const result = room.chess.applyMove(callerKey, {
     from: b.from,
     to: b.to,
     promotion: typeof b.promotion === "string" ? b.promotion : undefined,
@@ -1662,8 +1576,8 @@ app.post<{ Body: ChessMoveBody }>("/v1/chess/move", async (req, reply) => {
     const code = result.error === "not_your_turn" || result.error === "illegal_move" ? 403 : 409;
     return reply.code(code).send({ error: result.error });
   }
-  broadcastChessState(result.game);
-  if (result.ended) broadcast({ type: "chess_history", history: chessGetHistory() });
+  broadcastChessState(room, result.game);
+  if (result.ended) room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
   return { ok: true, game: result.game, ended: result.ended };
 });
 
@@ -1672,18 +1586,20 @@ app.post("/v1/chess/resign", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
-  const result = chessResign(callerKey);
+  const room = httpRoom();
+  const result = room.chess.resign(callerKey);
   if (!result.ok) return reply.code(409).send({ error: result.error });
-  broadcastChessState(result.game);
-  broadcast({ type: "chess_history", history: chessGetHistory() });
+  broadcastChessState(room, result.game);
+  room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
   return { ok: true, game: result.game };
 });
 
 app.post("/v1/chess/close", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const result = chessClearGame();
-  broadcastChessState(null);
+  const room = httpRoom();
+  const result = room.chess.clearGame();
+  broadcastChessState(room, null);
   return { ok: true, aborted: result.aborted };
 });
 
@@ -1699,13 +1615,13 @@ app.get("/v1/music", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { state: musicState, version: musicStateVersion };
+  return httpRoom().music.current();
 });
 
 // Long-poll the music state. Pass `?since=<version>` from a previous
-// /v1/music response; this returns immediately if `musicStateVersion`
-// has already advanced, otherwise blocks up to `?timeout=<sec>` (default
-// 25, max 60) waiting for the next change.
+// /v1/music response; this returns immediately if the version has
+// already advanced, otherwise blocks up to `?timeout=<sec>` (default 25,
+// max 60) waiting for the next change.
 //
 // Drives the "agent DJ" loop: long-poll → check if the current track
 // just ended (position + elapsed-since-`at` >= duration) → set the
@@ -1718,8 +1634,10 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/music/wait",
   const since = Number(req.query?.since ?? 0);
   const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
 
-  if (!Number.isFinite(since) || musicStateVersion > since) {
-    return { state: musicState, version: musicStateVersion };
+  const music = httpRoom().music;
+  const cur = music.current();
+  if (!Number.isFinite(since) || cur.version > since) {
+    return cur;
   }
 
   return await new Promise<unknown>(resolve => {
@@ -1728,21 +1646,20 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/music/wait",
       if (done) return;
       done = true;
       cleanup();
-      resolve({ state: musicState, version: musicStateVersion });
+      resolve(music.current());
     };
     const timer = setTimeout(finish, timeoutSec * 1000);
     const cleanup = () => {
       clearTimeout(timer);
-      const idx = musicWaiters.findIndex(x => x === entry);
-      if (idx >= 0) musicWaiters.splice(idx, 1);
+      music.removeWaiter(entry);
       try {
         reply.raw.off("close", finish);
       } catch {
         /* ignore */
       }
     };
-    const entry: MusicWaiter = { wake: finish, cleanup };
-    musicWaiters.push(entry);
+    const entry = { wake: finish, cleanup };
+    music.pushWaiter(entry);
     reply.raw.on("close", finish);
   });
 });
@@ -1780,18 +1697,18 @@ app.post<{ Body: MusicStateBody }>("/v1/music/state", async (req, reply) => {
   if (typeof b.index !== "number" || typeof b.position !== "number") {
     return reply.code(400).send({ error: "bad-state" });
   }
+  const room = httpRoom();
   const incomingVolume = typeof b.volume === "number" ? Math.max(0, Math.min(1, b.volume)) : null;
-  musicState = {
+  const next = room.music.set({
     src: typeof b.src === "string" ? b.src : null,
     index: b.index,
     playing: !!b.playing,
     position: b.position,
     at: typeof b.at === "number" ? b.at : Date.now(),
-    volume: incomingVolume ?? musicState?.volume ?? 0.7,
-  };
-  broadcast({ type: "music_state", state: musicState });
-  bumpMusicVersion();
-  return { ok: true, state: musicState, version: musicStateVersion };
+    volume: incomingVolume ?? room.music.cachedVolume() ?? 0.7,
+  });
+  room.broadcast({ type: "music_state", state: next });
+  return { ok: true, ...room.music.current() };
 });
 
 // =============================================================================
@@ -1807,7 +1724,8 @@ app.post<{ Body: OpenWindowBody }>("/v1/windows", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
   if (!id) return reply.code(400).send({ error: "missing-id" });
-  if (openSingletonWindow(id)) broadcast({ type: "window_opened", id });
+  const room = httpRoom();
+  if (room.windows.open(id)) room.broadcast({ type: "window_opened", id });
   return { ok: true, id };
 });
 
@@ -1815,14 +1733,15 @@ app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => 
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const id = req.params.id;
-  if (closeSingletonWindow(id)) broadcast({ type: "window_closed", id });
+  const room = httpRoom();
+  if (room.windows.close(id)) room.broadcast({ type: "window_closed", id });
   return { ok: true, id };
 });
 
 // --- Todo REST surface ------------------------------------------------------
 // Mirrors the WS handlers below; mutations broadcast to live peers via the
-// shared subscribeTodos broadcaster, so REST writers and WS writers feel the
-// same to spectators.
+// Room's wired-in TodoList subscriber, so REST writers and WS writers feel
+// the same to spectators.
 
 type TodoTextBody = { text?: unknown };
 type TodoReorderBody = { ids?: unknown };
@@ -1831,7 +1750,7 @@ app.get("/v1/todos", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: todoList() };
+  return { items: httpRoom().todos.list() };
 });
 
 app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
@@ -1839,7 +1758,7 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  const item = todoAdd({ address: a.session.address, handle: a.session.handle, text });
+  const item = httpRoom().todos.add({ address: a.session.address, handle: a.session.handle, text });
   if (!item) return reply.code(400).send({ error: "empty" });
   return { ok: true, item };
 });
@@ -1847,7 +1766,7 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
 app.post<{ Params: { id: string } }>("/v1/todos/:id/toggle", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!todoToggle(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!httpRoom().todos.toggle(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
@@ -1856,21 +1775,21 @@ app.post<{ Params: { id: string }; Body: TodoTextBody }>("/v1/todos/:id", async 
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  if (!todoUpdate(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  if (!httpRoom().todos.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/todos/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!todoRemove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!httpRoom().todos.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.post("/v1/todos/clear-done", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  todoClearDone();
+  httpRoom().todos.clearDone();
   return { ok: true };
 });
 
@@ -1879,7 +1798,7 @@ app.post<{ Body: TodoReorderBody }>("/v1/todos/reorder", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
   const ids = req.body.ids.filter((s: unknown): s is string => typeof s === "string");
-  todoReorder(ids);
+  httpRoom().todos.reorder(ids);
   return { ok: true };
 });
 
@@ -1891,14 +1810,14 @@ app.get("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: noteList() };
+  return { items: httpRoom().notes.list() };
 });
 
 app.post<{ Body: NoteTextBody }>("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const note = noteCreate({ address: a.session.address, handle: a.session.handle, text });
+  const note = httpRoom().notes.create({ address: a.session.address, handle: a.session.handle, text });
   if (!note) return reply.code(400).send({ error: "create-failed" });
   return { ok: true, note };
 });
@@ -1907,14 +1826,14 @@ app.post<{ Params: { id: string }; Body: NoteTextBody }>("/v1/notes/:id", async 
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  if (!noteUpdate(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  if (!httpRoom().notes.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/notes/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!noteRemove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!httpRoom().notes.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
@@ -2029,7 +1948,7 @@ app.get("/v1/music/genres", async (req, reply) => {
   reply.header("cache-control", "no-store");
   return {
     genres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
-    current: getCurrentGenre(),
+    current: httpRoom().jamendo.getCurrentGenre(),
   };
 });
 
@@ -2040,7 +1959,7 @@ app.post<{ Body: SetGenreBody }>("/v1/music/genre", async (req, reply) => {
   if (incoming !== null && typeof incoming !== "string") return reply.code(400).send({ error: "bad-genre" });
   if (incoming !== null && !isGenre(incoming)) return reply.code(400).send({ error: "unknown-genre" });
   try {
-    const out = await setCurrentGenre(incoming as string | null);
+    const out = await httpRoom().jamendo.setCurrentGenre(incoming as string | null);
     // Intentionally do NOT reset musicState here. If someone is in the
     // middle of a song from genre A and a peer switches to genre B,
     // the currently-playing song should keep playing — only an
@@ -2059,6 +1978,9 @@ app.get<{ Params: { genre: string } }>("/v1/music/genre/:genre/playlist", async 
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!isGenre(req.params.genre)) return reply.code(404).send({ error: "unknown-genre" });
   reply.header("cache-control", "no-store");
+  // The "custom" playlist is per-room — served from the JamendoRoomState
+  // rather than the global MP3 cache.
+  if (req.params.genre === "custom") return httpRoom().jamendo.getCustomPlaylist();
   // Lazily refresh if the cache is stale. Hot path (popular genre, cached
   // and fresh) returns immediately; cold path may take ~30s while we
   // download missing tracks.
@@ -2097,7 +2019,7 @@ app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => 
   }
   // Normalize: only persist the fields we know about. Defends against
   // a misbehaving client storing extra junk in the saved blob.
-  const tracks = addToCustom({
+  const tracks = httpRoom().jamendo.addToCustom({
     title: t.title,
     artist: t.artist,
     src: t.src,
@@ -2112,7 +2034,7 @@ app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => 
 app.delete<{ Params: { jamendoId: string } }>("/v1/music/custom/:jamendoId", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const tracks = removeFromCustom(req.params.jamendoId);
+  const tracks = httpRoom().jamendo.removeFromCustom(req.params.jamendoId);
   return { ok: true, tracks };
 });
 
@@ -2123,7 +2045,7 @@ app.post<{ Body: ReorderCustomBody }>("/v1/music/custom/reorder", async (req, re
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
   const ids = req.body.ids.filter((x: unknown): x is string => typeof x === "string");
-  const tracks = reorderCustom(ids);
+  const tracks = httpRoom().jamendo.reorderCustom(ids);
   return { ok: true, tracks };
 });
 
@@ -2188,14 +2110,14 @@ app.get("/v1/clock", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { state: getClockState() };
+  return { state: httpRoom().clock.getState() };
 });
 
 app.post<{ Body: ClockBody }>("/v1/clock", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!req.body || typeof req.body !== "object") return reply.code(400).send({ error: "bad-body" });
-  const next = setClockState(req.body);
+  const next = httpRoom().clock.setState(req.body);
   return { ok: true, state: next };
 });
 
@@ -2216,7 +2138,7 @@ app.get("/v1/files", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: fileList() };
+  return { items: httpRoom().files.list() };
 });
 
 // Upload — raw body. Filename comes from `?name=<original>` (URL-encoded)
@@ -2246,7 +2168,7 @@ app.post<{ Querystring: FileUploadQuery }>(
     const mime = headerMime || String(req.headers["content-type"] ?? "application/octet-stream");
     const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "anon";
     const uploaderLabel = a.session.handle ?? a.session.address ?? "anon";
-    const result = fileAdd({ name, mime, buffer: body, ownerKey, uploaderLabel });
+    const result = httpRoom().files.add({ name, mime, buffer: body, ownerKey, uploaderLabel });
     if ("error" in result) return reply.code(400).send(result);
     return { ok: true, item: result };
   },
@@ -2256,7 +2178,7 @@ app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "";
-  const result = fileRemove(req.params.id, ownerKey, a.isHost);
+  const result = httpRoom().files.remove(req.params.id, ownerKey, a.isHost);
   if (result === "not-found") return reply.code(404).send({ error: "not-found" });
   if (result === "forbidden") return reply.code(403).send({ error: "forbidden" });
   return { ok: true };
@@ -2268,10 +2190,20 @@ app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
 app.get<{ Params: { id: string } }>("/files/:id", async (req, reply) => {
   const id = req.params.id;
   if (!/^[a-z0-9]+$/i.test(id)) return reply.code(400).send({ error: "bad-id" });
-  const item = fileGet(id);
+  const filesIndex = httpRoom().files;
+  const item = filesIndex.get(id);
   if (!item) return reply.code(404).send({ error: "not-found" });
+  // Prefer the BGIPFS gateway when the background pin landed — keeps
+  // the prod box's outbound bandwidth off the hot path, and the gateway
+  // already has aggressive caching. Falls back to serving local bytes
+  // for legacy entries (pre-IPFS) and pin-pending entries.
+  const gateway = config.ipfsPublicGateway;
+  if (item.cid && gateway) {
+    const encodedName = encodeURIComponent(item.name);
+    return reply.redirect(`${gateway.replace(/\/$/, "")}/${item.cid}?filename=${encodedName}`, 302);
+  }
   const fsSync = await import("node:fs");
-  const filepath = `${FILES_DIR_PATH}/${item.storedAs}`;
+  const filepath = filesIndex.resolveReadPath(item);
   if (!fsSync.existsSync(filepath)) return reply.code(404).send({ error: "missing-on-disk" });
   reply.header("content-type", item.mime);
   reply.header("content-length", item.size);
@@ -2296,11 +2228,9 @@ app.get<{ Querystring: { name?: string } }>("/v1/ens/resolve", async (req, reply
 
 // --- Invite gate ------------------------------------------------------------
 //
-// A single global invite password that gates the sign-in screen. Visitors
-// hit POST /auth/invite with the password (typically pre-filled from a
-// `?invite=` query the host shared); on match we set a long-lived
-// `slop_invite` cookie carrying the password verbatim, and the SIWE +
-// passkey login endpoints check that cookie before issuing a session.
+// Legacy single-global-invite endpoint, kept so existing slop_invite
+// cookies issued before per-room passwords keep working for the main
+// room. New rooms use /v1/rooms/:slug/auth (below).
 //
 // Admins (addresses in ADMIN_ADDRESSES) bypass the invite check on SIWE
 // so the operator can sign in on a fresh deploy without having to know
@@ -2324,6 +2254,114 @@ app.post<{ Body: InviteBody }>("/auth/invite", async (req, reply) => {
     maxAge: INVITE_COOKIE_TTL_SECONDS,
   });
   return { ok: true };
+});
+
+// --- Per-room password gate ------------------------------------------------
+//
+// Each room has its own scrypt-hashed password (stored in
+// .slop-data/rooms/<slug>/auth.json). The host creates the room with a
+// password via POST /v1/rooms; anyone with the password posts to
+// /v1/rooms/:slug/auth and gets back an HMAC-signed cookie scoped to
+// that slug.
+//
+// Two layers of auth:
+//   - Room cookie (this endpoint)  → "you were invited to this room"
+//   - Session cookie (SIWE/passkey) → "this is who you are"
+// Both required for write actions; either alone is not enough.
+
+const ROOM_COOKIE_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
+
+function hasValidRoomCookie(req: { cookies?: Record<string, string | undefined> }, slug: string): boolean {
+  if (slug === DEFAULT_SLUG && isInvited(req.cookies?.[INVITE_COOKIE])) {
+    // Backwards-compat: pre-Phase-5 users with a slop_invite cookie keep
+    // their access to the main room without re-entering a password.
+    return true;
+  }
+  const cookie = req.cookies?.[roomCookieName(slug)];
+  return verifyRoomCookie(cookie, slug, config.sessionSecret);
+}
+
+type RoomCreateBody = { slug?: unknown; password?: unknown; name?: unknown };
+
+// Host-only: claim a slug + set its password. Returns 409 if the slug
+// already has a password (use POST /v1/rooms/:slug/password to rotate).
+app.post<{ Body: RoomCreateBody }>("/v1/rooms", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const body = (req.body ?? {}) as RoomCreateBody;
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!isValidSlug(slug)) return reply.code(400).send({ error: "bad-slug" });
+  if (!password) return reply.code(400).send({ error: "missing-password" });
+  const room = getOrCreateRoom(slug);
+  if (room.auth.hasPassword()) return reply.code(409).send({ error: "room-already-exists" });
+  room.auth.setPassword(password);
+  return { ok: true, slug };
+});
+
+// Host-only: rotate an existing room's password. Doesn't invalidate
+// outstanding room cookies (those are time-bound only — Phase 7 could
+// add a revocation list if needed).
+type RoomPasswordBody = { password?: unknown };
+app.post<{ Params: { slug: string }; Body: RoomPasswordBody }>("/v1/rooms/:slug/password", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password) return reply.code(400).send({ error: "missing-password" });
+  const room = getOrCreateRoom(req.params.slug);
+  room.auth.setPassword(password);
+  return { ok: true };
+});
+
+type RoomAuthBody = { password?: unknown };
+
+// Public: verify a room's password and get back a slug-scoped cookie.
+// Rejects with 404 if the room hasn't been claimed yet (no password set)
+// — without this rooms would silently accept any password as wrong.
+app.post<{ Params: { slug: string }; Body: RoomAuthBody }>("/v1/rooms/:slug/auth", async (req, reply) => {
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password) return reply.code(400).send({ error: "missing-password" });
+  const room = getOrCreateRoom(req.params.slug);
+  if (!room.auth.hasPassword()) return reply.code(404).send({ error: "no-such-room" });
+  if (!room.auth.verify(password)) return reply.code(401).send({ error: "bad-password" });
+  reply.setCookie(roomCookieName(req.params.slug), signRoomCookie(req.params.slug, config.sessionSecret), {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: ROOM_COOKIE_TTL_SECONDS,
+  });
+  return { ok: true, slug: req.params.slug };
+});
+
+// GET status: does this room exist + does the caller already have a
+// valid cookie? Frontends call this on page load to decide whether to
+// show the password prompt.
+app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/auth", async (req, reply) => {
+  reply.header("cache-control", "no-store");
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const room = getOrCreateRoom(req.params.slug);
+  return {
+    slug: req.params.slug,
+    exists: room.auth.hasPassword(),
+    authed: hasValidRoomCookie(req, req.params.slug),
+  };
+});
+
+// Hot/cold revive: the frontend POSTs payment proof here when a WS
+// connect fails with `payment-required`. Phase 7 stub trusts the
+// PAYMENTS_DISABLED env var; Phase 8 swaps in the real on-chain check
+// against the Base contract via Alchemy.
+type ReviveBody = { proof?: unknown };
+app.post<{ Params: { slug: string }; Body: ReviveBody }>("/v1/rooms/:slug/revive", async (req, reply) => {
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const result = await verifyPaid(req.params.slug, (req.body ?? {}).proof);
+  if (!result) return reply.code(402).send({ error: "payment-required" });
+  const room = getOrCreateRoom(req.params.slug);
+  room.meta.setPaidUntil(result.paidUntil);
+  return { ok: true, slug: req.params.slug, paidUntil: result.paidUntil };
 });
 
 // --- SIWE auth --------------------------------------------------------------
@@ -2615,10 +2653,14 @@ app.post("/admin/finalize", async (req, reply) => {
   // to the wire and returns to the event loop while we push events.
   void (async () => {
     try {
+      const room = httpRoom();
       await finalizeRecording({
         recordingsDir: config.recordingsDir,
         pathName: "live",
         ipfsApiUrl: config.ipfsApiUrl,
+        chatArchive: room.chat.readArchive(),
+        transcriptArchive: room.transcript.readArchive(),
+        clearTranscript: () => room.transcript.clear(),
         onEvent: writeEvent,
       });
     } catch (err) {
@@ -2647,7 +2689,7 @@ app.get("/admin/peers", async (req, reply) => {
 app.post("/admin/wallet/reset", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  walletWipeAll();
+  httpRoom().wallet.wipeAll();
   return { ok: true };
 });
 
@@ -2681,10 +2723,14 @@ app.post<{ Params: { id: string } }>("/admin/fanouts/:id/stop", async (req, repl
 });
 
 // --- Browser-host tx ingress -----------------------------------------------
-// The browser-host POSTs captured wallet calls here so all WS-connected peers
-// see them in their tx panels. Authenticated by a shared bearer secret —
-// keeps random clients from injecting fake tx_request messages.
-type BrowserTxBody = { browserId?: unknown; payload?: unknown };
+// The browser-host POSTs captured wallet calls here so peers in the
+// originating room see them in their tx panels. Authenticated by a shared
+// bearer secret — keeps random clients from injecting fake tx_requests.
+//
+// `slug` lets us narrow the broadcast to that specific room (Phase 2).
+// Old browser-host builds that don't include `slug` fall back to the
+// main room — the relay can still serve them during a rolling deploy.
+type BrowserTxBody = { slug?: unknown; browserId?: unknown; payload?: unknown };
 app.post<{ Body: BrowserTxBody }>("/internal/browser-tx", async (req, reply) => {
   const expected = process.env.BROWSER_HOST_INGRESS_SECRET;
   if (!expected) return reply.code(503).send({ error: "ingress not configured" });
@@ -2709,7 +2755,8 @@ app.post<{ Body: BrowserTxBody }>("/internal/browser-tx", async (req, reply) => 
   } else {
     calldata = JSON.stringify({ method, params });
   }
-  broadcast({
+  const slug = typeof body.slug === "string" ? parseSlug(body.slug) : DEFAULT_SLUG;
+  getOrCreateRoom(slug).broadcast({
     type: "tx_request",
     from: "browser-host",
     browserId: body.browserId,
@@ -2779,6 +2826,36 @@ app.register(async function signalRoutes(fastify) {
       return;
     }
 
+    // Parse the room slug from the connect URL (?slug=ep0). Falls back
+    // to DEFAULT_SLUG ("main") so pre-Phase-3 frontends — which don't
+    // yet send a slug — keep landing in the single-room experience.
+    const urlForSlug = new URL(req.url ?? "/", "http://x");
+    const slug = parseSlug(urlForSlug.searchParams.get("slug"));
+    const room = getOrCreateRoom(slug);
+
+    // Phase 5: WS access requires the room cookie (issued by
+    // /v1/rooms/:slug/auth). Admins bypass — same model as the old
+    // global invite gate — so the operator can recover access without
+    // knowing the password. The main room also honors the legacy
+    // slop_invite cookie for users from before per-room passwords.
+    const adminBypass = session.address ? isAdminAddress(session.address) : false;
+    if (!adminBypass && room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
+      send(socket, { type: "error", error: "room-auth-required", slug });
+      socket.close(4403, "room-auth-required");
+      return;
+    }
+
+    // Phase 7: paid-room gate. Admins bypass. Free / unclaimed / paid
+    // rooms pass through. Lapsed paid rooms (paidUntil < now AND has a
+    // password) need to be revived via POST /v1/rooms/:slug/revive
+    // before the WS can connect.
+    if (!adminBypass && !isRoomFreeOrPaid(room)) {
+      send(socket, { type: "error", error: "payment-required", slug });
+      socket.close(4290, "payment-required");
+      return;
+    }
+    room.touch();
+
     const peerId = randomBytes(8).toString("hex");
     const info = {
       id: peerId,
@@ -2796,6 +2873,11 @@ app.register(async function signalRoutes(fastify) {
     // infinite reconnect loop: each new tab kicked the previous one,
     // the kicked tab auto-reconnected and kicked back, ad nauseam.
     // Symptom in the UI: icons flicker, peer cursors blink in and out.
+    //
+    // Cross-room: a stale peer may live in a different room than the
+    // one we're now joining (same session, different slug). Use
+    // findPeerRoom so each peer_leave broadcast lands in the room
+    // where that peer was actually visible.
     for (const stale of findPeersBySessionToken(session.token)) {
       // ws is the `ws` library's WebSocket on the server side; readyState
       // values: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED. Treat both
@@ -2805,12 +2887,14 @@ app.register(async function signalRoutes(fastify) {
       const rs = (stale.ws as { readyState?: number }).readyState;
       const stillAlive = rs === 0 || rs === 1;
       if (stillAlive) continue;
-      const ended = clearPeerPublications(stale.id);
-      removePeer(stale.id);
+      const staleRoom = findPeerRoom(stale.id);
+      if (!staleRoom) continue;
+      const ended = staleRoom.desktop.clearPeerPublications(stale.id);
+      staleRoom.removePeer(stale.id);
       for (const p of ended) {
-        broadcast({ type: "unpublished", peerId: stale.id, streamId: p.streamId });
+        staleRoom.broadcast({ type: "unpublished", peerId: stale.id, streamId: p.streamId });
       }
-      broadcast({
+      staleRoom.broadcast({
         type: "peer_leave",
         peer: { id: stale.id, role: stale.role, address: stale.address, handle: stale.handle, connectedAt: stale.connectedAt },
       });
@@ -2821,39 +2905,39 @@ app.register(async function signalRoutes(fastify) {
       }
     }
 
-    addPeer({ ...info, ws: socket, sessionToken: session.token });
+    room.addPeer({ ...info, ws: socket, sessionToken: session.token });
     send(socket, {
       type: "hello",
       id: peerId,
-      peers: listPeers().filter(p => p.id !== peerId),
-      publications: listPublications(),
-      slots: getSlots(PRIMARY_HOST_ADDR),
-      browsers: listBrowsers(PRIMARY_HOST_ADDR),
+      peers: room.listPeers().filter(p => p.id !== peerId),
+      publications: room.desktop.listPublications(),
+      slots: room.desktop.getSlots(),
+      browsers: room.browsers.list(),
       avatars: listAvatarsSync(),
       hiddenAvatars: listHiddenOwnersSync(),
-      chatHistory: recentChat(),
-      openWindows: listOpenWindows(),
-      musicState,
-      chessGame: chessGetCurrentGame(),
-      chessHistory: chessGetHistory(),
+      chatHistory: room.chat.recent(),
+      openWindows: room.windows.list(),
+      musicState: room.music.current().state,
+      chessGame: room.chess.getCurrentGame(),
+      chessHistory: room.chess.getHistory(),
       aiPlayers: listAvailableAIPlayers(),
-      todos: todoList(),
-      notes: noteList(),
+      todos: room.todos.list(),
+      notes: room.notes.list(),
       glossary: glossaryList(),
       gasState: getGasState(),
       tickerState: getTickerState(),
       headlinesState: getHeadlinesState(),
       timelineState: getTimelineState(),
     newsDigestState: getNewsDigestState(),
-      files: fileList(),
+      files: room.files.list(),
       musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
-      musicGenre: getCurrentGenre(),
-      musicCustom: getCustomPlaylist().tracks,
-      clockState: getClockState(),
-      wallet: walletGetCurrent(),
-      walletTxs: walletListTxs(),
+      musicGenre: room.jamendo.getCurrentGenre(),
+      musicCustom: room.jamendo.getCustomPlaylist().tracks,
+      clockState: room.clock.getState(),
+      wallet: room.wallet.getCurrent(),
+      walletTxs: room.wallet.listTxs(),
     });
-    broadcast({ type: "peer_join", peer: info }, peerId);
+    room.broadcast({ type: "peer_join", peer: info }, peerId);
 
     socket.on("message", (raw: Buffer | string) => {
       let msg: any;
@@ -2874,7 +2958,7 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.to !== "string") {
             return send(socket, { type: "error", error: "missing_to" });
           }
-          const ok = sendTo(msg.to, {
+          const ok = room.sendTo(msg.to, {
             type: "signal",
             kind: msg.type,
             from: peerId,
@@ -2885,7 +2969,7 @@ app.register(async function signalRoutes(fastify) {
         }
         case "cursor": {
           if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
-          broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
+          room.broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
           return;
         }
         case "click": {
@@ -2893,18 +2977,18 @@ app.register(async function signalRoutes(fastify) {
           // Include the sender — the click ripple should appear on the
           // clicker's own screen at the same time it appears for everyone
           // else, otherwise click+ripple feel desynced.
-          broadcast({ type: "click", from: peerId, x: msg.x, y: msg.y });
+          room.broadcast({ type: "click", from: peerId, x: msg.x, y: msg.y });
           return;
         }
         case "chat_send": {
           if (typeof msg.text !== "string" || !msg.text.trim()) return;
-          if (!allowChat(session.token)) {
+          if (!room.chat.allow(session.token)) {
             return send(socket, { type: "error", error: "rate-limited" });
           }
           // Cookie-authed WS peer → "live". The chat subscriber relays
           // this back to everyone (including the sender) via broadcast,
           // so the local UI doesn't need an optimistic insert.
-          appendChat({
+          room.chat.append({
             address: info.address,
             handle: info.handle,
             text: msg.text,
@@ -2914,7 +2998,7 @@ app.register(async function signalRoutes(fastify) {
         }
         case "todo_add": {
           if (typeof msg.text !== "string" || !msg.text.trim()) return;
-          todoAdd({
+          room.todos.add({
             address: info.address,
             handle: info.handle,
             text: msg.text,
@@ -2923,32 +3007,32 @@ app.register(async function signalRoutes(fastify) {
         }
         case "todo_toggle": {
           if (typeof msg.id !== "string") return;
-          todoToggle(msg.id);
+          room.todos.toggle(msg.id);
           return;
         }
         case "todo_update": {
           if (typeof msg.id !== "string" || typeof msg.text !== "string") return;
-          todoUpdate(msg.id, msg.text);
+          room.todos.update(msg.id, msg.text);
           return;
         }
         case "todo_delete": {
           if (typeof msg.id !== "string") return;
-          todoRemove(msg.id);
+          room.todos.remove(msg.id);
           return;
         }
         case "todo_clear_done": {
-          todoClearDone();
+          room.todos.clearDone();
           return;
         }
         case "todo_reorder": {
           if (!Array.isArray(msg.ids)) return;
           const ids = msg.ids.filter((s: unknown): s is string => typeof s === "string");
-          todoReorder(ids);
+          room.todos.reorder(ids);
           return;
         }
         case "note_create": {
           if (typeof msg.text !== "string") return;
-          noteCreate({
+          room.notes.create({
             address: info.address,
             handle: info.handle,
             text: msg.text,
@@ -2957,12 +3041,12 @@ app.register(async function signalRoutes(fastify) {
         }
         case "note_update": {
           if (typeof msg.id !== "string" || typeof msg.text !== "string") return;
-          noteUpdate(msg.id, msg.text);
+          room.notes.update(msg.id, msg.text);
           return;
         }
         case "note_delete": {
           if (typeof msg.id !== "string") return;
-          noteRemove(msg.id);
+          room.notes.remove(msg.id);
           return;
         }
         case "glossary_add": {
@@ -3000,8 +3084,8 @@ app.register(async function signalRoutes(fastify) {
             kind: msg.kind as SlotKind,
             label: msg.label,
           };
-          publishStream(pub);
-          broadcast({ type: "published", publication: pub });
+          room.desktop.publish(pub);
+          room.broadcast({ type: "published", publication: pub });
           return;
         }
         case "unpublish": {
@@ -3013,9 +3097,9 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.streamId !== "string") {
             return send(socket, { type: "error", error: "missing_streamId" });
           }
-          const ownerId = findPublicationOwner(msg.streamId) ?? peerId;
-          const ok = unpublishStream(ownerId, msg.streamId);
-          if (ok) broadcast({ type: "unpublished", peerId: ownerId, streamId: msg.streamId });
+          const ownerId = room.desktop.findPublicationOwner(msg.streamId) ?? peerId;
+          const ok = room.desktop.unpublish(ownerId, msg.streamId);
+          if (ok) room.broadcast({ type: "unpublished", peerId: ownerId, streamId: msg.streamId });
           return;
         }
         case "slot_update": {
@@ -3028,9 +3112,9 @@ app.register(async function signalRoutes(fastify) {
           for (const key of ["x", "y", "width", "height", "z"] as const) {
             if (typeof msg[key] === "number") (patch as any)[key] = msg[key];
           }
-          const merged = applySlotUpdate(PRIMARY_HOST_ADDR, patch);
+          const merged = room.desktop.applySlotUpdate(patch);
           if (!merged) return;
-          broadcast({ type: "slot", slot: merged });
+          room.broadcast({ type: "slot", slot: merged });
           return;
         }
         case "browser_open": {
@@ -3038,25 +3122,25 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "bad_browser_open" });
           }
           const appId = typeof msg.appId === "string" && msg.appId.trim() ? msg.appId.trim() : undefined;
-          const browser = openSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url, peerId, appId);
-          broadcast({ type: "browser", browser });
+          const browser = room.browsers.open(msg.id, msg.url, peerId, appId);
+          room.broadcast({ type: "browser", browser });
           return;
         }
         case "browser_navigate": {
           if (typeof msg.id !== "string" || typeof msg.url !== "string") {
             return send(socket, { type: "error", error: "bad_browser_navigate" });
           }
-          const browser = navigateSharedBrowser(PRIMARY_HOST_ADDR, msg.id, msg.url);
+          const browser = room.browsers.navigate(msg.id, msg.url);
           if (!browser) return;
-          broadcast({ type: "browser", browser });
+          room.broadcast({ type: "browser", browser });
           return;
         }
         case "browser_close": {
           if (typeof msg.id !== "string") {
             return send(socket, { type: "error", error: "missing_id" });
           }
-          const ok = closeSharedBrowser(PRIMARY_HOST_ADDR, msg.id);
-          if (ok) broadcast({ type: "browser_closed", id: msg.id });
+          const ok = room.browsers.close(msg.id);
+          if (ok) room.broadcast({ type: "browser_closed", id: msg.id });
           return;
         }
         case "window_open": {
@@ -3067,8 +3151,8 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.id !== "string") {
             return send(socket, { type: "error", error: "missing_id" });
           }
-          if (openSingletonWindow(msg.id)) {
-            broadcast({ type: "window_opened", id: msg.id });
+          if (room.windows.open(msg.id)) {
+            room.broadcast({ type: "window_opened", id: msg.id });
           }
           return;
         }
@@ -3076,8 +3160,8 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.id !== "string") {
             return send(socket, { type: "error", error: "missing_id" });
           }
-          if (closeSingletonWindow(msg.id)) {
-            broadcast({ type: "window_closed", id: msg.id });
+          if (room.windows.close(msg.id)) {
+            room.broadcast({ type: "window_closed", id: msg.id });
           }
           return;
         }
@@ -3094,16 +3178,15 @@ app.register(async function signalRoutes(fastify) {
           // sensible default — never leave it undefined, peers expect a
           // number.
           const incomingVolume = typeof msg.volume === "number" ? Math.max(0, Math.min(1, msg.volume)) : null;
-          musicState = {
+          const next = room.music.set({
             src: typeof msg.src === "string" ? msg.src : null,
             index: msg.index,
             playing: !!msg.playing,
             position: msg.position,
             at: msg.at,
-            volume: incomingVolume ?? musicState?.volume ?? 0.7,
-          };
-          broadcast({ type: "music_state", state: musicState });
-          bumpMusicVersion();
+            volume: incomingVolume ?? room.music.cachedVolume() ?? 0.7,
+          });
+          room.broadcast({ type: "music_state", state: next });
           return;
         }
         case "chess_create_game": {
@@ -3114,14 +3197,14 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.whiteKey !== "string" || typeof msg.blackKey !== "string") {
             return send(socket, { type: "error", error: "bad_chess_create" });
           }
-          const result = chessCreateGame({
+          const result = room.chess.createGame({
             whiteKey: msg.whiteKey,
             blackKey: msg.blackKey,
             whiteLabel: typeof msg.whiteLabel === "string" ? msg.whiteLabel : msg.whiteKey,
             blackLabel: typeof msg.blackLabel === "string" ? msg.blackLabel : msg.blackKey,
           });
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcastChessState(result.game);
+          broadcastChessState(room, result.game);
           return;
         }
         case "chess_move": {
@@ -3132,24 +3215,24 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "bad_chess_move" });
           }
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
-          const result = chessApplyMove(callerKey, {
+          const result = room.chess.applyMove(callerKey, {
             from: msg.from,
             to: msg.to,
             promotion: typeof msg.promotion === "string" ? msg.promotion : undefined,
           });
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcastChessState(result.game);
+          broadcastChessState(room, result.game);
           if (result.ended) {
-            broadcast({ type: "chess_history", history: chessGetHistory() });
+            room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
           }
           return;
         }
         case "chess_resign": {
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
-          const result = chessResign(callerKey);
+          const result = room.chess.resign(callerKey);
           if (!result.ok) return send(socket, { type: "error", error: result.error });
-          broadcastChessState(result.game);
-          broadcast({ type: "chess_history", history: chessGetHistory() });
+          broadcastChessState(room, result.game);
+          room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
           return;
         }
         case "chess_close_game": {
@@ -3157,8 +3240,8 @@ app.register(async function signalRoutes(fastify) {
           // Clearing an active game is an "abort" (no winner recorded,
           // nothing appended to history). Same any-peer-can-close model
           // as the rest of the singleton windows.
-          chessClearGame();
-          broadcastChessState(null);
+          room.chess.clearGame();
+          broadcastChessState(room, null);
           return;
         }
         case "tx_request": {
@@ -3168,7 +3251,7 @@ app.register(async function signalRoutes(fastify) {
           if (typeof msg.browserId !== "string" || typeof msg.calldata !== "string") {
             return send(socket, { type: "error", error: "bad_tx_request" });
           }
-          broadcast({
+          room.broadcast({
             type: "tx_request",
             from: peerId,
             browserId: msg.browserId,
@@ -3224,7 +3307,7 @@ app.register(async function signalRoutes(fastify) {
             )
             .map(s => ({ address: s.address.toLowerCase(), label: s.label, signerType: s.signerType }));
           if (signers.length === 0) return send(socket, { type: "error", error: "no_signers" });
-          walletSetCurrent({
+          room.wallet.setCurrent({
             id: typeof rec.id === "string" ? rec.id : Math.random().toString(36).slice(2),
             address: rec.address.toLowerCase(),
             chainId: rec.chainId,
@@ -3240,11 +3323,11 @@ app.register(async function signalRoutes(fastify) {
         }
         case "wallet_new_episode": {
           // Archive `current` and let the deploy flow surface again.
-          walletArchiveCurrent();
+          room.wallet.archiveCurrent();
           return;
         }
         case "wallet_tx_propose": {
-          const cur = walletGetCurrent();
+          const cur = room.wallet.getCurrent();
           if (!cur) return send(socket, { type: "error", error: "no_wallet" });
           if (
             typeof msg.target !== "string" ||
@@ -3256,7 +3339,7 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_propose" });
           }
-          const tx = walletProposeTx({
+          const tx = room.wallet.proposeTx({
             multisigAddress: cur.address,
             chainId: cur.chainId,
             from: info.address,
@@ -3277,7 +3360,7 @@ app.register(async function signalRoutes(fastify) {
             target: tx.target,
             value: tx.value,
             data: tx.data,
-          }).then(summary => walletSetTxSummary(tx.id, summary));
+          }).then(summary => room.wallet.setTxSummary(tx.id, summary));
           return;
         }
         case "wallet_tx_sign": {
@@ -3289,7 +3372,7 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_sign" });
           }
-          walletAddSignature(msg.id, {
+          room.wallet.addSignature(msg.id, {
             signer: msg.signer,
             sigType: msg.sigType,
             data: msg.data,
@@ -3303,18 +3386,18 @@ app.register(async function signalRoutes(fastify) {
           }
           const allowed: WalletTx["status"][] = ["pending", "executing", "executed", "failed", "expired", "cancelled"];
           if (!allowed.includes(msg.status as WalletTx["status"])) return;
-          walletSetTxStatus(msg.id, msg.status as WalletTx["status"], typeof msg.txHash === "string" ? msg.txHash : null);
+          room.wallet.setTxStatus(msg.id, msg.status as WalletTx["status"], typeof msg.txHash === "string" ? msg.txHash : null);
           return;
         }
         case "wallet_tx_remove": {
           if (typeof msg.id !== "string") return;
-          walletRemoveTx(msg.id);
+          room.wallet.removeTx(msg.id);
           return;
         }
         case "wallet_tx_resummarize": {
           if (typeof msg.id !== "string") return;
-          const tx = walletFindTx(msg.id);
-          const cur = walletGetCurrent();
+          const tx = room.wallet.findTx(msg.id);
+          const cur = room.wallet.getCurrent();
           if (!tx || !cur) return;
           void summarizeTransaction({
             chainId: cur.chainId,
@@ -3322,7 +3405,7 @@ app.register(async function signalRoutes(fastify) {
             target: tx.target,
             value: tx.value,
             data: tx.data,
-          }).then(summary => walletSetTxSummary(tx.id, summary));
+          }).then(summary => room.wallet.setTxSummary(tx.id, summary));
           return;
         }
         default:
@@ -3331,12 +3414,12 @@ app.register(async function signalRoutes(fastify) {
     });
 
     socket.on("close", () => {
-      const ended = clearPeerPublications(peerId);
-      removePeer(peerId);
+      const ended = room.desktop.clearPeerPublications(peerId);
+      room.removePeer(peerId);
       for (const p of ended) {
-        broadcast({ type: "unpublished", peerId, streamId: p.streamId });
+        room.broadcast({ type: "unpublished", peerId, streamId: p.streamId });
       }
-      broadcast({ type: "peer_leave", peer: info });
+      room.broadcast({ type: "peer_leave", peer: info });
     });
   });
 });
@@ -3353,13 +3436,15 @@ app
     // mid-think (rare, but happened during the AI-vs-AI debug), kick
     // off a fresh tick. Without this, the game would sit forever
     // because nothing else triggers a broadcastChessState until a
-    // human interacts.
-    const resumed = chessGetCurrentGame();
+    // human interacts. Only resumes the main room on boot — other rooms
+    // are loaded lazily on first WS connect, and resume their own
+    // chess state at that time via the Room constructor + ChessState
+    // load. If we ever need to resume every persistent room on boot
+    // we'd glob the .slop-data/rooms dir here.
+    const mainRoom = httpRoom();
+    const resumed = mainRoom.chess.getCurrentGame();
     if (resumed && resumed.status === "active") {
-      // Triggering broadcastChessState handles broadcast + version
-      // bump + maybeMoveAI scheduling. Safe to call on an unchanged
-      // state — peers just re-receive the snapshot they already have.
-      broadcastChessState(resumed);
+      broadcastChessState(mainRoom, resumed);
     }
   })
   .catch(err => {

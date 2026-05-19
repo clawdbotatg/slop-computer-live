@@ -1,10 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
-// Shared clock app state — synchronized across every peer. Tab,
-// timezone pick, stopwatch, and countdown all live here. The wall-
-// clock "Now" display is computed locally in each browser, so it
-// stays naturally consistent without us syncing the literal time.
+// Per-room shared clock app state — synchronized across every peer in
+// a room. Tab, timezone pick, stopwatch, and countdown all live here.
+// The wall-clock "Now" display is computed locally in each browser, so
+// it stays naturally consistent without us syncing the literal time.
 //
 // Countdown sync: state.countdown is "running" with an `endAt` field
 // that's a `Date.now()` epoch. Every peer's UI computes the remaining
@@ -14,8 +14,6 @@ import { dirname } from "node:path";
 //
 // On-disk persistence so a relay restart doesn't reset everyone's
 // running timer.
-
-const CLOCK_STATE_FILE = process.env.CLOCK_STATE_FILE ?? "./.slop-data/clock-state.json";
 
 export type ClockTab = "time" | "timer" | "countdown";
 
@@ -43,35 +41,6 @@ const DEFAULT_STATE: ClockState = {
   stopwatch: { phase: "idle" },
   countdown: { phase: "idle" },
 };
-
-let state: ClockState = DEFAULT_STATE;
-let loaded = false;
-
-function load(): void {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = readFileSync(CLOCK_STATE_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Partial<ClockState>;
-    state = {
-      tab: validTab(parsed.tab) ? parsed.tab : DEFAULT_STATE.tab,
-      selectedZone: typeof parsed.selectedZone === "string" ? parsed.selectedZone : DEFAULT_STATE.selectedZone,
-      stopwatch: validStopwatch(parsed.stopwatch) ? parsed.stopwatch : DEFAULT_STATE.stopwatch,
-      countdown: validCountdown(parsed.countdown) ? parsed.countdown : DEFAULT_STATE.countdown,
-    };
-  } catch {
-    /* fresh — keep DEFAULT_STATE */
-  }
-}
-
-function persist(): void {
-  try {
-    mkdirSync(dirname(CLOCK_STATE_FILE), { recursive: true });
-    writeFileSync(CLOCK_STATE_FILE, JSON.stringify(state), "utf8");
-  } catch (err) {
-    console.warn("[clock] persist failed", err);
-  }
-}
 
 function validTab(t: unknown): t is ClockTab {
   return t === "time" || t === "timer" || t === "countdown";
@@ -106,45 +75,86 @@ function validCountdown(c: unknown): c is CountdownState {
   return false;
 }
 
-// --- Subscribers -----------------------------------------------------------
-
 type Subscriber = (state: ClockState) => void;
-const subscribers = new Set<Subscriber>();
-export function subscribe(fn: Subscriber): () => void {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
-}
-function emit(): void {
-  for (const fn of subscribers) {
+
+export class Clock {
+  private state: ClockState = DEFAULT_STATE;
+  private loaded = false;
+  private subscribers = new Set<Subscriber>();
+
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyPath: string | null = null,
+  ) {}
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath) this.readFrom(this.legacyPath);
+  }
+
+  private readFrom(path: string): boolean {
     try {
-      fn(state);
+      const raw = readFileSync(path, "utf8");
+      const parsed = JSON.parse(raw) as Partial<ClockState>;
+      this.state = {
+        tab: validTab(parsed.tab) ? parsed.tab : DEFAULT_STATE.tab,
+        selectedZone: typeof parsed.selectedZone === "string" ? parsed.selectedZone : DEFAULT_STATE.selectedZone,
+        stopwatch: validStopwatch(parsed.stopwatch) ? parsed.stopwatch : DEFAULT_STATE.stopwatch,
+        countdown: validCountdown(parsed.countdown) ? parsed.countdown : DEFAULT_STATE.countdown,
+      };
+      return true;
     } catch {
-      /* one bad sub shouldn't kill the rest */
+      return false;
     }
   }
-}
 
-// --- Public API ------------------------------------------------------------
+  private persist(): void {
+    try {
+      writeFileAtomic(this.filePath, JSON.stringify(this.state));
+    } catch (err) {
+      console.warn("[clock] persist failed", err);
+    }
+  }
 
-export function getState(): ClockState {
-  load();
-  return state;
-}
+  private emit(): void {
+    for (const fn of this.subscribers) {
+      try {
+        fn(this.state);
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
+    }
+  }
 
-/** Partial update — fields not in `patch` are preserved. Validation
- *  rejects bad shapes so a misbehaving client can't park us in a state
- *  the typed UI can't render. */
-export function setState(patch: Partial<ClockState>): ClockState {
-  load();
-  const next: ClockState = {
-    tab: validTab(patch.tab) ? patch.tab : state.tab,
-    selectedZone:
-      typeof patch.selectedZone === "string" && patch.selectedZone ? patch.selectedZone : state.selectedZone,
-    stopwatch: patch.stopwatch !== undefined && validStopwatch(patch.stopwatch) ? patch.stopwatch : state.stopwatch,
-    countdown: patch.countdown !== undefined && validCountdown(patch.countdown) ? patch.countdown : state.countdown,
-  };
-  state = next;
-  persist();
-  emit();
-  return state;
+  subscribe(fn: Subscriber): () => void {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
+
+  getState(): ClockState {
+    this.load();
+    return this.state;
+  }
+
+  /** Partial update — fields not in `patch` are preserved. Validation
+   *  rejects bad shapes so a misbehaving client can't park us in a state
+   *  the typed UI can't render. */
+  setState(patch: Partial<ClockState>): ClockState {
+    this.load();
+    const next: ClockState = {
+      tab: validTab(patch.tab) ? patch.tab : this.state.tab,
+      selectedZone:
+        typeof patch.selectedZone === "string" && patch.selectedZone ? patch.selectedZone : this.state.selectedZone,
+      stopwatch:
+        patch.stopwatch !== undefined && validStopwatch(patch.stopwatch) ? patch.stopwatch : this.state.stopwatch,
+      countdown:
+        patch.countdown !== undefined && validCountdown(patch.countdown) ? patch.countdown : this.state.countdown,
+    };
+    this.state = next;
+    this.persist();
+    this.emit();
+    return this.state;
+  }
 }

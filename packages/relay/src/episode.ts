@@ -1,17 +1,14 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
-// Per-episode flags the host can flip on the fly. Currently just `sttOn`
-// (gates whether peer browsers post Web Speech transcripts to /v1/transcript)
-// but built as a stateful module so other flags can join (e.g. recording-on,
-// chat-locked) without restructuring.
+// Per-room episode flags the host can flip on the fly. Currently just
+// `sttOn` (gates whether peer browsers post Web Speech transcripts to
+// /v1/transcript) but built as a stateful class so other flags can
+// join (e.g. recording-on, chat-locked) without restructuring.
 //
-// Persistence is a tiny JSON file so a relay restart mid-show doesn't lose
-// the toggle state. State is broadcast on `subscribe(fn)` so SSE consumers
-// can push updates to the desktop in real-time.
-
-const EPISODE_STATE_FILE =
-  process.env.EPISODE_STATE_FILE ?? "./.slop-data/episode.json";
+// Persistence is a tiny JSON file so a relay restart mid-show doesn't
+// lose the toggle state. State is broadcast on `subscribe(fn)` so SSE
+// consumers can push updates to the desktop in real-time.
 
 export type EpisodeState = {
   /** When true, peer browsers run Web Speech and POST final segments to
@@ -21,54 +18,73 @@ export type EpisodeState = {
   sttOn: boolean;
 };
 
-let state: EpisodeState = { sttOn: false };
-let loaded = false;
+type Subscriber = (s: EpisodeState) => void;
 
-function load(): void {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = readFileSync(EPISODE_STATE_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Partial<EpisodeState>;
-    if (typeof parsed.sttOn === "boolean") state.sttOn = parsed.sttOn;
-  } catch {
-    /* fresh — keep defaults */
+export class EpisodeFlags {
+  private state: EpisodeState = { sttOn: false };
+  private loaded = false;
+  private subscribers = new Set<Subscriber>();
+
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyPath: string | null = null,
+  ) {}
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath) this.readFrom(this.legacyPath);
   }
-}
 
-function persist(): void {
-  try {
-    mkdirSync(dirname(EPISODE_STATE_FILE), { recursive: true });
-    writeFileSync(EPISODE_STATE_FILE, JSON.stringify(state), "utf8");
-  } catch {
-    /* disk write failed — state stays in memory; not load-bearing */
-  }
-}
-
-export function getState(): EpisodeState {
-  load();
-  return { ...state };
-}
-
-export function setSttOn(on: boolean): EpisodeState {
-  load();
-  if (state.sttOn === on) return { ...state };
-  state = { ...state, sttOn: on };
-  persist();
-  for (const fn of subscribers) {
+  private readFrom(path: string): boolean {
     try {
-      fn({ ...state });
+      const raw = readFileSync(path, "utf8");
+      const parsed = JSON.parse(raw) as Partial<EpisodeState>;
+      if (typeof parsed.sttOn === "boolean") {
+        this.state.sttOn = parsed.sttOn;
+        return true;
+      }
     } catch {
-      /* one bad sub shouldn't kill the rest */
+      /* missing or unparseable */
+    }
+    return false;
+  }
+
+  private persist(): void {
+    try {
+      writeFileAtomic(this.filePath, JSON.stringify(this.state));
+    } catch {
+      /* disk write failed — state stays in memory; not load-bearing */
     }
   }
-  return { ...state };
-}
 
-type Subscriber = (s: EpisodeState) => void;
-const subscribers = new Set<Subscriber>();
+  private emit(): void {
+    for (const fn of this.subscribers) {
+      try {
+        fn({ ...this.state });
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
+    }
+  }
 
-export function subscribe(fn: Subscriber): () => void {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
+  subscribe(fn: Subscriber): () => void {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
+
+  getState(): EpisodeState {
+    this.load();
+    return { ...this.state };
+  }
+
+  setSttOn(on: boolean): EpisodeState {
+    this.load();
+    if (this.state.sttOn === on) return { ...this.state };
+    this.state = { ...this.state, sttOn: on };
+    this.persist();
+    this.emit();
+    return { ...this.state };
+  }
 }

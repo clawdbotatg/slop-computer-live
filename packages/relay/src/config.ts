@@ -41,6 +41,11 @@ export const config = {
   // recording to /api/v0/add and streams the {Bytes, Hash} response back
   // to the host UI as a real progress bar.
   ipfsApiUrl: env("IPFS_API_URL", "http://127.0.0.1:5001"),
+  // Public HTTP gateway for serving pinned blobs (BGIPFS in prod). When
+  // set, /files/:id 302-redirects to `${gateway}/${cid}?filename=…` for
+  // entries that have a CID — keeps the prod box's outbound bandwidth
+  // off the hot path. Unset → always serve from local storage.
+  ipfsPublicGateway: env("IPFS_PUBLIC_GATEWAY", "https://media.slop.computer/ipfs"),
   turnSecret: env("TURN_SECRET", ""),
   turnHost: env("TURN_HOST", ""),
   turnTtlSeconds: Number(env("TURN_TTL_SECONDS", "3600")),

@@ -1,115 +1,114 @@
-// Server-side autonomous chess move loop for AI players.
+// Per-room server-side autonomous chess move loop for AI players.
 //
-// Wired into the chess broadcast cycle: every time the game state
-// changes (create/move/resign/abort), `maybeMoveAI(version)` is
-// called. If it's now an AI's turn, the engine asks that AI's model
-// for a move (one retry on illegal/parse failure with a stricter
-// prompt; second failure auto-resigns the AI so the human isn't
-// stuck waiting on a broken provider).
+// Wired into the chess broadcast cycle: every time a room's chess
+// state changes (create/move/resign/abort), `room.aiMover.tick(version)`
+// is called. If it's now an AI's turn for that room, the engine asks
+// that AI's model for a move (one retry on illegal/parse failure with
+// a stricter prompt; second failure auto-resigns the AI so the human
+// isn't stuck waiting on a broken provider).
 
 import { Chess } from "chess.js";
-import { applyMove as chessApply, resign as chessResign, getCurrentGame } from "./chess.js";
+import type { ChessState } from "./chess.js";
 import { getAIPlayer, isAIKey } from "./ai-players.js";
 
-let inFlight = false;
-let lastVersionHandled = -1;
+export class AIMover {
+  private inFlight = false;
+  private lastVersionHandled = -1;
 
-/** Called from `bumpChessVersion()` on every state change. Cheap when
- *  it's not an AI's turn — we only kick off the model call if the
- *  side-to-move's ownerKey is one of ours. */
-export async function maybeMoveAI(
-  version: number,
-  notifyAfterMove: () => void,
-): Promise<void> {
-  // Coalesce: if we already started a move for this version, skip.
-  // The new state from our own move will bump the version again, which
-  // re-runs us — that's how AI-vs-AI keeps stepping forward.
-  if (inFlight) return;
-  if (version <= lastVersionHandled) return;
-  lastVersionHandled = version;
+  constructor(private readonly chess: ChessState) {}
 
-  const game = getCurrentGame();
-  if (!game || game.status !== "active") return;
+  /** Called from the broadcastChessState wrapper after every state
+   *  change. Cheap when it's not an AI's turn — we only kick off the
+   *  model call if the side-to-move's ownerKey is one of ours. */
+  async tick(version: number, notifyAfterMove: () => void): Promise<void> {
+    // Coalesce: if we already started a move for this version, skip.
+    // The new state from our own move will bump the version again,
+    // which re-runs us — that's how AI-vs-AI keeps stepping forward.
+    if (this.inFlight) return;
+    if (version <= this.lastVersionHandled) return;
+    this.lastVersionHandled = version;
 
-  const fen = game.fen;
-  let turn: "w" | "b";
-  try {
-    const ch = new Chess();
-    ch.load(fen);
-    turn = ch.turn();
-  } catch {
-    return;
+    const game = this.chess.getCurrentGame();
+    if (!game || game.status !== "active") return;
+
+    const fen = game.fen;
+    let turn: "w" | "b";
+    try {
+      const ch = new Chess();
+      ch.load(fen);
+      turn = ch.turn();
+    } catch {
+      return;
+    }
+    const sideKey = turn === "w" ? game.whiteKey : game.blackKey;
+    if (!isAIKey(sideKey)) return;
+
+    const ai = getAIPlayer(sideKey);
+    if (!ai) {
+      // Game references an AI we no longer ship (or whose key was
+      // rotated out). Best we can do is resign for them so a human
+      // isn't stuck — alternative is leave the game frozen forever.
+      console.warn(`[ai-mover] no config for ${sideKey}, resigning`);
+      this.chess.resign(sideKey);
+      notifyAfterMove();
+      return;
+    }
+
+    this.inFlight = true;
+    try {
+      await this.playOneTurn(ai, sideKey, notifyAfterMove);
+    } catch (err) {
+      console.error("[ai-mover] unexpected failure:", err);
+    } finally {
+      this.inFlight = false;
+    }
   }
-  const sideKey = turn === "w" ? game.whiteKey : game.blackKey;
-  if (!isAIKey(sideKey)) return;
 
-  const ai = getAIPlayer(sideKey);
-  if (!ai) {
-    // Game references an AI we no longer ship (or whose key was
-    // rotated out). Best we can do is resign for them so a human
-    // isn't stuck — alternative is leave the game frozen forever.
-    console.warn(`[ai-mover] no config for ${sideKey}, resigning`);
-    chessResign(sideKey);
+  private async playOneTurn(
+    ai: ReturnType<typeof getAIPlayer> & object,
+    sideKey: string,
+    notifyAfterMove: () => void,
+  ): Promise<void> {
+    const game = this.chess.getCurrentGame();
+    if (!game || game.status !== "active") return;
+
+    const legalMoves = computeLegalUCIs(game.fen);
+
+    // First attempt: open prompt.
+    let move = await askForMove(ai, game.fen, game.moves, legalMoves, false);
+    if (move && this.tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
+
+    // Second attempt: stricter prompt that lists the legal options.
+    console.warn(`[ai-mover] ${ai.id}: retrying with strict prompt`);
+    move = await askForMove(ai, game.fen, game.moves, legalMoves, true);
+    if (move && this.tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
+
+    // Two strikes — auto-resign so the human isn't stuck.
+    console.warn(`[ai-mover] ${ai.id}: 2 bad responses, resigning`);
+    this.chess.resign(sideKey);
     notifyAfterMove();
-    return;
   }
 
-  inFlight = true;
-  try {
-    await playOneTurn(ai, sideKey, notifyAfterMove);
-  } catch (err) {
-    console.error("[ai-mover] unexpected failure:", err);
-  } finally {
-    inFlight = false;
+  private tryApply(sideKey: string, raw: string, fen: string, notifyAfterMove: () => void): boolean {
+    const parsed = extractMove(raw, fen);
+    if (!parsed) {
+      // Log the truncated raw response so we can diagnose models that
+      // chronically fail. 240 chars fits one log line + a normal prompt
+      // window without flooding the journal.
+      console.warn(`[ai-mover] couldn't extract a legal move from ${sideKey}; raw=${JSON.stringify(raw.slice(0, 240))}`);
+      return false;
+    }
+    const result = this.chess.applyMove(sideKey, parsed);
+    if (!result.ok) {
+      console.warn(`[ai-mover] illegal move from ${sideKey}: ${raw.slice(0, 80)} → ${JSON.stringify(parsed)} (${result.error})`);
+      return false;
+    }
+    notifyAfterMove();
+    return true;
   }
 }
 
-async function playOneTurn(
-  ai: ReturnType<typeof getAIPlayer> & object,
-  sideKey: string,
-  notifyAfterMove: () => void,
-): Promise<void> {
-  const game = getCurrentGame();
-  if (!game || game.status !== "active") return;
-
-  // Compute legal moves once — we use them for the strict-retry prompt
-  // AND to validate parsed responses before sending them to chess.js.
-  const legalMoves = computeLegalUCIs(game.fen);
-
-  // First attempt: open prompt.
-  let move = await askForMove(ai, game.fen, game.moves, legalMoves, false);
-  if (move && tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
-
-  // Second attempt: stricter prompt that lists the legal options.
-  console.warn(`[ai-mover] ${ai.id}: retrying with strict prompt`);
-  move = await askForMove(ai, game.fen, game.moves, legalMoves, true);
-  if (move && tryApply(sideKey, move, game.fen, notifyAfterMove)) return;
-
-  // Two strikes — auto-resign so the human isn't stuck.
-  console.warn(`[ai-mover] ${ai.id}: 2 bad responses, resigning`);
-  chessResign(sideKey);
-  notifyAfterMove();
-}
-
-function tryApply(sideKey: string, raw: string, fen: string, notifyAfterMove: () => void): boolean {
-  const parsed = extractMove(raw, fen);
-  if (!parsed) {
-    // Log the truncated raw response so we can diagnose models that
-    // chronically fail. 240 chars fits one log line + a normal prompt
-    // window without flooding the journal.
-    console.warn(`[ai-mover] couldn't extract a legal move from ${sideKey}; raw=${JSON.stringify(raw.slice(0, 240))}`);
-    return false;
-  }
-  const result = chessApply(sideKey, parsed);
-  if (!result.ok) {
-    console.warn(`[ai-mover] illegal move from ${sideKey}: ${raw.slice(0, 80)} → ${JSON.stringify(parsed)} (${result.error})`);
-    return false;
-  }
-  notifyAfterMove();
-  return true;
-}
-
-// ---- Prompt + parsing ------------------------------------------------
+// ---- Prompt + parsing (stateless helpers, shared across rooms) -----------
 
 function buildSystemPrompt(ai: ReturnType<typeof getAIPlayer> & object, color: "white" | "black"): string {
   const base = [
@@ -264,10 +263,6 @@ const UCI_RE = /([a-h][1-8])([a-h][1-8])([qrbn])?/gi;
 const SAN_RE = /\b(?:O-O-O|O-O|0-0-0|0-0|[KQRBN][a-h]?[1-8]?x?[a-h][1-8](?:=?[QRBN])?[+#]?|[a-h]x?[a-h][1-8](?:=?[QRBN])?[+#]?|[a-h][1-8](?:=?[QRBN])?[+#]?)\b/g;
 
 function extractMove(text: string, fen: string): { from: string; to: string; promotion?: string } | null {
-  // Strategy 1: UCI — scan all matches and try each. Reasoning models
-  // sometimes mention the OPPONENT's last move ("white played e2e4")
-  // before their own answer; the first match might be wrong, but a
-  // later match often is the actual move.
   for (const m of text.matchAll(UCI_RE)) {
     const candidate = {
       from: m[1]!.toLowerCase(),
@@ -276,8 +271,6 @@ function extractMove(text: string, fen: string): { from: string; to: string; pro
     };
     if (validateMove(fen, candidate)) return candidate;
   }
-  // Strategy 2: SAN — scan candidates, validate via chess.js. Same
-  // "first valid wins" approach.
   for (const sanMatch of text.matchAll(SAN_RE)) {
     const san = sanMatch[0];
     const resolved = sanToCoords(fen, san);
@@ -301,9 +294,9 @@ function sanToCoords(fen: string, san: string): { from: string; to: string; prom
   try {
     const ch = new Chess();
     ch.load(fen);
-    const m = ch.move(san);
-    if (!m) return null;
-    return { from: m.from, to: m.to, promotion: (m as { promotion?: string }).promotion };
+    const move = ch.move(san);
+    if (!move) return null;
+    return { from: move.from, to: move.to, promotion: move.promotion };
   } catch {
     return null;
   }

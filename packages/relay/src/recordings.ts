@@ -9,8 +9,6 @@ import { basename, join } from "node:path";
 import * as nodeFs from "node:fs";
 const openAsBlob = (nodeFs as unknown as { openAsBlob: (path: string) => Promise<Blob> }).openAsBlob;
 
-import { readArchive as readChatArchive } from "./chat.js";
-import { clear as clearTranscript, readArchive as readTranscriptArchive } from "./transcript.js";
 import { type EpisodeMeta, generateEpisodeMeta } from "./meta-ai.js";
 
 // Post-stream archival: MediaMTX writes the live session to disk
@@ -253,6 +251,14 @@ export async function finalizeRecording(opts: {
   recordingsDir: string;
   pathName: string;
   ipfsApiUrl: string;
+  /** Caller snapshots these from the room and passes them in — keeps
+   *  recordings.ts decoupled from per-room subsystem APIs. */
+  chatArchive: { content: string; messageCount: number } | null;
+  transcriptArchive: { content: string; segmentCount: number } | null;
+  /** Called once the manifest is safely pinned, before resolve. Lets the
+   *  caller wipe the per-room transcript JSONL so the next episode starts
+   *  fresh. Chat is intentionally NOT cleared. */
+  clearTranscript: () => void;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -287,7 +293,7 @@ export async function finalizeRecording(opts: {
         // per-episode manifest point at its own snapshot CID. JSONL is pinned
         // as-is (no JSON wrapper) since the frontpage just opens the raw CID.
         let chatPin: { cid: string; messageCount: number } | null = null;
-        const chatArchive = readChatArchive();
+        const chatArchive = opts.chatArchive;
         if (chatArchive && chatArchive.messageCount > 0) {
           emit({ phase: "pinning-chat", messageCount: chatArchive.messageCount });
           const chatCid = await pinBlobToLocalIpfs({
@@ -302,7 +308,7 @@ export async function finalizeRecording(opts: {
         // is one server-stamped Web Speech "final" segment; merged across
         // peers and sorted by `ts` to form the canonical episode transcript.
         let transcriptPin: { cid: string; segmentCount: number } | null = null;
-        const transcriptArchive = readTranscriptArchive();
+        const transcriptArchive = opts.transcriptArchive;
         if (transcriptArchive && transcriptArchive.segmentCount > 0) {
           emit({
             phase: "pinning-transcript",
@@ -370,7 +376,7 @@ export async function finalizeRecording(opts: {
         // — its per-episode-vs-community-wide semantics are a separate call.
         if (transcriptPin) {
           try {
-            clearTranscript();
+            opts.clearTranscript();
           } catch (err) {
             // eslint-disable-next-line no-console
             console.error("[finalize] transcript clear failed", err);

@@ -1,12 +1,12 @@
-// Shared browser windows.
+// Per-room shared browser windows.
 //
 // A "browser" is a desktop window backed by an iframe whose URL is synced
-// across every connected peer. Anyone can open one, change its URL, or close
-// it. Like slot positions, browser state is host-authoritative-ish: persisted
-// per primary host so a relay restart doesn't wipe what's open.
+// across every connected peer in a room. Anyone can open one, change its
+// URL, or close it. State persists across relay restarts so a refresh
+// doesn't wipe what's open.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 export type Browser = {
   id: string;
@@ -19,91 +19,97 @@ export type Browser = {
   appId?: string;
 };
 
-const BROWSERS_PATH = process.env.BROWSERS_PATH ?? "/var/lib/slop-relay/browsers.json";
+export class BrowserRegistry {
+  private browsers = new Map<string, Browser>();
+  private loaded = false;
+  private saveQueued = false;
 
-const browsersByHost: Map<string, Map<string, Browser>> = loadBrowsers();
+  constructor(
+    private readonly filePath: string,
+    /** Legacy by-host map: `{ [hostAddress]: { [browserId]: Browser } }`.
+     *  Only the main room reads this and only for the slop-computer
+     *  primary host bucket — see `legacyHostKey`. */
+    private readonly legacyPath: string | null = null,
+    private readonly legacyHostKey: string | null = null,
+  ) {}
 
-function loadBrowsers(): Map<string, Map<string, Browser>> {
-  try {
-    const raw = readFileSync(BROWSERS_PATH, "utf8");
-    const obj = JSON.parse(raw) as Record<string, Record<string, Browser>>;
-    const out = new Map<string, Map<string, Browser>>();
-    for (const [host, list] of Object.entries(obj)) {
-      out.set(host, new Map(Object.entries(list)));
-    }
-    return out;
-  } catch {
-    return new Map();
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath && this.legacyHostKey) this.readLegacy();
   }
-}
 
-let saveQueued = false;
-function scheduleSave(): void {
-  if (saveQueued) return;
-  saveQueued = true;
-  queueMicrotask(() => {
-    saveQueued = false;
+  private readFrom(path: string): boolean {
     try {
-      mkdirSync(dirname(BROWSERS_PATH), { recursive: true });
-      const obj: Record<string, Record<string, Browser>> = {};
-      for (const [host, list] of browsersByHost) obj[host] = Object.fromEntries(list);
-      writeFileSync(BROWSERS_PATH, JSON.stringify(obj));
-    } catch (err) {
-      console.error("[browsers] failed to persist:", err);
+      const raw = readFileSync(path, "utf8");
+      const obj = JSON.parse(raw) as Record<string, Browser>;
+      for (const [id, b] of Object.entries(obj)) {
+        this.browsers.set(id, b);
+      }
+      return true;
+    } catch {
+      return false;
     }
-  });
-}
-
-const norm = (addr: string | null | undefined) => (addr ? addr.toLowerCase() : null);
-
-function bucket(hostAddress: string | null): Map<string, Browser> {
-  const host = norm(hostAddress) ?? "_global";
-  let b = browsersByHost.get(host);
-  if (!b) {
-    b = new Map();
-    browsersByHost.set(host, b);
   }
-  return b;
-}
 
-export function listBrowsers(hostAddress: string | null): Browser[] {
-  const host = norm(hostAddress) ?? "_global";
-  return [...(browsersByHost.get(host)?.values() ?? [])];
-}
+  private readLegacy(): void {
+    try {
+      const raw = readFileSync(this.legacyPath!, "utf8");
+      const obj = JSON.parse(raw) as Record<string, Record<string, Browser>>;
+      const bucket = obj[this.legacyHostKey!];
+      if (bucket) {
+        for (const [id, b] of Object.entries(bucket)) {
+          this.browsers.set(id, b);
+        }
+      }
+    } catch {
+      /* fresh start */
+    }
+  }
 
-export function openBrowser(
-  hostAddress: string | null,
-  id: string,
-  url: string,
-  openedBy: string,
-  appId?: string,
-): Browser {
-  const b = bucket(hostAddress);
-  const browser: Browser = { id, url, openedBy, openedAt: Date.now() };
-  if (appId) browser.appId = appId;
-  b.set(id, browser);
-  scheduleSave();
-  return browser;
-}
+  private scheduleSave(): void {
+    if (this.saveQueued) return;
+    this.saveQueued = true;
+    queueMicrotask(() => {
+      this.saveQueued = false;
+      try {
+        writeFileAtomic(this.filePath, JSON.stringify(Object.fromEntries(this.browsers)));
+      } catch (err) {
+        console.error("[browsers] failed to persist:", err);
+      }
+    });
+  }
 
-export function navigateBrowser(
-  hostAddress: string | null,
-  id: string,
-  url: string,
-): Browser | null {
-  const b = bucket(hostAddress);
-  const cur = b.get(id);
-  if (!cur) return null;
-  const next: Browser = { ...cur, url };
-  b.set(id, next);
-  scheduleSave();
-  return next;
-}
+  list(): Browser[] {
+    this.load();
+    return [...this.browsers.values()];
+  }
 
-export function closeBrowser(hostAddress: string | null, id: string): boolean {
-  const b = bucket(hostAddress);
-  if (!b.has(id)) return false;
-  b.delete(id);
-  scheduleSave();
-  return true;
+  open(id: string, url: string, openedBy: string, appId?: string): Browser {
+    this.load();
+    const browser: Browser = { id, url, openedBy, openedAt: Date.now() };
+    if (appId) browser.appId = appId;
+    this.browsers.set(id, browser);
+    this.scheduleSave();
+    return browser;
+  }
+
+  navigate(id: string, url: string): Browser | null {
+    this.load();
+    const cur = this.browsers.get(id);
+    if (!cur) return null;
+    const next: Browser = { ...cur, url };
+    this.browsers.set(id, next);
+    this.scheduleSave();
+    return next;
+  }
+
+  close(id: string): boolean {
+    this.load();
+    if (!this.browsers.has(id)) return false;
+    this.browsers.delete(id);
+    this.scheduleSave();
+    return true;
+  }
 }

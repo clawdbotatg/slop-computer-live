@@ -1,67 +1,85 @@
-// Shared singleton windows.
+// Per-room singleton windows.
 //
 // A "window" here is a desktop app whose visibility is one-shared-bit
-// (open or closed) across the entire mesh, NOT per user. Compare:
+// (open or closed) within a single room, NOT per user. Compare:
 //
 //   - publications  → one entity per peer (each user's own camera, mic)
 //   - browsers      → many shared entities (multiple iframes, by id)
 //   - chat          → per-user open/close (your panel, your call)
-//   - SINGLETONS    → one shared entity (music player, future calculator,
-//                     weather widget, etc.) — anyone can open, all see;
-//                     anyone can close, all lose it
+//   - SINGLETONS    → one shared entity per room (music player, future
+//                     calculator, weather widget, etc.) — anyone can
+//                     open, all see; anyone can close, all lose it
 //
 // Position is still tracked via the slot system (keyed by `app-${id}`),
 // so the window comes up where it last sat across reloads/peers.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
-const WINDOWS_PATH = process.env.WINDOWS_PATH ?? "/var/lib/slop-relay/windows.json";
+export class WindowSet {
+  private openIds = new Set<string>();
+  private loaded = false;
+  private saveQueued = false;
 
-const openIds: Set<string> = loadOpen();
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyPath: string | null = null,
+  ) {}
 
-function loadOpen(): Set<string> {
-  try {
-    const raw = readFileSync(WINDOWS_PATH, "utf8");
-    const parsed = JSON.parse(raw) as { open?: unknown };
-    if (Array.isArray(parsed.open)) return new Set(parsed.open.filter((s): s is string => typeof s === "string"));
-    return new Set();
-  } catch {
-    return new Set();
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.readFrom(this.filePath)) return;
+    if (this.legacyPath) this.readFrom(this.legacyPath);
   }
-}
 
-let saveQueued = false;
-function scheduleSave(): void {
-  if (saveQueued) return;
-  saveQueued = true;
-  queueMicrotask(() => {
-    saveQueued = false;
+  private readFrom(path: string): boolean {
     try {
-      mkdirSync(dirname(WINDOWS_PATH), { recursive: true });
-      writeFileSync(WINDOWS_PATH, JSON.stringify({ open: [...openIds] }));
-    } catch (err) {
-      console.error("[windows] failed to persist:", err);
+      const raw = readFileSync(path, "utf8");
+      const parsed = JSON.parse(raw) as { open?: unknown };
+      if (Array.isArray(parsed.open)) {
+        this.openIds = new Set(parsed.open.filter((s): s is string => typeof s === "string"));
+        return true;
+      }
+    } catch {
+      /* missing or unparseable */
     }
-  });
-}
+    return false;
+  }
 
-export function listOpenWindows(): string[] {
-  return [...openIds];
-}
+  private scheduleSave(): void {
+    if (this.saveQueued) return;
+    this.saveQueued = true;
+    queueMicrotask(() => {
+      this.saveQueued = false;
+      try {
+        writeFileAtomic(this.filePath, JSON.stringify({ open: [...this.openIds] }));
+      } catch (err) {
+        console.error("[windows] failed to persist:", err);
+      }
+    });
+  }
 
-/** @returns true if the set actually changed. */
-export function openWindow(id: string): boolean {
-  if (openIds.has(id)) return false;
-  openIds.add(id);
-  scheduleSave();
-  return true;
-}
+  list(): string[] {
+    this.load();
+    return [...this.openIds];
+  }
 
-/** @returns true if the set actually changed. */
-export function closeWindow(id: string): boolean {
-  if (!openIds.has(id)) return false;
-  openIds.delete(id);
-  scheduleSave();
-  return true;
+  /** @returns true if the set actually changed. */
+  open(id: string): boolean {
+    this.load();
+    if (this.openIds.has(id)) return false;
+    this.openIds.add(id);
+    this.scheduleSave();
+    return true;
+  }
+
+  /** @returns true if the set actually changed. */
+  close(id: string): boolean {
+    this.load();
+    if (!this.openIds.has(id)) return false;
+    this.openIds.delete(id);
+    this.scheduleSave();
+    return true;
+  }
 }
