@@ -62,3 +62,29 @@ export function kickById(id: string): boolean {
   peers.delete(id);
   return true;
 }
+
+/**
+ * Terminate every connected WebSocket so the process can exit on
+ * SIGTERM. Fastify's `app.close()` waits for HTTP requests to drain
+ * but won't proactively close upgraded WS connections — left alone,
+ * those keep the event loop alive until systemd's 90s stop timeout
+ * fires and SIGKILLs the process. Send a courtesy "shutting_down"
+ * frame so clients know to reconnect, then force-terminate the
+ * socket (ws.terminate() unlike ws.close() doesn't wait for a
+ * close handshake).
+ */
+export function closeAllPeers(): void {
+  for (const peer of peers.values()) {
+    try {
+      send(peer.ws, { type: "shutting_down" });
+    } catch {
+      /* ignore */
+    }
+    try {
+      peer.ws.terminate();
+    } catch {
+      /* ignore */
+    }
+  }
+  peers.clear();
+}

@@ -25,7 +25,17 @@ import {
 } from "./browsers.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
-import { addPeer, broadcast, findPeersBySessionToken, kickById, listPeers, removePeer, send, sendTo } from "./peers.js";
+import {
+  addPeer,
+  broadcast,
+  closeAllPeers,
+  findPeersBySessionToken,
+  kickById,
+  listPeers,
+  removePeer,
+  send,
+  sendTo,
+} from "./peers.js";
 import { generateCard } from "./card.js";
 import {
   MAX_TEXT_LEN as CHAT_MAX_TEXT,
@@ -3357,11 +3367,27 @@ app
     process.exit(1);
   });
 
-// Clean up restream children on shutdown so destinations see a clean
-// "stream ended" rather than a network drop.
+// Clean shutdown on systemd's SIGTERM. The key insight: Fastify's
+// `app.close()` waits for HTTP requests to drain, but it does NOT
+// proactively close upgraded WebSocket connections. With ~tens of
+// long-lived peer + fanout WS connections, app.close() would never
+// resolve and systemd's 90s TimeoutStopSec would fire — three full
+// minutes of "icons gone" during a deploy as systemd waited, then
+// SIGKILLed, then started the new process. Explicit terminate of
+// every WS first, then app.close(), then a force-exit safety net.
 const cleanShutdown = (signal: NodeJS.Signals) => {
-  app.log.info(`received ${signal} — stopping fanouts`);
+  app.log.info(`received ${signal} — stopping fanouts + terminating peers`);
   shutdownAllFanouts();
+  closeAllPeers();
+  // Safety net: if app.close() still hangs (some other long-lived
+  // resource we don't know about), force-exit after 3s. `.unref()`
+  // means this timeout itself doesn't keep the event loop alive —
+  // so on a clean shutdown the process exits naturally below and
+  // the timeout never fires.
+  setTimeout(() => {
+    app.log.warn("graceful shutdown exceeded 3s — force-exiting");
+    process.exit(0);
+  }, 3000).unref();
   app.close().finally(() => process.exit(0));
 };
 process.on("SIGTERM", cleanShutdown);

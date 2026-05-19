@@ -847,6 +847,18 @@ app.register(async function (fastify) {
               .catch(() => undefined);
             return;
           }
+          case "insertText": {
+            // Used for Cmd+V paste from the user's local clipboard. The
+            // remote Chromium doesn't share the user's clipboard, so the
+            // frontend reads `navigator.clipboard.readText()` and sends
+            // the text through this channel; CDP inserts it into the
+            // currently focused element.
+            const text = typeof msg.text === "string" ? msg.text : "";
+            if (!text) return;
+            tab.lastInputAt = Date.now();
+            void tab.cdp.send("Input.insertText", { text }).catch(() => undefined);
+            return;
+          }
           case "key": {
             const event = (msg.event as string) ?? "down";
             const key = String(msg.key ?? "");
@@ -909,6 +921,15 @@ app
 
 const shutdown = async (signal: NodeJS.Signals) => {
   app.log.info(`received ${signal} — shutting down`);
+  // Force-exit safety net: if any of destroyTab / browser.close /
+  // app.close hangs (puppeteer or a stuck WS), we still exit well
+  // inside systemd's 90s TimeoutStopSec instead of getting SIGKILLed.
+  // `.unref()` so the timeout itself doesn't pin the event loop on a
+  // clean shutdown.
+  setTimeout(() => {
+    app.log.warn("graceful shutdown exceeded 3s — force-exiting");
+    process.exit(0);
+  }, 3000).unref();
   for (const id of [...tabs.keys()]) await destroyTab(id);
   if (browser && browser.connected) {
     try {
