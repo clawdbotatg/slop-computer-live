@@ -14,22 +14,27 @@ this by building **locally**, then rsyncing the artifact.
    or a local out of sync with `origin/main`. Commit + push first.
 2. **Concurrency lock** at `/tmp/slop-deploy.lock` — a second deploy
    yields rather than racing. Two features can't fight over prod.
-3. **Local build** of Next.js (~10s on a modern Mac), relay, and
-   browser-host.
+3. **Local build** of Next.js (~10s on a modern Mac) and relay.
+   browser-host is **only** built when something in
+   `packages/browser-host/src/` is newer than the existing
+   `dist/index.js` — most deploys touch only Next.js or relay, and
+   `tsc` is ~2s of pure waste otherwise. Force with
+   `BROWSER_FORCE_BUILD=1 ./ops/deploy.sh` if you suspect local dist
+   is out of sync with prod.
 4. **Rsync** the new `.next/` to `.next.staging/` on prod using
    `--link-dest` (so unchanged files become free hardlinks — the
    transfer stays incremental) and `--exclude='cache/'` (webpack's
    incremental-build cache is hundreds of MB of pure waste on prod).
-   Relay and browser-host `dist/` rsync straight into place — they
-   pick up the new bytes on service restart. Live keeps serving from
-   the existing `.next/` during this.
+   Relay `dist/` rsyncs straight into place. browser-host `dist/`
+   rsync is skipped on the same condition as the build above.
+   Live keeps serving from the existing `.next/` during this.
 5. **Atomic swap + restart** — stop slop-live, `mv .next .next.old`,
    `mv .next.staging .next`, start slop-live. HTTPS downtime is ~2s
    (just Node.js port-bind), measured by the script via curl polling.
-   slop-relay restarts after. slop-browser-host only restarts if its
-   `dist/index.js` mtime is newer than the running process's start
-   time — bouncing Chromium for nothing would kill every active
-   SharedBrowser tab for no reason.
+   slop-relay restarts after. slop-browser-host is left alone unless
+   the browser-host build actually ran AND `dist/index.js` mtime is
+   newer than the running process's start time — bouncing Chromium
+   for nothing kills every active SharedBrowser tab.
 6. **Health check** — verifies `slop-live`, `slop-relay`, and
    `slop-browser-host` are `active` before exiting non-zero.
 

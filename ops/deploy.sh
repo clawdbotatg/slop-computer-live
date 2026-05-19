@@ -66,9 +66,30 @@ echo ""
 echo "→ Building relay…"
 yarn relay:build
 
-echo ""
-echo "→ Building browser-host…"
-yarn browser:build
+# Only build browser-host if its source has actually moved since the
+# last local build. `tsc` is ~2s and rsync round-trip is another ~1s,
+# which is pure waste on the typical deploy that only touches Next.js
+# or relay. Set `BROWSER_FORCE_BUILD=1` to bypass when you suspect the
+# local dist is somehow out of sync with prod.
+browser_dist="packages/browser-host/dist/index.js"
+deploy_browser=false
+if [ "${BROWSER_FORCE_BUILD:-}" = "1" ]; then
+  echo ""
+  echo "→ BROWSER_FORCE_BUILD=1 — rebuilding browser-host"
+  deploy_browser=true
+elif [ ! -f "$browser_dist" ]; then
+  echo ""
+  echo "→ browser-host dist missing — building"
+  deploy_browser=true
+elif find packages/browser-host/src -type f -newer "$browser_dist" -print -quit 2>/dev/null | grep -q .; then
+  echo ""
+  echo "→ browser-host source changed since last build — rebuilding"
+  deploy_browser=true
+fi
+
+if $deploy_browser; then
+  yarn browser:build
+fi
 
 # --- Ship to prod (live keeps serving) ---------------------------------------
 # Strategy: rsync the new build into a *sibling* directory while the live
@@ -95,10 +116,14 @@ rsync -az --delete \
   packages/relay/dist/ \
   "$PROD_HOST:$PROD_PATH/packages/relay/dist/"
 
-echo "→ Rsyncing browser-host build…"
-rsync -az --delete \
-  packages/browser-host/dist/ \
-  "$PROD_HOST:$PROD_PATH/packages/browser-host/dist/"
+if $deploy_browser; then
+  echo "→ Rsyncing browser-host build…"
+  rsync -az --delete \
+    packages/browser-host/dist/ \
+    "$PROD_HOST:$PROD_PATH/packages/browser-host/dist/"
+else
+  echo "→ Skipping browser-host rsync (no source changes since last build)"
+fi
 
 echo "→ Syncing source + installing prod deps (live still serving)…"
 # Mirror source on prod so what's on disk matches what we built.
@@ -145,22 +170,26 @@ fi
 echo "→ Restarting relay (WS reconnect — no HTTP downtime)…"
 ssh "$PROD_HOST" 'sudo systemctl restart slop-relay'
 
-# Restart only if we actually built fresh browser-host bytes — otherwise
-# bouncing Chromium for nothing kills every active SharedBrowser tab.
-# Tracked by comparing the rsync'd dist mtime against the running
-# process's start time on prod.
-echo "→ Restarting browser-host if dist changed (kills active SharedBrowser tabs — necessary for inject.ts / index.ts updates)…"
-ssh "$PROD_HOST" "
-  set -e
-  dist_mtime=\$(stat -c %Y $PROD_PATH/packages/browser-host/dist/index.js 2>/dev/null || echo 0)
-  svc_start=\$(sudo systemctl show -p ActiveEnterTimestamp --value slop-browser-host | xargs -I{} date -d '{}' +%s 2>/dev/null || echo 0)
-  if [ \"\$dist_mtime\" -gt \"\$svc_start\" ]; then
-    echo '  → fresh dist; restarting'
-    sudo systemctl restart slop-browser-host
-  else
-    echo '  → dist unchanged since service start; skipping restart'
-  fi
-"
+# Restart browser-host only if we just shipped fresh bytes — bouncing
+# Chromium for nothing kills every active SharedBrowser tab. The
+# on-prod mtime check is a second guard in case the rsync was a no-op
+# even though we rebuilt (rare; tsc is deterministic enough).
+if $deploy_browser; then
+  echo "→ Restarting browser-host if dist mtime changed (kills active SharedBrowser tabs — necessary for inject.ts / index.ts updates)…"
+  ssh "$PROD_HOST" "
+    set -e
+    dist_mtime=\$(stat -c %Y $PROD_PATH/packages/browser-host/dist/index.js 2>/dev/null || echo 0)
+    svc_start=\$(sudo systemctl show -p ActiveEnterTimestamp --value slop-browser-host | xargs -I{} date -d '{}' +%s 2>/dev/null || echo 0)
+    if [ \"\$dist_mtime\" -gt \"\$svc_start\" ]; then
+      echo '  → fresh dist; restarting'
+      sudo systemctl restart slop-browser-host
+    else
+      echo '  → dist unchanged since service start; skipping restart'
+    fi
+  "
+else
+  echo "→ Skipping browser-host restart (no deploy this run)"
+fi
 
 # --- Health check ------------------------------------------------------------
 
