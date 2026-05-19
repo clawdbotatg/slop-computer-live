@@ -76,7 +76,7 @@ yarn relay:build
 PROD_NEXT="$PROD_PATH/packages/nextjs"
 
 echo ""
-echo "→ Cleaning any stale staging/old dirs on $PROD_HOST…"
+echo "→ Cleaning any stale staging/old dirs on ${PROD_HOST}…"
 ssh "$PROD_HOST" "rm -rf $PROD_NEXT/.next.staging $PROD_NEXT/.next.old"
 
 echo "→ Rsyncing Next.js build → .next.staging (incremental via --link-dest, no cache/)…"
