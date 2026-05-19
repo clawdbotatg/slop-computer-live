@@ -31,10 +31,13 @@ this by building **locally**, then rsyncing the artifact.
 5. **Atomic swap + restart** — stop slop-live, `mv .next .next.old`,
    `mv .next.staging .next`, start slop-live. HTTPS downtime is ~2s
    (just Node.js port-bind), measured by the script via curl polling.
-   slop-relay restarts after. slop-browser-host is left alone unless
-   the browser-host build actually ran AND `dist/index.js` mtime is
-   newer than the running process's start time — bouncing Chromium
-   for nothing kills every active SharedBrowser tab.
+   slop-relay restarts after. slop-browser-host restarts **only if
+   the rsync above actually moved bytes** — the rsync runs in
+   `--checksum --itemize-changes` mode and we look for non-no-change
+   lines in its output. Using rsync's own opinion is more reliable
+   than comparing mtimes on prod (tsc rewrites dist mtimes on every
+   build, so an mtime check false-positives). Bouncing Chromium
+   kills every active SharedBrowser tab, so this matters.
 6. **Health check** — verifies `slop-live`, `slop-relay`, and
    `slop-browser-host` are `active` before exiting non-zero.
 

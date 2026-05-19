@@ -116,11 +116,19 @@ rsync -az --delete \
   packages/relay/dist/ \
   "$PROD_HOST:$PROD_PATH/packages/relay/dist/"
 
+browser_rsync_changes=""
 if $deploy_browser; then
-  echo "→ Rsyncing browser-host build…"
-  rsync -az --delete \
+  echo "→ Rsyncing browser-host build (checksum mode to catch real content changes)…"
+  # --checksum compares content, not mtime+size. We need that because tsc
+  # rewrites dist/* with a fresh mtime on every build, so an mtime-based
+  # compare would always say "transfer" even for byte-identical output.
+  # --itemize-changes emits one status line per file; lines starting with
+  # `.` mean "no change", so anything else is a real transfer/delete and
+  # is what we use below to decide whether to bounce browser-host.
+  browser_rsync_changes=$(rsync -az --checksum --delete --itemize-changes \
     packages/browser-host/dist/ \
-    "$PROD_HOST:$PROD_PATH/packages/browser-host/dist/"
+    "$PROD_HOST:$PROD_PATH/packages/browser-host/dist/" \
+    | grep -vE '^\.|^$' || true)
 else
   echo "→ Skipping browser-host rsync (no source changes since last build)"
 fi
@@ -170,25 +178,18 @@ fi
 echo "→ Restarting relay (WS reconnect — no HTTP downtime)…"
 ssh "$PROD_HOST" 'sudo systemctl restart slop-relay'
 
-# Restart browser-host only if we just shipped fresh bytes — bouncing
-# Chromium for nothing kills every active SharedBrowser tab. The
-# on-prod mtime check is a second guard in case the rsync was a no-op
-# even though we rebuilt (rare; tsc is deterministic enough).
-if $deploy_browser; then
-  echo "→ Restarting browser-host if dist mtime changed (kills active SharedBrowser tabs — necessary for inject.ts / index.ts updates)…"
-  ssh "$PROD_HOST" "
-    set -e
-    dist_mtime=\$(stat -c %Y $PROD_PATH/packages/browser-host/dist/index.js 2>/dev/null || echo 0)
-    svc_start=\$(sudo systemctl show -p ActiveEnterTimestamp --value slop-browser-host | xargs -I{} date -d '{}' +%s 2>/dev/null || echo 0)
-    if [ \"\$dist_mtime\" -gt \"\$svc_start\" ]; then
-      echo '  → fresh dist; restarting'
-      sudo systemctl restart slop-browser-host
-    else
-      echo '  → dist unchanged since service start; skipping restart'
-    fi
-  "
+# Restart browser-host only if the rsync above actually moved bytes.
+# `$deploy_browser` already gates whether we rebuilt; this captures the
+# rare case where we rebuilt but tsc produced byte-identical output
+# (rsync --checksum recognized it and skipped the transfer). Bouncing
+# Chromium kills every active SharedBrowser tab, so we want to be sure
+# the new code is *different* before paying that cost.
+if [ -n "$browser_rsync_changes" ]; then
+  echo "→ Restarting browser-host (rsync transferred new bytes — kills active SharedBrowser tabs):"
+  echo "$browser_rsync_changes" | sed 's/^/    /'
+  ssh "$PROD_HOST" 'sudo systemctl restart slop-browser-host'
 else
-  echo "→ Skipping browser-host restart (no deploy this run)"
+  echo "→ Skipping browser-host restart (no content changed; SharedBrowser tabs preserved)"
 fi
 
 # --- Health check ------------------------------------------------------------
