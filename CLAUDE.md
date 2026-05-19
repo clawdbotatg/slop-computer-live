@@ -1,5 +1,56 @@
 # slop-computer-live — Claude notes
 
+## Deploying to production
+
+**Always use `./ops/deploy.sh` from the repo root.** Do NOT ssh into
+the prod box and run `yarn next:build` there — prod is RAM-constrained
+(7.6G, originally no swap), and Next.js builds have OOM-killed the
+whole instance into an unreachable hang in the past. The script avoids
+this by building **locally**, then rsyncing the artifact.
+
+### What the script does
+
+1. **Pre-flight** — refuses to ship a dirty tree, non-`main` branch,
+   or a local out of sync with `origin/main`. Commit + push first.
+2. **Concurrency lock** at `/tmp/slop-deploy.lock` — a second deploy
+   yields rather than racing. Two features can't fight over prod.
+3. **Local build** of Next.js (~10s on a modern Mac) and relay.
+4. **Rsync** the new `.next/` to `.next.staging/` on prod using
+   `--link-dest` (so unchanged files become free hardlinks — the
+   transfer stays incremental) and `--exclude='cache/'` (webpack's
+   incremental-build cache is hundreds of MB of pure waste on prod).
+   Live keeps serving from the existing `.next/` during this.
+5. **Atomic swap + restart** — stop slop-live, `mv .next .next.old`,
+   `mv .next.staging .next`, start slop-live. HTTPS downtime is ~2s
+   (just Node.js port-bind), measured by the script via curl polling.
+6. **Health check** — verifies `slop-live` and `slop-relay` are
+   `active` before exiting non-zero.
+
+### When something goes wrong
+
+- **"Working tree is dirty"** — commit or stash; the script won't
+  ship uncommitted changes.
+- **"Local main is not in sync with origin/main"** — push (or pull)
+  first. The script wants the deployed commit to be on origin so it's
+  reachable / rollbackable.
+- **"Another deploy is running"** — wait for it. Only force-clear the
+  lockfile (`rm /tmp/slop-deploy.lock`) if you're sure the other
+  process is actually dead.
+- **HTTP didn't recover after the swap** — `ssh slopcomputer`,
+  `journalctl -u slop-live -n 50`. The swap leaves `.next.old`
+  in place for a moment in case rollback is needed; check disk
+  state under `packages/nextjs/` before retrying.
+
+### Prod box facts (for context)
+
+- SSH alias: `slopcomputer` (in `~/.ssh/config`, user `ubuntu`)
+- Repo path: `/home/ubuntu/slop-computer-live`
+- Services: `slop-live` (Next.js, :3000), `slop-relay` (:8080),
+  `slop-browser-host` (Puppeteer/Chromium — heavy memory consumer)
+- 4 GB swapfile at `/swapfile` (added after a prior OOM hang;
+  persisted via `/etc/fstab`)
+- Caddy fronts everything; HTTPS via Let's Encrypt
+
 ## Making icons for new apps
 
 **When you add a new app to the desktop, generate its icon BEFORE wiring
