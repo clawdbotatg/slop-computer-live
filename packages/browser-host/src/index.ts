@@ -685,6 +685,16 @@ app.register(async function (fastify) {
         } catch {
           return;
         }
+        // Re-read the current tab on every message instead of using the
+        // closure-captured one. The outer `tab` is whatever was alive at
+        // WS-open time; every destroyTab+createTab cycle (set_chain,
+        // set_impersonator, reload, EIP-3326 chain switch, watchdog)
+        // swaps the entry in `tabs` but can't update this closure. Using
+        // the stale ref made `tab.chainId` etc. read from the original
+        // tab forever, so e.g. a second set_chain reported "from: 1" even
+        // though we'd already switched to 8453 — and the recreate would
+        // use chainId 1 again, undoing the first switch.
+        const tab = tabs.get(id);
         if (!tab) return;
         switch (msg.type) {
           case "navigate": {
@@ -871,6 +881,10 @@ app.register(async function (fastify) {
       });
 
       socket.on("close", () => {
+        // Same fresh-lookup pattern as the message handler — after any
+        // recreate the WS is in the new tab's subscriber set, not the
+        // closure-captured one.
+        const tab = tabs.get(id);
         if (!tab) return;
         tab.subscribers.delete(socket);
         if (tab.subscribers.size === 0) scheduleShutdown(tab);
