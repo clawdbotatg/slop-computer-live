@@ -221,7 +221,7 @@ function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (
         cursor: item?.url ? "pointer" : "default",
         zIndex: 2,
         textShadow: "0 1px 0 rgba(0,0,0,0.45)",
-        width: 280,
+        width: 320,
         // Soft fade into the scrolling track so the seam is invisible.
         maskImage: "linear-gradient(90deg, #000 0%, #000 88%, transparent 100%)",
         WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 88%, transparent 100%)",
@@ -229,12 +229,15 @@ function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (
     >
       <span
         style={{
+          flexShrink: 0,
           fontFamily: "var(--slop-font-display)",
-          fontSize: 11,
-          letterSpacing: "0.16em",
           textTransform: "uppercase",
+          whiteSpace: "nowrap",
+          letterSpacing: "0.16em",
+          fontSize: 11,
         }}
       >
+        <span style={{ fontSize: 8, opacity: 0.75, marginRight: 4 }}>Built by</span>
         $CLAWD
       </span>
       {price === null ? (
@@ -357,7 +360,7 @@ export const TickerBar = ({ mesh, onOpenUrl }: TickerBarProps) => {
             style={{
               display: "flex",
               alignItems: "center",
-              paddingLeft: 290, // clear the CLAWD badge
+              paddingLeft: 330, // clear the CLAWD badge
               willChange: "transform",
             }}
           >
