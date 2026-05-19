@@ -392,7 +392,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
       app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "wallet_switchEthereumChain");
       void (async () => {
         const oldSubs = [...t.subscribers];
-        await destroyTab(t.id);
+        await destroyTab(t.id, { keepSubscribers: true });
         try {
           const created = await createTab(t.id, url, impersonator, targetChain);
           for (const ws of oldSubs) {
@@ -484,7 +484,21 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
   return tab;
 }
 
-async function destroyTab(id: string): Promise<void> {
+/**
+ * Tear down a tab's Chromium page + screencast.
+ *
+ * `keepSubscribers` controls whether subscriber WebSockets are closed
+ * along with the tab. Default false (close) is right for terminal
+ * teardown — page crash, server shutdown, idle linger. The recreate
+ * flow (reload, set_impersonator, set_chain, EIP-3326 chain switch)
+ * passes true: it captures the subscriber list BEFORE the destroy,
+ * keeps the sockets open through the gap, and re-attaches them to the
+ * freshly-created tab on the other side. Closing the sockets here
+ * would silently break every recreate path — frames from the new
+ * page go to `send()` which skips non-OPEN sockets, so users would
+ * see a frozen frame forever.
+ */
+async function destroyTab(id: string, opts: { keepSubscribers?: boolean } = {}): Promise<void> {
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
@@ -498,14 +512,16 @@ async function destroyTab(id: string): Promise<void> {
   } catch {
     /* ignore */
   }
-  for (const ws of tab.subscribers) {
-    try {
-      ws.close();
-    } catch {
-      /* ignore */
+  if (!opts.keepSubscribers) {
+    for (const ws of tab.subscribers) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
     }
   }
-  app.log.info({ id }, "tab destroyed");
+  app.log.info({ id, kept: !!opts.keepSubscribers }, "tab destroyed");
 }
 
 const TAB_LINGER_MS = 30_000;
@@ -564,7 +580,7 @@ setInterval(() => {
       const impersonator = t.impersonatedAddress;
       const tabChain = t.chainId;
       const oldSubs = [...t.subscribers];
-      await destroyTab(t.id);
+      await destroyTab(t.id, { keepSubscribers: true });
       try {
         const next = await createTab(t.id, url, impersonator, tabChain);
         for (const ws of oldSubs) next.subscribers.add(ws);
@@ -690,7 +706,7 @@ app.register(async function (fastify) {
             app.log.info({ id: t.id, url }, "reload — destroy+recreate");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id);
+              await destroyTab(t.id, { keepSubscribers: true });
               try {
                 const next = await createTab(t.id, url, impersonator, tabChain);
                 for (const ws of oldSubs) next.subscribers.add(ws);
@@ -714,7 +730,7 @@ app.register(async function (fastify) {
             app.log.info({ id: t.id, from: t.impersonatedAddress, to: next }, "set_impersonator");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id);
+              await destroyTab(t.id, { keepSubscribers: true });
               try {
                 const created = await createTab(t.id, url, next, tabChain);
                 for (const ws of oldSubs) {
@@ -749,7 +765,7 @@ app.register(async function (fastify) {
             app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "set_chain");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id);
+              await destroyTab(t.id, { keepSubscribers: true });
               try {
                 const created = await createTab(t.id, url, impersonator, targetChain);
                 for (const ws of oldSubs) {
