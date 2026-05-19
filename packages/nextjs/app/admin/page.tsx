@@ -104,6 +104,13 @@ const AdminPage: NextPage = () => {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [status, setStatus] = useState<string>("");
   const [invite, setInvite] = useState<string>("");
+  // Per-room password creation state (Phase 5). Filled in by the host
+  // when claiming a new slug; on submit we POST /v1/rooms which hashes
+  // the password on the relay and stores it under
+  // .slop-data/rooms/<slug>/auth.json.
+  const [newRoomSlug, setNewRoomSlug] = useState("");
+  const [newRoomPassword, setNewRoomPassword] = useState("");
+  const [createRoomStatus, setCreateRoomStatus] = useState<string>("");
 
   useEffect(() => {
     if (!mounted) return;
@@ -132,6 +139,42 @@ const AdminPage: NextPage = () => {
       cancelled = true;
     };
   }, [mounted, auth]);
+
+  const createRoom = async () => {
+    setCreateRoomStatus("");
+    const slug = newRoomSlug.trim();
+    const password = newRoomPassword.trim();
+    if (!/^[a-z0-9-]{1,64}$/.test(slug)) {
+      setCreateRoomStatus("slug must match ^[a-z0-9-]{1,64}$");
+      return;
+    }
+    if (!password) {
+      setCreateRoomStatus("password required");
+      return;
+    }
+    try {
+      const res = await fetch(`${RELAY_BASE}/v1/rooms`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug, password }),
+      });
+      if (res.ok) {
+        setCreateRoomStatus(`created /${slug} ✓`);
+        setNewRoomSlug("");
+        setNewRoomPassword("");
+        return;
+      }
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
+      if (j.error === "room-already-exists") {
+        setCreateRoomStatus("a room with that slug already exists");
+      } else {
+        setCreateRoomStatus(j.error ?? `error ${res.status}`);
+      }
+    } catch (e) {
+      setCreateRoomStatus((e as Error).message || "network error");
+    }
+  };
 
   const regenerateInvite = async () => {
     try {
@@ -524,6 +567,41 @@ const AdminPage: NextPage = () => {
         <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)", wordBreak: "break-all" }}>
           <code>{inviteUrl}</code>
         </p>
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Create a room</h2>
+        <p style={{ color: "var(--slop-text-muted)" }}>
+          Claim a slug + set its password. Anyone you share the password with can enter that room at
+          <code style={{ marginLeft: 4 }}>/&lt;slug&gt;</code>. Slug must match <code>^[a-z0-9-]{`{1,64}`}$</code> and
+          should usually match the on-chain episode slug from slop.computer.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+          <TextField
+            placeholder="slug (e.g. ep0)"
+            value={newRoomSlug}
+            onChange={e => setNewRoomSlug(e.target.value.toLowerCase())}
+            style={{ minWidth: 180 }}
+          />
+          <TextField
+            placeholder="password"
+            value={newRoomPassword}
+            onChange={e => setNewRoomPassword(e.target.value)}
+            style={{ minWidth: 180 }}
+          />
+          <Button onClick={createRoom}>Create</Button>
+        </div>
+        {createRoomStatus ? (
+          <p
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: createRoomStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
+            }}
+          >
+            {createRoomStatus}
+          </p>
+        ) : null}
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>

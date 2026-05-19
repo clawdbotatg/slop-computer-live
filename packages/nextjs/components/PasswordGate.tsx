@@ -4,46 +4,61 @@ import { useEffect, useRef, useState } from "react";
 import { Bevel, Button } from "~~/components/ui";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-const STORAGE_KEY = "slop-invite-password";
 
 export type PasswordGateProps = {
-  /** Optional invite pre-fill, typically passed from a `?invite=` query. */
+  /** Room slug this gate is authenticating for. Each room has its own
+   *  password, stored as a scrypt hash in `.slop-data/rooms/<slug>/auth.json`. */
+  slug: string;
+  /** Optional invite pre-fill, typically passed from a `?invite=` query
+   *  on the URL. */
   defaultPassword?: string;
   /** Called after the relay accepts the password and sets the cookie. */
   onAccepted: () => void;
 };
 
-const readStoredPassword = (): string => {
+const slugStorageKey = (slug: string) => `slop-room-password-${slug}`;
+const LEGACY_STORAGE_KEY = "slop-invite-password";
+
+const readStoredPassword = (slug: string): string => {
   if (typeof window === "undefined") return "";
   try {
-    return window.localStorage.getItem(STORAGE_KEY) ?? "";
+    return window.localStorage.getItem(slugStorageKey(slug)) ?? "";
   } catch {
     return "";
   }
 };
 
-// Lightweight gate shown before any login UI. POSTs to /auth/invite —
-// matching password gets a long-lived `slop_invite` cookie. Until that
-// cookie is present, /auth/me reports `invited:false` and the rest of
-// the sign-in screen stays out of reach.
+// Lightweight gate shown before any login UI. The relay holds a scrypt-
+// hashed password per room (see room-auth.ts). We POST the user's
+// password to /v1/rooms/:slug/auth; a match sets a long-lived,
+// HMAC-signed cookie scoped to that slug.
 //
-// We also cache the last accepted password in localStorage and silently
-// replay it on mount. Cookies can be cleared, expire, or be missing on
-// a fresh browser — having the password handy means a returning user
-// never sees this gate as long as their saved value still matches.
-export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateProps) => {
+// Backwards compat: the main room also honors the pre-Phase-5 global
+// slop_invite cookie. If the room hasn't been claimed with a per-room
+// password yet (exists=false), this gate falls back to POSTing the
+// legacy /auth/invite endpoint so existing deployments keep working.
+//
+// We cache the last accepted password in localStorage per-slug and
+// silently replay it on mount. Cookies can be cleared, expire, or be
+// missing on a fresh browser — having the password handy means a
+// returning user never sees this gate as long as their saved value
+// still matches.
+export const PasswordGate = ({ slug, defaultPassword = "", onAccepted }: PasswordGateProps) => {
   const [password, setPassword] = useState(defaultPassword);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // `exists` controls which endpoint we POST to. Defaults to true; flipped
+  // to false during the initial status fetch if the room isn't claimed.
+  const [exists, setExists] = useState(true);
   // Hide the form during the initial silent retry so the user doesn't
-  // see it flash before the cookie comes back. Resolves to `false` once
-  // we've decided there's nothing to auto-try (or the auto-try failed).
+  // see it flash before the cookie comes back.
   const [silentRetrying, setSilentRetrying] = useState(() => {
     if (typeof window === "undefined") return false;
-    return !defaultPassword.trim() && !!readStoredPassword();
+    const stored = window.localStorage.getItem(slugStorageKey(slug)) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    return !defaultPassword.trim() && !!stored;
   });
 
-  const submit = async (value: string, opts: { silent?: boolean } = {}) => {
+  const submit = async (value: string, opts: { silent?: boolean; legacy?: boolean } = {}) => {
     if (busy) return;
     const trimmed = value.trim();
     if (!trimmed) {
@@ -52,8 +67,11 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
     }
     setBusy(true);
     setError("");
+    const endpoint = opts.legacy
+      ? `${RELAY_HTTP}/auth/invite`
+      : `${RELAY_HTTP}/v1/rooms/${encodeURIComponent(slug)}/auth`;
     try {
-      const res = await fetch(`${RELAY_HTTP}/auth/invite`, {
+      const res = await fetch(endpoint, {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -61,13 +79,21 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
       });
       if (!res.ok) {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
+        // 404 on the per-room endpoint = unclaimed room; fall back to
+        // the legacy gate before giving up.
+        if (!opts.legacy && res.status === 404) {
+          setExists(false);
+          await submit(trimmed, { ...opts, legacy: true });
+          return;
+        }
         // A stored password that the server rejects is dead weight —
         // drop it so we don't auto-fail on every future mount.
         if (j.error === "bad-password") {
           try {
-            window.localStorage.removeItem(STORAGE_KEY);
+            window.localStorage.removeItem(slugStorageKey(slug));
+            window.localStorage.removeItem(LEGACY_STORAGE_KEY);
           } catch {
-            // ignore
+            /* ignore */
           }
         }
         if (opts.silent) {
@@ -78,9 +104,9 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         return;
       }
       try {
-        window.localStorage.setItem(STORAGE_KEY, trimmed);
+        window.localStorage.setItem(slugStorageKey(slug), trimmed);
       } catch {
-        // ignore — falling back to cookie-only is fine
+        /* falling back to cookie-only is fine */
       }
       onAccepted();
     } catch (e) {
@@ -94,27 +120,44 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
     }
   };
 
-  // Auto-submit on mount whenever we have a password to try:
-  //   1. `?invite=…` from the URL (user followed an invite link).
-  //   2. A previously accepted password cached in localStorage.
-  // Either way, clicking through this gate again is pointless friction.
-  // Bad codes surface inline (or silently clear the cache) so the user
-  // can edit and retry. Guarded by a ref against StrictMode double-mount.
+  // Status check on mount: do we already have a valid cookie? Does the
+  // room exist? Then auto-submit any stored password we have.
   const autoFiredRef = useRef(false);
   useEffect(() => {
     if (autoFiredRef.current) return;
     autoFiredRef.current = true;
-    const fromUrl = defaultPassword.trim();
-    if (fromUrl) {
-      void submit(fromUrl);
-      return;
-    }
-    const stored = readStoredPassword();
-    if (stored) {
-      void submit(stored, { silent: true });
-    }
+
+    void (async () => {
+      try {
+        const res = await fetch(`${RELAY_HTTP}/v1/rooms/${encodeURIComponent(slug)}/auth`, {
+          credentials: "include",
+        });
+        if (res.ok) {
+          const j = (await res.json()) as { exists?: boolean; authed?: boolean };
+          if (j.authed) {
+            onAccepted();
+            return;
+          }
+          if (j.exists === false) setExists(false);
+        }
+      } catch {
+        /* network blip — fall through to the manual gate */
+      }
+
+      const fromUrl = defaultPassword.trim();
+      if (fromUrl) {
+        void submit(fromUrl);
+        return;
+      }
+      const stored = readStoredPassword(slug) || window.localStorage.getItem(LEGACY_STORAGE_KEY) || "";
+      if (stored) {
+        void submit(stored, { silent: true });
+      } else {
+        setSilentRetrying(false);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [slug]);
 
   if (silentRetrying) return null;
 
@@ -138,10 +181,10 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
           fontSize: 18,
         }}
       >
-        Invite required
+        {exists ? `Room ${slug}` : "Invite required"}
       </h2>
       <p style={{ color: "var(--slop-text-muted)", fontSize: 12, marginTop: 0, marginBottom: 14 }}>
-        Enter the password from your invite link.
+        {exists ? "Enter the password for this room." : "Enter the password from your invite link."}
       </p>
       <input
         type="text"
@@ -149,7 +192,7 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         value={password}
         onChange={e => setPassword(e.target.value)}
         onKeyDown={e => {
-          if (e.key === "Enter") void submit(password);
+          if (e.key === "Enter") void submit(password, exists ? {} : { legacy: true });
         }}
         placeholder="password"
         spellCheck={false}
@@ -170,7 +213,7 @@ export const PasswordGate = ({ defaultPassword = "", onAccepted }: PasswordGateP
         <p style={{ color: "var(--slop-magenta, #ff3ec9)", fontSize: 11, marginTop: 8, marginBottom: 0 }}>{error}</p>
       ) : null}
       <div style={{ marginTop: 14 }}>
-        <Button variant="primary" onClick={() => void submit(password)} disabled={busy}>
+        <Button variant="primary" onClick={() => void submit(password, exists ? {} : { legacy: true })} disabled={busy}>
           {busy ? "Checking…" : "Continue"}
         </Button>
       </div>

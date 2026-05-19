@@ -7,6 +7,7 @@ import { usePublicClient } from "wagmi";
 import { Button, LoadingBar, TextField } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
+import { useRoomSlug } from "~~/lib/room-slug";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // Default address shown in the "custom" impersonator input until the user
@@ -154,6 +155,7 @@ export const SharedBrowser = ({
   forwardTxToPeer,
   hideUrlBar,
 }: SharedBrowserProps) => {
+  const slug = useRoomSlug();
   const [draft, setDraft] = useState(browser.url);
   const lastSeenUrlRef = useRef(browser.url);
   const [frameSrc, setFrameSrc] = useState<string | null>(null);
@@ -349,7 +351,8 @@ export const SharedBrowser = ({
       `${BROWSER_HOST_URL}/stream/${encodeURIComponent(browser.id)}` +
       `?url=${encodeURIComponent(browser.url)}` +
       `&impersonated=${encodeURIComponent(impersonatorRef.current)}` +
-      `&chainId=${encodeURIComponent(String(chainIdRef.current))}`;
+      `&chainId=${encodeURIComponent(String(chainIdRef.current))}` +
+      `&slug=${encodeURIComponent(slug)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => setConnState("open");
@@ -555,7 +558,7 @@ export const SharedBrowser = ({
     // We intentionally only re-subscribe on browser.id, not browser.url —
     // URL changes are sent as navigate messages over the existing WS.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browser.id]);
+  }, [browser.id, slug]);
 
   // Push local impersonator picks to the headless tab. We compare against
   // the last value we *sent* (rather than the message we last received)

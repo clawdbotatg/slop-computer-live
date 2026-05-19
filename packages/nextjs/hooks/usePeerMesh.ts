@@ -623,7 +623,7 @@ export type PeerMeshState = {
   walletResummarize: (id: string) => void;
 };
 
-export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshState {
+export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: string): PeerMeshState {
   const [myId, setMyId] = useState<string | null>(null);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [connected, setConnected] = useState(false);
@@ -1305,7 +1305,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       if (cancelled) return;
       iceConfigRef.current = await fetchIceConfig();
       if (cancelled) return;
-      const ws = new WebSocket(RELAY_WS_URL);
+      // Append the room slug so the relay routes this peer into the
+      // right Room (defaults to `main` server-side if missing, so old
+      // clients during a rolling deploy still land somewhere usable).
+      const wsUrl = `${RELAY_WS_URL}${RELAY_WS_URL.includes("?") ? "&" : "?"}slug=${encodeURIComponent(slug)}`;
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -1819,7 +1823,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null): PeerMeshSt
       wsRef.current = null;
       teardownConnections();
     };
-  }, [enabled, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, initiateOffer]);
+  }, [enabled, slug, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, initiateOffer]);
 
   // Cursor broadcast at ~30 Hz.
   useEffect(() => {
