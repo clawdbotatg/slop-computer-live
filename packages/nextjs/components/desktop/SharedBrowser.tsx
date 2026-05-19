@@ -295,6 +295,49 @@ export const SharedBrowser = ({
     }
   }, [browser.url]);
 
+  // ---- Back / forward history ---------------------------------------------
+  // Per-peer history of URLs witnessed in this browser tab. Clicking back
+  // or forward calls onNavigate, which propagates to mesh state, so every
+  // peer's URL bar follows along — but each peer's individual stack stays
+  // independent (peers who joined later just have a shorter stack). When
+  // a peer in the room navigates, the URL change arrives via the same
+  // `browser.url` prop the user's own nav would, so we can't tell them
+  // apart — that's fine; "back" means "the URL you previously saw in
+  // this tab," whoever produced it.
+  const [history, setHistory] = useState<string[]>([browser.url]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  // When the slot's browser is swapped for a different id (close + open
+  // a new tab), reset so the new tab doesn't inherit the previous one's
+  // stack. Handled in the same effect that watches URL changes so a
+  // simultaneous id + url change doesn't queue two conflicting setHistory
+  // calls in one batch.
+  const lastHistoryBrowserIdRef = useRef(browser.id);
+  useEffect(() => {
+    if (lastHistoryBrowserIdRef.current !== browser.id) {
+      lastHistoryBrowserIdRef.current = browser.id;
+      setHistory([browser.url]);
+      setHistoryIndex(0);
+      return;
+    }
+    if (browser.url === history[historyIndex]) return;
+    // Back: incoming URL matches the entry just before our cursor.
+    if (historyIndex > 0 && browser.url === history[historyIndex - 1]) {
+      setHistoryIndex(historyIndex - 1);
+      return;
+    }
+    // Forward: incoming URL matches the entry just after our cursor.
+    if (historyIndex < history.length - 1 && browser.url === history[historyIndex + 1]) {
+      setHistoryIndex(historyIndex + 1);
+      return;
+    }
+    // Fresh navigation: truncate the forward branch and push.
+    setHistory(h => [...h.slice(0, historyIndex + 1), browser.url]);
+    setHistoryIndex(i => i + 1);
+  }, [browser.id, browser.url, history, historyIndex]);
+
+  const canGoBack = historyIndex > 0;
+  const canGoForward = historyIndex < history.length - 1;
+
   // Connect to the browser-host's stream for this browser id. On every
   // shared-state URL change we send a "navigate" message so the headless
   // tab follows the URL bar.
@@ -615,6 +658,16 @@ export const SharedBrowser = ({
     ws.send(JSON.stringify({ type: "reload" }));
   };
 
+  const goBack = () => {
+    if (!canControl || !canGoBack) return;
+    onNavigate(history[historyIndex - 1]);
+  };
+
+  const goForward = () => {
+    if (!canControl || !canGoForward) return;
+    onNavigate(history[historyIndex + 1]);
+  };
+
   // ---- Input forwarding ----------------------------------------------------
   // The frame is rendered with object-fit: contain so it preserves the
   // server viewport's aspect ratio (1280:800) regardless of how the user has
@@ -743,11 +796,32 @@ export const SharedBrowser = ({
   // bar doesn't get swallowed by the canvas stand-in.
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!canControl) return;
+    // Cmd/Ctrl+V: paste from the user's local clipboard. The remote
+    // Chromium has its own clipboard context, so a real Cmd+V on the
+    // server can't see what the user copied locally — we read it here
+    // and ship the text as an `insertText` instead.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "v" || e.key === "V")) {
+      e.preventDefault();
+      void (async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) sendInput({ type: "insertText", text });
+        } catch {
+          // Clipboard permission denied or unavailable — best effort.
+        }
+      })();
+      return;
+    }
     // CDP keyDown with `text` produces the input directly — no separate
     // char event needed (and sending one would double-type printable keys).
     // Special keys (Delete, Backspace, arrows) come through with no text;
     // the server uses the windowsVirtualKeyCode it derives from key.
-    const text = e.key.length === 1 ? e.key : undefined;
+    // Skip `text` when Meta/Ctrl/Alt is held — otherwise CDP sees the text
+    // and types the literal letter, ignoring the modifier (so Cmd+A typed
+    // "a", Cmd+Z typed "z", etc.). Shift stays in `text` because shift+a
+    // legitimately produces "A".
+    const hasNonShiftModifier = e.metaKey || e.ctrlKey || e.altKey;
+    const text = e.key.length === 1 && !hasNonShiftModifier ? e.key : undefined;
     sendInput({
       type: "key",
       event: "down",
@@ -798,6 +872,12 @@ export const SharedBrowser = ({
             borderBottom: "1px solid rgba(255,62,201,0.2)",
           }}
         >
+          <Button onClick={goBack} aria-label="Back" disabled={!canControl || !canGoBack}>
+            ←
+          </Button>
+          <Button onClick={goForward} aria-label="Forward" disabled={!canControl || !canGoForward}>
+            →
+          </Button>
           <Button onClick={reload} aria-label="Reload">
             ↻
           </Button>
