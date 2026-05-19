@@ -2,15 +2,19 @@
 // watch and drive over a WebSocket. Not a generic remote-Chrome service —
 // the only goal is "shared dapp window with vitalik.eth as the wallet."
 //
-// One tab per browser-id. Frontends connect to /stream/:id; the first
-// connection that includes a `url` query string starts a tab. Subsequent
-// clients on the same id share the same tab. When the last client leaves,
-// the tab is kept warm for 30s so quick reconnects don't lose state.
+// Phase 2: tabs are partitioned by room (slug). One Chromium process,
+// one BrowserContext per room — same Chromium, isolated cookies /
+// localStorage / IndexedDB. WS path is /stream/:id?slug=<slug>; missing
+// slug falls back to "main" so pre-Phase-3 frontends keep working.
+//
+// Per-room tab cap + process-wide cap stop one busy room from starving
+// every other room (or OOM-ing the prod box). Idle timer destroys tabs
+// that the user interacted with but then walked away from.
 
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { Browser, CDPSession, Page } from "puppeteer";
+import type { Browser, BrowserContext, CDPSession, Page } from "puppeteer";
 import puppeteerVanilla from "puppeteer";
 // puppeteer-extra wraps the same Chromium puppeteer downloads, then layers
 // the stealth plugin which patches ~20 fingerprint vectors (navigator.webdriver,
@@ -41,6 +45,22 @@ await app.register(cors, {
   credentials: true,
 });
 await app.register(websocket);
+
+// ---- Per-room organization -----------------------------------------------
+
+// Mirrors the relay's slug rule (`^[a-z0-9-]{1,64}$`). browser-host never
+// reads the on-chain contract — the frontend hands us slugs and we
+// validate locally.
+const SLUG_RE = /^[a-z0-9-]{1,64}$/;
+const DEFAULT_SLUG = "main";
+
+function parseSlug(raw: string | undefined): string {
+  if (!raw) return DEFAULT_SLUG;
+  return SLUG_RE.test(raw) ? raw : DEFAULT_SLUG;
+}
+
+const MAX_TABS_PER_ROOM = 5;
+const MAX_TABS_TOTAL = 30;
 
 let browser: Browser | null = null;
 let browserBootPromise: Promise<Browser> | null = null;
@@ -89,6 +109,7 @@ async function getBrowser(): Promise<Browser> {
 
 type Tab = {
   id: string;
+  slug: string;
   page: Page;
   cdp: CDPSession;
   url: string;
@@ -110,12 +131,66 @@ type Tab = {
   lastFrameAt: number;
   /** Wall-clock ms of the most recent input event (key / mouse / wheel).
    *  Watchdog only restarts the screencast when input came AFTER the
-   *  last frame — otherwise a static page would keep getting kicked. */
+   *  last frame — otherwise a static page would keep getting kicked.
+   *  Idle policy: a tab that received input then went quiet for
+   *  IDLE_DESTROY_MS gets torn down. */
   lastInputAt: number;
   /** True once we've seen a renderer crash / process death on this tab.
    *  Reload requests on a crashed tab go straight to "destroy + recreate". */
   crashed: boolean;
+  /** Soft-paused: screencast stopped because the user hasn't interacted
+   *  in a while. Next input resumes the screencast. */
+  paused: boolean;
 };
+
+type RoomBrowser = {
+  slug: string;
+  /** Puppeteer BrowserContext — incognito-style isolated cookies /
+   *  localStorage / IndexedDB. All tabs in this room share one context;
+   *  closing it closes every tab in the room atomically (used by the
+   *  relay's hibernation flow in Phase 7). */
+  context: BrowserContext;
+  tabs: Map<string, Tab>;
+};
+
+const roomBrowsers = new Map<string, RoomBrowser>();
+// Coalesce concurrent first-tab boots so two subscribers connecting at
+// the same time don't race to create the same tab.
+const tabBoots = new Map<string, Promise<Tab>>();
+// Coalesce context creation similarly — first connect for a room
+// creates the BrowserContext; concurrent connects wait.
+const roomBoots = new Map<string, Promise<RoomBrowser>>();
+
+async function getOrCreateRoomBrowser(slug: string): Promise<RoomBrowser> {
+  const existing = roomBrowsers.get(slug);
+  if (existing) return existing;
+  const inFlight = roomBoots.get(slug);
+  if (inFlight) return inFlight;
+  const boot = (async () => {
+    const b = await getBrowser();
+    const ctx = await b.createBrowserContext();
+    const rb: RoomBrowser = { slug, context: ctx, tabs: new Map() };
+    roomBrowsers.set(slug, rb);
+    app.log.info({ slug }, "room context created");
+    return rb;
+  })().finally(() => roomBoots.delete(slug));
+  roomBoots.set(slug, boot);
+  return boot;
+}
+
+function getTab(slug: string, id: string): Tab | undefined {
+  return roomBrowsers.get(slug)?.tabs.get(id);
+}
+
+function tabBootKey(slug: string, id: string): string {
+  return `${slug}:${id}`;
+}
+
+function totalTabCount(): number {
+  let n = 0;
+  for (const rb of roomBrowsers.values()) n += rb.tabs.size;
+  return n;
+}
 
 // EIP-55 / checksum-agnostic 0x40 hex check. Anything that doesn't match
 // falls back to the configured default — we never reflect untrusted
@@ -126,9 +201,6 @@ function sanitizeImpersonator(raw: unknown): string {
   return ADDRESS_RE.test(raw) ? raw : config.impersonatedAddress;
 }
 
-const tabs = new Map<string, Tab>();
-const tabBoots = new Map<string, Promise<Tab>>();
-
 // Map a KeyboardEvent.code value (the physical key, unambiguous regardless
 // of Shift state or layout) to the legacy "windows virtual key code" that
 // Chrome's input handler expects. Without it, Chrome's input element
@@ -136,43 +208,32 @@ const tabBoots = new Map<string, Promise<Tab>>();
 // wrong key (e.g. punctuation whose ASCII value collides with a special
 // key's VK: '.' is ASCII 46, which is also VK_DELETE).
 const CODE_VK: Record<string, number> = {
-  // Letters
   KeyA: 65, KeyB: 66, KeyC: 67, KeyD: 68, KeyE: 69, KeyF: 70,
   KeyG: 71, KeyH: 72, KeyI: 73, KeyJ: 74, KeyK: 75, KeyL: 76,
   KeyM: 77, KeyN: 78, KeyO: 79, KeyP: 80, KeyQ: 81, KeyR: 82,
   KeyS: 83, KeyT: 84, KeyU: 85, KeyV: 86, KeyW: 87, KeyX: 88,
   KeyY: 89, KeyZ: 90,
-  // Top-row digits
   Digit0: 48, Digit1: 49, Digit2: 50, Digit3: 51, Digit4: 52,
   Digit5: 53, Digit6: 54, Digit7: 55, Digit8: 56, Digit9: 57,
-  // Numpad
   Numpad0: 96, Numpad1: 97, Numpad2: 98, Numpad3: 99, Numpad4: 100,
   Numpad5: 101, Numpad6: 102, Numpad7: 103, Numpad8: 104, Numpad9: 105,
   NumpadMultiply: 106, NumpadAdd: 107, NumpadSubtract: 109,
   NumpadDecimal: 110, NumpadDivide: 111, NumpadEnter: 13,
-  // OEM punctuation — these are why '.' was breaking
   Semicolon: 186, Equal: 187, Comma: 188, Minus: 189, Period: 190,
   Slash: 191, Backquote: 192, BracketLeft: 219, Backslash: 220,
   BracketRight: 221, Quote: 222, IntlBackslash: 226,
-  // Whitespace + line editing
   Space: 32, Backspace: 8, Tab: 9, Enter: 13,
-  // Navigation
   ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
   Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45, Delete: 46,
-  // System
   Escape: 27, CapsLock: 20, Pause: 19, ScrollLock: 145, PrintScreen: 44,
-  // Modifiers (left/right discriminated)
   ShiftLeft: 16, ShiftRight: 16,
   ControlLeft: 17, ControlRight: 17,
   AltLeft: 18, AltRight: 18,
   MetaLeft: 91, MetaRight: 92, ContextMenu: 93,
-  // Function row
   F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117,
   F7: 118, F8: 119, F9: 120, F10: 121, F11: 122, F12: 123,
 };
 
-// Last-resort key-name lookup for keys we somehow get without a code (older
-// browsers, synthetic events). Keep this small — code is the source of truth.
 const KEY_VK: Record<string, number> = {
   Backspace: 8, Tab: 9, Enter: 13, Escape: 27, " ": 32,
   ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
@@ -185,9 +246,6 @@ const KEY_VK: Record<string, number> = {
 function virtualKeyCode(key: string, code: string): number {
   if (code && CODE_VK[code] !== undefined) return CODE_VK[code]!;
   if (key && KEY_VK[key] !== undefined) return KEY_VK[key]!;
-  // Final fallback: if we got a single printable char and no code,
-  // assume it's a letter/digit where ASCII == VK. Punctuation will be
-  // wrong here, but this path only triggers for synthetic events.
   if (key.length === 1) return key.toUpperCase().charCodeAt(0);
   return 0;
 }
@@ -215,16 +273,28 @@ async function forwardTxToRelay(tab: Tab, payload: unknown): Promise<void> {
         "content-type": "application/json",
         ...(config.relayTxBroadcastSecret ? { authorization: `Bearer ${config.relayTxBroadcastSecret}` } : {}),
       },
-      body: JSON.stringify({ browserId: tab.id, payload }),
+      body: JSON.stringify({ slug: tab.slug, browserId: tab.id, payload }),
     });
   } catch (err) {
     app.log.warn({ err }, "failed to forward tx to relay");
   }
 }
 
-async function createTab(id: string, url: string, impersonatedAddress: string, chainId: number): Promise<Tab> {
-  const b = await getBrowser();
-  const page = await b.newPage();
+async function createTab(
+  slug: string,
+  id: string,
+  url: string,
+  impersonatedAddress: string,
+  chainId: number,
+): Promise<Tab> {
+  if (totalTabCount() >= MAX_TABS_TOTAL) {
+    throw new Error(`tab cap reached (process ${MAX_TABS_TOTAL})`);
+  }
+  const rb = await getOrCreateRoomBrowser(slug);
+  if (rb.tabs.size >= MAX_TABS_PER_ROOM) {
+    throw new Error(`tab cap reached (room ${slug} ${MAX_TABS_PER_ROOM})`);
+  }
+  const page = await rb.context.newPage();
 
   await page.setViewport({
     width: config.viewport.width,
@@ -280,11 +350,11 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
 
   page.on("console", msg => {
     const t = msg.type();
-    if (t === "error" || t === "warn") app.log.info({ id, t, text: msg.text().slice(0, 300) }, "page-console");
+    if (t === "error" || t === "warn") app.log.info({ slug, id, t, text: msg.text().slice(0, 300) }, "page-console");
   });
   page.on("pageerror", err => {
     const message = err instanceof Error ? err.message : String(err);
-    app.log.warn({ id, err: message }, "page-error");
+    app.log.warn({ slug, id, err: message }, "page-error");
   });
 
   // If a popup slips past the JS interception above (middle-click, CSP
@@ -296,20 +366,19 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
     if (!popup) return;
     try {
       let url = popup.url();
-      // The popup may not have settled on a real URL yet.
       if (!url || url === "about:blank") {
         await new Promise(r => setTimeout(r, 80));
         url = popup.url();
       }
-      app.log.info({ id, popupUrl: url }, "popup intercepted — redirecting main tab");
+      app.log.info({ slug, id, popupUrl: url }, "popup intercepted — redirecting main tab");
       await popup.close().catch(() => undefined);
       if (url && url !== "about:blank") {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(err => {
-          app.log.warn({ id, err: err.message, url }, "popup goto failed");
+          app.log.warn({ slug, id, err: err.message, url }, "popup goto failed");
         });
       }
     } catch (err) {
-      app.log.warn({ id, err: (err as Error).message }, "popup handler errored");
+      app.log.warn({ slug, id, err: (err as Error).message }, "popup handler errored");
     }
   });
 
@@ -323,7 +392,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
       const post = req.postData() ?? "{}";
       // Tab may have switched chains since this listener captured `id` —
       // look up the current chainId so the proxy follows the switch.
-      const t = tabs.get(id);
+      const t = getTab(slug, id);
       const tabChain = t?.chainId ?? chainId;
       void (async () => {
         try {
@@ -372,9 +441,9 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
       } catch {
         return;
       }
-      const tab = tabs.get(id);
+      const tab = getTab(slug, id);
       if (!tab) return;
-      app.log.info({ id, method: parsed.method }, "tx_request captured");
+      app.log.info({ slug, id, method: parsed.method }, "tx_request captured");
       broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params });
       void forwardTxToRelay(tab, parsed);
       return;
@@ -382,25 +451,25 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
     if (evt.name === "__slopChainSwitch") {
       const targetChain = Number(evt.payload);
       if (!Number.isFinite(targetChain) || !isSupportedChain(targetChain)) {
-        app.log.warn({ id, payload: evt.payload }, "chain switch rejected — unsupported");
+        app.log.warn({ slug, id, payload: evt.payload }, "chain switch rejected — unsupported");
         return;
       }
-      const t = tabs.get(id);
+      const t = getTab(slug, id);
       if (!t || targetChain === t.chainId) return;
       const url = t.url;
       const impersonator = t.impersonatedAddress;
-      app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "wallet_switchEthereumChain");
+      app.log.info({ slug, id: t.id, from: t.chainId, to: targetChain }, "wallet_switchEthereumChain");
       void (async () => {
         const oldSubs = [...t.subscribers];
-        await destroyTab(t.id, { keepSubscribers: true });
+        await destroyTab(slug, t.id, { keepSubscribers: true });
         try {
-          const created = await createTab(t.id, url, impersonator, targetChain);
+          const created = await createTab(slug, t.id, url, impersonator, targetChain);
           for (const ws of oldSubs) {
             created.subscribers.add(ws);
             send(ws, { type: "chain_changed", chainId: targetChain });
           }
         } catch (err) {
-          app.log.error({ id: t.id, err: (err as Error).message }, "chain switch recreate failed");
+          app.log.error({ slug, id: t.id, err: (err as Error).message }, "chain switch recreate failed");
         }
       })();
       return;
@@ -418,7 +487,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
   });
 
   cdp.on("Page.screencastFrame", async evt => {
-    const tab = tabs.get(id);
+    const tab = getTab(slug, id);
     if (!tab) return;
     tab.lastFrameAt = Date.now();
     broadcastTab(tab, { type: "frame", data: evt.data, sessionId: evt.sessionId });
@@ -436,14 +505,14 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
   // itself. Mark the tab crashed so a reload request takes the destroy+
   // recreate path.
   page.on("error", err => {
-    const tab = tabs.get(id);
+    const tab = getTab(slug, id);
     if (tab) tab.crashed = true;
-    app.log.error({ id, err: err instanceof Error ? err.message : String(err) }, "renderer-crashed");
+    app.log.error({ slug, id, err: err instanceof Error ? err.message : String(err) }, "renderer-crashed");
   });
   cdp.on("Inspector.targetCrashed", () => {
-    const tab = tabs.get(id);
+    const tab = getTab(slug, id);
     if (tab) tab.crashed = true;
-    app.log.error({ id }, "target-crashed");
+    app.log.error({ slug, id }, "target-crashed");
   });
 
   // Surface URL changes (in-page nav) so the URL bar across all peers
@@ -452,7 +521,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
   page.on("framenavigated", frame => {
     if (frame !== page.mainFrame()) return;
     const next = page.url();
-    const tab = tabs.get(id);
+    const tab = getTab(slug, id);
     if (!tab) return;
     if (next === tab.url) return;
     tab.url = next;
@@ -461,6 +530,7 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
 
   const tab: Tab = {
     id,
+    slug,
     page,
     cdp,
     url,
@@ -471,8 +541,9 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
     lastFrameAt: Date.now(),
     lastInputAt: 0,
     crashed: false,
+    paused: false,
   };
-  tabs.set(id, tab);
+  rb.tabs.set(id, tab);
 
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -498,10 +569,12 @@ async function createTab(id: string, url: string, impersonatedAddress: string, c
  * page go to `send()` which skips non-OPEN sockets, so users would
  * see a frozen frame forever.
  */
-async function destroyTab(id: string, opts: { keepSubscribers?: boolean } = {}): Promise<void> {
-  const tab = tabs.get(id);
+async function destroyTab(slug: string, id: string, opts: { keepSubscribers?: boolean } = {}): Promise<void> {
+  const rb = roomBrowsers.get(slug);
+  if (!rb) return;
+  const tab = rb.tabs.get(id);
   if (!tab) return;
-  tabs.delete(id);
+  rb.tabs.delete(id);
   try {
     await tab.cdp.send("Page.stopScreencast").catch(() => undefined);
   } catch {
@@ -521,7 +594,34 @@ async function destroyTab(id: string, opts: { keepSubscribers?: boolean } = {}):
       }
     }
   }
-  app.log.info({ id, kept: !!opts.keepSubscribers }, "tab destroyed");
+  app.log.info({ slug, id, kept: !!opts.keepSubscribers }, "tab destroyed");
+}
+
+/**
+ * Close a room's BrowserContext — Phase 7 hibernation path. Closes every
+ * tab in the room atomically and removes the room entry. The relay calls
+ * this via POST /admin/rooms/:slug/close when it hibernates the room.
+ */
+async function closeRoomContext(slug: string): Promise<void> {
+  const rb = roomBrowsers.get(slug);
+  if (!rb) return;
+  roomBrowsers.delete(slug);
+  // Close subscribers first so frontends know to back off.
+  for (const tab of rb.tabs.values()) {
+    for (const ws of tab.subscribers) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  try {
+    await rb.context.close();
+  } catch (err) {
+    app.log.warn({ slug, err: (err as Error).message }, "context close failed");
+  }
+  app.log.info({ slug, tabs: rb.tabs.size }, "room context closed");
 }
 
 const TAB_LINGER_MS = 30_000;
@@ -529,7 +629,7 @@ const TAB_LINGER_MS = 30_000;
 function scheduleShutdown(tab: Tab) {
   if (tab.shutdownTimer) clearTimeout(tab.shutdownTimer);
   tab.shutdownTimer = setTimeout(() => {
-    if (tab.subscribers.size === 0) void destroyTab(tab.id);
+    if (tab.subscribers.size === 0) void destroyTab(tab.slug, tab.id);
   }, TAB_LINGER_MS);
 }
 
@@ -561,90 +661,198 @@ const lastWatchdogRecreateAt = new Map<string, number>();
 
 setInterval(() => {
   const now = Date.now();
-  for (const tab of tabs.values()) {
-    if (tab.subscribers.size === 0) continue;
-    if (tab.crashed) continue;
-    const stale = now - tab.lastFrameAt;
-    if (stale < WATCHDOG_FRAME_STALENESS_MS) continue;
-    if (tab.lastInputAt <= tab.lastFrameAt) continue; // no input → no expected redraw
-    const lastRecreate = lastWatchdogRecreateAt.get(tab.id) ?? 0;
-    if (now - lastRecreate < WATCHDOG_COOLDOWN_MS) continue;
-    lastWatchdogRecreateAt.set(tab.id, now);
-    app.log.warn(
-      { id: tab.id, msSinceFrame: stale, msSinceInput: now - tab.lastInputAt },
-      "watchdog: wedged tab — destroy+recreate",
-    );
-    const t = tab;
-    void (async () => {
-      const url = t.url;
-      const impersonator = t.impersonatedAddress;
-      const tabChain = t.chainId;
-      const oldSubs = [...t.subscribers];
-      await destroyTab(t.id, { keepSubscribers: true });
-      try {
-        const next = await createTab(t.id, url, impersonator, tabChain);
-        for (const ws of oldSubs) next.subscribers.add(ws);
-      } catch (err) {
-        app.log.error({ id: t.id, err: (err as Error).message }, "watchdog recreate failed");
-      }
-    })();
+  for (const rb of roomBrowsers.values()) {
+    for (const tab of rb.tabs.values()) {
+      if (tab.subscribers.size === 0) continue;
+      if (tab.crashed) continue;
+      if (tab.paused) continue;
+      const stale = now - tab.lastFrameAt;
+      if (stale < WATCHDOG_FRAME_STALENESS_MS) continue;
+      if (tab.lastInputAt <= tab.lastFrameAt) continue; // no input → no expected redraw
+      const key = `${tab.slug}:${tab.id}`;
+      const lastRecreate = lastWatchdogRecreateAt.get(key) ?? 0;
+      if (now - lastRecreate < WATCHDOG_COOLDOWN_MS) continue;
+      lastWatchdogRecreateAt.set(key, now);
+      app.log.warn(
+        { slug: tab.slug, id: tab.id, msSinceFrame: stale, msSinceInput: now - tab.lastInputAt },
+        "watchdog: wedged tab — destroy+recreate",
+      );
+      const t = tab;
+      void (async () => {
+        const url = t.url;
+        const impersonator = t.impersonatedAddress;
+        const tabChain = t.chainId;
+        const oldSubs = [...t.subscribers];
+        await destroyTab(t.slug, t.id, { keepSubscribers: true });
+        try {
+          const next = await createTab(t.slug, t.id, url, impersonator, tabChain);
+          for (const ws of oldSubs) next.subscribers.add(ws);
+        } catch (err) {
+          app.log.error({ slug: t.slug, id: t.id, err: (err as Error).message }, "watchdog recreate failed");
+        }
+      })();
+    }
   }
 }, WATCHDOG_INTERVAL_MS);
+
+// ---- Idle policy ---------------------------------------------------------
+// Tabs the user actually used (lastInputAt > 0) but then walked away from
+// get soft-paused at 30 min and destroyed at 2 h. Tabs that never received
+// input are left alone — they might be a livestream / clock / ticker the
+// peer is watching, where "no input" is the normal mode of use.
+//
+// Soft pause: stop the screencast (no more frame work in Chromium), tell
+// subscribers via `{ type: "idle_paused" }`. Next input wakes the tab by
+// restarting the screencast + emitting `{ type: "idle_resumed" }`.
+
+const IDLE_CHECK_INTERVAL_MS = 60_000;
+const IDLE_SOFT_PAUSE_MS = 30 * 60 * 1000;
+const IDLE_DESTROY_MS = 2 * 60 * 60 * 1000;
+
+async function pauseTab(tab: Tab): Promise<void> {
+  if (tab.paused) return;
+  tab.paused = true;
+  try {
+    await tab.cdp.send("Page.stopScreencast").catch(() => undefined);
+  } catch {
+    /* ignore */
+  }
+  broadcastTab(tab, { type: "idle_paused" });
+  app.log.info({ slug: tab.slug, id: tab.id }, "tab soft-paused (idle)");
+}
+
+async function resumeTab(tab: Tab): Promise<void> {
+  if (!tab.paused) return;
+  tab.paused = false;
+  try {
+    await tab.cdp.send("Page.startScreencast", {
+      format: "jpeg",
+      quality: config.screencast.quality,
+      maxWidth: config.screencast.maxWidth,
+      maxHeight: config.screencast.maxHeight,
+      everyNthFrame: config.screencast.everyNthFrame,
+    });
+  } catch (err) {
+    app.log.warn({ slug: tab.slug, id: tab.id, err: (err as Error).message }, "resume screencast failed");
+  }
+  broadcastTab(tab, { type: "idle_resumed" });
+  app.log.info({ slug: tab.slug, id: tab.id }, "tab resumed");
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const rb of roomBrowsers.values()) {
+    for (const tab of rb.tabs.values()) {
+      if (tab.lastInputAt === 0) continue;
+      const idleMs = now - tab.lastInputAt;
+      if (idleMs >= IDLE_DESTROY_MS) {
+        app.log.info({ slug: tab.slug, id: tab.id, idleMs }, "idle destroy");
+        void destroyTab(tab.slug, tab.id);
+        continue;
+      }
+      if (idleMs >= IDLE_SOFT_PAUSE_MS && !tab.paused) {
+        void pauseTab(tab);
+      }
+    }
+  }
+}, IDLE_CHECK_INTERVAL_MS);
 
 // ---- HTTP -----------------------------------------------------------------
 
 app.get("/health", async () => ({
   ok: true,
   service: "slop-browser-host",
-  tabs: tabs.size,
-  // Default impersonator for tabs created without an explicit address.
-  // Per-tab values appear in /diag.
+  tabs: totalTabCount(),
+  rooms: roomBrowsers.size,
   defaultImpersonator: config.impersonatedAddress,
 }));
 
-// Diagnostics. Lists tab metadata so a wedged tab can be inspected from the
-// outside (subscribers count, frame staleness, crash flag). Unauthenticated
-// — info only, no actions.
+// Diagnostics. Lists tab metadata grouped by room so a wedged tab can be
+// inspected from the outside (subscribers count, frame staleness, crash
+// flag). Unauthenticated — info only, no actions.
 app.get("/diag", async () => {
   const now = Date.now();
+  const rooms: Record<string, unknown> = {};
+  for (const rb of roomBrowsers.values()) {
+    rooms[rb.slug] = {
+      tabCount: rb.tabs.size,
+      tabs: [...rb.tabs.values()].map(t => ({
+        id: t.id,
+        url: t.url,
+        impersonatedAddress: t.impersonatedAddress,
+        chainId: t.chainId,
+        subscribers: t.subscribers.size,
+        lastFrameAt: t.lastFrameAt,
+        msSinceLastFrame: now - t.lastFrameAt,
+        lastInputAt: t.lastInputAt,
+        msSinceLastInput: t.lastInputAt ? now - t.lastInputAt : null,
+        crashed: t.crashed,
+        paused: t.paused,
+        pageClosed: t.page.isClosed(),
+      })),
+    };
+  }
   return {
-    tabs: [...tabs.values()].map(t => ({
+    totalTabs: totalTabCount(),
+    caps: { perRoom: MAX_TABS_PER_ROOM, total: MAX_TABS_TOTAL },
+    rooms,
+  };
+});
+
+app.get<{ Params: { slug?: string; id: string } }>("/diag/:id", async (req, reply) => {
+  // Backwards-compat: pre-Phase-3 diag URLs only carry an id. Search every
+  // room until we find it. Phase 3+ frontends should hit /diag/:slug/:id
+  // directly (added below).
+  const id = req.params.id;
+  for (const rb of roomBrowsers.values()) {
+    const t = rb.tabs.get(id);
+    if (!t) continue;
+    const now = Date.now();
+    return {
+      slug: t.slug,
       id: t.id,
       url: t.url,
       impersonatedAddress: t.impersonatedAddress,
+      chainId: t.chainId,
       subscribers: t.subscribers.size,
       lastFrameAt: t.lastFrameAt,
       msSinceLastFrame: now - t.lastFrameAt,
       crashed: t.crashed,
+      paused: t.paused,
       pageClosed: t.page.isClosed(),
-    })),
-  };
+    };
+  }
+  return reply.code(404).send({ error: "no such tab" });
 });
 
-app.get<{ Params: { id: string } }>("/diag/:id", async (req, reply) => {
-  const t = tabs.get(req.params.id);
-  if (!t) return reply.code(404).send({ error: "no such tab" });
-  const now = Date.now();
-  return {
-    id: t.id,
-    url: t.url,
-    impersonatedAddress: t.impersonatedAddress,
-    subscribers: t.subscribers.size,
-    lastFrameAt: t.lastFrameAt,
-    msSinceLastFrame: now - t.lastFrameAt,
-    crashed: t.crashed,
-    pageClosed: t.page.isClosed(),
-  };
+// Admin: close a whole room's BrowserContext. Called by the relay's
+// hibernation path (Phase 7). Idempotent — closing an unknown room is a
+// no-op. Auth gate is bearer-shared-secret if the relay is configured
+// with one; otherwise local-only.
+app.post<{ Params: { slug: string } }>("/admin/rooms/:slug/close", async (req, reply) => {
+  if (config.relayTxBroadcastSecret) {
+    const auth = req.headers.authorization ?? "";
+    if (auth !== `Bearer ${config.relayTxBroadcastSecret}`) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  }
+  const slug = parseSlug(req.params.slug);
+  await closeRoomContext(slug);
+  return { ok: true, slug };
 });
 
-// ---- WS /stream/:id -------------------------------------------------------
+// ---- WS /stream/:id?slug=<slug> ------------------------------------------
 
 app.register(async function (fastify) {
-  fastify.get<{ Params: { id: string }; Querystring: { url?: string; impersonated?: string; chainId?: string } }>(
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { url?: string; impersonated?: string; chainId?: string; slug?: string };
+  }>(
     "/stream/:id",
     { websocket: true },
     async (socket, req) => {
       const id = req.params.id;
+      const slug = parseSlug(req.query.slug);
       const initialUrl = req.query.url ?? "about:blank";
       // First subscriber for a brand-new tab picks the impersonator from
       // their query. Subsequent subscribers join the existing tab and
@@ -656,27 +864,35 @@ app.register(async function (fastify) {
       // set, otherwise fall back to the host's configured default.
       const requestedChain = Number(req.query.chainId);
       const initialChain = Number.isFinite(requestedChain) && isSupportedChain(requestedChain) ? requestedChain : config.chainId;
-      let tab = tabs.get(id);
+      let tab = getTab(slug, id);
       if (!tab) {
         // Coalesce concurrent subscribers so we don't launch N tabs for the
-        // same browser id. The first subscriber wins; everyone else awaits.
-        let boot = tabBoots.get(id);
+        // same (slug, id). The first subscriber wins; everyone else awaits.
+        const bootKey = tabBootKey(slug, id);
+        let boot = tabBoots.get(bootKey);
         if (!boot) {
-          boot = createTab(id, initialUrl, initialImpersonator, initialChain).finally(() => tabBoots.delete(id));
-          tabBoots.set(id, boot);
+          boot = createTab(slug, id, initialUrl, initialImpersonator, initialChain).finally(() => tabBoots.delete(bootKey));
+          tabBoots.set(bootKey, boot);
         }
         try {
           tab = await boot;
         } catch (err) {
-          app.log.error({ err }, "createTab failed");
-          send(socket, { type: "error", error: "tab_create_failed" });
-          socket.close(1011);
+          const msg = (err as Error).message;
+          app.log.error({ slug, id, err: msg }, "createTab failed");
+          // Cap-reached → 4290 close code so the client can distinguish
+          // from generic failure. Anything else → 1011 (internal error).
+          const isCap = /tab cap reached/.test(msg);
+          send(socket, { type: "error", error: isCap ? "tab_cap_reached" : "tab_create_failed", message: msg });
+          socket.close(isCap ? 4290 : 1011);
           return;
         }
       }
       cancelShutdown(tab);
       tab.subscribers.add(socket);
-      send(socket, { type: "hello", id, url: tab.url, impersonated: tab.impersonatedAddress, chainId: tab.chainId });
+      send(socket, { type: "hello", id, slug, url: tab.url, impersonated: tab.impersonatedAddress, chainId: tab.chainId });
+      // Subscribing counts as "intent to use" — resume from idle pause
+      // immediately so the joining peer doesn't see a frozen frame.
+      if (tab.paused) void resumeTab(tab);
 
       socket.on("message", (raw: Buffer | string) => {
         let msg: { type?: string; [k: string]: unknown };
@@ -689,13 +905,13 @@ app.register(async function (fastify) {
         // closure-captured one. The outer `tab` is whatever was alive at
         // WS-open time; every destroyTab+createTab cycle (set_chain,
         // set_impersonator, reload, EIP-3326 chain switch, watchdog)
-        // swaps the entry in `tabs` but can't update this closure. Using
-        // the stale ref made `tab.chainId` etc. read from the original
-        // tab forever, so e.g. a second set_chain reported "from: 1" even
-        // though we'd already switched to 8453 — and the recreate would
-        // use chainId 1 again, undoing the first switch.
-        const tab = tabs.get(id);
+        // swaps the entry in the room's Map but can't update this closure.
+        const tab = getTab(slug, id);
         if (!tab) return;
+        // Any input wakes a paused tab.
+        if (tab.paused && (msg.type === "mouse" || msg.type === "wheel" || msg.type === "key" || msg.type === "insertText")) {
+          void resumeTab(tab);
+        }
         switch (msg.type) {
           case "navigate": {
             if (typeof msg.url !== "string") return;
@@ -713,15 +929,15 @@ app.register(async function (fastify) {
             const impersonator = tab.impersonatedAddress;
             const tabChain = tab.chainId;
             const t = tab;
-            app.log.info({ id: t.id, url }, "reload — destroy+recreate");
+            app.log.info({ slug: t.slug, id: t.id, url }, "reload — destroy+recreate");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id, { keepSubscribers: true });
+              await destroyTab(t.slug, t.id, { keepSubscribers: true });
               try {
-                const next = await createTab(t.id, url, impersonator, tabChain);
+                const next = await createTab(t.slug, t.id, url, impersonator, tabChain);
                 for (const ws of oldSubs) next.subscribers.add(ws);
               } catch (err) {
-                app.log.error({ id: t.id, err: (err as Error).message }, "recreate failed");
+                app.log.error({ slug: t.slug, id: t.id, err: (err as Error).message }, "recreate failed");
               }
             })();
             return;
@@ -737,33 +953,23 @@ app.register(async function (fastify) {
             const url = tab.url;
             const tabChain = tab.chainId;
             const t = tab;
-            app.log.info({ id: t.id, from: t.impersonatedAddress, to: next }, "set_impersonator");
+            app.log.info({ slug: t.slug, id: t.id, from: t.impersonatedAddress, to: next }, "set_impersonator");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id, { keepSubscribers: true });
+              await destroyTab(t.slug, t.id, { keepSubscribers: true });
               try {
-                const created = await createTab(t.id, url, next, tabChain);
+                const created = await createTab(t.slug, t.id, url, next, tabChain);
                 for (const ws of oldSubs) {
                   created.subscribers.add(ws);
-                  // Each subscribed peer's UI tracks the current
-                  // impersonator separately from its local dropdown
-                  // selection, so broadcast the new value.
                   send(ws, { type: "impersonator_changed", impersonated: next });
                 }
               } catch (err) {
-                app.log.error({ id: t.id, err: (err as Error).message }, "impersonator recreate failed");
+                app.log.error({ slug: t.slug, id: t.id, err: (err as Error).message }, "impersonator recreate failed");
               }
             })();
             return;
           }
           case "set_chain": {
-            // Same destroy+recreate dance as set_impersonator. The chain
-            // is baked into the injected provider, so the only way to
-            // change it is to re-inject on a fresh page. Triggered by
-            // the user picking from the SharedBrowser selector, or by
-            // the dapp calling wallet_switchEthereumChain via the
-            // __slopChainSwitch CDP binding (see Runtime.bindingCalled
-            // handler below).
             const targetChain = Number(msg.chainId);
             if (!Number.isFinite(targetChain) || !isSupportedChain(targetChain)) {
               return send(socket, { type: "error", error: "unsupported_chain" });
@@ -772,18 +978,18 @@ app.register(async function (fastify) {
             const url = tab.url;
             const impersonator = tab.impersonatedAddress;
             const t = tab;
-            app.log.info({ id: t.id, from: t.chainId, to: targetChain }, "set_chain");
+            app.log.info({ slug: t.slug, id: t.id, from: t.chainId, to: targetChain }, "set_chain");
             void (async () => {
               const oldSubs = [...t.subscribers];
-              await destroyTab(t.id, { keepSubscribers: true });
+              await destroyTab(t.slug, t.id, { keepSubscribers: true });
               try {
-                const created = await createTab(t.id, url, impersonator, targetChain);
+                const created = await createTab(t.slug, t.id, url, impersonator, targetChain);
                 for (const ws of oldSubs) {
                   created.subscribers.add(ws);
                   send(ws, { type: "chain_changed", chainId: targetChain });
                 }
               } catch (err) {
-                app.log.error({ id: t.id, err: (err as Error).message }, "chain recreate failed");
+                app.log.error({ slug: t.slug, id: t.id, err: (err as Error).message }, "chain recreate failed");
               }
             })();
             return;
@@ -805,14 +1011,6 @@ app.register(async function (fastify) {
                   : event === "move"
                     ? "mouseMoved"
                     : "mousePressed";
-            // `buttons` is the bitmap of buttons still pressed AFTER this
-            // event (same semantics as the JS MouseEvent.buttons field).
-            // On press, the button just went down → include it. On
-            // release, the button just came up → omit it. On move with
-            // no buttons reported, it's 0. Earlier versions reported the
-            // pressed button on mouseReleased too, which Chrome reads as
-            // "left button is still held during the release event" and
-            // can silently break click-event synthesis in some dapps.
             const buttonBit = button === "left" ? 1 : button === "right" ? 2 : button === "middle" ? 4 : 0;
             const buttonsAfter = cdpType === "mouseReleased" ? 0 : buttonBit;
             void tab.cdp
@@ -848,11 +1046,6 @@ app.register(async function (fastify) {
             return;
           }
           case "insertText": {
-            // Used for Cmd+V paste from the user's local clipboard. The
-            // remote Chromium doesn't share the user's clipboard, so the
-            // frontend reads `navigator.clipboard.readText()` and sends
-            // the text through this channel; CDP inserts it into the
-            // currently focused element.
             const text = typeof msg.text === "string" ? msg.text : "";
             if (!text) return;
             tab.lastInputAt = Date.now();
@@ -867,11 +1060,6 @@ app.register(async function (fastify) {
             tab.lastInputAt = Date.now();
             const cdpType: "keyDown" | "keyUp" | "char" =
               event === "down" ? "keyDown" : event === "up" ? "keyUp" : "char";
-            // CDP's Input.dispatchKeyEvent ignores special keys (Backspace,
-            // Delete, arrows, etc.) unless we also send the legacy
-            // windowsVirtualKeyCode. Without it Chrome sees keyCode=0 and
-            // the input element's default handler (delete-char-left/right,
-            // move caret, submit, etc.) never fires.
             const vk = cdpType === "char" ? 0 : virtualKeyCode(key, code);
             void tab.cdp
               .send("Input.dispatchKeyEvent", {
@@ -896,7 +1084,7 @@ app.register(async function (fastify) {
         // Same fresh-lookup pattern as the message handler — after any
         // recreate the WS is in the new tab's subscriber set, not the
         // closure-captured one.
-        const tab = tabs.get(id);
+        const tab = getTab(slug, id);
         if (!tab) return;
         tab.subscribers.delete(socket);
         if (tab.subscribers.size === 0) scheduleShutdown(tab);
@@ -911,7 +1099,7 @@ app
   .listen({ port: config.port, host: config.host })
   .then(() => {
     app.log.info(
-      `slop-browser-host listening on http://${config.host}:${config.port} — default impersonator ${config.impersonatedAddress} on chain ${config.chainId}`,
+      `slop-browser-host listening on http://${config.host}:${config.port} — default impersonator ${config.impersonatedAddress} on chain ${config.chainId}, tab caps perRoom=${MAX_TABS_PER_ROOM} total=${MAX_TABS_TOTAL}`,
     );
   })
   .catch(err => {
@@ -919,8 +1107,8 @@ app
     process.exit(1);
   });
 
-const shutdown = async (signal: NodeJS.Signals) => {
-  app.log.info(`received ${signal} — shutting down`);
+const shutdown = async (_signal: NodeJS.Signals) => {
+  app.log.info(`received ${_signal} — shutting down`);
   // Force-exit safety net: if any of destroyTab / browser.close /
   // app.close hangs (puppeteer or a stuck WS), we still exit well
   // inside systemd's 90s TimeoutStopSec instead of getting SIGKILLed.
@@ -930,7 +1118,9 @@ const shutdown = async (signal: NodeJS.Signals) => {
     app.log.warn("graceful shutdown exceeded 3s — force-exiting");
     process.exit(0);
   }, 3000).unref();
-  for (const id of [...tabs.keys()]) await destroyTab(id);
+  for (const rb of [...roomBrowsers.values()]) {
+    for (const id of [...rb.tabs.keys()]) await destroyTab(rb.slug, id);
+  }
   if (browser && browser.connected) {
     try {
       await browser.close();
