@@ -14,17 +14,24 @@ this by building **locally**, then rsyncing the artifact.
    or a local out of sync with `origin/main`. Commit + push first.
 2. **Concurrency lock** at `/tmp/slop-deploy.lock` — a second deploy
    yields rather than racing. Two features can't fight over prod.
-3. **Local build** of Next.js (~10s on a modern Mac) and relay.
+3. **Local build** of Next.js (~10s on a modern Mac), relay, and
+   browser-host.
 4. **Rsync** the new `.next/` to `.next.staging/` on prod using
    `--link-dest` (so unchanged files become free hardlinks — the
    transfer stays incremental) and `--exclude='cache/'` (webpack's
    incremental-build cache is hundreds of MB of pure waste on prod).
-   Live keeps serving from the existing `.next/` during this.
+   Relay and browser-host `dist/` rsync straight into place — they
+   pick up the new bytes on service restart. Live keeps serving from
+   the existing `.next/` during this.
 5. **Atomic swap + restart** — stop slop-live, `mv .next .next.old`,
    `mv .next.staging .next`, start slop-live. HTTPS downtime is ~2s
    (just Node.js port-bind), measured by the script via curl polling.
-6. **Health check** — verifies `slop-live` and `slop-relay` are
-   `active` before exiting non-zero.
+   slop-relay restarts after. slop-browser-host only restarts if its
+   `dist/index.js` mtime is newer than the running process's start
+   time — bouncing Chromium for nothing would kill every active
+   SharedBrowser tab for no reason.
+6. **Health check** — verifies `slop-live`, `slop-relay`, and
+   `slop-browser-host` are `active` before exiting non-zero.
 
 ### When something goes wrong
 

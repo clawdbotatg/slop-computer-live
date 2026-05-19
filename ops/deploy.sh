@@ -66,6 +66,10 @@ echo ""
 echo "→ Building relay…"
 yarn relay:build
 
+echo ""
+echo "→ Building browser-host…"
+yarn browser:build
+
 # --- Ship to prod (live keeps serving) ---------------------------------------
 # Strategy: rsync the new build into a *sibling* directory while the live
 # Next.js process keeps serving from the old .next. --link-dest hardlinks
@@ -90,6 +94,11 @@ echo "→ Rsyncing relay build…"
 rsync -az --delete \
   packages/relay/dist/ \
   "$PROD_HOST:$PROD_PATH/packages/relay/dist/"
+
+echo "→ Rsyncing browser-host build…"
+rsync -az --delete \
+  packages/browser-host/dist/ \
+  "$PROD_HOST:$PROD_PATH/packages/browser-host/dist/"
 
 echo "→ Syncing source + installing prod deps (live still serving)…"
 # Mirror source on prod so what's on disk matches what we built.
@@ -136,6 +145,23 @@ fi
 echo "→ Restarting relay (WS reconnect — no HTTP downtime)…"
 ssh "$PROD_HOST" 'sudo systemctl restart slop-relay'
 
+# Restart only if we actually built fresh browser-host bytes — otherwise
+# bouncing Chromium for nothing kills every active SharedBrowser tab.
+# Tracked by comparing the rsync'd dist mtime against the running
+# process's start time on prod.
+echo "→ Restarting browser-host if dist changed (kills active SharedBrowser tabs — necessary for inject.ts / index.ts updates)…"
+ssh "$PROD_HOST" "
+  set -e
+  dist_mtime=\$(stat -c %Y $PROD_PATH/packages/browser-host/dist/index.js 2>/dev/null || echo 0)
+  svc_start=\$(sudo systemctl show -p ActiveEnterTimestamp --value slop-browser-host | xargs -I{} date -d '{}' +%s 2>/dev/null || echo 0)
+  if [ \"\$dist_mtime\" -gt \"\$svc_start\" ]; then
+    echo '  → fresh dist; restarting'
+    sudo systemctl restart slop-browser-host
+  else
+    echo '  → dist unchanged since service start; skipping restart'
+  fi
+"
+
 # --- Health check ------------------------------------------------------------
 
 sleep 2
@@ -143,7 +169,7 @@ echo ""
 echo "→ Health check…"
 
 all_ok=true
-for svc in slop-live slop-relay; do
+for svc in slop-live slop-relay slop-browser-host; do
   state="$(ssh "$PROD_HOST" "sudo systemctl is-active $svc" || echo failed)"
   if [ "$state" = "active" ]; then
     echo "  ✓ $svc: $state"
