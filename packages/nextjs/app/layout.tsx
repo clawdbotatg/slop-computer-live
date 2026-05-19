@@ -13,7 +13,7 @@ const silkscreen = Silkscreen({
 });
 
 export const metadata = getMetadata({
-  title: "Slop..Computer",
+  title: "Slop...Computer",
   description: "Live, interactive desktop podcast at live.slop.computer",
 });
 
