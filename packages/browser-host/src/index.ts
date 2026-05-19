@@ -795,13 +795,23 @@ app.register(async function (fastify) {
                   : event === "move"
                     ? "mouseMoved"
                     : "mousePressed";
+            // `buttons` is the bitmap of buttons still pressed AFTER this
+            // event (same semantics as the JS MouseEvent.buttons field).
+            // On press, the button just went down → include it. On
+            // release, the button just came up → omit it. On move with
+            // no buttons reported, it's 0. Earlier versions reported the
+            // pressed button on mouseReleased too, which Chrome reads as
+            // "left button is still held during the release event" and
+            // can silently break click-event synthesis in some dapps.
+            const buttonBit = button === "left" ? 1 : button === "right" ? 2 : button === "middle" ? 4 : 0;
+            const buttonsAfter = cdpType === "mouseReleased" ? 0 : buttonBit;
             void tab.cdp
               .send("Input.dispatchMouseEvent", {
                 type: cdpType,
                 x,
                 y,
                 button,
-                buttons: button === "left" ? 1 : button === "right" ? 2 : button === "middle" ? 4 : 0,
+                buttons: buttonsAfter,
                 clickCount: event === "down" || event === "up" ? 1 : 0,
               })
               .catch(() => undefined);

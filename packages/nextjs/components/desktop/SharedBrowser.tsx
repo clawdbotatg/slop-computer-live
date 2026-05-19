@@ -628,31 +628,48 @@ export const SharedBrowser = ({
     ws.send(JSON.stringify(msg));
   }, []);
 
-  const onMouseDown = (e: React.MouseEvent) => {
+  // Pointer events (instead of mouse) so we can call setPointerCapture in
+  // onPointerDown — that redirects all subsequent pointer events to the
+  // stage element until pointerup, even if the cursor leaves the div.
+  // Without capture, releasing outside the stage means our onMouseUp
+  // never fires, the server thinks the button is still held, and every
+  // subsequent click registers as drag-into-target.
+  const pointerButton = (b: number) => (b === 2 ? "right" : b === 1 ? "middle" : "left");
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canControl) return;
     const c = toServerCoords(e);
     if (!c) return;
-    sendInput({
-      type: "mouse",
-      event: "down",
-      x: c.x,
-      y: c.y,
-      button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left",
-    });
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* element gone / unsupported — fall through */
+    }
+    sendInput({ type: "mouse", event: "down", x: c.x, y: c.y, button: pointerButton(e.button) });
   };
-  const onMouseUp = (e: React.MouseEvent) => {
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canControl) return;
     const c = toServerCoords(e);
-    if (!c) return;
-    sendInput({
-      type: "mouse",
-      event: "up",
-      x: c.x,
-      y: c.y,
-      button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left",
-    });
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    // If the up happened in a letterbox bar we still need to clear the
+    // server-side button state — clamp coords to the image rect in that
+    // case so Chrome sees a valid mouseReleased somewhere on the page.
+    const r = computeImageRect();
+    let sx = c?.x;
+    let sy = c?.y;
+    if ((sx === undefined || sy === undefined) && r) {
+      const px = Math.max(r.offsetX, Math.min(r.offsetX + r.imgW - 1, e.clientX));
+      const py = Math.max(r.offsetY, Math.min(r.offsetY + r.imgH - 1, e.clientY));
+      sx = ((px - r.offsetX) / r.imgW) * SERVER_W;
+      sy = ((py - r.offsetY) / r.imgH) * SERVER_H;
+    }
+    if (sx === undefined || sy === undefined) return;
+    sendInput({ type: "mouse", event: "up", x: sx, y: sy, button: pointerButton(e.button) });
   };
-  const onMouseMove = (e: React.MouseEvent) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canControl) return;
     const c = toServerCoords(e);
     if (!c) return;
@@ -923,9 +940,10 @@ export const SharedBrowser = ({
 
       <div
         ref={stageRef}
-        onMouseDown={onMouseDown}
-        onMouseUp={onMouseUp}
-        onMouseMove={onMouseMove}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerMove={onPointerMove}
+        onPointerCancel={onPointerUp}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
@@ -939,6 +957,12 @@ export const SharedBrowser = ({
           background: "#06030d",
           outline: "none",
           cursor: canControl ? "default" : "not-allowed",
+          // Stop the browser from treating drags inside the stage as
+          // native gestures (panning, pinch, image-drag). Without this,
+          // setPointerCapture can fight with the browser's own touch
+          // handlers and clicks land at the wrong moment.
+          touchAction: "none",
+          userSelect: "none",
         }}
       >
         {frameSrc ? (
