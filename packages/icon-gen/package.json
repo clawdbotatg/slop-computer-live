@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "gen": "node generate.mjs icons.json",
-    "add": "node add-icon.mjs"
+    "add": "node add-icon.mjs",
+    "crush": "node crush.mjs"
   },
   "dependencies": {
     "openai": "^4.80.0",

@@ -22,6 +22,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compressIcon } from "./compress.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const localEnv = path.join(here, ".env");
@@ -105,9 +106,12 @@ if (!b64) {
 
 const buf = Buffer.from(b64, "base64");
 await fsp.writeFile(cacheFile, buf);
-await fsp.writeFile(publicFile, buf);
-console.log(`  ✓ ${cacheFile}`);
-console.log(`  ✓ ${publicFile}  (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+const compressed = await compressIcon(buf);
+await fsp.writeFile(publicFile, compressed);
+console.log(`  ✓ ${cacheFile}  (${(buf.length / 1024).toFixed(0)} KB raw)`);
+console.log(
+  `  ✓ ${publicFile}  (${(compressed.length / 1024).toFixed(0)} KB compressed, ${((Date.now() - t0) / 1000).toFixed(1)}s)`,
+);
 
 if (Array.isArray(cfg.items)) {
   const existing = cfg.items.findIndex(i => i.name === name);

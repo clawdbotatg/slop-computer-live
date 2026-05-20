@@ -329,6 +329,7 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
             onClick={() => mesh.todoClearDone()}
             style={{
               marginLeft: "auto",
+              marginRight: 50,
               padding: "2px 6px",
               fontSize: 10,
               fontFamily: "var(--slop-font-display)",

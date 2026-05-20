@@ -51,6 +51,7 @@
     "browser:start": "yarn workspace @slop/browser-host start",
     "icon:add": "yarn workspace @slop/icon-gen run add",
     "icon:gen": "yarn workspace @slop/icon-gen run gen",
+    "icon:crush": "yarn workspace @slop/icon-gen run crush",
     "postinstall": "husky",
     "precommit": "lint-staged",
     "start": "yarn workspace @slop/nextjs dev",
