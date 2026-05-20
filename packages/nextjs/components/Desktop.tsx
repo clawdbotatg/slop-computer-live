@@ -2251,6 +2251,7 @@ function DesktopInner({ slug }: { slug: string }) {
           zIndex 2^31 keeps them on top of every other layer. */}
       {remoteCursors.map(({ peerId, x, y, handle, address }) => {
         const bands = bandsFromIdentity({ address, handle, fallback: peerId });
+        const customName = address ? mesh.customNames[address.toLowerCase()] : undefined;
         return (
           <Cursor
             key={peerId}
@@ -2260,7 +2261,9 @@ function DesktopInner({ slug }: { slug: string }) {
             bands={bands}
             label={
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                {handle ? (
+                {customName ? (
+                  <span>{customName}</span>
+                ) : handle ? (
                   <span>{handle}</span>
                 ) : address ? (
                   <Address address={address as AddressType} size="xs" onlyEnsOrAddress />
@@ -2283,7 +2286,9 @@ function DesktopInner({ slug }: { slug: string }) {
           label={
             session.authenticated ? (
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                {session.handle ? (
+                {session.address && mesh.customNames[session.address.toLowerCase()] ? (
+                  <span>{mesh.customNames[session.address.toLowerCase()]}</span>
+                ) : session.handle ? (
                   <span>{session.handle}</span>
                 ) : session.address ? (
                   <Address address={session.address as AddressType} size="xs" onlyEnsOrAddress />
