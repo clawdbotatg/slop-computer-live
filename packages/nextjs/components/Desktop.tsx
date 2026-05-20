@@ -2339,10 +2339,14 @@ function DesktopInner({ slug }: { slug: string }) {
         );
       })}
 
-      {/* The custom slop cursor is purely a UI flourish. Hide it for
-          god-mode streaming sessions so the captured browser frame
-          stays clean — the OS cursor still works for the operator. */}
-      {localCursor.pos && !(session.authenticated && session.spectator) ? (
+      {/* Spectators still render their own local cursor — globals.css
+          hides the OS cursor via `html.slop-cursor-ready` (set as soon
+          as ANY peer's Cursor mounts), so suppressing the local one
+          would leave the operator with nothing to point at. The relay
+          already drops their cursor frames, so other peers can't see
+          it; the streamed OBS frame just shows the same slop cursor
+          everyone else does. */}
+      {localCursor.pos ? (
         <Cursor
           x={localCursor.pos.x}
           y={localCursor.pos.y}
