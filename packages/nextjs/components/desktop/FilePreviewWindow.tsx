@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import type { FileEntry } from "~~/hooks/usePeerMesh";
+import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 
 // Inline file preview. Dispatches on mime type → image / video / audio /
 // pdf / text. Falls back to a metadata-only card with a Download button
@@ -156,7 +158,8 @@ const TextPreview = ({ url, name }: { url: string; name: string }) => {
 };
 
 export const FilePreviewWindow = ({ file }: FilePreviewWindowProps) => {
-  const downloadUrl = `${RELAY_HTTP}/files/${file.id}`;
+  const slug = useRoomSlug();
+  const downloadUrl = withSlug(`${RELAY_HTTP}/files/${file.id}`, slug);
   const kind = previewKindFor(file);
 
   return (

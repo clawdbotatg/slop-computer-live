@@ -9,6 +9,7 @@ import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
 import { Bevel, Button, Cursor, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
+import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -94,32 +95,16 @@ const formatConnectedAt = (ts?: number) => {
   return `${Math.floor(m / 60)}h ago`;
 };
 
-// Inline form for rotating a room's password. Kept tiny — slug is
-// known by the parent, the only input is the new plaintext password.
-// Parent's `onRotate` POSTs to /v1/rooms/:slug/password, remembers the
-// new password in this browser, and reports success via copyStatus.
-function RoomRotateForm({ onRotate }: { onRotate: (pw: string) => void }) {
-  const [pw, setPw] = useState("");
-  return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-      <TextField
-        placeholder="rotate password"
-        value={pw}
-        onChange={e => setPw(e.target.value)}
-        style={{ width: 140 }}
-      />
-      <Button
-        onClick={() => {
-          if (!pw) return;
-          onRotate(pw);
-          setPw("");
-        }}
-      >
-        Rotate
-      </Button>
-    </div>
-  );
-}
+// 12 random bytes → ~16 URL-safe chars. Strong enough for a shareable
+// room password (collision-resistant, not predictable from prior keys).
+const generatePassword = () => {
+  if (typeof window === "undefined" || !window.crypto?.getRandomValues) return "";
+  const bytes = new Uint8Array(12);
+  window.crypto.getRandomValues(bytes);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
 
 const AdminPage: NextPage = () => {
   const [mounted, setMounted] = useState(false);
@@ -143,7 +128,13 @@ const AdminPage: NextPage = () => {
   // hashes, so we remember plaintext passwords locally on this admin's
   // browser (see `roomPasswords` below) to make the "copy link with
   // password" affordance work.
-  type AdminRoom = { slug: string; createdAt: number | null; paidUntil: number | null; hot: boolean };
+  type AdminRoom = {
+    slug: string;
+    createdAt: number | null;
+    paidUntil: number | null;
+    hot: boolean;
+    sttOn: boolean;
+  };
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
   // Per-slug remembered plaintext password — populated when the admin
   // creates or rotates a room in this browser. Stored under
@@ -225,7 +216,7 @@ const AdminPage: NextPage = () => {
         setCreateRoomStatus(`created /${slug} ✓`);
         rememberRoomPassword(slug, password);
         setNewRoomSlug("");
-        setNewRoomPassword("");
+        setNewRoomPassword(generatePassword());
         void fetchRooms();
         return;
       }
@@ -293,6 +284,22 @@ const AdminPage: NextPage = () => {
     setRoomPasswords(readAdminPasswords());
   }, [mounted]);
 
+  // Seed a random password as soon as we mount so the URL preview is
+  // populated from the start; the user can hit Regenerate to roll it.
+  useEffect(() => {
+    if (!mounted) return;
+    if (newRoomPassword) return;
+    setNewRoomPassword(generatePassword());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+
+  const newRoomUrl = useMemo(() => {
+    if (!mounted) return "";
+    const slug = newRoomSlug.trim() || "<slug>";
+    const base = `${window.location.origin}/${slug}`;
+    return newRoomPassword ? `${base}?invite=${encodeURIComponent(newRoomPassword)}` : base;
+  }, [mounted, newRoomSlug, newRoomPassword]);
+
   useEffect(() => {
     if (!isHost) return;
     void fetchRooms();
@@ -328,16 +335,83 @@ const AdminPage: NextPage = () => {
     }
   };
 
-  const copyRoomLink = async (slug: string, withPassword: boolean) => {
+  const copyRoomLink = async (slug: string) => {
     if (typeof window === "undefined") return;
     const password = roomPasswords[slug];
     const base = `${window.location.origin}/${slug}`;
-    const url = withPassword && password ? `${base}?invite=${encodeURIComponent(password)}` : base;
+    const url = password ? `${base}?invite=${encodeURIComponent(password)}` : base;
     try {
       await navigator.clipboard.writeText(url);
-      setCopyStatus(withPassword && password ? `copied /${slug} link with password ✓` : `copied /${slug} link ✓`);
+      setCopyStatus(password ? `copied /${slug} link with password ✓` : `copied /${slug} link ✓`);
     } catch {
       setCopyStatus("clipboard blocked — copy manually");
+    }
+  };
+
+  // One-click password rotation. Generates a fresh URL-safe random
+  // password, POSTs it to the relay, and remembers it locally so the
+  // shareable copy-link affordance keeps working without the host
+  // having to type anything.
+  const regenerateRoomPassword = async (slug: string) => {
+    const next = generatePassword();
+    if (!next) return;
+    await rotateRoomPassword(slug, next);
+  };
+
+  // Flip per-room STT on/off. Optimistically updates the local rooms
+  // list so the toggle button reflects instantly; the next poll round-
+  // trips for consistency.
+  const toggleRoomStt = async (slug: string, on: boolean) => {
+    setCopyStatus("");
+    setRooms(prev => prev.map(r => (r.slug === slug ? { ...r, sttOn: on } : r)));
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/episode/stt?slug=${encodeURIComponent(slug)}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ on }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setCopyStatus(`STT toggle failed: ${j.error ?? res.status}`);
+        void fetchRooms();
+        return;
+      }
+      setCopyStatus(`/${slug} STT ${on ? "on" : "off"} ✓`);
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
+      void fetchRooms();
+    }
+  };
+
+  // Wipes a room's transcript archive (the per-slug /admin/transcript
+  // endpoint nukes both the rolling buffer and the persisted JSONL).
+  // Two-click arming so a hand-twitch doesn't lose data.
+  const [transcriptResetArmed, setTranscriptResetArmed] = useState<string | null>(null);
+  const transcriptResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetRoomTranscript = async (slug: string) => {
+    if (transcriptResetArmed !== slug) {
+      setTranscriptResetArmed(slug);
+      if (transcriptResetTimer.current) clearTimeout(transcriptResetTimer.current);
+      transcriptResetTimer.current = setTimeout(() => setTranscriptResetArmed(null), 4000);
+      return;
+    }
+    if (transcriptResetTimer.current) clearTimeout(transcriptResetTimer.current);
+    setTranscriptResetArmed(null);
+    setCopyStatus("");
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/transcript?slug=${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = (await res.json().catch(() => null)) as { clearedCount?: number; error?: string } | null;
+      if (!res.ok) {
+        setCopyStatus(`reset failed: ${data?.error ?? res.statusText}`);
+        return;
+      }
+      setCopyStatus(`/${slug} transcript reset (${data?.clearedCount ?? 0} segments) ✓`);
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
     }
   };
 
@@ -458,12 +532,15 @@ const AdminPage: NextPage = () => {
 
   // Episode-wide STT toggle. The hook SSE-subscribes so the button reflects
   // any flips made from other admin tabs (or the API directly) immediately.
-  const episode = useEpisodeState(RELAY_BASE);
+  // TODO: admin currently only operates on the default debug room; add a
+  // per-row STT toggle in the rooms table when we want to flip STT on a
+  // specific live show from here.
+  const episode = useEpisodeState(RELAY_BASE, DEFAULT_SLUG);
   const [sttBusy, setSttBusy] = useState(false);
   const toggleEpisodeStt = async (on: boolean) => {
     setSttBusy(true);
     try {
-      const res = await fetch(`${RELAY_BASE}/admin/episode/stt`, {
+      const res = await fetch(`${RELAY_BASE}/admin/episode/stt?slug=${encodeURIComponent(DEFAULT_SLUG)}`, {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -500,7 +577,7 @@ const AdminPage: NextPage = () => {
     disarmTranscriptClear();
     setTranscriptClearBusy(true);
     try {
-      const res = await fetch(`${RELAY_BASE}/admin/transcript`, {
+      const res = await fetch(`${RELAY_BASE}/admin/transcript?slug=${encodeURIComponent(DEFAULT_SLUG)}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -699,30 +776,40 @@ const AdminPage: NextPage = () => {
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Create a room</h2>
-        <p style={{ color: "var(--slop-text-muted)" }}>
-          Claim a slug + set its password. Anyone you share the password with can enter that room at
-          <code style={{ marginLeft: 4 }}>/&lt;slug&gt;</code>. Slug must match <code>^[a-z0-9-]{`{1,64}`}$</code> and
-          should usually match the on-chain episode slug from slop.computer.
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
+          Type a slug — the password is randomized for you and the shareable URL is previewed below. Hit{" "}
+          <em>Regenerate</em> to roll a new one, then <em>Create</em> to claim it.
         </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <TextField
             placeholder="slug (e.g. ep0)"
             value={newRoomSlug}
             onChange={e => setNewRoomSlug(e.target.value.toLowerCase())}
             style={{ minWidth: 180 }}
           />
-          <TextField
-            placeholder="password"
-            value={newRoomPassword}
-            onChange={e => setNewRoomPassword(e.target.value)}
-            style={{ minWidth: 180 }}
-          />
-          <Button onClick={createRoom}>Create</Button>
+          <Button onClick={() => setNewRoomPassword(generatePassword())}>Regenerate</Button>
+          <Button variant="primary" onClick={createRoom}>
+            Create
+          </Button>
         </div>
+        <p
+          style={{
+            marginTop: 10,
+            fontSize: 12,
+            color: "var(--slop-text-muted)",
+            fontFamily: "monospace",
+            wordBreak: "break-all",
+            background: "rgba(8,4,18,0.35)",
+            padding: "6px 8px",
+            border: "1px solid var(--slop-bevel-dark)",
+          }}
+        >
+          {newRoomUrl}
+        </p>
         {createRoomStatus ? (
           <p
             style={{
-              marginTop: 12,
+              marginTop: 8,
               fontSize: 12,
               color: createRoomStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
             }}
@@ -735,58 +822,75 @@ const AdminPage: NextPage = () => {
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
-          Every claimed room on disk. Passwords are stored as scrypt hashes on the relay — the &quot;with password&quot;
-          copy link only works for rooms whose password is remembered in this browser&apos;s localStorage (i.e. you
-          created or rotated them here). Rotate to set a new password + remember it locally.
+          Every claimed room on disk. The relay only stores scrypt hashes, so <em>Copy link</em> embeds the password
+          only for rooms whose plaintext is remembered locally (created or regenerated in this browser).
         </p>
         {rooms.length === 0 ? (
           <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: 0 }}>
             No claimed rooms yet. Create one above to get started.
           </p>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {rooms.map(r => {
-              const remembered = roomPasswords[r.slug];
-              return (
-                <div
-                  key={r.slug}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rooms.map(r => (
+              <div
+                key={r.slug}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  padding: "6px 10px",
+                  border: "1px solid var(--slop-bevel-shadow)",
+                  background: "rgba(8,4,18,0.35)",
+                }}
+              >
+                <span
+                  aria-label={r.hot ? "hot" : "cold"}
+                  title={r.hot ? "hot" : "cold"}
                   style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    padding: "8px 10px",
-                    border: "1px solid var(--slop-bevel-shadow)",
-                    background: "rgba(8,4,18,0.35)",
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: r.hot ? "var(--slop-lime, #b4ff3a)" : "var(--slop-text-muted)",
+                    boxShadow: r.hot ? "0 0 6px var(--slop-lime, #b4ff3a)" : "none",
+                    flex: "0 0 auto",
                   }}
+                />
+                <a
+                  href={`/${r.slug}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", flex: 1, minWidth: 0 }}
                 >
-                  <a
-                    href={`/${r.slug}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", minWidth: 120 }}
-                  >
-                    /{r.slug}
-                  </a>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: r.hot ? "var(--slop-lime, #b4ff3a)" : "var(--slop-text-muted)",
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {r.hot ? "● hot" : "○ cold"}
-                  </span>
-                  <span style={{ flex: 1 }} />
-                  <Button onClick={() => void copyRoomLink(r.slug, false)}>Copy link</Button>
-                  <Button variant="primary" disabled={!remembered} onClick={() => void copyRoomLink(r.slug, true)}>
-                    {remembered ? "Copy w/ password" : "(no password here)"}
-                  </Button>
-                  <RoomRotateForm onRotate={(pw: string) => void rotateRoomPassword(r.slug, pw)} />
-                </div>
-              );
-            })}
+                  /{r.slug}
+                </a>
+                <Button
+                  onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
+                  style={
+                    r.sttOn
+                      ? { background: "var(--slop-magenta, #ff3ec9)", color: "var(--slop-bg, #06030d)" }
+                      : undefined
+                  }
+                  title={r.sttOn ? "transcripts ON" : "transcripts OFF"}
+                >
+                  STT {r.sttOn ? "on" : "off"}
+                </Button>
+                <Button
+                  onClick={() => void resetRoomTranscript(r.slug)}
+                  style={
+                    transcriptResetArmed === r.slug
+                      ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" }
+                      : undefined
+                  }
+                  title="wipe this room's transcript archive"
+                >
+                  {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
+                </Button>
+                <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regenerate</Button>
+                <Button variant="primary" onClick={() => void copyRoomLink(r.slug)}>
+                  Copy link
+                </Button>
+              </div>
+            ))}
           </div>
         )}
         {copyStatus ? (
@@ -986,7 +1090,7 @@ const AdminPage: NextPage = () => {
               {episode.sttOn ? "ON AIR" : "STANDBY"}
             </span>
             <a
-              href={`${RELAY_BASE}/admin/transcript`}
+              href={`${RELAY_BASE}/admin/transcript?slug=${encodeURIComponent(DEFAULT_SLUG)}`}
               target="_blank"
               rel="noreferrer"
               style={{ color: "var(--slop-text-muted)", fontSize: 12 }}

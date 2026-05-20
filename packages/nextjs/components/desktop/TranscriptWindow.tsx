@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
+import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
 
 type TranscriptSegment = {
@@ -25,6 +27,7 @@ export type TranscriptWindowProps = {
 };
 
 export const TranscriptWindow = ({ relayHttpUrl }: TranscriptWindowProps) => {
+  const slug = useRoomSlug();
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +53,7 @@ export const TranscriptWindow = ({ relayHttpUrl }: TranscriptWindowProps) => {
     let alive = true;
     const fetchOnce = async () => {
       try {
-        const res = await fetch(`${relayHttpUrl}/v1/transcript`, { cache: "no-store" });
+        const res = await fetch(withSlug(`${relayHttpUrl}/v1/transcript`, slug), { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { segments: TranscriptSegment[] };
         if (!alive) return;
@@ -69,7 +72,7 @@ export const TranscriptWindow = ({ relayHttpUrl }: TranscriptWindowProps) => {
       alive = false;
       window.clearInterval(id);
     };
-  }, [relayHttpUrl]);
+  }, [relayHttpUrl, slug]);
 
   return (
     <div

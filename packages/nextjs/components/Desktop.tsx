@@ -275,7 +275,7 @@ function DesktopInner({ slug }: { slug: string }) {
       const r = readResume(slug);
       writeResume(slug, { ...r, [h.kind]: true });
     },
-    [mesh, myLabel],
+    [mesh, myLabel, slug],
   );
 
   const streamsRef = useRef<LocalStreamHandle[]>([]);
@@ -293,7 +293,7 @@ function DesktopInner({ slug }: { slug: string }) {
       writeResume(slug, r);
       clearKindPersistedState(slug, target.kind);
     },
-    [mesh],
+    [mesh, slug],
   );
 
   const media = useLocalMedia(addStream, stopStream);
@@ -344,11 +344,12 @@ function DesktopInner({ slug }: { slug: string }) {
     const id = setInterval(compute, 500);
     return () => clearInterval(id);
   }, []);
-  const episode = useEpisodeState(RELAY_HTTP);
+  const episode = useEpisodeState(RELAY_HTTP, slug);
   useLiveTranscript({
     enabled: sttEligible,
     episodeSttOn: episode.sttOn,
     relayHttpUrl: RELAY_HTTP,
+    slug,
   });
 
   // Forward-declared so the share menu's "Stop screen" handler can clear it
@@ -857,7 +858,7 @@ function DesktopInner({ slug }: { slug: string }) {
       delete cur.screen;
       writeResume(slug, cur);
     }
-  }, [media]);
+  }, [media, slug]);
 
   // True when localStorage says we WERE screen-sharing, but we don't have
   // an active own screen publication yet (post-reload state).
@@ -869,7 +870,7 @@ function DesktopInner({ slug }: { slug: string }) {
   const hasOwnScreenPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "screen");
   useEffect(() => {
     setWantScreenResume(Boolean(readResume(slug).screen) && !hasOwnScreenPub);
-  }, [hasOwnScreenPub]);
+  }, [hasOwnScreenPub, slug]);
 
   const screenResumeSlotId = myOwnerKey ? `owner-${myOwnerKey}-screen` : null;
   const screenResumeSlot =
@@ -977,7 +978,7 @@ function DesktopInner({ slug }: { slug: string }) {
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
-    [mesh, streams, stopStream, media, setWantScreenResume],
+    [mesh, streams, stopStream, media, setWantScreenResume, slug],
   );
 
   // Reconcile: when one of MY local streams is no longer in the mesh's
@@ -1014,7 +1015,7 @@ function DesktopInner({ slug }: { slug: string }) {
       clearKindPersistedState(slug, s.kind);
     }
     prevMyPubIdsRef.current = myPubStreamIds;
-  }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
+  }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream, slug]);
 
   // Persist a default slot the first time we see a new publication.
   // Any peer can do this — the relay broadcasts the slot back to everyone.
@@ -1359,7 +1360,10 @@ function DesktopInner({ slug }: { slug: string }) {
         // way to drive a real determinate progress bar today.
         const result = await new Promise<{ ok: boolean; body?: string }>(resolve => {
           const xhr = new XMLHttpRequest();
-          xhr.open("POST", `${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}`);
+          xhr.open(
+            "POST",
+            `${RELAY_HTTP}/v1/files?name=${encodeURIComponent(file.name)}&slug=${encodeURIComponent(slug)}`,
+          );
           xhr.withCredentials = true;
           xhr.setRequestHeader("content-type", "application/octet-stream");
           xhr.setRequestHeader("x-mime", file.type || "application/octet-stream");
@@ -1402,7 +1406,7 @@ function DesktopInner({ slug }: { slug: string }) {
         }
       }
     },
-    [mesh.slots, meshUpdateSlotForFiles],
+    [mesh.slots, meshUpdateSlotForFiles, slug],
   );
 
   return (
@@ -2134,10 +2138,17 @@ function DesktopInner({ slug }: { slug: string }) {
             justifyContent: "center",
           }}
         >
-          {session.invited ? (
+          {session.invited || roomAuthed === true ? (
             <JoinCard />
           ) : (
-            <PasswordGate slug={slug} defaultPassword={inviteFromUrl} onAccepted={() => void refreshSession()} />
+            <PasswordGate
+              slug={slug}
+              defaultPassword={inviteFromUrl}
+              onAccepted={() => {
+                setRoomAuthed(true);
+                void refreshSession();
+              }}
+            />
           )}
         </div>
       ) : null}

@@ -144,3 +144,21 @@ export function verifyRoomCookie(cookie: string | undefined, slug: string, secre
     return false;
   }
 }
+
+// True if the request carries at least one HMAC-valid `slop_room_<slug>`
+// cookie. Used by the global sign-in endpoints (SIWE, passkey) to accept
+// "the user already cleared at least one room's password gate" as proof
+// of invitation, replacing the legacy single-password slop_invite check
+// in the per-room flow. Per-room access is still gated separately by
+// the room's own cookie at WS handshake time.
+export function hasAnyValidRoomCookie(
+  cookies: Record<string, string | undefined>,
+  secret: string,
+): boolean {
+  for (const [name, value] of Object.entries(cookies)) {
+    if (!name.startsWith(ROOM_COOKIE_PREFIX)) continue;
+    const slug = name.slice(ROOM_COOKIE_PREFIX.length);
+    if (verifyRoomCookie(value, slug, secret)) return true;
+  }
+  return false;
+}

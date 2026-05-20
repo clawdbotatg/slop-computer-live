@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { withSlug } from "~~/lib/slug";
 
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://slop.computer/signal";
 const RELAY_HTTP_URL = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -1103,62 +1104,80 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // the deleteFile callback fires an HTTP request. The relay broadcasts
   // `file_removed` to the mesh after a successful delete, which our WS
   // handler above picks up — no optimistic insert needed.
-  const deleteFile = useCallback((id: string) => {
-    fetch(`${RELAY_HTTP_URL}/v1/files/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-      credentials: "include",
-    }).catch(err => console.warn("deleteFile failed", err));
-  }, []);
+  const deleteFile = useCallback(
+    (id: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/files/${encodeURIComponent(id)}`, slug), {
+        method: "DELETE",
+        credentials: "include",
+      }).catch(err => console.warn("deleteFile failed", err));
+    },
+    [slug],
+  );
 
   // Switch the shared genre. The relay broadcasts `music_genre`
   // back to every peer (including us) so we don't optimistically
   // setState here — the WS echo is authoritative.
-  const setMusicGenre = useCallback((genre: string | null) => {
-    fetch(`${RELAY_HTTP_URL}/v1/music/genre`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ genre }),
-    }).catch(err => console.warn("setMusicGenre failed", err));
-  }, []);
+  const setMusicGenre = useCallback(
+    (genre: string | null) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/music/genre`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ genre }),
+      }).catch(err => console.warn("setMusicGenre failed", err));
+    },
+    [slug],
+  );
 
   // Custom playlist mutations — all three flow through HTTP POSTs /
   // DELETE on the relay, which validates + broadcasts `music_custom`
   // back to the mesh. No optimistic local update.
-  const addToMusicCustom = useCallback((track: JamendoTrack) => {
-    fetch(`${RELAY_HTTP_URL}/v1/music/custom/add`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ track }),
-    }).catch(err => console.warn("addToMusicCustom failed", err));
-  }, []);
-  const removeFromMusicCustom = useCallback((jamendoId: string) => {
-    fetch(`${RELAY_HTTP_URL}/v1/music/custom/${encodeURIComponent(jamendoId)}`, {
-      method: "DELETE",
-      credentials: "include",
-    }).catch(err => console.warn("removeFromMusicCustom failed", err));
-  }, []);
-  const reorderMusicCustom = useCallback((orderedIds: string[]) => {
-    fetch(`${RELAY_HTTP_URL}/v1/music/custom/reorder`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ids: orderedIds }),
-    }).catch(err => console.warn("reorderMusicCustom failed", err));
-  }, []);
+  const addToMusicCustom = useCallback(
+    (track: JamendoTrack) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/music/custom/add`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ track }),
+      }).catch(err => console.warn("addToMusicCustom failed", err));
+    },
+    [slug],
+  );
+  const removeFromMusicCustom = useCallback(
+    (jamendoId: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/music/custom/${encodeURIComponent(jamendoId)}`, slug), {
+        method: "DELETE",
+        credentials: "include",
+      }).catch(err => console.warn("removeFromMusicCustom failed", err));
+    },
+    [slug],
+  );
+  const reorderMusicCustom = useCallback(
+    (orderedIds: string[]) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/music/custom/reorder`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: orderedIds }),
+      }).catch(err => console.warn("reorderMusicCustom failed", err));
+    },
+    [slug],
+  );
 
   // Update the shared clock state. Partial patch — fields you omit
   // are preserved server-side. Relay broadcasts `clock_state` to
   // every peer (including us) so the WS echo is authoritative.
-  const setClockState = useCallback((patch: Partial<ClockState>) => {
-    fetch(`${RELAY_HTTP_URL}/v1/clock`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    }).catch(err => console.warn("setClockState failed", err));
-  }, []);
+  const setClockState = useCallback(
+    (patch: Partial<ClockState>) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/clock`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      }).catch(err => console.warn("setClockState failed", err));
+    },
+    [slug],
+  );
 
   const broadcastTxRequest = useCallback(
     (req: Omit<TxRequest, "from" | "receivedAt">) => {

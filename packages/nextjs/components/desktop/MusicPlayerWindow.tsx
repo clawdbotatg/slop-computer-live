@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
+import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 
 // Music player window body — designed to live inside a <SharedAppWindow>.
 // Aesthetic: classic Winamp 2.x main-window — big amber LCD time digits,
@@ -69,6 +71,7 @@ const livePosition = (state: MusicState | null): number => {
 };
 
 export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
+  const slug = useRoomSlug();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [duration, setDuration] = useState(0);
@@ -161,7 +164,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       return;
     }
     setError(`loading ${activeGenre}…`);
-    fetch(`${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist`, {
+    fetch(withSlug(`${RELAY_HTTP}/v1/music/genre/${encodeURIComponent(activeGenre)}/playlist`, slug), {
       cache: "no-store",
       credentials: "include",
     })

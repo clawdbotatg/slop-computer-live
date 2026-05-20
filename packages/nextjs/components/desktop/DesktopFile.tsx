@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FileEntry } from "~~/hooks/usePeerMesh";
+import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 
 // One file-icon on the desktop. Visually mirrors DesktopIcon (the app
 // icon) so the desktop reads as a uniform grid of "things" — apps,
@@ -76,6 +78,7 @@ export const DesktopFile = ({
   onDragEnd,
   isOverTrash,
 }: DesktopFileProps) => {
+  const slug = useRoomSlug();
   const [hover, setHover] = useState(false);
   const [imgPreview, setImgPreview] = useState(false);
   // While the user is actively dragging this icon, lift it above the
@@ -92,7 +95,7 @@ export const DesktopFile = ({
     setImgPreview(file.mime.startsWith("image/") && file.size < 2_500_000);
   }, [file.mime, file.size]);
 
-  const downloadUrl = `${RELAY_HTTP}/files/${file.id}`;
+  const downloadUrl = withSlug(`${RELAY_HTTP}/files/${file.id}`, slug);
 
   const startDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;

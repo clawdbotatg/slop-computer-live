@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { withSlug } from "~~/lib/slug";
 
-// Subscribes to the relay's per-episode flag stream (currently just
+// Subscribes to the relay's per-room episode flag stream (currently just
 // `sttOn`, but built to grow). Opens an EventSource against
-// /v1/episode/stream, emits the latest state on every flip. Falls back to
-// a one-shot GET if SSE is unavailable.
+// /v1/episode/stream?slug=<slug>, emits the latest state on every flip.
+// Falls back to a one-shot GET if SSE is unavailable.
 
 export type EpisodeState = {
   sttOn: boolean;
@@ -13,7 +14,7 @@ export type EpisodeState = {
 
 const DEFAULT_STATE: EpisodeState = { sttOn: false };
 
-export function useEpisodeState(relayHttpUrl: string): EpisodeState {
+export function useEpisodeState(relayHttpUrl: string, slug: string): EpisodeState {
   const [state, setState] = useState<EpisodeState>(DEFAULT_STATE);
 
   useEffect(() => {
@@ -21,7 +22,7 @@ export function useEpisodeState(relayHttpUrl: string): EpisodeState {
     let es: EventSource | null = null;
 
     // Best-effort one-shot fetch so we have a value before SSE settles.
-    fetch(`${relayHttpUrl}/v1/episode`, { credentials: "include" })
+    fetch(withSlug(`${relayHttpUrl}/v1/episode`, slug), { credentials: "include" })
       .then(r => (r.ok ? r.json() : null))
       .then((data: EpisodeState | null) => {
         if (cancelled || !data) return;
@@ -32,7 +33,7 @@ export function useEpisodeState(relayHttpUrl: string): EpisodeState {
       });
 
     try {
-      es = new EventSource(`${relayHttpUrl}/v1/episode/stream`, { withCredentials: true });
+      es = new EventSource(withSlug(`${relayHttpUrl}/v1/episode/stream`, slug), { withCredentials: true });
       const apply = (raw: string) => {
         try {
           const data = JSON.parse(raw) as Partial<EpisodeState>;
@@ -51,7 +52,7 @@ export function useEpisodeState(relayHttpUrl: string): EpisodeState {
       cancelled = true;
       es?.close();
     };
-  }, [relayHttpUrl]);
+  }, [relayHttpUrl, slug]);
 
   return state;
 }

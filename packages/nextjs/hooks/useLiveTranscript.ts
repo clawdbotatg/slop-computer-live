@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { withSlug } from "~~/lib/slug";
 
 // Web Speech API → POST /v1/transcript. The hook intentionally does NOT
 // own the "should we be listening?" decision — the caller passes `enabled`
@@ -62,6 +63,10 @@ export type UseLiveTranscriptOptions = {
   /** Relay base URL, e.g. `https://slop.computer`. Must match the same
    *  origin the user's session cookie is scoped to. */
   relayHttpUrl: string;
+  /** Room slug, used to route transcript POSTs to the right room on the
+   *  relay. Without this every per-room transcript would land in the
+   *  default room's archive. */
+  slug: string;
   /** BCP-47 language tag. Defaults to "en-US". */
   lang?: string;
   /** Fired on a transient (auto-restarted) or terminal recognition error. */
@@ -81,7 +86,7 @@ export type UseLiveTranscriptResult = {
 };
 
 export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTranscriptResult {
-  const { enabled: rawEnabled, episodeSttOn, relayHttpUrl, lang = "en-US", onError } = opts;
+  const { enabled: rawEnabled, episodeSttOn, relayHttpUrl, slug, lang = "en-US", onError } = opts;
   // Hook is dormant unless BOTH the per-peer gate AND the episode-wide
   // STT flag are on. Either being false stops recognition.
   const enabled = rawEnabled && episodeSttOn;
@@ -98,6 +103,8 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   onErrorRef.current = onError;
   const relayUrlRef = useRef(relayHttpUrl);
   relayUrlRef.current = relayHttpUrl;
+  const slugRef = useRef(slug);
+  slugRef.current = slug;
 
   const recRef = useRef<SpeechRecognition | null>(null);
   // Guards against double-start (Chrome throws "InvalidStateError" if you
@@ -108,7 +115,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     const trimmed = text.trim();
     if (!trimmed) return;
     try {
-      const res = await fetch(`${relayUrlRef.current}/v1/transcript`, {
+      const res = await fetch(withSlug(`${relayUrlRef.current}/v1/transcript`, slugRef.current), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },

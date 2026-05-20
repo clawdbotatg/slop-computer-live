@@ -27,3 +27,14 @@ export function isValidSlug(slug: unknown): slug is string {
 export function normalizeSlug(raw: unknown): string {
   return isValidSlug(raw) ? raw : DEFAULT_SLUG;
 }
+
+/**
+ * Append `?slug=<slug>` (or `&slug=`) to a relay URL so the per-room
+ * HTTP endpoints route to the caller's room. Pair with `useRoomSlug()`
+ * inside components / hooks. No-op when slug is empty.
+ */
+export function withSlug(url: string, slug: string): string {
+  if (!slug) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}slug=${encodeURIComponent(slug)}`;
+}

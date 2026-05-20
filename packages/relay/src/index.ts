@@ -26,7 +26,7 @@ import {
   parseSlug,
   type Room,
 } from "./room.js";
-import { roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
+import { hasAnyValidRoomCookie, roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
 import { generateCard } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import {
@@ -100,11 +100,23 @@ import type { WalletRecord, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
 
-// Room used by HTTP routes until Phase 3 wires slug-in-URL routing.
-// Single source of truth — when the URL convention changes, only this
-// helper has to learn how to parse a slug out of `req.params` or
-// `req.url`. WS handler resolves its room from `?slug=` separately.
+// Room used by HTTP routes that aren't slug-scoped (admin-global things
+// that operate on the default room only). Kept as a thin alias so the
+// intent is grep-able — "this endpoint really does only act on debug".
 const httpRoom = () => getOrCreateRoom(DEFAULT_SLUG);
+
+// Per-room HTTP routes resolve their room from `?slug=<slug>` on the
+// query string. Frontend hooks read it from RoomSlugContext and append
+// it to every fetch. Missing slug falls back to DEFAULT_SLUG so the
+// admin UI (still served from "/") keeps working without changes.
+// Invalid slugs are silently coerced to DEFAULT_SLUG — the caller can
+// also use `roomFromReqStrict` if it wants a 400.
+const roomFromReq = (req: { query?: unknown }) => {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const raw = typeof q.slug === "string" ? q.slug : "";
+  if (raw && isValidSlug(raw)) return getOrCreateRoom(raw);
+  return getOrCreateRoom(DEFAULT_SLUG);
+};
 
 // Global feeds (ticker, gas, headlines, news-digest, timeline,
 // polymarket, glossary) poll external sources once and fan the snapshot
@@ -495,6 +507,7 @@ type V1Auth = { session: import("./sessions.js").Session; isHost: boolean; via: 
 function v1AuthFromReq(req: {
   cookies: Record<string, string | undefined>;
   headers: Record<string, string | string[] | undefined>;
+  query?: unknown;
 }): V1Auth | null {
   // Bearer first, cookie fallback.
   const authHeader = req.headers.authorization;
@@ -506,6 +519,18 @@ function v1AuthFromReq(req: {
   const cookieTok = req.cookies[SESSION_COOKIE];
   const s = getSession(cookieTok);
   if (!s) return null;
+  // Per-room gate: if the caller passed ?slug=<x>, they must also hold a
+  // valid slop_room_<x> cookie (or the legacy slop_invite for the debug
+  // room). Mirrors the /signal WS gate's design — comment near
+  // hasValidRoomCookie says "both required for write actions". Bearer
+  // tokens above skip this because the agent was vetted at mint time.
+  // Endpoints without a ?slug= (eg /v1/agent-token) aren't slug-scoped
+  // and stay open to any authed session.
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const rawSlug = typeof q.slug === "string" ? q.slug : "";
+  if (rawSlug && isValidSlug(rawSlug)) {
+    if (!hasValidRoomCookie(req, rawSlug)) return null;
+  }
   return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "cookie" };
 }
 
@@ -543,32 +568,32 @@ app.get("/v1/state", async (req, reply) => {
       ownerKey: (a.session.address ?? a.session.handle ?? "").toLowerCase() || null,
     },
     peers: listPeers(),
-    publications: httpRoom().desktop.listPublications(),
-    slots: httpRoom().desktop.getSlots(),
-    browsers: httpRoom().browsers.list(),
+    publications: roomFromReq(req).desktop.listPublications(),
+    slots: roomFromReq(req).desktop.getSlots(),
+    browsers: roomFromReq(req).browsers.list(),
     apps: readApps(),
     avatars: listAvatarsSync(),
     hiddenAvatars: listHiddenOwnersSync(),
-    openWindowIds: httpRoom().windows.list(),
-    musicState: httpRoom().music.current().state,
-    chessGame: httpRoom().chess.getCurrentGame(),
-    chessHistory: httpRoom().chess.getHistory(),
+    openWindowIds: roomFromReq(req).windows.list(),
+    musicState: roomFromReq(req).music.current().state,
+    chessGame: roomFromReq(req).chess.getCurrentGame(),
+    chessHistory: roomFromReq(req).chess.getHistory(),
     aiPlayers: listAvailableAIPlayers(),
-    todos: httpRoom().todos.list(),
-    notes: httpRoom().notes.list(),
+    todos: roomFromReq(req).todos.list(),
+    notes: roomFromReq(req).notes.list(),
     glossary: glossaryList(),
     gasState: getGasState(),
     tickerState: getTickerState(),
     headlinesState: getHeadlinesState(),
     timelineState: getTimelineState(),
     newsDigestState: getNewsDigestState(),
-    files: httpRoom().files.list(),
+    files: roomFromReq(req).files.list(),
     musicGenres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
-    musicGenre: httpRoom().jamendo.getCurrentGenre(),
-    musicCustom: httpRoom().jamendo.getCustomPlaylist().tracks,
-    clockState: httpRoom().clock.getState(),
-    wallet: httpRoom().wallet.getCurrent(),
-    walletTxs: httpRoom().wallet.listTxs(),
+    musicGenre: roomFromReq(req).jamendo.getCurrentGenre(),
+    musicCustom: roomFromReq(req).jamendo.getCustomPlaylist().tracks,
+    clockState: roomFromReq(req).clock.getState(),
+    wallet: roomFromReq(req).wallet.getCurrent(),
+    walletTxs: roomFromReq(req).wallet.listTxs(),
   };
 });
 
@@ -659,7 +684,7 @@ app.post<{ Body: SlotBody }>("/v1/slots", async (req, reply) => {
   for (const key of ["x", "y", "width", "height", "z"] as const) {
     if (typeof body[key] === "number") (patch as Record<string, unknown>)[key] = body[key];
   }
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const merged = room.desktop.applySlotUpdate(patch);
   if (!merged) return reply.code(500).send({ error: "no-host-configured" });
   // Broadcast to live WS peers so they see the move in real time, same
@@ -681,7 +706,7 @@ app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
   const id =
     typeof body.id === "string" && body.id.trim() ? body.id.trim() : `browser-${Math.random().toString(36).slice(2, 8)}`;
   const appId = typeof body.appId === "string" && body.appId.trim() ? body.appId.trim() : undefined;
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const browser = room.browsers.open(id, url, "agent", appId);
   room.broadcast({ type: "browser", browser });
   return { ok: true, browser };
@@ -694,7 +719,7 @@ app.post<{ Params: { id: string }; Body: NavBody }>("/v1/browsers/:id/navigate",
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const url = typeof req.body?.url === "string" ? req.body.url : "";
   if (!url) return reply.code(400).send({ error: "missing-url" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const browser = room.browsers.navigate(req.params.id, url);
   if (!browser) return reply.code(404).send({ error: "no-such-browser" });
   room.broadcast({ type: "browser", browser });
@@ -704,7 +729,7 @@ app.post<{ Params: { id: string }; Body: NavBody }>("/v1/browsers/:id/navigate",
 app.delete<{ Params: { id: string } }>("/v1/browsers/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const ok = room.browsers.close(req.params.id);
   if (!ok) return reply.code(404).send({ error: "no-such-browser" });
   room.broadcast({ type: "browser_closed", id: req.params.id });
@@ -732,7 +757,7 @@ app.post<{ Body: XYBody }>("/v1/cursor", async (req, reply) => {
   const x = Number(req.body?.x);
   const y = Number(req.body?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
-  httpRoom().broadcast({
+  roomFromReq(req).broadcast({
     type: "cursor",
     from: agentPeerId(a.session.token),
     address: a.session.address,
@@ -749,7 +774,7 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
   const x = Number(req.body?.x);
   const y = Number(req.body?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return reply.code(400).send({ error: "missing-coords" });
-  httpRoom().broadcast({
+  roomFromReq(req).broadcast({
     type: "click",
     from: agentPeerId(a.session.token),
     address: a.session.address,
@@ -882,7 +907,7 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   if (raw.length > CHAT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
   // Rate-limit by session token (covers both browser cookie and agent
   // bearer — each is one chatty actor).
-  const chat = httpRoom().chat;
+  const chat = roomFromReq(req).chat;
   if (!chat.allow(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
   // Source classification: bearer = agent (skill flow), cookie = browser.
   // Browser cookies that own a current WS peer are "live" desktop users;
@@ -899,9 +924,9 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   return { ok: true, msg };
 });
 
-app.get("/v1/chat", async (_req, reply) => {
+app.get("/v1/chat", async (req, reply) => {
   reply.header("cache-control", "no-store");
-  return { messages: httpRoom().chat.recent() };
+  return { messages: roomFromReq(req).chat.recent() };
 });
 
 // SSE stream for slop.computer spectators (and anyone who'd rather not open
@@ -932,7 +957,7 @@ app.get("/v1/chat/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  const chat = httpRoom().chat;
+  const chat = roomFromReq(req).chat;
   write("init", { messages: chat.recent() });
   const unsub = chat.subscribe(msg => write("chat", msg));
   // Heartbeat — some proxies drop idle connections after ~60s.
@@ -960,7 +985,7 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
   const raw = typeof req.body?.text === "string" ? req.body.text : "";
   if (!raw.trim()) return reply.code(400).send({ error: "empty" });
   if (raw.length > TRANSCRIPT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
-  const transcript = httpRoom().transcript;
+  const transcript = roomFromReq(req).transcript;
   if (!transcript.allow(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
   const inMesh = findPeersBySessionToken(a.session.token).length > 0;
   const source: TranscriptSegment["source"] =
@@ -979,9 +1004,9 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
 // (the live show is already streaming the speakers' words to every peer +
 // the spectator chat firehose, so there's nothing to gate). The Transcript
 // desktop app polls this every few seconds.
-app.get("/v1/transcript", async (_req, reply) => {
+app.get("/v1/transcript", async (req, reply) => {
   reply.header("cache-control", "no-store");
-  return { segments: httpRoom().transcript.recent() };
+  return { segments: roomFromReq(req).transcript.recent() };
 });
 
 // --- Admin transcript viewer -------------------------------------------------
@@ -991,7 +1016,7 @@ app.get("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   reply.header("cache-control", "no-store");
-  return { segments: httpRoom().transcript.recent() };
+  return { segments: roomFromReq(req).transcript.recent() };
 });
 
 // Manual wipe — for blowing away pre-show test segments. Finalize also
@@ -1000,7 +1025,7 @@ app.get("/admin/transcript", async (req, reply) => {
 app.delete("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return httpRoom().transcript.clear();
+  return roomFromReq(req).transcript.clear();
 });
 
 // --- Episode flags (STT toggle, etc.) ---------------------------------------
@@ -1008,9 +1033,9 @@ app.delete("/admin/transcript", async (req, reply) => {
 // posting. Peers read /v1/episode (or subscribe to /v1/episode/stream) so
 // their browser knows when STT is allowed.
 
-app.get("/v1/episode", async (_req, reply) => {
+app.get("/v1/episode", async (req, reply) => {
   reply.header("cache-control", "no-store");
-  return httpRoom().episode.getState();
+  return roomFromReq(req).episode.getState();
 });
 
 app.get("/v1/episode/stream", async (req, reply) => {
@@ -1035,7 +1060,7 @@ app.get("/v1/episode/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  const episode = httpRoom().episode;
+  const episode = roomFromReq(req).episode;
   write("init", episode.getState());
   const unsub = episode.subscribe((s: EpisodeState) => write("episode", s));
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
@@ -1056,7 +1081,7 @@ app.post<{ Body: EpisodeSttBody }>("/admin/episode/stt", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   const on = req.body?.on === true;
-  return httpRoom().episode.setSttOn(on);
+  return roomFromReq(req).episode.setSttOn(on);
 });
 
 app.get("/admin/transcript/stream", async (req, reply) => {
@@ -1076,7 +1101,7 @@ app.get("/admin/transcript/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  const transcript = httpRoom().transcript;
+  const transcript = roomFromReq(req).transcript;
   write("init", { segments: transcript.recent() });
   const unsub = transcript.subscribe(seg => write("transcript", seg));
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
@@ -1480,7 +1505,7 @@ app.get("/v1/chess", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
-  return buildChessPayload(httpRoom(), callerKey);
+  return buildChessPayload(roomFromReq(req), callerKey);
 });
 
 /** Long-poll the chess game. Pass `?since=<version>` (the `version`
@@ -1496,7 +1521,7 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/chess/wait",
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
   const since = Number(req.query?.since ?? 0);
   const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
@@ -1539,7 +1564,7 @@ app.post<{ Body: ChessCreateBody }>("/v1/chess/create", async (req, reply) => {
   if (typeof b.whiteKey !== "string" || typeof b.blackKey !== "string") {
     return reply.code(400).send({ error: "missing-player" });
   }
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const result = room.chess.createGame({
     whiteKey: b.whiteKey,
     blackKey: b.blackKey,
@@ -1566,7 +1591,7 @@ app.post<{ Body: ChessMoveBody }>("/v1/chess/move", async (req, reply) => {
   // stored from the WS / client side.
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const result = room.chess.applyMove(callerKey, {
     from: b.from,
     to: b.to,
@@ -1586,7 +1611,7 @@ app.post("/v1/chess/resign", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const result = room.chess.resign(callerKey);
   if (!result.ok) return reply.code(409).send({ error: result.error });
   broadcastChessState(room, result.game);
@@ -1597,7 +1622,7 @@ app.post("/v1/chess/resign", async (req, reply) => {
 app.post("/v1/chess/close", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const result = room.chess.clearGame();
   broadcastChessState(room, null);
   return { ok: true, aborted: result.aborted };
@@ -1615,7 +1640,7 @@ app.get("/v1/music", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return httpRoom().music.current();
+  return roomFromReq(req).music.current();
 });
 
 // Long-poll the music state. Pass `?since=<version>` from a previous
@@ -1634,7 +1659,7 @@ app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/music/wait",
   const since = Number(req.query?.since ?? 0);
   const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
 
-  const music = httpRoom().music;
+  const music = roomFromReq(req).music;
   const cur = music.current();
   if (!Number.isFinite(since) || cur.version > since) {
     return cur;
@@ -1697,7 +1722,7 @@ app.post<{ Body: MusicStateBody }>("/v1/music/state", async (req, reply) => {
   if (typeof b.index !== "number" || typeof b.position !== "number") {
     return reply.code(400).send({ error: "bad-state" });
   }
-  const room = httpRoom();
+  const room = roomFromReq(req);
   const incomingVolume = typeof b.volume === "number" ? Math.max(0, Math.min(1, b.volume)) : null;
   const next = room.music.set({
     src: typeof b.src === "string" ? b.src : null,
@@ -1724,7 +1749,7 @@ app.post<{ Body: OpenWindowBody }>("/v1/windows", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
   if (!id) return reply.code(400).send({ error: "missing-id" });
-  const room = httpRoom();
+  const room = roomFromReq(req);
   if (room.windows.open(id)) room.broadcast({ type: "window_opened", id });
   return { ok: true, id };
 });
@@ -1733,7 +1758,7 @@ app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => 
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const id = req.params.id;
-  const room = httpRoom();
+  const room = roomFromReq(req);
   if (room.windows.close(id)) room.broadcast({ type: "window_closed", id });
   return { ok: true, id };
 });
@@ -1750,7 +1775,7 @@ app.get("/v1/todos", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: httpRoom().todos.list() };
+  return { items: roomFromReq(req).todos.list() };
 });
 
 app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
@@ -1758,7 +1783,7 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  const item = httpRoom().todos.add({ address: a.session.address, handle: a.session.handle, text });
+  const item = roomFromReq(req).todos.add({ address: a.session.address, handle: a.session.handle, text });
   if (!item) return reply.code(400).send({ error: "empty" });
   return { ok: true, item };
 });
@@ -1766,7 +1791,7 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
 app.post<{ Params: { id: string } }>("/v1/todos/:id/toggle", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!httpRoom().todos.toggle(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!roomFromReq(req).todos.toggle(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
@@ -1775,21 +1800,21 @@ app.post<{ Params: { id: string }; Body: TodoTextBody }>("/v1/todos/:id", async 
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  if (!httpRoom().todos.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  if (!roomFromReq(req).todos.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/todos/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!httpRoom().todos.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!roomFromReq(req).todos.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.post("/v1/todos/clear-done", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  httpRoom().todos.clearDone();
+  roomFromReq(req).todos.clearDone();
   return { ok: true };
 });
 
@@ -1798,7 +1823,7 @@ app.post<{ Body: TodoReorderBody }>("/v1/todos/reorder", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
   const ids = req.body.ids.filter((s: unknown): s is string => typeof s === "string");
-  httpRoom().todos.reorder(ids);
+  roomFromReq(req).todos.reorder(ids);
   return { ok: true };
 });
 
@@ -1810,14 +1835,14 @@ app.get("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: httpRoom().notes.list() };
+  return { items: roomFromReq(req).notes.list() };
 });
 
 app.post<{ Body: NoteTextBody }>("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const note = httpRoom().notes.create({ address: a.session.address, handle: a.session.handle, text });
+  const note = roomFromReq(req).notes.create({ address: a.session.address, handle: a.session.handle, text });
   if (!note) return reply.code(400).send({ error: "create-failed" });
   return { ok: true, note };
 });
@@ -1826,14 +1851,14 @@ app.post<{ Params: { id: string }; Body: NoteTextBody }>("/v1/notes/:id", async 
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  if (!httpRoom().notes.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
+  if (!roomFromReq(req).notes.update(req.params.id, text)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/notes/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!httpRoom().notes.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  if (!roomFromReq(req).notes.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
   return { ok: true };
 });
 
@@ -1948,7 +1973,7 @@ app.get("/v1/music/genres", async (req, reply) => {
   reply.header("cache-control", "no-store");
   return {
     genres: GENRE_IDS.map(id => ({ id, label: GENRES[id]!.label })),
-    current: httpRoom().jamendo.getCurrentGenre(),
+    current: roomFromReq(req).jamendo.getCurrentGenre(),
   };
 });
 
@@ -1959,7 +1984,7 @@ app.post<{ Body: SetGenreBody }>("/v1/music/genre", async (req, reply) => {
   if (incoming !== null && typeof incoming !== "string") return reply.code(400).send({ error: "bad-genre" });
   if (incoming !== null && !isGenre(incoming)) return reply.code(400).send({ error: "unknown-genre" });
   try {
-    const out = await httpRoom().jamendo.setCurrentGenre(incoming as string | null);
+    const out = await roomFromReq(req).jamendo.setCurrentGenre(incoming as string | null);
     // Intentionally do NOT reset musicState here. If someone is in the
     // middle of a song from genre A and a peer switches to genre B,
     // the currently-playing song should keep playing — only an
@@ -1980,7 +2005,7 @@ app.get<{ Params: { genre: string } }>("/v1/music/genre/:genre/playlist", async 
   reply.header("cache-control", "no-store");
   // The "custom" playlist is per-room — served from the JamendoRoomState
   // rather than the global MP3 cache.
-  if (req.params.genre === "custom") return httpRoom().jamendo.getCustomPlaylist();
+  if (req.params.genre === "custom") return roomFromReq(req).jamendo.getCustomPlaylist();
   // Lazily refresh if the cache is stale. Hot path (popular genre, cached
   // and fresh) returns immediately; cold path may take ~30s while we
   // download missing tracks.
@@ -2019,7 +2044,7 @@ app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => 
   }
   // Normalize: only persist the fields we know about. Defends against
   // a misbehaving client storing extra junk in the saved blob.
-  const tracks = httpRoom().jamendo.addToCustom({
+  const tracks = roomFromReq(req).jamendo.addToCustom({
     title: t.title,
     artist: t.artist,
     src: t.src,
@@ -2034,7 +2059,7 @@ app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => 
 app.delete<{ Params: { jamendoId: string } }>("/v1/music/custom/:jamendoId", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const tracks = httpRoom().jamendo.removeFromCustom(req.params.jamendoId);
+  const tracks = roomFromReq(req).jamendo.removeFromCustom(req.params.jamendoId);
   return { ok: true, tracks };
 });
 
@@ -2045,7 +2070,7 @@ app.post<{ Body: ReorderCustomBody }>("/v1/music/custom/reorder", async (req, re
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!Array.isArray(req.body?.ids)) return reply.code(400).send({ error: "ids-required" });
   const ids = req.body.ids.filter((x: unknown): x is string => typeof x === "string");
-  const tracks = httpRoom().jamendo.reorderCustom(ids);
+  const tracks = roomFromReq(req).jamendo.reorderCustom(ids);
   return { ok: true, tracks };
 });
 
@@ -2110,14 +2135,14 @@ app.get("/v1/clock", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { state: httpRoom().clock.getState() };
+  return { state: roomFromReq(req).clock.getState() };
 });
 
 app.post<{ Body: ClockBody }>("/v1/clock", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!req.body || typeof req.body !== "object") return reply.code(400).send({ error: "bad-body" });
-  const next = httpRoom().clock.setState(req.body);
+  const next = roomFromReq(req).clock.setState(req.body);
   return { ok: true, state: next };
 });
 
@@ -2138,7 +2163,7 @@ app.get("/v1/files", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
-  return { items: httpRoom().files.list() };
+  return { items: roomFromReq(req).files.list() };
 });
 
 // Upload — raw body. Filename comes from `?name=<original>` (URL-encoded)
@@ -2168,7 +2193,7 @@ app.post<{ Querystring: FileUploadQuery }>(
     const mime = headerMime || String(req.headers["content-type"] ?? "application/octet-stream");
     const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "anon";
     const uploaderLabel = a.session.handle ?? a.session.address ?? "anon";
-    const result = httpRoom().files.add({ name, mime, buffer: body, ownerKey, uploaderLabel });
+    const result = roomFromReq(req).files.add({ name, mime, buffer: body, ownerKey, uploaderLabel });
     if ("error" in result) return reply.code(400).send(result);
     return { ok: true, item: result };
   },
@@ -2178,7 +2203,7 @@ app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "";
-  const result = httpRoom().files.remove(req.params.id, ownerKey, a.isHost);
+  const result = roomFromReq(req).files.remove(req.params.id, ownerKey, a.isHost);
   if (result === "not-found") return reply.code(404).send({ error: "not-found" });
   if (result === "forbidden") return reply.code(403).send({ error: "forbidden" });
   return { ok: true };
@@ -2190,7 +2215,7 @@ app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
 app.get<{ Params: { id: string } }>("/files/:id", async (req, reply) => {
   const id = req.params.id;
   if (!/^[a-z0-9]+$/i.test(id)) return reply.code(400).send({ error: "bad-id" });
-  const filesIndex = httpRoom().files;
+  const filesIndex = roomFromReq(req).files;
   const item = filesIndex.get(id);
   if (!item) return reply.code(404).send({ error: "not-found" });
   // Prefer the BGIPFS gateway when the background pin landed — keeps
@@ -2383,8 +2408,13 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
   if (!check.ok) return reply.code(401).send({ error: check.error });
   // Admins bypass the invite gate so the operator can sign in on a fresh
   // deploy and then share / regenerate the invite from the admin panel.
-  // Everyone else needs the slop_invite cookie set first.
-  if (!check.isAdmin && !isInvited(req.cookies[INVITE_COOKIE])) {
+  // Everyone else has to have cleared either the legacy global gate
+  // (slop_invite) OR a per-room password gate (any signed slop_room_*).
+  if (
+    !check.isAdmin &&
+    !isInvited(req.cookies[INVITE_COOKIE]) &&
+    !hasAnyValidRoomCookie(req.cookies, config.sessionSecret)
+  ) {
     return reply.code(403).send({ error: "invite-required" });
   }
   // Resolve the primary ENS name once at login so chat / transcript /
@@ -2429,7 +2459,11 @@ type PasskeyBody = {
 };
 
 app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
-  if (!isInvited(req.cookies[INVITE_COOKIE])) {
+  // Same gate as SIWE — legacy global invite OR any per-room cookie.
+  if (
+    !isInvited(req.cookies[INVITE_COOKIE]) &&
+    !hasAnyValidRoomCookie(req.cookies, config.sessionSecret)
+  ) {
     return reply.code(403).send({ error: "invite-required" });
   }
   const b = (req.body ?? {}) as PasskeyBody;
@@ -2653,7 +2687,7 @@ app.post("/admin/finalize", async (req, reply) => {
   // to the wire and returns to the event loop while we push events.
   void (async () => {
     try {
-      const room = httpRoom();
+      const room = roomFromReq(req);
       await finalizeRecording({
         recordingsDir: config.recordingsDir,
         pathName: "live",
@@ -2718,7 +2752,19 @@ app.get("/admin/rooms", async (req, reply) => {
       } catch {
         /* no meta.json yet — room exists but never accessed since hibernate */
       }
-      return { slug, createdAt, paidUntil, hot: hotSlugs.has(slug) };
+      // Cold rooms keep their last STT toggle on disk so a relay restart
+      // doesn't quietly turn STT back off mid-show. Read it directly
+      // rather than instantiating the Room (which would also flip cold→hot
+      // just to read a boolean).
+      let sttOn = false;
+      try {
+        const raw = fs.readFileSync(`${dir}/${slug}/episode.json`, "utf8");
+        const parsed = JSON.parse(raw) as { sttOn?: boolean };
+        if (typeof parsed.sttOn === "boolean") sttOn = parsed.sttOn;
+      } catch {
+        /* no episode.json — sttOn defaults to false, same as a fresh room */
+      }
+      return { slug, createdAt, paidUntil, hot: hotSlugs.has(slug), sttOn };
     })
     .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   return { rooms };
@@ -2731,7 +2777,7 @@ app.get("/admin/rooms", async (req, reply) => {
 app.post("/admin/wallet/reset", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  httpRoom().wallet.wipeAll();
+  roomFromReq(req).wallet.wipeAll();
   return { ok: true };
 });
 
@@ -3496,7 +3542,7 @@ app
     // chess state at that time via the Room constructor + ChessState
     // load. If we ever need to resume every persistent room on boot
     // we'd glob the .slop-data/rooms dir here.
-    const mainRoom = httpRoom();
+    const mainRoom = getOrCreateRoom(DEFAULT_SLUG);
     const resumed = mainRoom.chess.getCurrentGame();
     if (resumed && resumed.status === "active") {
       broadcastChessState(mainRoom, resumed);
