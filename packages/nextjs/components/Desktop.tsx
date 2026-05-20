@@ -53,6 +53,7 @@ import {
 import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
+import { useGodModeStt } from "~~/hooks/useGodModeStt";
 import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
@@ -407,9 +408,29 @@ function DesktopInner({ slug }: { slug: string }) {
     return () => clearInterval(id);
   }, []);
   const episode = useEpisodeState(RELAY_HTTP, slug);
+  // Per-browser Web Speech STT. Still active for non-god-mode peers as a
+  // belt-and-braces fallback — but if a god-mode peer is in the room
+  // running server-side STT, the user can mute their browser's Web Speech
+  // by toggling episode.sttOn off centrally without per-peer config.
+  const isGodMode = session.authenticated && session.spectator === true;
   useLiveTranscript({
-    enabled: sttEligible,
+    // God-mode never publishes its own audio (spectator session) so
+    // sttEligible is structurally false for it — but skipping the
+    // hook entirely for god-mode keeps the recognizer object from
+    // being constructed at all on the streaming box.
+    enabled: sttEligible && !isGodMode,
     episodeSttOn: episode.sttOn,
+    relayHttpUrl: RELAY_HTTP,
+    slug,
+  });
+  // God-mode server-side STT. Only the streaming box runs this. It
+  // walks every other peer's audio track in the mesh, VAD-gates,
+  // captures Opus segments, and POSTs them to /v1/transcript/relay
+  // tagged with the speaker's address. The 🛰️ "god is listening"
+  // emoji in the menubar derives from `listening` below.
+  const godStt = useGodModeStt({
+    enabled: isGodMode && episode.sttOn,
+    mesh,
     relayHttpUrl: RELAY_HTTP,
     slug,
   });
@@ -834,6 +855,21 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Arrange for Video", onClick: arrangeForVideo },
         { label: "Arrange for Countdown", onClick: arrangeForCountdown },
         { divider: true, label: "" },
+        {
+          label: "Snap to Livestream",
+          onClick: () => {
+            // God-mode streaming box runs at 1568×888 — give the
+            // operator a one-click way to match it when previewing
+            // or recovering from a manual resize. `resizeTo` only
+            // works on windows opened via window.open or on the
+            // outermost frame in some browsers; failure is silent.
+            try {
+              window.resizeTo(1568, 888);
+            } catch {
+              /* browser blocked the resize — nothing we can do */
+            }
+          },
+        },
         {
           label: "Full Screen",
           shortcut: "⌃⌘F",
@@ -1483,6 +1519,7 @@ function DesktopInner({ slug }: { slug: string }) {
       <MenuBar
         menus={[fileMenu, editMenu, viewMenu]}
         meshConnected={mesh.connected}
+        godListening={isGodMode && godStt.listening}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
         slug={slug}
@@ -2349,14 +2386,11 @@ function DesktopInner({ slug }: { slug: string }) {
         );
       })}
 
-      {/* Spectators still render their own local cursor — globals.css
-          hides the OS cursor via `html.slop-cursor-ready` (set as soon
-          as ANY peer's Cursor mounts), so suppressing the local one
-          would leave the operator with nothing to point at. The relay
-          already drops their cursor frames, so other peers can't see
-          it; the streamed OBS frame just shows the same slop cursor
-          everyone else does. */}
-      {localCursor.pos ? (
+      {/* God-mode (spectator) is invisible by design — the relay drops
+          their cursor broadcasts, and we suppress the local slop cursor
+          render here too so the streamer's OBS capture doesn't include
+          a wandering pointer on top of the live participants. */}
+      {localCursor.pos && !isGodMode ? (
         <Cursor
           x={localCursor.pos.x}
           y={localCursor.pos.y}

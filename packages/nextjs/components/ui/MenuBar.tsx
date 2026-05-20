@@ -31,6 +31,12 @@ interface MenuBarProps {
    *  itself moved out of the menubar — see `<PinnedPeers>` for the
    *  always-visible top-right HUD. */
   meshConnected?: boolean;
+  /** True when this client is the god-mode streaming box AND it has at
+   *  least one active server-side STT recorder open — i.e. someone in
+   *  the room is currently being transcribed. Renders 🛰️ next to the
+   *  green LivePulse so the operator can see "god is listening" at a
+   *  glance. */
+  godListening?: boolean;
   /** Optional session-wallet chip. If a wallet address is supplied
    *  we render the Address component as a clickable chip; otherwise
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
@@ -48,6 +54,7 @@ export const MenuBar = ({
   className = "",
   menus = [],
   meshConnected,
+  godListening = false,
   walletAddress,
   onWalletClick,
   slug,
@@ -110,6 +117,16 @@ export const MenuBar = ({
             </button>
           ) : null}
           {authNode}
+          {godListening ? (
+            <span
+              className="slop-menubar__item"
+              style={{ cursor: "help", fontSize: 14, padding: "0 6px" }}
+              title="god is listening — this god-mode client is running server-side STT on every peer's audio"
+              aria-label="god is listening"
+            >
+              🛰️
+            </span>
+          ) : null}
           <span
             className="slop-menubar__item"
             style={{ cursor: "help" }}

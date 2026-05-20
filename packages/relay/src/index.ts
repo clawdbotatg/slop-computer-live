@@ -33,6 +33,7 @@ import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
   type TranscriptSegment,
 } from "./transcript.js";
+import { isSttConfigured, transcribeAudio } from "./stt.js";
 import {
   SESSION_COOKIE,
   consumeNonce,
@@ -249,6 +250,12 @@ app.addContentTypeParser(/^image\/(jpeg|png|webp)$/, { parseAs: "buffer" }, (_re
 // raw bytes as application/octet-stream and pass the real mime + name
 // in `x-mime` / `?name=`.
 app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => {
+  done(null, body);
+});
+// god-mode STT — the streaming box ships short MediaRecorder blobs
+// (audio/webm;codecs=opus by default) to /v1/transcript/relay. Same
+// passthrough shape as the image parser above so we get a Buffer.
+app.addContentTypeParser(/^audio\/(webm|ogg|mp4|mpeg|wav)/, { parseAs: "buffer" }, (_req, body, done) => {
   done(null, body);
 });
 
@@ -1020,6 +1027,86 @@ app.get("/v1/transcript", async (req, reply) => {
   reply.header("cache-control", "no-store");
   return { segments: roomFromReq(req).transcript.recent() };
 });
+
+// --- God-mode STT relay (on-behalf-of transcript) ---------------------------
+// The headed-Chrome streaming box receives every other peer's audio over
+// the full-mesh WebRTC connection it already maintains. For each peer it
+// runs client-side VAD, captures short Opus chunks via MediaRecorder, and
+// POSTs them here tagged with that speaker's address. We transcribe via
+// OpenAI and stamp the resulting segment with the speaker's identity —
+// not the god-mode caller's — so the transcript reads identically to
+// the old per-browser Web Speech path, just without the Firefox blind
+// spot. Only sessions minted via /auth/godmode are allowed in.
+//
+// `address` / `handle` come from query params (URL-encoded) so the
+// request body can stay a raw audio Buffer.
+const STT_AUDIO_MAX_BYTES = 4 * 1024 * 1024; // ~30s of opus at 96kbps, with headroom
+type SttRelayQuery = { slug?: string; address?: string; handle?: string; lang?: string };
+app.post<{ Querystring: SttRelayQuery }>(
+  "/v1/transcript/relay",
+  { bodyLimit: STT_AUDIO_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    if (!a.session.spectator) return reply.code(403).send({ error: "godmode-only" });
+    if (!isSttConfigured()) return reply.code(503).send({ error: "stt-not-configured" });
+
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply
+        .code(400)
+        .send({ error: "empty-body", note: "POST raw audio bytes (audio/webm or audio/ogg)" });
+    }
+
+    // Speaker identity from the query string. `address` is optional —
+    // the god-mode client looks it up from the room state, but a peer
+    // who hasn't authed yet would have null. handle is purely cosmetic.
+    const rawAddr = typeof req.query?.address === "string" ? req.query.address.toLowerCase() : "";
+    const address = /^0x[a-f0-9]{40}$/.test(rawAddr) ? rawAddr : null;
+    const handle = typeof req.query?.handle === "string" && req.query.handle.length <= 64
+      ? req.query.handle
+      : null;
+    const lang = typeof req.query?.lang === "string" && req.query.lang.length <= 16
+      ? req.query.lang
+      : undefined;
+
+    // Rate limit keyed on the SPEAKER, not the caller. Otherwise a
+    // single god-mode token would share one bucket across all speakers
+    // and a fast conversation would 429 mid-utterance. Bucket key
+    // falls back to the god-mode session token when address is null
+    // so we still cap unattributed spam.
+    const room = roomFromReq(req);
+    const bucketKey = address ?? `gm:${a.session.token}`;
+    if (!room.transcript.allow(bucketKey)) {
+      return reply.code(429).send({ error: "rate-limited" });
+    }
+
+    let text: string;
+    try {
+      const mime = String(req.headers["content-type"] ?? "audio/webm");
+      text = await transcribeAudio(body, mime, lang);
+    } catch (err) {
+      req.log.error({ err }, "stt failed");
+      const msg = err instanceof Error ? err.message : "unknown";
+      return reply.code(502).send({ error: "stt-failed", detail: msg });
+    }
+
+    const trimmed = text.trim();
+    if (!trimmed) return { ok: true, seg: null };
+
+    const seg = room.transcript.append({
+      address,
+      handle,
+      text: trimmed,
+      // Same "live" source the per-browser STT path used — keeps the
+      // archive coherent for downstream consumers (no special "from
+      // god-mode" branch needed in the finalize / spectator UIs).
+      source: "live",
+    });
+    if (!seg) return reply.code(400).send({ error: "empty" });
+    return { ok: true, seg };
+  },
+);
 
 // --- Admin transcript viewer -------------------------------------------------
 // Host-only. JSON for one-shot inspection, SSE for live tailing — open either
