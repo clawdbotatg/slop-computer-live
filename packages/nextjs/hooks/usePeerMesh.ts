@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { withSlug } from "~~/lib/slug";
 
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_URL ?? "ws://slop.computer/signal";
@@ -57,6 +57,11 @@ export type Peer = {
   address: string | null;
   handle: string | null;
   connectedAt?: number;
+  // Set by the relay for god-mode streaming sessions. Kept in the
+  // peers array so RTC signaling works (the streamer needs audio/
+  // video offers), but every display layer filters spectators out
+  // before rendering.
+  spectator?: boolean;
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
@@ -1920,9 +1925,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     return () => window.removeEventListener("mousemove", handler);
   }, [connected, send]);
 
+  // Spectators (god-mode streaming sessions) stay in the internal
+  // peers state so RTC signaling still wires them up — without that
+  // the streaming box wouldn't receive any video/audio offers — but
+  // every consumer of `peers` is a UI surface (WhosHere, PinnedPeers,
+  // wallet/chess pickers, cursor lookups). Filtering once here keeps
+  // the spectator off every display in one shot instead of bolting
+  // `if (!p.spectator)` onto each callsite.
+  const visiblePeers = useMemo(() => peers.filter(p => !p.spectator), [peers]);
+
   return {
     myId,
-    peers,
+    peers: visiblePeers,
     connected,
     bootstrapped,
     remoteStreams,

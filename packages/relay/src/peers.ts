@@ -19,6 +19,11 @@ export type PeerInfo = {
   address: string | null;
   handle: string | null;
   connectedAt: number;
+  // True for god-mode streaming sessions: still in the relay's peer
+  // map so RTC signaling flows (the streaming box receives audio/
+  // video), but filtered out of the visible guest list on every
+  // client.
+  spectator?: boolean;
 };
 
 export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };

@@ -194,7 +194,14 @@ function DesktopInner({ slug }: { slug: string }) {
   // Pick up an invite from `?invite=…` for the password gate, then strip
   // it from the URL so it doesn't linger or get linked-around. The gate
   // also accepts manual entry, so this is just a convenience.
+  //
+  // `?godMode=<password>` is the stream-capture box's escape hatch: same
+  // room password as everyone else PLUS this second password swaps
+  // SIWE / passkey / guest-password for a passive spectator session.
+  // Both params are stripped from the URL so the leak surface is just
+  // whatever the operator pasted into their address bar.
   const [inviteFromUrl, setInviteFromUrl] = useState<string>("");
+  const [godModeFromUrl, setGodModeFromUrl] = useState<string>("");
   useEffect(() => {
     if (typeof window === "undefined") return;
     const u = new URL(window.location.href);
@@ -202,6 +209,13 @@ function DesktopInner({ slug }: { slug: string }) {
     if (fromUrl) {
       setInviteFromUrl(fromUrl);
       u.searchParams.delete("invite");
+    }
+    const god = u.searchParams.get("godMode");
+    if (god) {
+      setGodModeFromUrl(god);
+      u.searchParams.delete("godMode");
+    }
+    if (fromUrl || god) {
       window.history.replaceState({}, "", u.toString());
     }
   }, []);
@@ -213,6 +227,10 @@ function DesktopInner({ slug }: { slug: string }) {
   // checking), `false` = need password, `true` = good. The debug
   // sandbox slug always reports true.
   const [roomAuthed, setRoomAuthed] = useState<boolean | null>(slug === DEFAULT_SLUG ? true : null);
+  // godMode auth is two-step: the room password gate sets the room
+  // cookie, THEN we trade the godMode password for a spectator session.
+  // `godModeBusy` keeps the JoinCard from flashing between those steps.
+  const [godModeBusy, setGodModeBusy] = useState(false);
   useEffect(() => {
     if (slug === DEFAULT_SLUG) {
       setRoomAuthed(true);
@@ -237,6 +255,42 @@ function DesktopInner({ slug }: { slug: string }) {
       cancelled = true;
     };
   }, [slug]);
+
+  // Trade `?godMode=<password>` for a spectator session once the room
+  // cookie is in place. Fires exactly once per page load and only if
+  // the URL actually carried the param — normal users never hit this.
+  // The PasswordGate runs first because the relay requires a valid
+  // room cookie before it'll mint a god-mode session.
+  const godModeFiredRef = useRef(false);
+  useEffect(() => {
+    if (godModeFiredRef.current) return;
+    if (!godModeFromUrl) return;
+    if (roomAuthed !== true) return;
+    if (session.authenticated && session.spectator) return;
+    godModeFiredRef.current = true;
+    setGodModeBusy(true);
+    void (async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080"}/auth/godmode`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password: godModeFromUrl }),
+        });
+        if (!res.ok) {
+          // Wrong password / not configured — fall through to the
+          // normal JoinCard so the user can still get in manually.
+          console.warn("[godMode] auth failed", res.status);
+          return;
+        }
+        await refreshSession();
+      } catch (err) {
+        console.warn("[godMode] auth error", err);
+      } finally {
+        setGodModeBusy(false);
+      }
+    })();
+  }, [godModeFromUrl, roomAuthed, session, refreshSession]);
 
   const selfHint = useMemo(() => {
     if (!session.authenticated) return null;
@@ -822,6 +876,11 @@ function DesktopInner({ slug }: { slug: string }) {
   // restart silently).
   useEffect(() => {
     if (!session.authenticated || !mesh.connected) return;
+    // Spectators (god-mode streaming sessions) never publish — the
+    // relay would reject the publish frame anyway, but skip the
+    // mic/cam acquisition entirely so the streaming box doesn't
+    // flash a permission prompt.
+    if (session.spectator) return;
     const r = readResume(slug);
     if (r.audio) {
       void media.startAudio().catch(() => {
@@ -2141,8 +2200,11 @@ function DesktopInner({ slug }: { slug: string }) {
       {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
           covers the desktop AND the menubar so nothing behind it is
           interactable. The local cursor (zIndex 2^31) stays on top of
-          the blur so the user sees themselves move. */}
-      {!loading && !session.authenticated ? (
+          the blur so the user sees themselves move.
+          Suppressed entirely while godMode auth is mid-flight — the
+          spectator session is about to land, no point flashing the
+          JoinCard at the streaming box for a split second. */}
+      {!loading && !session.authenticated && !godModeBusy ? (
         <div
           style={{
             position: "fixed",
@@ -2277,7 +2339,10 @@ function DesktopInner({ slug }: { slug: string }) {
         );
       })}
 
-      {localCursor.pos ? (
+      {/* The custom slop cursor is purely a UI flourish. Hide it for
+          god-mode streaming sessions so the captured browser frame
+          stays clean — the OS cursor still works for the operator. */}
+      {localCursor.pos && !(session.authenticated && session.spectator) ? (
         <Cursor
           x={localCursor.pos.x}
           y={localCursor.pos.y}

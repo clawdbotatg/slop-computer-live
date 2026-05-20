@@ -26,6 +26,13 @@ export const config = {
   adminAddresses: adminAddrs,
   adminDomain: env("ADMIN_DOMAIN", "localhost:3000"),
   guestPassword: env("GUEST_PASSWORD", ""),
+  // Optional "god mode" password — anyone joining with
+  //   ?godMode=<this password>
+  // AND a valid room cookie gets a passive spectator session: no
+  // wallet/passkey required, no entry in the guest list, no cursor
+  // or click broadcasts, can't publish or chat. Intended for the
+  // streaming machine that captures the live show.
+  godPassword: env("GOD_MODE_PASSWORD", ""),
   sessionSecret: env("SIWE_SESSION_SECRET", "dev-secret-change-me"),
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),

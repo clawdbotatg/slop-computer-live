@@ -11,6 +11,11 @@ export type Session = {
   address: string | null;
   handle: string | null;
   expiresAt: number;
+  // True for "god mode" streaming sessions: receives broadcasts but
+  // is invisible to other peers (no guest list entry, no cursor) and
+  // is rejected if it tries to publish, chat, or write any shared
+  // state. Role stays "guest" so admin-only checks still gate it.
+  spectator?: boolean;
 };
 
 // Persist sessions to disk so a relay restart (every deploy) doesn't
@@ -85,7 +90,12 @@ function pruneNonces() {
   for (const [n, exp] of nonces) if (exp < now) nonces.delete(n);
 }
 
-export function createSession(args: { role: Role; address: string | null; handle: string | null }): Session {
+export function createSession(args: {
+  role: Role;
+  address: string | null;
+  handle: string | null;
+  spectator?: boolean;
+}): Session {
   pruneSessions();
   const token = randomBytes(32).toString("hex");
   const expiresAt = Date.now() + config.sessionTTLSeconds * 1000;

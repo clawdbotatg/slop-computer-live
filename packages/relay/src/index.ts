@@ -2542,6 +2542,49 @@ app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
   return { ok: true, role: "guest", handle };
 });
 
+// --- God-mode auth (spectator) ----------------------------------------------
+//
+// Issues a session cookie for a passive streaming/observer session. The
+// caller must:
+//   - Hold a valid per-room cookie (i.e. already cleared the PasswordGate
+//     for some room).
+//   - Provide the GOD_MODE_PASSWORD configured on the relay env.
+// God-mode sessions are invisible in the UI: their peer record carries
+// `spectator: true`, every client filters them out of the guest list,
+// and the WS handler rejects state-changing message types (cursor,
+// click, publish, chat, slot moves, browser ops, etc.). Used for the
+// live stream capture box.
+
+type GodModeBody = { password?: unknown };
+
+app.post<{ Body: GodModeBody }>("/auth/godmode", async (req, reply) => {
+  if (!config.godPassword) {
+    return reply.code(503).send({ error: "godmode-not-configured" });
+  }
+  if (!hasAnyValidRoomCookie(req.cookies, config.sessionSecret)) {
+    return reply.code(403).send({ error: "room-auth-required" });
+  }
+  const body = (req.body ?? {}) as GodModeBody;
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!password || password !== config.godPassword) {
+    return reply.code(401).send({ error: "bad-password" });
+  }
+  const session = createSession({
+    role: "guest",
+    address: null,
+    handle: null,
+    spectator: true,
+  });
+  reply.setCookie(SESSION_COOKIE, session.token, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: config.sessionTTLSeconds,
+  });
+  return { ok: true, role: "guest", spectator: true };
+});
+
 app.post("/auth/logout", async (req, reply) => {
   const token = req.cookies[SESSION_COOKIE];
   if (token) deleteSession(token);
@@ -2561,6 +2604,7 @@ app.get("/auth/me", async req => {
     address: session.address,
     handle: session.handle,
     isAdmin: session.role === "host" && !!session.address && isAdminAddress(session.address),
+    spectator: session.spectator === true,
   };
 });
 
@@ -2979,12 +3023,14 @@ app.register(async function signalRoutes(fastify) {
     room.touch();
 
     const peerId = randomBytes(8).toString("hex");
+    const isSpectator = session.spectator === true;
     const info = {
       id: peerId,
       role: session.role,
       address: session.address,
       handle: session.handle,
       connectedAt: Date.now(),
+      ...(isSpectator ? { spectator: true as const } : {}),
     };
 
     // Garbage-collect peers from this session whose socket is already
@@ -3068,6 +3114,16 @@ app.register(async function signalRoutes(fastify) {
         msg = JSON.parse(raw.toString());
       } catch {
         return send(socket, { type: "error", error: "invalid_json" });
+      }
+      // God-mode (spectator) sessions are passive: they receive every
+      // broadcast and do RTC signaling so the streaming box gets audio/
+      // video, but every state-changing message is dropped. This is
+      // defense in depth — the client already hides write UI — so even
+      // a hand-crafted WS frame can't smuggle presence into the room.
+      if (isSpectator) {
+        const t = msg?.type;
+        const allowed = t === "hello" || t === "ping" || t === "offer" || t === "answer" || t === "ice";
+        if (!allowed) return;
       }
       switch (msg?.type) {
         case "hello":

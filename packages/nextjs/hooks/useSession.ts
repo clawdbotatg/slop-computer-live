@@ -26,6 +26,11 @@ export type Session =
       address: string | null;
       handle: string | null;
       isAdmin: boolean;
+      // True when the session was minted via /auth/godmode. Invisible
+      // streaming/observer session — UI hides itself (no JoinCard, no
+      // local cursor, no auto-publish) and the relay rejects any
+      // attempt to write shared state.
+      spectator?: boolean;
     };
 
 export type UseSessionResult = {
