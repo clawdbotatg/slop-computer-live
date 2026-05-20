@@ -2839,6 +2839,16 @@ app.register(async function signalRoutes(fastify) {
     // knowing the password. The main room also honors the legacy
     // slop_invite cookie for users from before per-room passwords.
     const adminBypass = session.address ? isAdminAddress(session.address) : false;
+    // Pre-claim model: arbitrary slugs (e.g. /testslug123) shouldn't
+    // silently spin up a sandbox room. Non-main slugs must have been
+    // claimed via POST /v1/rooms (which writes auth.json) before any
+    // peer can connect. The main room stays special — it has no
+    // per-room password and is the always-on default home.
+    if (!adminBypass && slug !== DEFAULT_SLUG && !room.auth.hasPassword()) {
+      send(socket, { type: "error", error: "room-not-found", slug });
+      socket.close(4404, "room-not-found");
+      return;
+    }
     if (!adminBypass && room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
       send(socket, { type: "error", error: "room-auth-required", slug });
       socket.close(4403, "room-auth-required");
