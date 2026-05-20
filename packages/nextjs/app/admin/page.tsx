@@ -114,7 +114,6 @@ const AdminPage: NextPage = () => {
   const [auth, setAuth] = useState<AuthState>({ authenticated: false });
   const [peers, setPeers] = useState<Peer[]>([]);
   const [status, setStatus] = useState<string>("");
-  const [invite, setInvite] = useState<string>("");
   // Per-room password creation state (Phase 5). Filled in by the host
   // when claiming a new slug; on submit we POST /v1/rooms which hashes
   // the password on the relay and stores it under
@@ -172,26 +171,6 @@ const AdminPage: NextPage = () => {
       .catch(() => setAuth({ authenticated: false }));
   }, [mounted]);
 
-  // The single global invite password is stored on the relay (file-backed).
-  // Pull the current value once we're a host so the admin can read it,
-  // share it, or rotate it. Non-hosts get a 401 and we leave invite blank.
-  useEffect(() => {
-    if (!mounted) return;
-    if (!auth.authenticated || auth.role !== "host") return;
-    let cancelled = false;
-    fetch(`${RELAY_BASE}/admin/invite-password`, { credentials: "include" })
-      .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((data: { password?: string }) => {
-        if (!cancelled && typeof data.password === "string") setInvite(data.password);
-      })
-      .catch(() => {
-        /* leave blank — UI shows a regenerate prompt */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [mounted, auth]);
-
   const createRoom = async () => {
     setCreateRoomStatus("");
     const slug = newRoomSlug.trim();
@@ -227,20 +206,6 @@ const AdminPage: NextPage = () => {
       }
     } catch (e) {
       setCreateRoomStatus((e as Error).message || "network error");
-    }
-  };
-
-  const regenerateInvite = async () => {
-    try {
-      const res = await fetch(`${RELAY_BASE}/admin/invite-password`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) return;
-      const data = (await res.json()) as { password?: string };
-      if (typeof data.password === "string") setInvite(data.password);
-    } catch {
-      /* relay offline */
     }
   };
 
@@ -413,15 +378,6 @@ const AdminPage: NextPage = () => {
       setCopyStatus((e as Error).message || "network error");
     }
   };
-
-  const inviteUrl = useMemo(() => {
-    if (!mounted) return "";
-    // Root path — the desktop page picks `?invite=` up off the URL and
-    // pre-fills the password gate.
-    const u = new URL("/", window.location.origin);
-    if (invite) u.searchParams.set("invite", invite);
-    return u.toString();
-  }, [invite, mounted]);
 
   const handleSiwe = async () => {
     if (!address) return;
@@ -655,29 +611,6 @@ const AdminPage: NextPage = () => {
           <span>({auth.authenticated ? auth.role : ""})</span>
           {!isHost && <span style={{ color: "var(--slop-text-muted)" }}>— not on the admin allowlist.</span>}
         </div>
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Invite link</h2>
-        <p style={{ color: "var(--slop-text-muted)" }}>
-          Anyone with this link can reach the sign-in screen and connect a wallet or passkey. Regenerate to invalidate
-          all outstanding invite cookies.
-        </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
-          <TextField placeholder="(no password set)" value={invite} readOnly style={{ minWidth: 180 }} />
-          <Button onClick={regenerateInvite}>Regenerate</Button>
-          <Button
-            onClick={() => {
-              if (inviteUrl) void navigator.clipboard?.writeText(inviteUrl);
-            }}
-            disabled={!inviteUrl}
-          >
-            Copy link
-          </Button>
-        </div>
-        <p style={{ marginTop: 12, fontFamily: "var(--slop-font-body)", wordBreak: "break-all" }}>
-          <code>{inviteUrl}</code>
-        </p>
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
