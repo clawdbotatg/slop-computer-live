@@ -1,10 +1,11 @@
-// Generate a podcast-guest title card by compositing the guest's PFP into
-// the green-screen circle on the slop.computer template via gpt-image-2.
+// Generate a podcast-guest title card by compositing the guest's PFP onto
+// the slop.computer template via gpt-image-2.
 //
 // The template lives in the frontend at packages/nextjs/public/card-template.png
 // (committed). We pass it + the uploaded PFP as the two reference images
-// to images.edit and prompt the model to drop the face into the green
-// circle while leaving the rest of the template untouched.
+// to images.edit. The green-screen dot on the template is a POSITION MARKER
+// — the model background-removes the guest and places them as a free-floating
+// cutout at that spot, replacing the green entirely.
 //
 // This is a single-shot, ephemeral generator: the frontend gets back PNG
 // bytes and decides what to do with them. Nothing is persisted server-side.
@@ -29,14 +30,22 @@ const MODEL = "gpt-image-2-2026-04-21";
 const SIZE = "1536x1024";
 
 const PROMPT = [
-  "Replace ONLY the bright green circular area on the right side of this title card",
-  "with the person from the second reference image. The face should completely",
-  "cover the green circle, cropped to a clean circle that fits the bordered area.",
+  "The bright green circular dot on the right side of the first image is a",
+  "POSITION MARKER — it is NOT a mask, NOT a window, NOT a shape to fill.",
+  "It only marks WHERE to place the person from the second reference image.",
+  "Take the person from the second image, REMOVE their background completely,",
+  "and paste them as a free-floating cutout at the location of the green dot.",
+  "Keep the person's natural silhouette — head, hair, shoulders — DO NOT crop",
+  "them into a circle. The person should be sized so their head sits roughly",
+  "where the green dot was, with shoulders/body extending naturally below.",
+  "The green color must be ENTIRELY REMOVED — no green ring, no green halo,",
+  "no green pixels anywhere. Replace it with the card's dark/cyberdelic",
+  "background tones so the person looks composited into the scene.",
   "Match the cyberdelic magenta/cyan lighting around the rest of the card.",
-  "DO NOT change any other element: keep the SLOP.COMPUTER wordmark, the guest list,",
-  "the camera/claude/chat windows, the ticker bars, balances, and every label",
-  "pixel-for-pixel identical. Only the green circle changes — into the guest's face.",
-  "No text overlays, no watermarks, no captions added.",
+  "DO NOT change any other element: keep the SLOP.COMPUTER wordmark, the guest",
+  "list, the camera/claude/chat windows, the ticker bars, balances, and every",
+  "label pixel-for-pixel identical. Only the green dot area changes — into the",
+  "background-removed guest cutout. No text overlays, no watermarks, no captions.",
 ].join(" ");
 
 let cachedClient: OpenAI | null = null;

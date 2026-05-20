@@ -9,7 +9,8 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 // Title-card generator. The window's resting state is the
 // slop.computer template — drop a guest PFP onto it, the relay calls
-// gpt-image-2 to drop the face into the green-screen circle, and we
+// gpt-image-2 to background-remove the guest and paste them as a
+// free-floating cutout at the green-dot position marker, and we
 // swap the result in. Once we have a result, an editable title overlay
 // lets you type a guest name, drag to reposition, and wheel to resize.
 // DOWNLOAD bakes the title text into the PNG via canvas before saving.
