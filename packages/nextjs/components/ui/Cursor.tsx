@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { useCursorSvg } from "~~/hooks/useCursorSvg";
 import type { CursorKind } from "~~/hooks/useLocalCursor";
@@ -41,6 +42,18 @@ export const Cursor = ({ x, y, kind = "pointer", label, dimmed = false, bands }:
   const hot = HOTSPOT[kind];
   const svg = useCursorSvg(kind);
   const b = bands ?? DEFAULT_BANDS;
+
+  // Once the React cursor has the SVG in hand AND has committed to the
+  // DOM, flip <html> into "cursor-ready" mode so globals.css hides the
+  // OS cursor. Until then the OS cursor stays visible — cold-cache
+  // visitors should never stare at a blank screen with no cursor at
+  // all. Doing this in useEffect (post-paint) avoids a one-frame gap
+  // where the OS cursor is hidden but the custom one isn't drawn yet.
+  useEffect(() => {
+    if (svg && typeof document !== "undefined") {
+      document.documentElement.classList.add("slop-cursor-ready");
+    }
+  }, [svg]);
 
   const wrapperStyle: CSSProperties = {
     position: "fixed",

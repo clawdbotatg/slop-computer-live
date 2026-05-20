@@ -21,14 +21,46 @@ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   return (
     <html suppressHydrationWarning data-theme="dark" className={silkscreen.variable}>
       <head>
-        {/* Cursor SVGs are large (the open-grab one is ~3.7 MB because it
-            embeds a JPEG). Preload all four on initial HTML so they're in
-            cache before the user first hovers a draggable surface and we
-            don't show a stale cursor while the SVG downloads. */}
-        <link rel="preload" as="image" href="/cursors/six_finger_pointer_exact_band_masks_no_bleed.svg" />
-        <link rel="preload" as="image" href="/cursors/six_finger_open_grab_dynamic_bands.svg" />
-        <link rel="preload" as="image" href="/cursors/six_finger_grabbing_fist_dynamic_bands_clean.svg" />
-        <link rel="preload" as="image" href="/cursors/text_cursor_ibeam_clean.svg" />
+        {/* The pointer cursor is the very first thing the user looks for —
+            without it the page reads as broken. Preload it before any other
+            asset using as="fetch" (NOT as="image") because useCursorSvg
+            fetches the SVG as TEXT to inline its markup; preload entries
+            only match when the destination matches. fetchPriority="high"
+            puts it ahead of the JS bundle in the connection queue.
+            The grab/grabbing/text cursors don't matter for first paint but
+            we still preload them at "low" so they're warm in cache before
+            the user hovers a draggable or focuses an input — otherwise the
+            cursor visibly flickers on first interaction while the SVG
+            downloads. Low priority keeps them out of the way of the JS
+            bundle and the pointer's high-priority slot. */}
+        <link
+          rel="preload"
+          as="fetch"
+          crossOrigin="anonymous"
+          fetchPriority="high"
+          href="/cursors/six_finger_pointer_exact_band_masks_no_bleed.svg"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          crossOrigin="anonymous"
+          fetchPriority="low"
+          href="/cursors/six_finger_open_grab_dynamic_bands.svg"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          crossOrigin="anonymous"
+          fetchPriority="low"
+          href="/cursors/six_finger_grabbing_fist_dynamic_bands_clean.svg"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          crossOrigin="anonymous"
+          fetchPriority="low"
+          href="/cursors/text_cursor_ibeam_clean.svg"
+        />
       </head>
       <body>
         <ThemeProvider forcedTheme="dark">

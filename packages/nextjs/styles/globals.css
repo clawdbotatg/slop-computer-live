@@ -106,11 +106,15 @@
   }
 
   /* Hide the system cursor everywhere — we render a custom one in
-     React via useLocalCursor. The few CSS rules below that explicitly
-     set `cursor:` are overridden so they all stay invisible. */
-  *,
-  *::before,
-  *::after {
+     React via useLocalCursor. Scoped under html.slop-cursor-ready so
+     the OS cursor stays visible until the React Cursor has its SVG
+     markup loaded; otherwise cold-cache visitors stare at a blank
+     screen with no cursor while the 114K SVG downloads. The class is
+     flipped on by useCursorSvg once the pointer SVG resolves. */
+  html.slop-cursor-ready,
+  html.slop-cursor-ready *,
+  html.slop-cursor-ready *::before,
+  html.slop-cursor-ready *::after {
     cursor: none !important;
   }
 
