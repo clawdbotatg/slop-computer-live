@@ -521,16 +521,19 @@ function v1AuthFromReq(req: {
   const s = getSession(cookieTok);
   if (!s) return null;
   // Per-room gate: if the caller passed ?slug=<x>, they must also hold a
-  // valid slop_room_<x> cookie (or the legacy slop_invite for the debug
-  // room). Mirrors the /signal WS gate's design — comment near
-  // hasValidRoomCookie says "both required for write actions". Bearer
-  // tokens above skip this because the agent was vetted at mint time.
-  // Endpoints without a ?slug= (eg /v1/agent-token) aren't slug-scoped
-  // and stay open to any authed session.
+  // valid slop_room_<x> cookie. Mirrors the /signal WS gate exactly —
+  // rooms with no password (debug, plus any unclaimed slug) skip the
+  // cookie check because no one was ever issued one. Without this skip,
+  // SIWE/passkey users on debug 401 on every /v1 endpoint (the session
+  // cookie alone isn't enough, and the legacy slop_invite cookie is no
+  // longer minted post per-room migration). Bearer tokens above skip
+  // this because the agent was vetted at mint time. Endpoints without
+  // a ?slug= (eg /v1/agent-token) aren't slug-scoped.
   const q = (req.query ?? {}) as { slug?: unknown };
   const rawSlug = typeof q.slug === "string" ? q.slug : "";
   if (rawSlug && isValidSlug(rawSlug)) {
-    if (!hasValidRoomCookie(req, rawSlug)) return null;
+    const room = getOrCreateRoom(rawSlug);
+    if (room.auth.hasPassword() && !hasValidRoomCookie(req, rawSlug)) return null;
   }
   return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "cookie" };
 }
