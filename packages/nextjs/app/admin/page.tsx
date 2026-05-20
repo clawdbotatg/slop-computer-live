@@ -7,7 +7,6 @@ import { Address as AddressType } from "viem";
 import { useAccount, useSignMessage } from "wagmi";
 import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
 import { Bevel, Button, Cursor, DesktopBackground, MenuBar, TextField } from "~~/components/ui";
-import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
@@ -466,35 +465,6 @@ const AdminPage: NextPage = () => {
     }
   };
 
-  const [walletResetBusy, setWalletResetBusy] = useState(false);
-  const resetSessionWallet = async () => {
-    if (walletResetBusy) return;
-    if (
-      !confirm(
-        "Wipe the current multisig + history + all pending txs? This can't be undone (but it doesn't touch the on-chain contract).",
-      )
-    ) {
-      return;
-    }
-    setWalletResetBusy(true);
-    try {
-      const res = await fetch(`${RELAY_BASE}/admin/wallet/reset`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setStatus(`wallet reset failed: ${(data as { error?: string }).error ?? res.statusText}`);
-      } else {
-        setStatus("Session wallet reset.");
-      }
-    } catch (err) {
-      setStatus(`wallet reset failed: ${(err as Error).message}`);
-    } finally {
-      setWalletResetBusy(false);
-    }
-  };
-
   const kickPeer = async (id: string) => {
     try {
       const res = await fetch(`${RELAY_BASE}/admin/kick`, {
@@ -529,70 +499,6 @@ const AdminPage: NextPage = () => {
   const [stream, setStream] = useState<StreamSession | null>(null);
   const [fanouts, setFanouts] = useState<Fanout[]>([]);
   const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
-
-  // Episode-wide STT toggle. The hook SSE-subscribes so the button reflects
-  // any flips made from other admin tabs (or the API directly) immediately.
-  // TODO: admin currently only operates on the default debug room; add a
-  // per-row STT toggle in the rooms table when we want to flip STT on a
-  // specific live show from here.
-  const episode = useEpisodeState(RELAY_BASE, DEFAULT_SLUG);
-  const [sttBusy, setSttBusy] = useState(false);
-  const toggleEpisodeStt = async (on: boolean) => {
-    setSttBusy(true);
-    try {
-      const res = await fetch(`${RELAY_BASE}/admin/episode/stt?slug=${encodeURIComponent(DEFAULT_SLUG)}`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ on }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as { error?: string } | null;
-        setStatus(`STT toggle failed: ${data?.error ?? res.statusText}`);
-      }
-    } catch (err) {
-      setStatus(`STT toggle failed: ${(err as Error).message}`);
-    } finally {
-      setSttBusy(false);
-    }
-  };
-  const [transcriptClearBusy, setTranscriptClearBusy] = useState(false);
-  // Two-click confirm instead of window.confirm — Chrome silently blocks
-  // repeated native dialogs from the same origin (returns false
-  // instantly with no UI), which made the previous version unusable.
-  const [transcriptClearArmed, setTranscriptClearArmed] = useState(false);
-  const transcriptClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const disarmTranscriptClear = () => {
-    if (transcriptClearTimer.current) clearTimeout(transcriptClearTimer.current);
-    transcriptClearTimer.current = null;
-    setTranscriptClearArmed(false);
-  };
-  const clearTranscript = async () => {
-    if (!transcriptClearArmed) {
-      setTranscriptClearArmed(true);
-      if (transcriptClearTimer.current) clearTimeout(transcriptClearTimer.current);
-      transcriptClearTimer.current = setTimeout(() => setTranscriptClearArmed(false), 5000);
-      return;
-    }
-    disarmTranscriptClear();
-    setTranscriptClearBusy(true);
-    try {
-      const res = await fetch(`${RELAY_BASE}/admin/transcript?slug=${encodeURIComponent(DEFAULT_SLUG)}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      const data = (await res.json().catch(() => null)) as { clearedCount?: number; error?: string } | null;
-      if (!res.ok) {
-        setStatus(`Transcript clear failed: ${data?.error ?? res.statusText}`);
-      } else {
-        setStatus(`Cleared ${data?.clearedCount ?? 0} transcript segments.`);
-      }
-    } catch (err) {
-      setStatus(`Transcript clear failed: ${(err as Error).message}`);
-    } finally {
-      setTranscriptClearBusy(false);
-    }
-  };
 
   // ---- Services health -----------------------------------------------------
   // Poll each /health URL every 5s. Services without a healthUrl render as
@@ -885,7 +791,9 @@ const AdminPage: NextPage = () => {
                 >
                   {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
                 </Button>
-                <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regenerate</Button>
+                {r.slug === DEFAULT_SLUG ? null : (
+                  <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regenerate</Button>
+                )}
                 <Button variant="primary" onClick={() => void copyRoomLink(r.slug)}>
                   Copy link
                 </Button>
@@ -1058,69 +966,6 @@ const AdminPage: NextPage = () => {
 
       <Bevel style={{ padding: 16, maxWidth: 720 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-          Live transcript
-        </h2>
-        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
-          When ON, every peer with a published mic runs Web Speech locally and posts final segments to the relay. They
-          land in the per-episode transcript archive at finalize, then auto-clear so the next episode starts fresh.
-          Default OFF so pre-show dinking around isn&apos;t captured.
-        </p>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "8px 12px",
-            border: "1px solid var(--slop-bevel-dark)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <span
-              style={{
-                padding: "2px 8px",
-                fontSize: 10,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.05em",
-                textTransform: "uppercase",
-                background: episode.sttOn ? "var(--slop-accent)" : "var(--slop-bevel-dark)",
-                color: episode.sttOn ? "var(--slop-bg)" : "var(--slop-text-muted)",
-              }}
-            >
-              {episode.sttOn ? "ON AIR" : "STANDBY"}
-            </span>
-            <a
-              href={`${RELAY_BASE}/admin/transcript?slug=${encodeURIComponent(DEFAULT_SLUG)}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "var(--slop-text-muted)", fontSize: 12 }}
-            >
-              view raw ↗
-            </a>
-            <Button
-              onClick={clearTranscript}
-              disabled={transcriptClearBusy}
-              style={transcriptClearArmed ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" } : undefined}
-            >
-              {transcriptClearBusy ? "Clearing…" : transcriptClearArmed ? "Click again to confirm" : "Clear"}
-            </Button>
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {episode.sttOn ? (
-              <Button onClick={() => toggleEpisodeStt(false)} disabled={sttBusy}>
-                Stop STT
-              </Button>
-            ) : (
-              <Button variant="primary" onClick={() => toggleEpisodeStt(true)} disabled={sttBusy}>
-                Start STT
-              </Button>
-            )}
-          </div>
-        </div>
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
           Restream destinations
         </h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
@@ -1236,20 +1081,6 @@ const AdminPage: NextPage = () => {
             </tbody>
           </table>
         )}
-      </Bevel>
-
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-          Session wallet
-        </h2>
-        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 13 }}>
-          Per-episode multisig lives in <code>.slop-data/wallet.json</code> on the relay. Resetting clears the deployed
-          address + history + every pending tx so the wallet window goes back to the deploy form. The on-chain contract
-          itself is unaffected.
-        </p>
-        <Button onClick={resetSessionWallet} disabled={!isHost || walletResetBusy}>
-          {walletResetBusy ? "Resetting…" : "Reset session wallet"}
-        </Button>
       </Bevel>
     </>
   );

@@ -2732,9 +2732,19 @@ app.get("/admin/rooms", async (req, reply) => {
     return { rooms: [] };
   }
   const hotSlugs = new Set(listRooms().map(r => r.id));
-  const rooms = entries
+  // Debug is special-cased: it's the always-on sandbox room and has no
+  // password (so no auth.json), but the admin still needs to control its
+  // STT toggle, view its transcript, etc. from the same row UI as every
+  // other room. We synthesize an entry for it if the directory exists at
+  // all — the room may be cold but its state on disk is real.
+  const claimedSlugs = entries
     .filter(name => /^[a-z0-9-]{1,64}$/.test(name))
-    .filter(slug => fs.existsSync(`${dir}/${slug}/auth.json`))
+    .filter(slug => fs.existsSync(`${dir}/${slug}/auth.json`));
+  const slugSet = new Set<string>(claimedSlugs);
+  if (fs.existsSync(`${dir}/${DEFAULT_SLUG}`) || hotSlugs.has(DEFAULT_SLUG)) {
+    slugSet.add(DEFAULT_SLUG);
+  }
+  const rooms = Array.from(slugSet)
     .map(slug => {
       let createdAt: number | null = null;
       try {
