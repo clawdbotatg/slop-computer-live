@@ -856,21 +856,6 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Arrange for Countdown", onClick: arrangeForCountdown },
         { divider: true, label: "" },
         {
-          label: "Snap to Livestream",
-          onClick: () => {
-            // God-mode streaming box runs at 1568×888 — give the
-            // operator a one-click way to match it when previewing
-            // or recovering from a manual resize. `resizeTo` only
-            // works on windows opened via window.open or on the
-            // outermost frame in some browsers; failure is silent.
-            try {
-              window.resizeTo(1568, 888);
-            } catch {
-              /* browser blocked the resize — nothing we can do */
-            }
-          },
-        },
-        {
           label: "Full Screen",
           shortcut: "⌃⌘F",
           onClick: () => {
@@ -1561,6 +1546,25 @@ function DesktopInner({ slug }: { slug: string }) {
           cursor: "none",
         }}
       >
+        {/* Livestream frame guide — god-mode capture is 1568×888 from
+            the top-left of the window. Faint dashed rectangle so the
+            operator can drag their window's bottom-right corner until
+            it sits flush with the line. Behind everything, never
+            clickable. */}
+        <div
+          aria-hidden
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: 1568,
+            height: 888,
+            border: "1px dashed rgba(255, 255, 255, 0.18)",
+            boxSizing: "border-box",
+            pointerEvents: "none",
+            zIndex: 0,
+          }}
+        />
         {/* Desktop icons. Catalog comes from the relay's /apps endpoint
             (JSON file on the box, no rebuild needed). Position lives in
             the shared slots system keyed by `icon-${app.id}` so dragging
