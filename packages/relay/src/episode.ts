@@ -14,14 +14,15 @@ export type EpisodeState = {
   /** When true, peer browsers run Web Speech and POST final segments to
    *  /v1/transcript. When false, the hook is dormant even with a live mic —
    *  host-controlled so the show can dink around pre-air without polluting
-   *  the archive. Defaults to false on a cold start. */
+   *  the archive. Defaults to true on a cold start; the host can flip it
+   *  off from the admin row if they want a silent warmup. */
   sttOn: boolean;
 };
 
 type Subscriber = (s: EpisodeState) => void;
 
 export class EpisodeFlags {
-  private state: EpisodeState = { sttOn: false };
+  private state: EpisodeState = { sttOn: true };
   private loaded = false;
   private subscribers = new Set<Subscriber>();
 

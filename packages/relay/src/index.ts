@@ -2755,14 +2755,16 @@ app.get("/admin/rooms", async (req, reply) => {
       // Cold rooms keep their last STT toggle on disk so a relay restart
       // doesn't quietly turn STT back off mid-show. Read it directly
       // rather than instantiating the Room (which would also flip cold→hot
-      // just to read a boolean).
-      let sttOn = false;
+      // just to read a boolean). Defaults match EpisodeFlags' fresh-room
+      // default (true) so the admin row shows the toggle in its real state
+      // for rooms that haven't been touched.
+      let sttOn = true;
       try {
         const raw = fs.readFileSync(`${dir}/${slug}/episode.json`, "utf8");
         const parsed = JSON.parse(raw) as { sttOn?: boolean };
         if (typeof parsed.sttOn === "boolean") sttOn = parsed.sttOn;
       } catch {
-        /* no episode.json — sttOn defaults to false, same as a fresh room */
+        /* no episode.json — sttOn defaults to true, same as a fresh room */
       }
       return { slug, createdAt, paidUntil, hot: hotSlugs.has(slug), sttOn };
     })
