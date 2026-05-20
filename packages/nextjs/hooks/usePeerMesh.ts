@@ -455,6 +455,11 @@ type SelfHint = {
   role: "host" | "guest";
   address: string | null;
   handle: string | null;
+  // Marks god-mode (streaming) sessions so the client-side self-Peer
+  // carries the same flag the relay stamps on it server-side. Without
+  // it, `visiblePeers` would filter every other peer's view of this
+  // user but leave the user's own self-entry in their own guest list.
+  spectator?: boolean;
 };
 
 export type PeerMeshState = {
@@ -1416,6 +1421,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             role: hint?.role ?? "guest",
             address: hint?.address ?? null,
             handle: hint?.handle ?? null,
+            ...(hint?.spectator ? { spectator: true as const } : {}),
           };
           setPeers([...others, me]);
 

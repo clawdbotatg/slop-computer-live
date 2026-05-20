@@ -294,7 +294,16 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const selfHint = useMemo(() => {
     if (!session.authenticated) return null;
-    return { role: session.role, address: session.address, handle: session.handle };
+    return {
+      role: session.role,
+      address: session.address,
+      handle: session.handle,
+      // Threads the god-mode flag through to usePeerMesh so the self-
+      // peer it constructs locally matches what the relay stamps for
+      // everyone else — otherwise visiblePeers would still show the
+      // streaming box in its own Who's Here list.
+      ...(session.spectator ? { spectator: true as const } : {}),
+    };
   }, [session]);
 
   // Hold off the WS until we know the room cookie is good — otherwise
