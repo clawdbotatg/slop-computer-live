@@ -9,7 +9,7 @@ import { PasswordGate } from "~~/components/PasswordGate";
 import { AIWalletWindow } from "~~/components/desktop/AIWalletWindow";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
-import { AUDIO_MUTED_STORAGE_KEY, AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { AudioVisualizer, audioMutedKey } from "~~/components/desktop/AudioVisualizer";
 import { CardWindow } from "~~/components/desktop/CardWindow";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
@@ -37,7 +37,7 @@ import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
-import { VIDEO_PAUSED_STORAGE_KEY, VideoView } from "~~/components/desktop/VideoView";
+import { VideoView, videoPausedKey } from "~~/components/desktop/VideoView";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import {
   BandFlag,
@@ -136,23 +136,30 @@ function slotIdFor(pub: Publication): string {
   return `owner-${pub.ownerKey}-${pub.kind}`;
 }
 
-const RESUME_KEY = "slop-resume-publishing-v1";
+// Resume flags + per-kind UI state are scoped to the current room slug:
+// a user who left /main publishing audio should NOT auto-publish into
+// /ep0 the next time they visit. Old (pre-multi-room) localStorage
+// entries with no slug suffix are intentionally orphaned — the failure
+// mode is "user has to click share again," which is the right default
+// after a room switch.
+const RESUME_KEY_BASE = "slop-resume-publishing-v1";
+const resumeKey = (slug: string) => `${RESUME_KEY_BASE}:${slug}`;
 
 type ResumeState = Partial<Record<StreamKind, boolean>>;
 
-const readResume = (): ResumeState => {
+const readResume = (slug: string): ResumeState => {
   if (typeof window === "undefined") return {};
   try {
-    return JSON.parse(window.localStorage.getItem(RESUME_KEY) ?? "{}") as ResumeState;
+    return JSON.parse(window.localStorage.getItem(resumeKey(slug)) ?? "{}") as ResumeState;
   } catch {
     return {};
   }
 };
 
-const writeResume = (state: ResumeState) => {
+const writeResume = (slug: string, state: ResumeState) => {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(RESUME_KEY, JSON.stringify(state));
+    window.localStorage.setItem(resumeKey(slug), JSON.stringify(state));
   } catch {
     /* quota / private mode */
   }
@@ -163,13 +170,14 @@ const writeResume = (state: ResumeState) => {
 // is fully stopped (Stop, close button, peer-initiated close, reconcile
 // cleanup), the corresponding flag is meaningless and must clear so a
 // fresh share starts in the default state.
-const PER_KIND_PERSIST_KEYS: Partial<Record<StreamKind, string>> = {
-  camera: VIDEO_PAUSED_STORAGE_KEY,
-  audio: AUDIO_MUTED_STORAGE_KEY,
+const perKindPersistedKey = (slug: string, kind: StreamKind): string | null => {
+  if (kind === "camera") return videoPausedKey(slug);
+  if (kind === "audio") return audioMutedKey(slug);
+  return null;
 };
 
-const clearKindPersistedState = (kind: StreamKind) => {
-  const key = PER_KIND_PERSIST_KEYS[kind];
+const clearKindPersistedState = (slug: string, kind: StreamKind) => {
+  const key = perKindPersistedKey(slug, kind);
   if (!key || typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(key);
@@ -228,8 +236,8 @@ function DesktopInner({ slug }: { slug: string }) {
       // so no prompt). Screen needs a click — getDisplayMedia requires
       // a fresh user gesture — so its window comes back as a
       // placeholder until the user re-acquires.
-      const r = readResume();
-      writeResume({ ...r, [h.kind]: true });
+      const r = readResume(slug);
+      writeResume(slug, { ...r, [h.kind]: true });
     },
     [mesh, myLabel],
   );
@@ -244,10 +252,10 @@ function DesktopInner({ slug }: { slug: string }) {
       mesh.unpublish(id);
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
-      const r = readResume();
+      const r = readResume(slug);
       delete r[target.kind];
-      writeResume(r);
-      clearKindPersistedState(target.kind);
+      writeResume(slug, r);
+      clearKindPersistedState(slug, target.kind);
     },
     [mesh],
   );
@@ -778,19 +786,19 @@ function DesktopInner({ slug }: { slug: string }) {
   // restart silently).
   useEffect(() => {
     if (!session.authenticated || !mesh.connected) return;
-    const r = readResume();
+    const r = readResume(slug);
     if (r.audio) {
       void media.startAudio().catch(() => {
-        const cur = readResume();
+        const cur = readResume(slug);
         delete cur.audio;
-        writeResume(cur);
+        writeResume(slug, cur);
       });
     }
     if (r.camera) {
       void media.startCamera().catch(() => {
-        const cur = readResume();
+        const cur = readResume(slug);
         delete cur.camera;
-        writeResume(cur);
+        writeResume(slug, cur);
       });
     }
     // Fire once when both auth + WS are up. media is the live ref and
@@ -809,9 +817,9 @@ function DesktopInner({ slug }: { slug: string }) {
     try {
       await media.startScreen();
     } catch {
-      const cur = readResume();
+      const cur = readResume(slug);
       delete cur.screen;
-      writeResume(cur);
+      writeResume(slug, cur);
     }
   }, [media]);
 
@@ -824,7 +832,7 @@ function DesktopInner({ slug }: { slug: string }) {
   const myEnsAvatar = useEnsAvatarFromAddress(session.authenticated ? session.address : null);
   const hasOwnScreenPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "screen");
   useEffect(() => {
-    setWantScreenResume(Boolean(readResume().screen) && !hasOwnScreenPub);
+    setWantScreenResume(Boolean(readResume(slug).screen) && !hasOwnScreenPub);
   }, [hasOwnScreenPub]);
 
   const screenResumeSlotId = myOwnerKey ? `owner-${myOwnerKey}-screen` : null;
@@ -926,10 +934,10 @@ function DesktopInner({ slug }: { slug: string }) {
         const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
         else mesh.unpublish(pub.streamId);
-        const r = readResume();
+        const r = readResume(slug);
         delete r[pub.kind];
-        writeResume(r);
-        clearKindPersistedState(pub.kind);
+        writeResume(slug, r);
+        clearKindPersistedState(slug, pub.kind);
       }
       if (pub.kind === "screen") setWantScreenResume(false);
     },
@@ -964,10 +972,10 @@ function DesktopInner({ slug }: { slug: string }) {
         (s.kind === "screen" && media.activeScreen);
       if (tracked) media.stop(s.kind);
       else stopStream(s.id);
-      const r = readResume();
+      const r = readResume(slug);
       delete r[s.kind];
-      writeResume(r);
-      clearKindPersistedState(s.kind);
+      writeResume(slug, r);
+      clearKindPersistedState(slug, s.kind);
     }
     prevMyPubIdsRef.current = myPubStreamIds;
   }, [mesh.publications, mesh.connected, mesh.bootstrapped, mesh.myId, media, stopStream]);
@@ -1787,9 +1795,9 @@ function DesktopInner({ slug }: { slug: string }) {
             height={screenResumeSlot.height}
             zIndex={screenResumeSlot.z}
             onClose={() => {
-              const cur = readResume();
+              const cur = readResume(slug);
               delete cur.screen;
-              writeResume(cur);
+              writeResume(slug, cur);
               setWantScreenResume(false);
             }}
             onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}

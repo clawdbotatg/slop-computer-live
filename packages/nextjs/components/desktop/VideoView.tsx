@@ -2,11 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
+import { useRoomSlug } from "~~/lib/room-slug";
 
 // Persisted alongside the resume flags so reload preserves the pause
-// state. Cleared by page.tsx when the camera publication is fully
-// stopped (not when it's merely re-acquired by auto-resume).
-export const VIDEO_PAUSED_STORAGE_KEY = "slop-video-paused-v1";
+// state. **Scoped to the current room slug** — switching from /main to
+// /ep0 shouldn't auto-restore a paused state from a different room.
+// Cleared by Desktop.tsx when the camera publication is fully stopped
+// (not when it's merely re-acquired by auto-resume).
+const VIDEO_PAUSED_KEY_BASE = "slop-video-paused-v1";
+export const videoPausedKey = (slug: string) => `${VIDEO_PAUSED_KEY_BASE}:${slug}`;
 
 export type VideoViewProps = {
   stream: MediaStream;
@@ -38,6 +42,8 @@ export const VideoView = ({
   onSettings,
   persistPause = false,
 }: VideoViewProps) => {
+  const slug = useRoomSlug();
+  const storageKey = videoPausedKey(slug);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Lazy init from localStorage when persistence is on, so the initial
   // track.enabled effect below sees the resumed paused=true and freezes
@@ -45,7 +51,7 @@ export const VideoView = ({
   const [paused, setPaused] = useState<boolean>(() => {
     if (!persistPause || typeof window === "undefined") return false;
     try {
-      return window.localStorage.getItem(VIDEO_PAUSED_STORAGE_KEY) === "1";
+      return window.localStorage.getItem(storageKey) === "1";
     } catch {
       return false;
     }
@@ -53,12 +59,12 @@ export const VideoView = ({
   useEffect(() => {
     if (!persistPause || typeof window === "undefined") return;
     try {
-      if (paused) window.localStorage.setItem(VIDEO_PAUSED_STORAGE_KEY, "1");
-      else window.localStorage.removeItem(VIDEO_PAUSED_STORAGE_KEY);
+      if (paused) window.localStorage.setItem(storageKey, "1");
+      else window.localStorage.removeItem(storageKey);
     } catch {
       /* quota / private mode */
     }
-  }, [paused, persistPause]);
+  }, [paused, persistPause, storageKey]);
   // Per-user "mute on my side" for remote streams. Doesn't touch the
   // upstream — only my local <video> element goes silent. Same model
   // as the music player + AudioVisualizer.

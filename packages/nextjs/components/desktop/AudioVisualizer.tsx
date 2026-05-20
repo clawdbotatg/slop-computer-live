@@ -3,13 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
+import { useRoomSlug } from "~~/lib/room-slug";
 import type { Bands } from "~~/utils/blockieBands";
 
 // Persisted alongside the resume flags so reload preserves the
-// publisher's self-mute state. Cleared by page.tsx when the audio
-// publication is fully stopped (not when it's merely re-acquired by
-// auto-resume).
-export const AUDIO_MUTED_STORAGE_KEY = "slop-audio-muted-v1";
+// publisher's self-mute state. **Scoped to the current room slug** —
+// switching from /main to /ep0 shouldn't auto-mute based on another
+// room's state. Cleared by Desktop.tsx when the audio publication is
+// fully stopped (not when it's merely re-acquired by auto-resume).
+const AUDIO_MUTED_KEY_BASE = "slop-audio-muted-v1";
+export const audioMutedKey = (slug: string) => `${AUDIO_MUTED_KEY_BASE}:${slug}`;
 
 export type AudioVisualizerProps = {
   stream: MediaStream;
@@ -59,6 +62,8 @@ export const AudioVisualizer = ({
   onSettings,
   persistMute = false,
 }: AudioVisualizerProps) => {
+  const slug = useRoomSlug();
+  const storageKey = audioMutedKey(slug);
   const ensAvatar = useEnsAvatarFromAddress(address);
   const effectiveAvatar = hidden ? null : avatarUrl || ensAvatar;
   const circleRef = useRef<HTMLDivElement>(null);
@@ -80,7 +85,7 @@ export const AudioVisualizer = ({
   const [selfMuted, setSelfMuted] = useState<boolean>(() => {
     if (!persistMute || typeof window === "undefined") return false;
     try {
-      return window.localStorage.getItem(AUDIO_MUTED_STORAGE_KEY) === "1";
+      return window.localStorage.getItem(storageKey) === "1";
     } catch {
       return false;
     }
@@ -92,12 +97,12 @@ export const AudioVisualizer = ({
   useEffect(() => {
     if (!persistMute || typeof window === "undefined") return;
     try {
-      if (selfMuted) window.localStorage.setItem(AUDIO_MUTED_STORAGE_KEY, "1");
-      else window.localStorage.removeItem(AUDIO_MUTED_STORAGE_KEY);
+      if (selfMuted) window.localStorage.setItem(storageKey, "1");
+      else window.localStorage.removeItem(storageKey);
     } catch {
       /* quota / private mode */
     }
-  }, [selfMuted, persistMute]);
+  }, [selfMuted, persistMute, storageKey]);
 
   useEffect(() => {
     if (audioRef.current && audioRef.current.srcObject !== stream) {
