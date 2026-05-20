@@ -73,7 +73,12 @@ export const TrashCan = ({ trashRef }: TrashCanProps) => {
         bottom: TRASH_BOTTOM,
         width: TRASH_SIZE,
         height: TRASH_SIZE,
-        zIndex: 50, // above icons (z=1) but below windows (z>=4-500)
+        // Sits between desktop icons (z=1) and all windows. New windows
+        // start at z>=6 (SlotWindow focus floor is max(0, …, 5)+1), so
+        // anything ≥50 here loses to a fresh window only after enough
+        // peer churn has pushed slot z values past 50 — which is why
+        // chat (recently opened, low z) was rendering behind the trash.
+        zIndex: 3,
         // Pointer-events: none so it doesn't intercept drags. The
         // bounding-box overlap check works just as well without us
         // capturing pointer events directly.

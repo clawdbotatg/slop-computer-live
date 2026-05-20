@@ -7,9 +7,9 @@ import { QRCodeSVG } from "qrcode.react";
 // position) flows through SharedAppWindow like every other app, but the text
 // input and optional center logo are private to each peer.
 //
-// On first open the input defaults to window.location.href so the QR is
-// immediately scannable — point a phone at the screen and you're back on the
-// same desktop.
+// On first open the input defaults to the room's public URL (slop.computer/<slug>,
+// not live.slop.computer/<slug>) so the QR is immediately scannable — point a
+// phone at the screen and you're back on the same desktop.
 
 const LOGO_MAX_DIM = 256;
 const LOGO_JPEG_QUALITY = 0.9;
@@ -48,12 +48,15 @@ export const QrCodeWindow = () => {
   const [hover, setHover] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Default to the current URL on first mount. Effect (not initial state)
-  // because `window` isn't available during SSR.
+  // Default to the room's canonical public URL on first mount. We strip the
+  // `live.` subdomain so a scanned QR lands on slop.computer/<slug>, which
+  // redirects into the live desktop but is the shorter, shareable form.
+  // Effect (not initial state) because `window` isn't available during SSR.
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      setText(window.location.href);
-    }
+    if (typeof window === "undefined") return;
+    const { hostname, pathname, search, hash, protocol } = window.location;
+    const publicHost = hostname.replace(/^live\./, "");
+    setText(`${protocol}//${publicHost}${pathname}${search}${hash}`);
   }, []);
 
   const handleFile = async (file: File | null | undefined) => {
