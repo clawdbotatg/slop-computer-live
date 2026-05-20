@@ -622,7 +622,26 @@ export type PeerMeshState = {
   walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
   walletRemoveTx: (id: string) => void;
   walletResummarize: (id: string) => void;
+  /** User-chosen display names keyed by lowercased address. Wins over
+   *  ENS handle when rendering peer labels — see `peerLabel`. */
+  customNames: Record<string, string>;
+  /** Set or clear the current user's display name. Pass `null` (or an
+   *  empty string) to clear. */
+  setCustomName: (name: string | null) => void;
 };
+
+/** Resolve a peer's display label using the agreed precedence:
+ *  customName (set by the user) → ENS handle → short address →
+ *  short peer-id. Pass `mesh.customNames` so the rule lives in one
+ *  place — every renderer (guest list, tile badge, cursor label,
+ *  chat author) goes through here. */
+export function peerLabel(peer: Pick<Peer, "id" | "address" | "handle">, customNames: Record<string, string>): string {
+  const lower = peer.address?.toLowerCase();
+  if (lower && customNames[lower]) return customNames[lower];
+  if (peer.handle) return peer.handle;
+  if (peer.address) return `${peer.address.slice(0, 6)}…${peer.address.slice(-4)}`;
+  return peer.id.slice(0, 6);
+}
 
 export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: string): PeerMeshState {
   const [myId, setMyId] = useState<string | null>(null);
@@ -662,6 +681,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [wallet, setWallet] = useState<WalletRecord | null>(null);
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
   const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
+  // User-chosen display names keyed by lowercased address. Wins over
+  // ENS handle and address-shorthand in the label-fallback chain (see
+  // `peerLabel` below). Server-authoritative — `set_custom_name` round-
+  // trips through the relay so other peers see the change.
+  const [customNames, setCustomNames] = useState<Record<string, string>>({});
 
   // Mirror of `slots` for synchronous reads inside callbacks (so
   // updateSlot's "new windows come to the front" rule can compute the
@@ -1270,6 +1294,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const setCustomName = useCallback(
+    (name: string | null) => {
+      // Pass an empty string or null to clear. Server is the source of
+      // truth — we don't optimistically update local state; the relay
+      // will broadcast `peer_name` back and the listener above applies it.
+      send({ type: "set_custom_name", name });
+    },
+    [send],
+  );
+
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
       // HARD RULE: every brand-new window comes to the front. If no slot
@@ -1460,6 +1494,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.walletTxs)) {
             setWalletTxs(msg.walletTxs as WalletTx[]);
           }
+          if (msg.customNames && typeof msg.customNames === "object" && !Array.isArray(msg.customNames)) {
+            const next: Record<string, string> = {};
+            for (const [addr, name] of Object.entries(msg.customNames as Record<string, unknown>)) {
+              if (typeof name === "string") next[addr.toLowerCase()] = name;
+            }
+            setCustomNames(next);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1489,6 +1530,27 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const peer = msg.peer as Peer;
           setPeers(prev => prev.filter(p => p.id !== peer.id));
           closePeerConnection(peer.id);
+          return;
+        }
+
+        if (msg.type === "peer_name") {
+          // Global custom-name update — fired in every room the relay
+          // serves, not just the room the setter is in. The local user
+          // gets one of these too, which is what tells the UI their
+          // edit landed.
+          const address = typeof msg.address === "string" ? msg.address.toLowerCase() : null;
+          if (!address) return;
+          const name = typeof msg.name === "string" ? msg.name : null;
+          setCustomNames(prev => {
+            if (name == null) {
+              if (!(address in prev)) return prev;
+              const rest = { ...prev };
+              delete rest[address];
+              return rest;
+            }
+            if (prev[address] === name) return prev;
+            return { ...prev, [address]: name };
+          });
           return;
         }
 
@@ -1939,5 +2001,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletSetTxStatus,
     walletRemoveTx,
     walletResummarize,
+    customNames,
+    setCustomName,
   };
 }

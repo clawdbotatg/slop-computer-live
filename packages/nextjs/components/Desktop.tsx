@@ -32,6 +32,7 @@ import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
 import { TickerBar } from "~~/components/desktop/TickerBar";
+import { TileBadge } from "~~/components/desktop/TileBadge";
 import { TimelineBar } from "~~/components/desktop/TimelineBar";
 import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
@@ -55,7 +56,7 @@ import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
-import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePeerMesh";
+import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
 import { RoomSlugProvider } from "~~/lib/room-slug";
@@ -256,11 +257,9 @@ function DesktopInner({ slug }: { slug: string }) {
     (peerId: string): string => {
       const peer = mesh.peers.find(p => p.id === peerId);
       if (!peer) return peerId.slice(0, 6);
-      if (peer.handle) return peer.handle;
-      if (peer.address) return shortAddress(peer.address);
-      return peerId.slice(0, 6);
+      return resolvePeerLabel(peer, mesh.customNames);
     },
-    [mesh.peers],
+    [mesh.peers, mesh.customNames],
   );
 
   const addStream = useCallback(
@@ -1700,6 +1699,15 @@ function DesktopInner({ slug }: { slug: string }) {
             handle: peer?.handle ?? null,
             fallback: pub.ownerKey || pub.peerId,
           });
+          // Tile badge label uses the same precedence as the guest list:
+          // custom name > ENS handle > short address > short peer-id.
+          // Fall back to the publication's ownerKey (which carries the
+          // pre-disconnect identity) when the peer record itself is gone
+          // — keeps the tile labelled correctly when a publisher drops
+          // off and the publication lingers a beat before tearing down.
+          const badgeLabel = peer
+            ? resolvePeerLabel(peer, mesh.customNames)
+            : (mesh.customNames[pub.ownerKey.toLowerCase()] ?? pub.label ?? pub.ownerKey.slice(0, 8));
           return (
             <Window
               key={`${pub.peerId}-${pub.streamId}`}
@@ -1716,56 +1724,59 @@ function DesktopInner({ slug }: { slug: string }) {
               bodyStyle={{ padding: 0, overflow: "hidden" }}
               containerInset={{ top: 38 }}
             >
-              {stream ? (
-                pub.kind === "audio" ? (
-                  <AudioDropZone
-                    // Owner-key match (not peer-id) so a user with the
-                    // wallet open in multiple tabs / devices can drag a
-                    // new PFP onto ANY of their audio windows — relay
-                    // auth keys avatars on the session's owner, not the
-                    // publishing peer.
-                    isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
-                    onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
-                  >
-                    <AudioVisualizer
+              <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                {stream ? (
+                  pub.kind === "audio" ? (
+                    <AudioDropZone
+                      // Owner-key match (not peer-id) so a user with the
+                      // wallet open in multiple tabs / devices can drag a
+                      // new PFP onto ANY of their audio windows — relay
+                      // auth keys avatars on the session's owner, not the
+                      // publishing peer.
+                      isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
+                      onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
+                    >
+                      <AudioVisualizer
+                        stream={stream}
+                        bands={pubBands}
+                        muted={pub.peerId === mesh.myId}
+                        isMine={pub.peerId === mesh.myId}
+                        avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                        address={peer?.address ?? null}
+                        hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+                        onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
+                        persistMute={pub.peerId === mesh.myId}
+                      />
+                    </AudioDropZone>
+                  ) : pub.kind === "camera" ? (
+                    <VideoView
                       stream={stream}
-                      bands={pubBands}
                       muted={pub.peerId === mesh.myId}
                       isMine={pub.peerId === mesh.myId}
-                      avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
-                      address={peer?.address ?? null}
-                      hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
-                      onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
-                      persistMute={pub.peerId === mesh.myId}
+                      onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
+                      persistPause={pub.peerId === mesh.myId}
                     />
-                  </AudioDropZone>
-                ) : pub.kind === "camera" ? (
-                  <VideoView
-                    stream={stream}
-                    muted={pub.peerId === mesh.myId}
-                    isMine={pub.peerId === mesh.myId}
-                    onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
-                    persistPause={pub.peerId === mesh.myId}
-                  />
+                  ) : (
+                    <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
+                  )
                 ) : (
-                  <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
-                )
-              ) : (
-                <div
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    background: "#000",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "var(--slop-text-muted)",
-                    fontSize: 12,
-                  }}
-                >
-                  waiting for stream…
-                </div>
-              )}
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      background: "#000",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "var(--slop-text-muted)",
+                      fontSize: 12,
+                    }}
+                  >
+                    waiting for stream…
+                  </div>
+                )}
+                <TileBadge bands={pubBands} label={badgeLabel} />
+              </div>
             </Window>
           );
         })}
@@ -2089,7 +2100,14 @@ function DesktopInner({ slug }: { slug: string }) {
             (per-peer viewport position, not in the shared slot system,
             like the trash). Sign-out / power dropdowns from the menubar
             naturally overlay this via their z=9100. */}
-        {session.authenticated ? <PinnedPeers peers={mesh.peers} myId={mesh.myId} /> : null}
+        {session.authenticated ? (
+          <PinnedPeers
+            peers={mesh.peers}
+            myId={mesh.myId}
+            customNames={mesh.customNames}
+            onSetCustomName={mesh.setCustomName}
+          />
+        ) : null}
 
         {/* File previews — shared across the mesh, exactly like every
             other singleton window. Each opens via mesh.openWindow

@@ -1,9 +1,10 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import { BandFlag } from "~~/components/ui";
-import type { Peer } from "~~/hooks/usePeerMesh";
+import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Always-visible "who's here" panel pinned to the top-right of the
@@ -20,18 +21,53 @@ import { bandsFromIdentity } from "~~/utils/blockieBands";
 export type PinnedPeersProps = {
   peers: Peer[];
   myId: string | null;
+  customNames: Record<string, string>;
+  onSetCustomName: (name: string | null) => void;
 };
 
 const MENUBAR_HEIGHT = 38;
 const TOP_GAP = 10;
+const MAX_NAME_LEN = 30;
 
-const labelOf = (p: Peer) => {
+const labelOf = (p: Peer, customNames: Record<string, string>) => {
+  const lower = p.address?.toLowerCase();
+  if (lower && customNames[lower]) return <span>{customNames[lower]}</span>;
   if (p.handle) return <span>{p.handle}</span>;
   if (p.address) return <Address address={p.address as AddressType} size="xs" onlyEnsOrAddress />;
   return <span>{p.id.slice(0, 6)}</span>;
 };
 
-export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
+export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const me = peers.find(p => p.id === myId) ?? null;
+  const myLower = me?.address?.toLowerCase() ?? null;
+  const myCurrentName = myLower ? (customNames[myLower] ?? "") : "";
+  const canEdit = !!me?.address;
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const startEdit = () => {
+    if (!canEdit) return;
+    setDraft(myCurrentName);
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    onSetCustomName(trimmed === "" ? null : trimmed.slice(0, MAX_NAME_LEN));
+    setEditing(false);
+  };
+
+  const cancel = () => setEditing(false);
+
   return (
     <div
       style={{
@@ -74,6 +110,7 @@ export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
           {peers.map(p => {
             const isMe = p.id === myId;
+            const showEditor = isMe && editing;
             return (
               <li
                 key={p.id}
@@ -94,8 +131,8 @@ export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
                     alignItems: "center",
                     gap: 6,
                     minWidth: 0,
+                    flex: 1,
                     overflow: "hidden",
-                    textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                     fontWeight: p.role === "host" ? 600 : undefined,
                   }}
@@ -105,8 +142,57 @@ export const PinnedPeers = ({ peers, myId }: PinnedPeersProps) => {
                       star used to occupy. Host emphasis is now carried by
                       fontWeight + the role tag on the right. */}
                   <BandFlag bands={bandsFromIdentity({ address: p.address, handle: p.handle, fallback: p.id })} />
-                  {labelOf(p)}
-                  {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                  {showEditor ? (
+                    <input
+                      ref={inputRef}
+                      className="slop-textfield"
+                      value={draft}
+                      maxLength={MAX_NAME_LEN}
+                      onChange={e => setDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          commit();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancel();
+                        }
+                      }}
+                      onBlur={commit}
+                      placeholder={peerLabel(p, customNames)}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 12,
+                        padding: "2px 4px",
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{labelOf(p, customNames)}</span>
+                      {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                      {isMe && canEdit ? (
+                        <button
+                          type="button"
+                          onClick={startEdit}
+                          aria-label="edit name"
+                          title="edit your name"
+                          style={{
+                            background: "transparent",
+                            border: 0,
+                            cursor: "pointer",
+                            padding: 0,
+                            margin: "0 0 0 2px",
+                            lineHeight: 1,
+                            color: "var(--slop-text-muted)",
+                            fontSize: 11,
+                          }}
+                        >
+                          ✎
+                        </button>
+                      ) : null}
+                    </>
+                  )}
                 </span>
                 <span
                   style={{

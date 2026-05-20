@@ -85,6 +85,7 @@ import {
 import { start as startPolymarket } from "./polymarket.js";
 import { resolveEns, reverseLookup as reverseLookupEns } from "./ens.js";
 import { type EpisodeState } from "./episode.js";
+import { peerNames } from "./peer-names.js";
 import { FILES_MAX_BYTES } from "./files.js";
 import {
   GENRE_IDS,
@@ -879,6 +880,14 @@ subscribeNewsDigest(state => {
   broadcastToAllRooms({ type: "news_digest", state });
 });
 startNewsDigest();
+
+// Custom peer display names — global across rooms, keyed by lowercased
+// address. When a user sets/clears their name, fan out a single
+// `peer_name` event to every room so video/audio tile badges and guest
+// list labels update everywhere they're visible.
+peerNames.subscribe((address, name) => {
+  broadcastToAllRooms({ type: "peer_name", address, name });
+});
 
 // Desktop file system — per-room. Each room's FileIndex broadcasts
 // add/remove events into that room's mesh (wired in Room's constructor)
@@ -3049,6 +3058,7 @@ app.register(async function signalRoutes(fastify) {
       clockState: room.clock.getState(),
       wallet: room.wallet.getCurrent(),
       walletTxs: room.wallet.listTxs(),
+      customNames: peerNames.all(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -3107,6 +3117,19 @@ app.register(async function signalRoutes(fastify) {
             text: msg.text,
             source: "live",
           });
+          return;
+        }
+        case "set_custom_name": {
+          // User picks a display name that overrides ENS / address-short
+          // everywhere their identity is shown. Keyed by lowercased
+          // address — only peers with a SIWE/passkey-backed address can
+          // claim a name. The PeerNames subscriber above fans this out to
+          // every room so the change lands on tiles in other rooms too.
+          if (!info.address) {
+            return send(socket, { type: "error", error: "no_address" });
+          }
+          const next = peerNames.set(info.address, typeof msg.name === "string" ? msg.name : null);
+          send(socket, { type: "custom_name_ack", name: next });
           return;
         }
         case "todo_add": {
