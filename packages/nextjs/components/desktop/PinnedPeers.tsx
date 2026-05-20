@@ -184,11 +184,10 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
                             padding: 0,
                             margin: "0 0 0 2px",
                             lineHeight: 1,
-                            color: "var(--slop-text-muted)",
                             fontSize: 11,
                           }}
                         >
-                          ✎
+                          ✏️
                         </button>
                       ) : null}
                     </>
