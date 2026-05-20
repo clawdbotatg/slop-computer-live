@@ -1485,6 +1485,7 @@ function DesktopInner({ slug }: { slug: string }) {
         meshConnected={mesh.connected}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
+        slug={slug}
       />
       <div
         onDragEnter={e => {

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
+import { useRoomSlug } from "~~/lib/room-slug";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const TEMPLATE_SRC = "/card-template.png";
@@ -26,27 +27,33 @@ type Frac = { x: number; y: number };
 // SharedAppWindow unmounts the body on close, which would otherwise wipe
 // the result blob URL and the host's typed-in name. We rehydrate from
 // here on mount and write through on every change.
+// `titleText: null` means "not yet initialized" — on first mount we
+// seed it from the room slug so the title row defaults to the show
+// name. Once the host types over it, the edited value sticks here and
+// survives close / reopen.
 const cardStore: {
   resultUrl: string | null;
-  titleText: string;
+  titleText: string | null;
   titlePos: Frac;
   titleSizeFrac: number;
 } = {
   resultUrl: null,
-  titleText: "GUEST NAME",
+  titleText: null,
   titlePos: { x: 0.5, y: 0.93 },
   titleSizeFrac: 0.055,
 };
 
 export const CardWindow = () => {
+  const slug = useRoomSlug();
   const [resultUrl, setResultUrl] = useState<string | null>(cardStore.resultUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  // Title overlay state.
-  const [titleText, setTitleText] = useState(cardStore.titleText);
+  // Title overlay state. Defaults to the room slug (uppercased) on the
+  // very first open in this page session.
+  const [titleText, setTitleText] = useState(cardStore.titleText ?? slug.toUpperCase());
   const [titlePos, setTitlePos] = useState<Frac>(cardStore.titlePos); // fraction of image rect
   const [titleSizeFrac, setTitleSizeFrac] = useState(cardStore.titleSizeFrac); // font-size as fraction of image width
   const [titleEditing, setTitleEditing] = useState(false);

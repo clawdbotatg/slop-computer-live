@@ -19,6 +19,7 @@ import {
 import { Button, LoadingBar, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
+import { useRoomSlug } from "~~/lib/room-slug";
 import { computeExecHash, defaultDeadline, saltFromLabel, sortSignatures } from "~~/utils/multisig";
 
 export type WalletWindowProps = {
@@ -63,6 +64,7 @@ type DeployProps = {
 };
 
 const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
+  const slug = useRoomSlug();
   const { address: connectedAddress } = useAccount();
   const chainId = useChainId() ?? mainnet.id;
   const { switchChain, isPending: switching } = useSwitchChain();
@@ -84,7 +86,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
     chainId: txChainId ?? undefined,
   });
 
-  const [label, setLabel] = useState<string>(() => `Episode ${new Date().toISOString().slice(0, 10)}`);
+  const [label, setLabel] = useState<string>(slug);
 
   // Manually-added signers (typed into AddressInput). Keyed lowercased,
   // separate from peer-derived so removing one doesn't conflict with the
@@ -275,12 +277,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
       </div>
 
       <Field label="Episode label">
-        <TextField
-          value={label}
-          onChange={e => setLabel(e.target.value)}
-          placeholder="Episode 12"
-          disabled={deploying}
-        />
+        <TextField value={label} onChange={e => setLabel(e.target.value)} placeholder={slug} disabled={deploying} />
       </Field>
 
       <Field label={`Signers (${selectedSigners.length})`}>

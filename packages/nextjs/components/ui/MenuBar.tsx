@@ -36,6 +36,9 @@ interface MenuBarProps {
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
   walletAddress?: string | null;
   onWalletClick?: () => void;
+  /** Room slug — surfaced in the SlopMenu dropdown as a clickable
+   *  link to slop.computer/<slug> (not live.slop.computer). */
+  slug?: string;
 }
 
 export const MenuBar = ({
@@ -47,6 +50,7 @@ export const MenuBar = ({
   meshConnected,
   walletAddress,
   onWalletClick,
+  slug,
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
 
@@ -69,7 +73,7 @@ export const MenuBar = ({
   // page.tsx, pinned to the top-right just below the menubar.
   return (
     <div className={`slop-menubar ${className}`.trim()}>
-      <SlopMenu brand={brand} />
+      <SlopMenu brand={brand} slug={slug} />
       {/* Brand replaced by SlopMenu (the apple-menu equivalent). */}
       {menus.map(menu => (
         <Dropdown key={menu.label} menu={menu} />
@@ -342,10 +346,11 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
 }
 
 // "Apple-menu" equivalent: the slop.computer brand + a dropdown with the
-// session-wide actions. Currently just [ copy skill ] which mints an agent
-// token and copies the agent skill markdown to the clipboard so the user
-// can paste it into Claude Code / any local LLM with tool-use.
-function SlopMenu({ brand }: { brand: string }) {
+// session-wide actions. The dropdown leads with the room slug (clickable —
+// opens the public slop.computer/<slug> URL, not the live. subdomain) and
+// is followed by [ copy skill ] which mints an agent token and copies a
+// fetchable skill URL to the clipboard for pasting into a local LLM.
+function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
   const ref = useRef<HTMLSpanElement>(null);
@@ -435,6 +440,30 @@ function SlopMenu({ brand }: { brand: string }) {
             textTransform: "none",
           }}
         >
+          {slug ? (
+            <a
+              href={`https://slop.computer/${slug}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setOpen(false)}
+              style={{
+                ...itemStyle,
+                textDecoration: "none",
+                color: "var(--slop-cyan, #3fcfff)",
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLAnchorElement).style.background =
+                  "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+                (e.currentTarget as HTMLAnchorElement).style.color = "#fff";
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLAnchorElement).style.background = "transparent";
+                (e.currentTarget as HTMLAnchorElement).style.color = "var(--slop-cyan, #3fcfff)";
+              }}
+            >
+              [ {slug} ]
+            </a>
+          ) : null}
           <button
             type="button"
             onClick={copySkill}
