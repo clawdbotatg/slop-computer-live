@@ -94,6 +94,33 @@ const formatConnectedAt = (ts?: number) => {
   return `${Math.floor(m / 60)}h ago`;
 };
 
+// Inline form for rotating a room's password. Kept tiny — slug is
+// known by the parent, the only input is the new plaintext password.
+// Parent's `onRotate` POSTs to /v1/rooms/:slug/password, remembers the
+// new password in this browser, and reports success via copyStatus.
+function RoomRotateForm({ onRotate }: { onRotate: (pw: string) => void }) {
+  const [pw, setPw] = useState("");
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <TextField
+        placeholder="rotate password"
+        value={pw}
+        onChange={e => setPw(e.target.value)}
+        style={{ width: 140 }}
+      />
+      <Button
+        onClick={() => {
+          if (!pw) return;
+          onRotate(pw);
+          setPw("");
+        }}
+      >
+        Rotate
+      </Button>
+    </div>
+  );
+}
+
 const AdminPage: NextPage = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -111,6 +138,41 @@ const AdminPage: NextPage = () => {
   const [newRoomSlug, setNewRoomSlug] = useState("");
   const [newRoomPassword, setNewRoomPassword] = useState("");
   const [createRoomStatus, setCreateRoomStatus] = useState<string>("");
+  // List of every claimed room on disk (slug + hot flag). The relay
+  // serves slug + metadata only; passwords are stored only as scrypt
+  // hashes, so we remember plaintext passwords locally on this admin's
+  // browser (see `roomPasswords` below) to make the "copy link with
+  // password" affordance work.
+  type AdminRoom = { slug: string; createdAt: number | null; paidUntil: number | null; hot: boolean };
+  const [rooms, setRooms] = useState<AdminRoom[]>([]);
+  // Per-slug remembered plaintext password — populated when the admin
+  // creates or rotates a room in this browser. Stored under
+  // `slop-admin-room-passwords` localStorage so it persists across
+  // reloads. Never sent to the server; lookup-only on this device.
+  const ADMIN_PW_KEY = "slop-admin-room-passwords";
+  const readAdminPasswords = (): Record<string, string> => {
+    if (typeof window === "undefined") return {};
+    try {
+      return JSON.parse(window.localStorage.getItem(ADMIN_PW_KEY) ?? "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  };
+  const writeAdminPasswords = (next: Record<string, string>) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(ADMIN_PW_KEY, JSON.stringify(next));
+    } catch {
+      /* quota / private mode */
+    }
+  };
+  const [roomPasswords, setRoomPasswords] = useState<Record<string, string>>({});
+  const [copyStatus, setCopyStatus] = useState<string>("");
+  const rememberRoomPassword = (slug: string, password: string) => {
+    const next = { ...readAdminPasswords(), [slug]: password };
+    writeAdminPasswords(next);
+    setRoomPasswords(next);
+  };
 
   useEffect(() => {
     if (!mounted) return;
@@ -161,8 +223,10 @@ const AdminPage: NextPage = () => {
       });
       if (res.ok) {
         setCreateRoomStatus(`created /${slug} ✓`);
+        rememberRoomPassword(slug, password);
         setNewRoomSlug("");
         setNewRoomPassword("");
+        void fetchRooms();
         return;
       }
       const j = (await res.json().catch(() => ({}))) as { error?: string };
@@ -212,6 +276,70 @@ const AdminPage: NextPage = () => {
       clearInterval(t);
     };
   }, [isHost]);
+
+  const fetchRooms = async () => {
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/rooms`, { credentials: "include" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { rooms?: AdminRoom[] };
+      if (Array.isArray(data.rooms)) setRooms(data.rooms);
+    } catch {
+      /* relay offline — leave list as-is */
+    }
+  };
+
+  useEffect(() => {
+    if (!mounted) return;
+    setRoomPasswords(readAdminPasswords());
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!isHost) return;
+    void fetchRooms();
+    const t = setInterval(() => void fetchRooms(), 10_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost]);
+
+  const rotateRoomPassword = async (slug: string, newPassword: string) => {
+    setCopyStatus("");
+    if (!newPassword) {
+      setCopyStatus("password required");
+      return false;
+    }
+    try {
+      const res = await fetch(`${RELAY_BASE}/v1/rooms/${encodeURIComponent(slug)}/password`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: newPassword }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setCopyStatus(j.error ?? `error ${res.status}`);
+        return false;
+      }
+      rememberRoomPassword(slug, newPassword);
+      setCopyStatus(`rotated /${slug} ✓`);
+      return true;
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
+      return false;
+    }
+  };
+
+  const copyRoomLink = async (slug: string, withPassword: boolean) => {
+    if (typeof window === "undefined") return;
+    const password = roomPasswords[slug];
+    const base = `${window.location.origin}/${slug}`;
+    const url = withPassword && password ? `${base}?invite=${encodeURIComponent(password)}` : base;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyStatus(withPassword && password ? `copied /${slug} link with password ✓` : `copied /${slug} link ✓`);
+    } catch {
+      setCopyStatus("clipboard blocked — copy manually");
+    }
+  };
 
   const inviteUrl = useMemo(() => {
     if (!mounted) return "";
@@ -600,6 +728,76 @@ const AdminPage: NextPage = () => {
             }}
           >
             {createRoomStatus}
+          </p>
+        ) : null}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
+        <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
+          Every claimed room on disk. Passwords are stored as scrypt hashes on the relay — the &quot;with password&quot;
+          copy link only works for rooms whose password is remembered in this browser&apos;s localStorage (i.e. you
+          created or rotated them here). Rotate to set a new password + remember it locally.
+        </p>
+        {rooms.length === 0 ? (
+          <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: 0 }}>
+            No claimed rooms yet. Create one above to get started.
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {rooms.map(r => {
+              const remembered = roomPasswords[r.slug];
+              return (
+                <div
+                  key={r.slug}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    padding: "8px 10px",
+                    border: "1px solid var(--slop-bevel-shadow)",
+                    background: "rgba(8,4,18,0.35)",
+                  }}
+                >
+                  <a
+                    href={`/${r.slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", minWidth: 120 }}
+                  >
+                    /{r.slug}
+                  </a>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: r.hot ? "var(--slop-lime, #b4ff3a)" : "var(--slop-text-muted)",
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {r.hot ? "● hot" : "○ cold"}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  <Button onClick={() => void copyRoomLink(r.slug, false)}>Copy link</Button>
+                  <Button variant="primary" disabled={!remembered} onClick={() => void copyRoomLink(r.slug, true)}>
+                    {remembered ? "Copy w/ password" : "(no password here)"}
+                  </Button>
+                  <RoomRotateForm onRotate={(pw: string) => void rotateRoomPassword(r.slug, pw)} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {copyStatus ? (
+          <p
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: copyStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
+            }}
+          >
+            {copyStatus}
           </p>
         ) : null}
       </Bevel>
