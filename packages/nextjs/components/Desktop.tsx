@@ -59,6 +59,7 @@ import { type Publication, type SlotPosition, usePeerMesh } from "~~/hooks/usePe
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
 import { RoomSlugProvider } from "~~/lib/room-slug";
+import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 export const dynamic = "force-dynamic";
@@ -204,12 +205,47 @@ function DesktopInner({ slug }: { slug: string }) {
     }
   }, []);
 
+  // Room-cookie state for this slug. Determines whether the
+  // PasswordGate has to fire even when the user is already signed in
+  // (e.g. an admin with a cached session who switches rooms — they
+  // still need the new room's password). `null` = unknown (still
+  // checking), `false` = need password, `true` = good. The debug
+  // sandbox slug always reports true.
+  const [roomAuthed, setRoomAuthed] = useState<boolean | null>(slug === DEFAULT_SLUG ? true : null);
+  useEffect(() => {
+    if (slug === DEFAULT_SLUG) {
+      setRoomAuthed(true);
+      return;
+    }
+    setRoomAuthed(null);
+    let cancelled = false;
+    fetch(
+      `${process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080"}/v1/rooms/${encodeURIComponent(slug)}/auth`,
+      {
+        credentials: "include",
+      },
+    )
+      .then(r => (r.ok ? r.json() : { authed: false }))
+      .then((data: { authed?: boolean }) => {
+        if (!cancelled) setRoomAuthed(data.authed === true);
+      })
+      .catch(() => {
+        if (!cancelled) setRoomAuthed(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
   const selfHint = useMemo(() => {
     if (!session.authenticated) return null;
     return { role: session.role, address: session.address, handle: session.handle };
   }, [session]);
 
-  const mesh = usePeerMesh(session.authenticated, selfHint, slug);
+  // Hold off the WS until we know the room cookie is good — otherwise
+  // an admin with a stale session would auto-connect and the server's
+  // password-required gate would close the socket in a reconnect loop.
+  const mesh = usePeerMesh(session.authenticated && roomAuthed === true, selfHint, slug);
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated
@@ -2106,12 +2142,35 @@ function DesktopInner({ slug }: { slug: string }) {
         </div>
       ) : null}
 
-      {/* Second-layer gate: authenticated but no user gesture yet
-          this page-load. Forces a tap so audio/AudioContext start.
-          Sign-in flow trips the gesture incidentally (the click on
-          Continue / Use Passkey), so this only appears on reload-
+      {/* Room-password gate. Fires after sign-in if the user doesn't
+          have a valid cookie for THIS specific room. Catches the case
+          where an already-signed-in user (e.g. admin with a cached
+          session) navigates to a new room — they still need to prove
+          they know its password. Skipped for the debug sandbox slug. */}
+      {!loading && session.authenticated && roomAuthed === false ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            background: "rgba(8,4,18,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <PasswordGate slug={slug} defaultPassword={inviteFromUrl} onAccepted={() => setRoomAuthed(true)} />
+        </div>
+      ) : null}
+
+      {/* Third-layer gate: authenticated, room cookie set, but no user
+          gesture yet this page-load. Forces a tap so audio/AudioContext
+          start. Sign-in flow trips the gesture incidentally (the click
+          on Continue / Use Passkey), so this only appears on reload-
           with-valid-session. */}
-      {!loading && session.authenticated && !gestured ? (
+      {!loading && session.authenticated && roomAuthed === true && !gestured ? (
         <div
           style={{
             position: "fixed",

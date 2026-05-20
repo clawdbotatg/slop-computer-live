@@ -36,10 +36,12 @@ import { send } from "./ws-send.js";
 // in `.slop-data/rooms/<slug>/...` (Phase 4).
 const SLUG_REGEX = /^[a-z0-9-]{1,64}$/;
 
-// Fallback slug used during the migration: existing clients (pre-Phase-3
-// frontend) connect without a slug, and land in the "main" room so the
-// single-room experience keeps working.
-export const DEFAULT_SLUG = "main";
+// Sandbox room used for debugging + the pre-Phase-3 fallback. Always-on
+// (via HOST_WHITELIST), no password required, and inherits the pre-
+// per-room-refactor legacy data files. Real episodes live at claimed
+// slugs like /ep0; visitors who hit an unknown slug bounce to
+// slop.computer rather than landing here.
+export const DEFAULT_SLUG = "debug";
 
 export function isValidSlug(slug: string): boolean {
   return SLUG_REGEX.test(slug);

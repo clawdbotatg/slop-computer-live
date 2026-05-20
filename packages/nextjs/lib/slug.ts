@@ -5,7 +5,15 @@
 
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
 
-export const DEFAULT_SLUG = "main";
+// Sandbox room used for debugging — always-on, no password. Unknown
+// slugs do NOT land here; they bounce to slop.computer (see the
+// dynamic [slug] route).
+export const DEFAULT_SLUG = "debug";
+
+// Where to send users when they hit an unknown / unclaimed / invalid
+// slug. The live.slop.computer subdomain is for actual claimed
+// episodes; anything else belongs on the parent site.
+export const ROOM_NOT_FOUND_URL = "https://slop.computer";
 
 export function isValidSlug(slug: unknown): slug is string {
   return typeof slug === "string" && SLUG_RE.test(slug);

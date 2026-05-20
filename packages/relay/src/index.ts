@@ -2682,6 +2682,48 @@ app.get("/admin/peers", async (req, reply) => {
   return { peers: listPeers() };
 });
 
+// Lists every claimed room (anything with an `auth.json` on disk).
+// Scans the filesystem rather than the in-memory `rooms` Map so cold /
+// hibernated rooms still show up. Returns slug + claim/hot metadata
+// only — never the password (that lives on disk as a scrypt hash).
+app.get("/admin/rooms", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const fs = await import("node:fs");
+  const dir = "./.slop-data/rooms";
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return { rooms: [] };
+  }
+  const hotSlugs = new Set(listRooms().map(r => r.id));
+  const rooms = entries
+    .filter(name => /^[a-z0-9-]{1,64}$/.test(name))
+    .filter(slug => fs.existsSync(`${dir}/${slug}/auth.json`))
+    .map(slug => {
+      let createdAt: number | null = null;
+      try {
+        const raw = fs.readFileSync(`${dir}/${slug}/auth.json`, "utf8");
+        const parsed = JSON.parse(raw) as { createdAt?: number };
+        if (typeof parsed.createdAt === "number") createdAt = parsed.createdAt;
+      } catch {
+        /* unreadable auth.json — slug still claimed, just no createdAt */
+      }
+      let paidUntil: number | null = null;
+      try {
+        const raw = fs.readFileSync(`${dir}/${slug}/meta.json`, "utf8");
+        const parsed = JSON.parse(raw) as { paidUntil?: number };
+        if (typeof parsed.paidUntil === "number") paidUntil = parsed.paidUntil;
+      } catch {
+        /* no meta.json yet — room exists but never accessed since hibernate */
+      }
+      return { slug, createdAt, paidUntil, hot: hotSlugs.has(slug) };
+    })
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return { rooms };
+});
+
 // Host-only "nuke the session wallet" — wipes current + history + tx queue.
 // Same effect as `rm .slop-data/wallet.json` but doesn't require shell access.
 // Used by the admin page's "Reset session wallet" button so the host can
@@ -2827,39 +2869,42 @@ app.register(async function signalRoutes(fastify) {
     }
 
     // Parse the room slug from the connect URL (?slug=ep0). Falls back
-    // to DEFAULT_SLUG ("main") so pre-Phase-3 frontends — which don't
-    // yet send a slug — keep landing in the single-room experience.
+    // to DEFAULT_SLUG ("debug") so pre-Phase-3 frontends — which don't
+    // yet send a slug — keep landing in the sandbox room.
     const urlForSlug = new URL(req.url ?? "/", "http://x");
     const slug = parseSlug(urlForSlug.searchParams.get("slug"));
     const room = getOrCreateRoom(slug);
 
-    // Phase 5: WS access requires the room cookie (issued by
-    // /v1/rooms/:slug/auth). Admins bypass — same model as the old
-    // global invite gate — so the operator can recover access without
-    // knowing the password. The main room also honors the legacy
-    // slop_invite cookie for users from before per-room passwords.
-    const adminBypass = session.address ? isAdminAddress(session.address) : false;
     // Pre-claim model: arbitrary slugs (e.g. /testslug123) shouldn't
-    // silently spin up a sandbox room. Non-main slugs must have been
-    // claimed via POST /v1/rooms (which writes auth.json) before any
-    // peer can connect. The main room stays special — it has no
-    // per-room password and is the always-on default home.
-    if (!adminBypass && slug !== DEFAULT_SLUG && !room.auth.hasPassword()) {
+    // silently spin up a sandbox room. Non-DEFAULT slugs must have
+    // been claimed via POST /v1/rooms (which writes auth.json) before
+    // any peer can connect. The debug slug is special — always-on, no
+    // password, used by ops + the AI for poking at the relay.
+    if (slug !== DEFAULT_SLUG && !room.auth.hasPassword()) {
       send(socket, { type: "error", error: "room-not-found", slug });
       socket.close(4404, "room-not-found");
       return;
     }
-    if (!adminBypass && room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
+    // Password gate. Everyone — including admins — needs the room
+    // cookie for any slug that has a password set. The previous
+    // adminBypass shortcut here meant admins could enter their own
+    // claimed rooms without proving they remembered the password,
+    // which silently broke the "unique-per-room password" invariant.
+    // Admins who lock themselves out should rotate via
+    // POST /v1/rooms/:slug/password instead.
+    if (room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
       send(socket, { type: "error", error: "room-auth-required", slug });
       socket.close(4403, "room-auth-required");
       return;
     }
 
-    // Phase 7: paid-room gate. Admins bypass. Free / unclaimed / paid
-    // rooms pass through. Lapsed paid rooms (paidUntil < now AND has a
-    // password) need to be revived via POST /v1/rooms/:slug/revive
-    // before the WS can connect.
-    if (!adminBypass && !isRoomFreeOrPaid(room)) {
+    // Phase 7: paid-room gate. Admins DO bypass this one — payment is
+    // a billing concern (Phase 8 wires it to the Base contract), not
+    // an access-control concern, and locking the operator out of
+    // their own room because of a missed payment is the wrong
+    // failure mode. Free / unclaimed / paid rooms pass through.
+    const isPaymentAdminBypass = session.address ? isAdminAddress(session.address) : false;
+    if (!isPaymentAdminBypass && !isRoomFreeOrPaid(room)) {
       send(socket, { type: "error", error: "payment-required", slug });
       socket.close(4290, "payment-required");
       return;

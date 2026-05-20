@@ -5,7 +5,8 @@
 // Phase 2: tabs are partitioned by room (slug). One Chromium process,
 // one BrowserContext per room — same Chromium, isolated cookies /
 // localStorage / IndexedDB. WS path is /stream/:id?slug=<slug>; missing
-// slug falls back to "main" so pre-Phase-3 frontends keep working.
+// slug falls back to "debug" (the always-on dev sandbox) so pre-
+// Phase-3 frontends keep working.
 //
 // Per-room tab cap + process-wide cap stop one busy room from starving
 // every other room (or OOM-ing the prod box). Idle timer destroys tabs
@@ -52,7 +53,7 @@ await app.register(websocket);
 // reads the on-chain contract — the frontend hands us slugs and we
 // validate locally.
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
-const DEFAULT_SLUG = "main";
+const DEFAULT_SLUG = "debug";
 
 function parseSlug(raw: string | undefined): string {
   if (!raw) return DEFAULT_SLUG;

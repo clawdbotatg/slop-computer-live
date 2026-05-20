@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Desktop } from "~~/components/Desktop";
-import { DEFAULT_SLUG, isValidSlug } from "~~/lib/slug";
+import { DEFAULT_SLUG, ROOM_NOT_FOUND_URL, isValidSlug } from "~~/lib/slug";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 // Cap the existence check at 2s so a slow / unreachable relay doesn't
@@ -9,19 +9,16 @@ const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 // the frontend handles via its own error flow.
 const EXIST_CHECK_TIMEOUT_MS = 2000;
 
-// Dynamic per-room route. Validates the slug here so the Desktop
-// component (which only reads from the context) can trust it.
-// Invalid slugs bounce to DEFAULT_SLUG rather than 404 — the user
-// presumably mistyped a URL; quietly recover.
+// Dynamic per-room route. Validates the slug, then checks with the
+// relay that a host has claimed it. Misses bounce to slop.computer —
+// live.slop.computer is for actual episodes, not a generic fallback.
 //
-// Pre-claim gate: a non-main slug must have been claimed by a host
-// (POST /v1/rooms creates `.slop-data/rooms/<slug>/auth.json`) before
-// the page renders. Unclaimed non-main slugs redirect to main so a
-// typo can't silently spin up a sandbox room. The relay's WS
-// handshake enforces the same rule defense-in-depth.
+// The `debug` slug (DEFAULT_SLUG) is special-cased: always-on, no
+// password required, used by ops + dev for poking at the relay. It
+// skips the existence check.
 export default async function RoomPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  if (!isValidSlug(slug)) redirect(`/${DEFAULT_SLUG}`);
+  if (!isValidSlug(slug)) redirect(ROOM_NOT_FOUND_URL);
 
   if (slug !== DEFAULT_SLUG) {
     const ctl = new AbortController();
@@ -33,7 +30,7 @@ export default async function RoomPage({ params }: { params: Promise<{ slug: str
       });
       if (res.ok) {
         const data = (await res.json()) as { exists?: boolean };
-        if (!data.exists) redirect(`/${DEFAULT_SLUG}`);
+        if (!data.exists) redirect(ROOM_NOT_FOUND_URL);
       }
     } catch (err) {
       // Next.js's `redirect()` throws internally — propagate that.
