@@ -86,10 +86,16 @@ export function useGodModeStt(opts: UseGodModeSttOptions): UseGodModeSttResult {
   const [uploaded, setUploaded] = useState(0);
   const [lastError, setLastError] = useState<string | null>(null);
 
-  // Map<trackId, handle>. trackId (not streamId) is the key because a
-  // stream can carry multiple tracks (mic + screen audio) — we want
-  // one transcriber per audio track, not per stream.
-  const transcribersRef = useRef<Map<string, TranscriberHandle>>(new Map());
+  // Map<peerId, handle>. Keyed by PEER, not track — because a single
+  // speaker frequently publishes multiple audio tracks at once: the
+  // dedicated "audio" mic publication AND the audio sub-track bundled
+  // inside the "camera" publication. Both carry the same physical mic
+  // signal, so transcribing both produced two slightly-different
+  // Whisper transcripts per utterance (since Whisper isn't bit-exact
+  // run-to-run) — which is the duplication bug observed in prod.
+  // One transcriber per peer guarantees one OpenAI call per
+  // utterance, eliminating the source of those near-duplicates.
+  const transcribersRef = useRef<Map<string, { trackId: string; handle: TranscriberHandle }>>(new Map());
 
   // Active-recording counter — bumped/decremented as MediaRecorders
   // open and close. `listening` is derived from this.
@@ -118,52 +124,74 @@ export function useGodModeStt(opts: UseGodModeSttOptions): UseGodModeSttResult {
     if (!enabled) {
       // Tear down everything when god-mode disengages (rare — usually
       // either always-on or always-off for the lifetime of the page).
-      for (const h of transcribersRef.current.values()) h.stop();
+      for (const entry of transcribersRef.current.values()) entry.handle.stop();
       transcribersRef.current.clear();
       activeRecordingsRef.current = 0;
       setListening(false);
       return;
     }
 
-    // Collect the audio tracks currently in the mesh. We iterate
-    // remoteStreams (not publications) because the stream is the only
-    // place the actual MediaStreamTrack lives; publications are
-    // metadata. Filtering to audio-only avoids transcribing video's
-    // null audio track if a peer publishes screen video without sound.
-    const wantedTrackIds = new Set<string>();
-    for (const [, stream] of mesh.remoteStreams) {
-      for (const track of stream.getAudioTracks()) {
-        if (track.readyState !== "live") continue;
-        wantedTrackIds.add(track.id);
-        if (transcribersRef.current.has(track.id)) continue;
-        const handle = startTranscriberForTrack({
-          track,
-          getSpeakerIdentity: () => lookupSpeaker(stream.id, publicationsRef.current, peersRef.current),
-          upload: (blob, identity) =>
-            uploadSegment({
-              blob,
-              identity,
-              relayUrl: relayUrlRef.current,
-              slug: slugRef.current,
-              lang: langRef.current,
-              onSuccess: () => setUploaded(c => c + 1),
-              onError: err => setLastError(err),
-            }),
-          onRecordingOpen: () => bumpActive(1),
-          onRecordingClose: () => bumpActive(-1),
-        });
-        transcribersRef.current.set(track.id, handle);
+    // Pick one canonical audio source per speaker. Iteration order:
+    // publications first (so we can read `kind` + peerId attribution),
+    // preferring the dedicated "audio" mic publication over the
+    // camera's bundled audio sub-track. If a peer only publishes
+    // camera (no separate mic share), we still get them — the camera
+    // entry is kept as a fallback.
+    const chosenByPeer = new Map<string, { peerId: string; streamId: string; track: MediaStreamTrack }>();
+    for (const pub of mesh.publications) {
+      if (pub.kind !== "audio" && pub.kind !== "camera") continue;
+      const stream = mesh.remoteStreams.get(pub.streamId);
+      if (!stream) continue;
+      const audioTrack = stream.getAudioTracks().find(t => t.readyState === "live");
+      if (!audioTrack) continue;
+      const existing = chosenByPeer.get(pub.peerId);
+      if (!existing) {
+        chosenByPeer.set(pub.peerId, { peerId: pub.peerId, streamId: pub.streamId, track: audioTrack });
+        continue;
+      }
+      // Upgrade camera→audio when a dedicated mic publication arrives
+      // for the same peer (sharper signal, no video-pipeline routing).
+      if (pub.kind === "audio") {
+        const existingPub = mesh.publications.find(p => p.streamId === existing.streamId);
+        if (existingPub?.kind === "camera") {
+          chosenByPeer.set(pub.peerId, { peerId: pub.peerId, streamId: pub.streamId, track: audioTrack });
+        }
       }
     }
 
-    // Stop transcribers for tracks that disappeared (peer unpublished
-    // or left). The MediaStreamTrack's "ended" event would also fire,
-    // but listening for it here on top of the mesh-state diff is
-    // cheaper than wiring per-track listeners that need teardown.
-    for (const [trackId, handle] of transcribersRef.current) {
-      if (!wantedTrackIds.has(trackId)) {
-        handle.stop();
-        transcribersRef.current.delete(trackId);
+    // Reconcile: start a transcriber for each chosen (peer, track)
+    // that doesn't have one yet; tear down anything that no longer
+    // matches the current peer→track map (peer left, swapped from
+    // camera to audio publication, etc.).
+    for (const { peerId, streamId, track } of chosenByPeer.values()) {
+      const existing = transcribersRef.current.get(peerId);
+      if (existing && existing.trackId === track.id) continue;
+      if (existing) existing.handle.stop();
+      const handle = startTranscriberForTrack({
+        track,
+        getSpeakerIdentity: () => lookupSpeaker(streamId, publicationsRef.current, peersRef.current),
+        upload: (blob, identity) =>
+          uploadSegment({
+            blob,
+            identity,
+            relayUrl: relayUrlRef.current,
+            slug: slugRef.current,
+            lang: langRef.current,
+            onSuccess: () => setUploaded(c => c + 1),
+            onError: err => setLastError(err),
+          }),
+        onRecordingOpen: () => bumpActive(1),
+        onRecordingClose: () => bumpActive(-1),
+      });
+      transcribersRef.current.set(peerId, { trackId: track.id, handle });
+    }
+
+    // Stop transcribers for peers that disappeared (left the room,
+    // unpublished all audio, etc.).
+    for (const [peerId, entry] of transcribersRef.current) {
+      if (!chosenByPeer.has(peerId)) {
+        entry.handle.stop();
+        transcribersRef.current.delete(peerId);
       }
     }
   }, [enabled, mesh.remoteStreams, mesh.publications]);
@@ -172,7 +200,7 @@ export function useGodModeStt(opts: UseGodModeSttOptions): UseGodModeSttResult {
   // leak AudioContexts after the god-mode tab navigates away.
   useEffect(
     () => () => {
-      for (const h of transcribersRef.current.values()) h.stop();
+      for (const entry of transcribersRef.current.values()) entry.handle.stop();
       transcribersRef.current.clear();
       activeRecordingsRef.current = 0;
     },
