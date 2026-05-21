@@ -629,16 +629,21 @@ function DesktopInner({ slug }: { slug: string }) {
   );
 
   // First-visit hint state. `hintActive` controls icon filtering + arrow
-  // visibility; `hintDismissedAt` lets the formerly-hidden icons fade in
-  // with a slow stagger instead of popping in all at once. Both are
-  // useState so SSR renders without the hint (matches localStorage-empty)
-  // and the effect below promotes to active on the client if needed.
+  // visibility; `firstVisitMode` outlives `hintActive` by a short grace
+  // period so the post-dismiss fade-in icons render at clean default
+  // positions instead of revealing whatever stacked mess the relay's
+  // slot store had from prior sessions. `hintDismissedAt` drives the
+  // fade-in animation timing.
   const [hintActive, setHintActive] = useState(false);
+  const [firstVisitMode, setFirstVisitMode] = useState(false);
   const [hintDismissedAt, setHintDismissedAt] = useState<number | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) setHintActive(true);
+      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) {
+        setHintActive(true);
+        setFirstVisitMode(true);
+      }
     } catch {
       /* private mode → leave hint off, no biggie */
     }
@@ -655,16 +660,12 @@ function DesktopInner({ slug }: { slug: string }) {
       setHintDismissedAt(Date.now());
       return false;
     });
+    // Hold the default-position override past the fade-in (~700ms +
+    // 800ms max stagger) so the previously-hidden icons land at clean
+    // defaults visually, even if the relay broadcast for the auto-
+    // arrange hasn't fully round-tripped yet.
+    window.setTimeout(() => setFirstVisitMode(false), 2500);
   }, []);
-
-  // Auto-dismiss after the configured timeout — long enough for someone
-  // to read the arrow, short enough that the full icon set isn't gated
-  // behind it for users who already understand the desktop.
-  useEffect(() => {
-    if (!hintActive) return;
-    const t = window.setTimeout(dismissHint, HINT_TIMEOUT_MS);
-    return () => window.clearTimeout(t);
-  }, [hintActive, dismissHint]);
 
   // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
   // who lands on the page (signed in or not) eventually sees the right
@@ -1320,6 +1321,19 @@ function DesktopInner({ slug }: { slug: string }) {
   // future autoplay-blocked component) retry their .play() call.
   const { gestured, trip: tripGesture } = useUserGesture();
 
+  // Hint auto-dismiss after the configured timeout. Only starts ticking
+  // once the user is past every gate (auth + room password + gesture)
+  // AND the desktop has bootstrapped — i.e. once the hint is actually
+  // visible. Mounting the timer at component-mount would burn most of
+  // the 15s while the user is still clicking through Connect Wallet /
+  // EntryGate.
+  const hintVisible = hintActive && session.authenticated && mesh.bootstrapped && gestured;
+  useEffect(() => {
+    if (!hintVisible) return;
+    const t = window.setTimeout(dismissHint, HINT_TIMEOUT_MS);
+    return () => window.clearTimeout(t);
+  }, [hintVisible, dismissHint]);
+
   // Trash can — pinned to the bottom-right of THIS viewer's viewport
   // (not in the shared slot system; everyone's trash sits at a
   // different absolute coord because viewports differ in size). The
@@ -1643,14 +1657,25 @@ function DesktopInner({ slug }: { slug: string }) {
               if (hidden) return null;
               const slotId = `icon-${app.id}`;
               const fallback = defaultIconPosition(i);
-              const slot = mesh.slots[slotId] ?? {
-                id: slotId,
-                x: fallback.x,
-                y: fallback.y,
-                width: 88,
-                height: 110,
-                z: 1,
-              };
+              // While in first-visit mode, IGNORE the relay's slot
+              // positions for icons — they're often piled into stacks
+              // from previous sessions, which made the hint reveal a
+              // mess of overlapping icons. Force every icon to its
+              // default cascade position locally; the auto-arrange
+              // effect below also broadcasts these defaults so the
+              // room state catches up. After the hint dismisses + grace
+              // expires, we go back to honoring the shared slot
+              // positions so dragging still syncs.
+              const slot = firstVisitMode
+                ? { id: slotId, x: fallback.x, y: fallback.y, width: 88, height: 110, z: 1 }
+                : (mesh.slots[slotId] ?? {
+                    id: slotId,
+                    x: fallback.x,
+                    y: fallback.y,
+                    width: 88,
+                    height: 110,
+                    z: 1,
+                  });
               // After dismiss, the non-priority icons fade in with a
               // small per-icon stagger so it feels like the desktop is
               // unlocking, not popping. The priority 4 are already on-
