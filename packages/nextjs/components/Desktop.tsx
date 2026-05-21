@@ -193,7 +193,7 @@ const clearKindPersistedState = (slug: string, kind: StreamKind) => {
 // slug) because the goal is "user has been to slop.computer once" — a
 // repeat visitor jumping between rooms shouldn't get the tutorial again.
 const HAS_BEEN_HERE_KEY = "slop-has-been-here-v1";
-const HINT_TIMEOUT_MS = 10_000;
+const HINT_TIMEOUT_MS = 15_000;
 const HINT_ALLOWED_KINDS: ReadonlySet<string> = new Set(["chat", "audio", "video", "screen"]);
 
 function DesktopInner({ slug }: { slug: string }) {
@@ -657,9 +657,9 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, []);
 
-  // Auto-dismiss after 10s — long enough for someone to read the arrow,
-  // short enough that the full icon set isn't gated behind it for users
-  // who already understand the desktop.
+  // Auto-dismiss after the configured timeout — long enough for someone
+  // to read the arrow, short enough that the full icon set isn't gated
+  // behind it for users who already understand the desktop.
   useEffect(() => {
     if (!hintActive) return;
     const t = window.setTimeout(dismissHint, HINT_TIMEOUT_MS);
@@ -726,6 +726,22 @@ function DesktopInner({ slug }: { slug: string }) {
       mesh.updateSlot({ id: `icon-${app.id}`, x, y });
     });
   }, [apps, mesh]);
+
+  // First-visit auto-arrange: a brand-new user landing into a room with
+  // stale / stacked slot positions (e.g. someone dragged everything into
+  // a pile during testing) would otherwise see all icons piled at the
+  // same spot once the hint dismisses. Snap the icon layout to its
+  // default cascade exactly once, the moment we recognize a first
+  // visitor — runs after apps + bootstrap so updateSlot actually lands.
+  const arrangedOnFirstVisitRef = useRef(false);
+  useEffect(() => {
+    if (!hintActive) return;
+    if (arrangedOnFirstVisitRef.current) return;
+    if (apps.length === 0) return;
+    if (!mesh.bootstrapped || !mesh.connected) return;
+    arrangedOnFirstVisitRef.current = true;
+    autoArrangeIcons();
+  }, [hintActive, apps.length, mesh.bootstrapped, mesh.connected, autoArrangeIcons]);
 
   // --- Arrange "for X" layouts -------------------------------------------
   // Each writes a batch of slot updates that broadcasts to every peer, so
