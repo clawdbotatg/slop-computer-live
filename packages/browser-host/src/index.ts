@@ -856,6 +856,26 @@ app.post<{ Params: { slug: string } }>("/admin/rooms/:slug/close", async (req, r
   return { ok: true, slug };
 });
 
+// Per-tab destroy — called by the relay on `browser_close` so closing a
+// browser window in the UI also tears down the host tab. Without this we
+// rely on every subscriber WS closing within TAB_LINGER_MS, which can
+// leave zombies when a peer's socket lingers (TCP keepalive, dropped
+// peer, etc.) and fills the per-room cap.
+app.post<{ Params: { slug: string; id: string } }>("/admin/rooms/:slug/tabs/:id/close", async (req, reply) => {
+  if (config.relayTxBroadcastSecret) {
+    const auth = req.headers.authorization ?? "";
+    if (auth !== `Bearer ${config.relayTxBroadcastSecret}`) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  }
+  const slug = parseSlug(req.params.slug);
+  const id = req.params.id;
+  const tab = getTab(slug, id);
+  if (!tab) return { ok: true, slug, id, existed: false };
+  await destroyTab(slug, id);
+  return { ok: true, slug, id, existed: true };
+});
+
 // ---- WS /stream/:id?slug=<slug> ------------------------------------------
 
 app.register(async function (fastify) {

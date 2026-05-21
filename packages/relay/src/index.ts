@@ -192,6 +192,29 @@ async function notifyBrowserHostHibernate(slug: string): Promise<void> {
   }
 }
 
+// Tell browser-host to destroy a specific tab when a peer closes the
+// browser window in the UI. Without this we rely on every subscriber WS
+// closing within TAB_LINGER_MS — but a single zombie WS (lingering peer,
+// keepalive timing) leaves the tab alive and eats a slot in the room's
+// 5-tab cap forever.
+async function notifyBrowserHostCloseTab(slug: string, id: string): Promise<void> {
+  const base = process.env.BROWSER_HOST_INGRESS_URL;
+  if (!base) return;
+  try {
+    await fetch(
+      `${base.replace(/\/$/, "")}/admin/rooms/${encodeURIComponent(slug)}/tabs/${encodeURIComponent(id)}/close`,
+      {
+        method: "POST",
+        headers: process.env.BROWSER_HOST_INGRESS_SECRET
+          ? { authorization: `Bearer ${process.env.BROWSER_HOST_INGRESS_SECRET}` }
+          : {},
+      },
+    );
+  } catch (err) {
+    app.log.warn({ slug, id, err: (err as Error).message }, "browser-host close-tab call failed");
+  }
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const room of listRooms()) {
@@ -3473,7 +3496,10 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "missing_id" });
           }
           const ok = room.browsers.close(msg.id);
-          if (ok) room.broadcast({ type: "browser_closed", id: msg.id });
+          if (ok) {
+            room.broadcast({ type: "browser_closed", id: msg.id });
+            void notifyBrowserHostCloseTab(slug, msg.id);
+          }
           return;
         }
         case "window_open": {
