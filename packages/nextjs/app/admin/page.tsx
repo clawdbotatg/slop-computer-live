@@ -753,27 +753,33 @@ const AdminPage: NextPage = () => {
                 >
                   /{r.slug}
                 </a>
-                {godPassword && roomPasswords[r.slug] ? (
-                  <button
-                    type="button"
-                    onClick={() => void copyGodLink(r.slug)}
-                    title="copy god-mode link (room password + GOD_MODE_PASSWORD inline)"
-                    style={{
-                      background: "transparent",
-                      border: 0,
-                      padding: 0,
-                      margin: 0,
-                      color: "var(--slop-text-muted)",
-                      fontFamily: "var(--slop-font-display)",
-                      fontSize: 11,
-                      cursor: "pointer",
-                      textTransform: "lowercase",
-                      letterSpacing: "0.06em",
-                    }}
-                  >
-                    [god]
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void copyGodLink(r.slug)}
+                  title={
+                    !godPassword
+                      ? "GOD_MODE_PASSWORD not set on the relay"
+                      : !roomPasswords[r.slug]
+                        ? "regenerate this room's password first so the link can embed it"
+                        : "copy god-mode link (room password + GOD_MODE_PASSWORD inline)"
+                  }
+                  style={{
+                    background: "transparent",
+                    border: 0,
+                    padding: 0,
+                    margin: 0,
+                    color:
+                      godPassword && roomPasswords[r.slug] ? "var(--slop-cyan, #3fcfff)" : "var(--slop-text-muted)",
+                    fontFamily: "var(--slop-font-display)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    textTransform: "lowercase",
+                    letterSpacing: "0.06em",
+                    opacity: godPassword && roomPasswords[r.slug] ? 1 : 0.55,
+                  }}
+                >
+                  [god]
+                </button>
                 <span style={{ flex: 1 }} />
                 <Button
                   onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
