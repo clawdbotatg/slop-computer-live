@@ -623,6 +623,7 @@ app.get("/v1/state", async (req, reply) => {
     wallet: roomFromReq(req).wallet.getCurrent(),
     walletDraft: roomFromReq(req).wallet.getDraft(),
     walletTxs: roomFromReq(req).wallet.listTxs(),
+    cardState: readCardSnapshot(roomFromReq(req).id),
   };
 });
 
@@ -1460,9 +1461,25 @@ app.delete("/v1/avatars", async (req, reply) => {
 
 // --- Title card generator --------------------------------------------------
 // POST raw PFP bytes (image/jpeg|png|webp) -> gpt-image-2 composites the
-// guest face into the green circle on the template. Returns PNG bytes.
-// Ephemeral: nothing persisted server-side. ~10MB cap on the PFP.
+// guest face into the green circle on the template. Result is persisted at
+// ./.slop-data/rooms/<slug>/card.png and broadcast to the room as
+// `{ type: "card_state", state: { version } }` so every peer sees the new
+// card immediately. Survives relay restarts; one current card per room.
 const CARD_PFP_MAX_BYTES = 10 * 1024 * 1024;
+
+function cardFilePath(slug: string): string {
+  return `./.slop-data/rooms/${slug}/card.png`;
+}
+
+function readCardSnapshot(slug: string): { version: number } | null {
+  try {
+    const st = _statSync(cardFilePath(slug));
+    return { version: st.mtimeMs | 0 };
+  } catch {
+    return null;
+  }
+}
+
 app.post(
   "/v1/card",
   { bodyLimit: CARD_PFP_MAX_BYTES },
@@ -1476,17 +1493,60 @@ app.post(
     }
     if (body.length > CARD_PFP_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
 
+    const room = roomFromReq(req);
     const ct = String(req.headers["content-type"] ?? "");
     try {
       const { png } = await generateCard(body, ct);
-      reply.header("content-type", "image/png");
-      reply.header("cache-control", "no-store");
-      return reply.send(png);
+      const out = cardFilePath(room.id);
+      await _mkdir(`./.slop-data/rooms/${room.id}`, { recursive: true });
+      await _writeFile(out, png);
+      const snap = readCardSnapshot(room.id);
+      room.broadcast({ type: "card_state", state: snap });
+      return { ok: true, state: snap };
     } catch (err) {
       req.log.error({ err }, "card generation failed");
       const msg = err instanceof Error ? err.message : "unknown";
       return reply.code(500).send({ error: "card-generation-failed", detail: msg });
     }
+  },
+);
+
+// Clear the current card — anyone in the room may reset, mirroring the
+// per-peer reset button in CardWindow. After delete the room falls back
+// to the template until someone drops a new PFP.
+app.delete("/v1/card", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  try {
+    _unlinkSync(cardFilePath(room.id));
+  } catch {
+    /* already gone */
+  }
+  room.broadcast({ type: "card_state", state: null });
+  return { ok: true };
+});
+
+// Serve the per-room card PNG. Slug validated against the same regex
+// the relay uses everywhere; filename is locked to `card.png` so this
+// can never be turned into an arbitrary-file-read primitive.
+app.get<{ Params: { slug: string; filename: string } }>(
+  "/cards/:slug/:filename",
+  async (req, reply) => {
+    const { slug, filename } = req.params;
+    if (!isValidSlug(slug) || filename !== "card.png") {
+      return reply.code(400).send({ error: "bad-name" });
+    }
+    let buf: Buffer;
+    try {
+      const fs = await import("node:fs/promises");
+      buf = await fs.readFile(cardFilePath(slug));
+    } catch {
+      return reply.code(404).send({ error: "not-found" });
+    }
+    reply.header("content-type", "image/png");
+    reply.header("cache-control", "public, max-age=300");
+    return reply.send(buf);
   },
 );
 
@@ -3269,6 +3329,7 @@ app.register(async function signalRoutes(fastify) {
       walletDraft: room.wallet.getDraft(),
       walletTxs: room.wallet.listTxs(),
       customNames: peerNames.all(),
+      cardState: readCardSnapshot(room.id),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 

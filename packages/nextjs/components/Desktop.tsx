@@ -875,12 +875,21 @@ function DesktopInner({ slug }: { slug: string }) {
   // zoom, etc.) any open windows that were positioned for a larger viewport
   // would otherwise be parked off-screen. Pull them back inside the visible
   // area, shrinking width/height first if they no longer fit.
+  //
+  // Also runs once on `mesh.bootstrapped` so a peer joining with a smaller
+  // viewport than whoever sized the slot (typical: an Austin-Mac slot from
+  // 1920+ being received by a 1494 Windows laptop) gets clamped at load
+  // time. Without this the window would start out-of-bounds and react-rnd's
+  // `bounds="parent"` would pin state.x/y to the bound on the first drag
+  // step — the window then only moves a fraction of cursor travel and the
+  // Y axis can even drift the wrong direction as slack accumulates.
   const meshUpdateSlot = mesh.updateSlot;
   const slotsRef = useRef(mesh.slots);
   slotsRef.current = mesh.slots;
+  const meshBootstrapped = mesh.bootstrapped;
   useEffect(() => {
     const MENUBAR = 38;
-    const onResize = () => {
+    const clamp = () => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       Object.values(slotsRef.current).forEach(slot => {
@@ -896,9 +905,10 @@ function DesktopInner({ slug }: { slug: string }) {
         }
       });
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [meshUpdateSlot]);
+    if (meshBootstrapped) clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [meshUpdateSlot, meshBootstrapped]);
 
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
@@ -1728,7 +1738,7 @@ function DesktopInner({ slug }: { slug: string }) {
             style={{
               position: "absolute",
               left: 120,
-              top: 170,
+              top: 100,
               width: 480,
               height: "auto",
               pointerEvents: "none",
@@ -2228,7 +2238,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={480}
               minHeight={320}
             >
-              <CardWindow />
+              <CardWindow mesh={mesh} />
             </SharedAppWindow>
           </>
         ) : null}

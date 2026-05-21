@@ -385,6 +385,13 @@ const DEFAULT_CLOCK_STATE: ClockState = {
   countdown: { phase: "idle" },
 };
 
+/** Shared "title card" state for the room. `version` is the relay's
+ *  card.png mtime — it doubles as a cache-buster in the URL so a
+ *  regenerate forces every peer's <img> to re-fetch. */
+export type CardState = {
+  version: number;
+};
+
 /** A user-uploaded file on the shared desktop. Mirrors
  *  `packages/relay/src/files.ts` FileEntry. */
 export type FileEntry = {
@@ -584,6 +591,14 @@ export type PeerMeshState = {
   /** Partial-update setter. Pass only the fields you want to change;
    *  the server preserves the rest. */
   setClockState: (patch: Partial<ClockState>) => void;
+  /** Shared title-card state for the CARD app. `null` means the room
+   *  is on the slop.computer template; a `{version}` snapshot means
+   *  someone dropped a PFP and the relay produced a result the room
+   *  should show. */
+  cardState: CardState | null;
+  /** Clear the current card and bring the template back for the
+   *  whole room. */
+  resetCard: () => void;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -706,6 +721,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [musicGenre, setMusicGenreLocal] = useState<string | null>(null);
   const [musicCustom, setMusicCustomLocal] = useState<JamendoTrack[]>([]);
   const [clockState, setClockStateLocal] = useState<ClockState>(DEFAULT_CLOCK_STATE);
+  const [cardState, setCardState] = useState<CardState | null>(null);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1222,6 +1238,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [slug],
   );
 
+  // Clear the shared title card — anyone in the room may reset, which
+  // hides the generated PNG and brings the template back. Relay
+  // broadcasts `card_state: null` so every peer flips at once.
+  const resetCard = useCallback(() => {
+    fetch(withSlug(`${RELAY_HTTP_URL}/v1/card`, slug), {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("resetCard failed", err));
+  }, [slug]);
+
   // Update the shared clock state. Partial patch — fields you omit
   // are preserved server-side. Relay broadcasts `clock_state` to
   // every peer (including us) so the WS echo is authoritative.
@@ -1553,6 +1579,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             }
             setCustomNames(next);
           }
+          if (msg.cardState === null || (msg.cardState && typeof msg.cardState === "object")) {
+            setCardState((msg.cardState ?? null) as CardState | null);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1868,6 +1897,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "card_state") {
+          // `state` is either { version } or null — null means the host
+          // hit reset and the room is back on the template.
+          if (msg.state === null || (msg.state && typeof msg.state === "object")) {
+            setCardState((msg.state ?? null) as CardState | null);
+          }
+          return;
+        }
+
         if (msg.type === "wallet") {
           setWallet((msg.current ?? null) as WalletRecord | null);
           if (Array.isArray(msg.history)) {
@@ -2057,6 +2095,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     reorderMusicCustom,
     clockState,
     setClockState,
+    cardState,
+    resetCard,
     broadcastTxRequest,
     incomingForwards,
     forwardTxToPeer,

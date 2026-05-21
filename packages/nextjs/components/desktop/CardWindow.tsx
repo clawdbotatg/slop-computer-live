@@ -1,20 +1,26 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
+import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const TEMPLATE_SRC = "/card-template.png";
 const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
-// Title-card generator. The window's resting state is the
-// slop.computer template — drop a guest PFP onto it, the relay calls
-// gpt-image-2 to background-remove the guest and paste them as a
-// free-floating cutout at the green-dot position marker, and we
-// swap the result in. Once we have a result, an editable title overlay
-// lets you type a guest name, drag to reposition, and wheel to resize.
-// DOWNLOAD bakes the title text into the PNG via canvas before saving.
+// Title-card generator. Multiplayer: a single shared card per room
+// lives on the relay at /cards/<slug>/card.png. Any peer can drop a
+// guest PFP, the relay calls gpt-image-2, persists the result, and
+// broadcasts `card_state` to everyone in the room so every CardWindow
+// flips from template to the new card in lockstep. Reset broadcasts
+// `card_state: null`, returning the room to the template.
+//
+// The title overlay (typed guest name, drag-to-position, wheel-to-
+// resize) stays per-peer — it's a tool for the host to prep a name
+// before recording, then baked into the downloaded PNG at the host's
+// machine. Other viewers see their own local title text.
 //
 // Position + size are stored as fractions of the IMAGE content rect
 // (not the window) so values stay correct across window resizes AND
@@ -22,30 +28,34 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 type Frac = { x: number; y: number };
 
-// Module-scope store so the generated card + title overlay survive the
-// window being closed and reopened in the same page session.
-// SharedAppWindow unmounts the body on close, which would otherwise wipe
-// the result blob URL and the host's typed-in name. We rehydrate from
-// here on mount and write through on every change.
-// `titleText: null` means "not yet initialized" — on first mount we
-// seed it from the room slug so the title row defaults to the show
-// name. Once the host types over it, the edited value sticks here and
-// survives close / reopen.
+// Module-scope store so the title overlay survives the window being
+// closed and reopened in the same page session. SharedAppWindow
+// unmounts the body on close, which would otherwise wipe the host's
+// typed-in name. We rehydrate from here on mount and write through on
+// every change. The generated card itself lives in the mesh now, so
+// there's no resultUrl here anymore — closing + reopening shows
+// whatever the room is currently displaying.
 const cardStore: {
-  resultUrl: string | null;
   titleText: string | null;
   titlePos: Frac;
   titleSizeFrac: number;
 } = {
-  resultUrl: null,
   titleText: null,
   titlePos: { x: 0.5, y: 0.93 },
   titleSizeFrac: 0.055,
 };
 
-export const CardWindow = () => {
+type Props = {
+  mesh: PeerMeshState;
+};
+
+export const CardWindow = ({ mesh }: Props) => {
   const slug = useRoomSlug();
-  const [resultUrl, setResultUrl] = useState<string | null>(cardStore.resultUrl);
+  const { cardState, resetCard } = mesh;
+  const resultUrl = useMemo(() => {
+    if (!cardState) return null;
+    return `${RELAY_HTTP}/cards/${encodeURIComponent(slug)}/card.png?v=${cardState.version}`;
+  }, [cardState, slug]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
@@ -58,9 +68,6 @@ export const CardWindow = () => {
   const [titleSizeFrac, setTitleSizeFrac] = useState(cardStore.titleSizeFrac); // font-size as fraction of image width
   const [titleEditing, setTitleEditing] = useState(false);
 
-  useEffect(() => {
-    cardStore.resultUrl = resultUrl;
-  }, [resultUrl]);
   useEffect(() => {
     cardStore.titleText = titleText;
   }, [titleText]);
@@ -103,10 +110,9 @@ export const CardWindow = () => {
     return () => cancelAnimationFrame(raf);
   }, [loading]);
 
-  // Only abort an in-flight generation on unmount — DON'T revoke the
-  // blob URL here. The cardStore keeps the URL alive across close/reopen;
-  // explicit replacement (`handleFile`) and `reset()` are the only paths
-  // that revoke old URLs.
+  // Abort any in-flight generation if this peer closes the window.
+  // The card image itself lives on the relay, so we don't need to
+  // revoke anything client-side.
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
@@ -160,7 +166,10 @@ export const CardWindow = () => {
     abortRef.current?.abort();
     abortRef.current = ctrl;
     try {
-      const res = await fetch(`${RELAY_HTTP}/v1/card`, {
+      // Server persists the PNG and broadcasts `card_state` to the
+      // whole room — we don't read the response body. Our own mesh
+      // tick picks it up like any other peer's would.
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": file.type },
@@ -177,12 +186,6 @@ export const CardWindow = () => {
         }
         throw new Error(detail);
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setResultUrl(prev => {
-        if (prev) URL.revokeObjectURL(prev);
-        return url;
-      });
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       setError((e as Error).message || "generation failed");
@@ -301,9 +304,8 @@ export const CardWindow = () => {
   };
 
   const reset = () => {
-    if (resultUrl) URL.revokeObjectURL(resultUrl);
-    setResultUrl(null);
     setError(null);
+    resetCard();
   };
 
   // Bake the title — including the magenta-bordered mini-window chrome
