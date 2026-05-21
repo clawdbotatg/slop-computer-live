@@ -1,10 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Address } from "@scaffold-ui/components";
-import type { Address as AddressType } from "viem";
+import { SlopAddress } from "~~/components/ui";
 import type { PeerMeshState, TodoItem } from "~~/hooks/usePeerMesh";
-import { shortAddress } from "~~/hooks/useSession";
 
 // Shared todo list. Anyone signed in can add, toggle, edit or delete any
 // item — the relay is the source of truth and broadcasts the full list
@@ -19,14 +17,6 @@ import { shortAddress } from "~~/hooks/useSession";
 
 export type TodoWindowProps = {
   mesh: PeerMeshState;
-};
-
-const sourceLabel = (item: TodoItem, customNames: Record<string, string>): string => {
-  const custom = item.address ? customNames[item.address.toLowerCase()] : undefined;
-  if (custom) return custom;
-  if (item.handle) return item.handle;
-  if (item.address) return shortAddress(item.address);
-  return "anon";
 };
 
 export const TodoWindow = ({ mesh }: TodoWindowProps) => {
@@ -229,11 +219,12 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
                       </button>
                     )}
                     <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>
-                      {item.address && !mesh.customNames[item.address.toLowerCase()] ? (
-                        <Address address={item.address as AddressType} size="xs" onlyEnsOrAddress />
-                      ) : (
-                        <span>{sourceLabel(item, mesh.customNames)}</span>
-                      )}
+                      <SlopAddress
+                        address={item.address}
+                        handle={item.handle}
+                        fallback={item.id}
+                        customNames={mesh.customNames}
+                      />
                     </div>
                   </div>
                   <button

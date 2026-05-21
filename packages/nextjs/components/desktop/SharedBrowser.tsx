@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Address, AddressInput } from "@scaffold-ui/components";
+import { AddressInput } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex } from "viem";
 import { usePublicClient } from "wagmi";
-import { Button, LoadingBar, TextField } from "~~/components/ui";
+import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -974,7 +974,7 @@ export const SharedBrowser = ({
             />
           </div>
         ) : (
-          <Address address={effectiveImpersonator} size="xs" onlyEnsOrAddress />
+          <SlopAddress address={effectiveImpersonator} customNames={customNames} />
         )}
         <span style={{ width: 12 }} />
         <span title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain.">

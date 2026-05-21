@@ -1,12 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Address } from "@scaffold-ui/components";
-import type { Address as AddressType } from "viem";
-import { AddressBlockie } from "~~/components/scaffold-eth";
-import { BandFlag } from "~~/components/ui";
+import { SlopAddress } from "~~/components/ui";
 import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
-import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Always-visible "who's here" panel pinned to the top-right of the
 // viewport, sitting just under the menubar. Replaces the old
@@ -29,26 +25,6 @@ export type PinnedPeersProps = {
 const MENUBAR_HEIGHT = 38;
 const TOP_GAP = 10;
 const MAX_NAME_LEN = 30;
-
-// Renders the row's identity. When a custom name is set, hides the
-// underlying address — but pins a blockie + copy icon next to it so
-// viewers can still click through to the block explorer and grab the
-// real address.
-const Identity = ({ p, customNames }: { p: Peer; customNames: Record<string, string> }) => {
-  const lower = p.address?.toLowerCase();
-  const custom = lower ? customNames[lower] : undefined;
-  if (custom && p.address) {
-    return (
-      <>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{custom}</span>
-        <AddressBlockie address={p.address as AddressType} />
-      </>
-    );
-  }
-  if (p.handle) return <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.handle}</span>;
-  if (p.address) return <Address address={p.address as AddressType} size="xs" onlyEnsOrAddress />;
-  return <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.id.slice(0, 6)}</span>;
-};
 
 export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
@@ -150,11 +126,6 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
                     fontWeight: p.role === "host" ? 600 : undefined,
                   }}
                 >
-                  {/* BandFlag (identity-derived blockie-color strip) sits
-                      to the left of the label — fills the slot the host
-                      star used to occupy. Host emphasis is now carried by
-                      fontWeight + the role tag on the right. */}
-                  <BandFlag bands={bandsFromIdentity({ address: p.address, handle: p.handle, fallback: p.id })} />
                   {showEditor ? (
                     <input
                       ref={inputRef}
@@ -182,8 +153,7 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
                     />
                   ) : (
                     <>
-                      <Identity p={p} customNames={customNames} />
-                      {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                      <SlopAddress address={p.address} handle={p.handle} fallback={p.id} customNames={customNames} />
                       {isMe && canEdit ? (
                         <button
                           type="button"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDisconnect } from "wagmi";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -44,20 +44,50 @@ export function useSession(): UseSessionResult {
   const [session, setSession] = useState<Session>({ authenticated: false, invited: false });
   const [loading, setLoading] = useState(true);
   const { disconnectAsync } = useDisconnect();
+  // Backoff state for transient /auth/me failures (relay down during a
+  // deploy, brief Caddy 502s, network blip). We only flip to "logged out"
+  // on a definitive 200 response — anything else is treated as transient
+  // and the last-known-good session is preserved while we retry.
+  const transientRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transientAttemptsRef = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`${RELAY_BASE}/auth/me`, { credentials: "include" });
+      // /auth/me is authoritative ONLY on a 200. A bad/missing cookie
+      // still returns 200 with `authenticated: false`. So any non-200
+      // (5xx from Caddy while slop-relay restarts, fetch reject, etc.)
+      // means "couldn't reach the relay", not "logged out" — keep the
+      // existing session and schedule a retry instead of forcing the
+      // user back to the JoinCard.
       if (!res.ok) {
-        setSession({ authenticated: false, invited: false });
+        scheduleTransientRetry();
         return;
       }
       const data = (await res.json()) as Session;
+      // Clear backoff on a definitive answer.
+      transientAttemptsRef.current = 0;
+      if (transientRetryRef.current) {
+        clearTimeout(transientRetryRef.current);
+        transientRetryRef.current = null;
+      }
       setSession(data);
     } catch {
-      setSession({ authenticated: false, invited: false });
+      scheduleTransientRetry();
     } finally {
       setLoading(false);
+    }
+
+    function scheduleTransientRetry() {
+      if (transientRetryRef.current) return; // already pending
+      const attempt = transientAttemptsRef.current++;
+      // 1s, 2s, 4s, 8s, capped at 10s. Plenty fast for a ~5s relay
+      // restart; gentle enough that a long outage doesn't hammer Caddy.
+      const delay = Math.min(1000 * 2 ** attempt, 10_000);
+      transientRetryRef.current = setTimeout(() => {
+        transientRetryRef.current = null;
+        void refresh();
+      }, delay);
     }
   }, []);
 
@@ -80,22 +110,56 @@ export function useSession(): UseSessionResult {
     // and JoinCard skips the Connect Wallet button. Sign-out should be a
     // total reset, so blow them all away.
     //
-    // The passkey keys are also cleared here: JoinCard remembers the last
-    // credential id + path so returning users skip the chooser modal AND
-    // the browser picker. Sign-out should let them pick a different passkey
-    // next time, so we trash that preference along with the wallet state.
+    // Passkey keys (slop:passkey:*) are also wiped here: JoinCard remembers
+    // the last credential id + path so returning users skip the chooser modal
+    // AND the browser picker. Sign-out should let them pick a different
+    // passkey next time, so we trash that preference along with the wallet
+    // state. The slop:* sweep runs in its OWN try/catch BEFORE the wagmi loop
+    // so that even if the wagmi prefix scan blows up on some weird stored
+    // value, the passkey memory is already gone.
     if (typeof window !== "undefined") {
+      try {
+        for (const k of Object.keys(window.localStorage)) {
+          if (k.startsWith("slop:passkey:")) window.localStorage.removeItem(k);
+        }
+      } catch {
+        /* private mode / quota */
+      }
       try {
         const prefixes = ["wagmi", "rk-", "wc@", "@w3m", "@appkit", "WCM_VERSION"];
         Object.keys(window.localStorage)
           .filter(k => prefixes.some(p => k.startsWith(p)))
           .forEach(k => window.localStorage.removeItem(k));
-        window.localStorage.removeItem("slop:passkey:credId");
-        window.localStorage.removeItem("slop:passkey:lastPath");
       } catch {
         /* private mode / quota */
       }
+      // The relay's /auth/logout only clears slop_session. Room-password
+      // and slop_invite cookies survive across sign-outs by design (a
+      // signed-out user shouldn't need to re-enter the room password to
+      // see the JoinCard again). But "sign out then immediately sign in
+      // with a different identity" should still feel clean, so we expire
+      // every slop_* cookie from the client side as a belt-and-suspenders
+      // pass. Anything the relay still needs (invites, room creds) will
+      // get reissued on the next gate hit.
+      try {
+        const past = "expires=Thu, 01 Jan 1970 00:00:00 GMT";
+        for (const part of document.cookie.split(";")) {
+          const name = part.split("=")[0]?.trim();
+          if (name && name.startsWith("slop_")) {
+            document.cookie = `${name}=; ${past}; path=/`;
+          }
+        }
+      } catch {
+        /* document.cookie not writable */
+      }
     }
+    // Sign-out is authoritative — kill any in-flight transient retry so
+    // a stale /auth/me response can't resurrect the session.
+    if (transientRetryRef.current) {
+      clearTimeout(transientRetryRef.current);
+      transientRetryRef.current = null;
+    }
+    transientAttemptsRef.current = 0;
     setSession({ authenticated: false, invited: false });
     notifySessionChanged();
   }, [disconnectAsync]);
@@ -120,6 +184,10 @@ export function useSession(): UseSessionResult {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener(SESSION_CHANGED, onChanged);
+      if (transientRetryRef.current) {
+        clearTimeout(transientRetryRef.current);
+        transientRetryRef.current = null;
+      }
     };
   }, [refresh]);
 

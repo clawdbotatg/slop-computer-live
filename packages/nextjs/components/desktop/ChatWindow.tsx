@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Address } from "@scaffold-ui/components";
-import type { Address as AddressType } from "viem";
-import { Button } from "~~/components/ui";
+import { Button, SlopAddress } from "~~/components/ui";
 import type { ChatMessage } from "~~/hooks/usePeerMesh";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
 
@@ -137,7 +135,6 @@ const ChatRow = ({
   isMine: boolean;
   customNames: Record<string, string>;
 }) => {
-  const customName = msg.address ? customNames[msg.address.toLowerCase()] : undefined;
   const bands = useMemo<Bands>(
     () =>
       bandsFromIdentity({
@@ -181,13 +178,7 @@ const ChatRow = ({
             textTransform: "uppercase",
           }}
         >
-          {customName ? (
-            <span>{customName}</span>
-          ) : msg.address ? (
-            <Address address={msg.address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
-          ) : (
-            <span>{msg.handle ?? "anon"}</span>
-          )}
+          <SlopAddress address={msg.address} handle={msg.handle} fallback={msg.id} customNames={customNames} />
           {isMine ? <span style={{ opacity: 0.7 }}>(you)</span> : null}
           {sourceTag ? (
             <span

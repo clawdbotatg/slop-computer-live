@@ -6,7 +6,6 @@ import type { Address as AddressType } from "viem";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
 import { PasswordGate } from "~~/components/PasswordGate";
-import { AIWalletWindow } from "~~/components/desktop/AIWalletWindow";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
 import { AudioVisualizer, audioMutedKey } from "~~/components/desktop/AudioVisualizer";
@@ -99,7 +98,6 @@ type AppEntry = {
     | "gas"
     | "clock"
     | "wallet"
-    | "ai-wallet"
     | "research"
     | "news"
     | "transcript"
@@ -1506,6 +1504,7 @@ function DesktopInner({ slug }: { slug: string }) {
       <MenuBar
         menus={[fileMenu, editMenu, viewMenu]}
         meshConnected={mesh.connected}
+        godActive={isGodMode}
         godListening={isGodMode && godStt.listening}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
@@ -1643,9 +1642,6 @@ function DesktopInner({ slug }: { slug: string }) {
                         return;
                       case "wallet":
                         focusApp("wallet");
-                        return;
-                      case "ai-wallet":
-                        focusApp("ai-wallet");
                         return;
                       case "research":
                         focusApp("research");
@@ -2130,21 +2126,11 @@ function DesktopInner({ slug }: { slug: string }) {
               mesh={mesh}
               id="wallet"
               title="WALLET"
-              defaultSlot={{ x: 400, y: 100, width: 460, height: 580 }}
-              minWidth={360}
-              minHeight={420}
+              defaultSlot={{ x: 400, y: 100, width: 640, height: 680 }}
+              minWidth={420}
+              minHeight={460}
             >
               <WalletWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="ai-wallet"
-              title="AI WALLET"
-              defaultSlot={{ x: 440, y: 140, width: 720, height: 620 }}
-              minWidth={520}
-              minHeight={420}
-            >
-              <AIWalletWindow mesh={mesh} myAddress={session.address} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

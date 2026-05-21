@@ -9,6 +9,8 @@ export { LoadingBar } from "./LoadingBar";
 export type { LoadingBarProps } from "./LoadingBar";
 export { MenuBar } from "./MenuBar";
 export type { Menu, MenuItem } from "./MenuBar";
+export { SlopAddress } from "./SlopAddress";
+export type { SlopAddressProps } from "./SlopAddress";
 export { TextField } from "./TextField";
 export { TitleBar } from "./TitleBar";
 export { Window } from "./Window";

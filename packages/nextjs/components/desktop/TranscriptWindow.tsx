@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Address } from "@scaffold-ui/components";
-import type { Address as AddressType } from "viem";
+import { SlopAddress } from "~~/components/ui";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
@@ -139,7 +138,6 @@ const EmptyNote = ({ children }: { children: React.ReactNode }) => (
 );
 
 const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames: Record<string, string> }) => {
-  const customName = seg.address ? customNames[seg.address.toLowerCase()] : undefined;
   const bands = useMemo<Bands>(
     () =>
       bandsFromIdentity({
@@ -182,13 +180,7 @@ const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames:
             textTransform: "uppercase",
           }}
         >
-          {customName ? (
-            <span>{customName}</span>
-          ) : seg.address ? (
-            <Address address={seg.address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
-          ) : (
-            <span>{seg.handle ?? "anon"}</span>
-          )}
+          <SlopAddress address={seg.address} handle={seg.handle} fallback={seg.id} customNames={customNames} />
           {sourceTag ? (
             <span
               style={{

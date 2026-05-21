@@ -31,11 +31,14 @@ interface MenuBarProps {
    *  itself moved out of the menubar — see `<PinnedPeers>` for the
    *  always-visible top-right HUD. */
   meshConnected?: boolean;
-  /** True when this client is the god-mode streaming box AND it has at
-   *  least one active server-side STT recorder open — i.e. someone in
-   *  the room is currently being transcribed. Renders 🛰️ next to the
-   *  green LivePulse so the operator can see "god is listening" at a
-   *  glance. */
+  /** True when this client is the god-mode streaming box. Renders 🛰️
+   *  in the menubar at all times so the operator can confirm STT is
+   *  wired up at a glance. */
+  godActive?: boolean;
+  /** True when god-mode has at least one server-side STT recorder open
+   *  — i.e. a peer in the room is currently being transcribed. Drives
+   *  the cyan halo behind 🛰️ that grows + glows during speech and
+   *  shrinks during silence. */
   godListening?: boolean;
   /** Optional session-wallet chip. If a wallet address is supplied
    *  we render the Address component as a clickable chip; otherwise
@@ -54,6 +57,7 @@ export const MenuBar = ({
   className = "",
   menus = [],
   meshConnected,
+  godActive = false,
   godListening = false,
   walletAddress,
   onWalletClick,
@@ -117,14 +121,47 @@ export const MenuBar = ({
             </button>
           ) : null}
           {authNode}
-          {godListening ? (
+          {godActive ? (
             <span
               className="slop-menubar__item"
-              style={{ cursor: "help", fontSize: 14, padding: "0 6px" }}
-              title="god is listening — this god-mode client is running server-side STT on every peer's audio"
-              aria-label="god is listening"
+              style={{
+                cursor: "help",
+                fontSize: 14,
+                padding: "0 6px",
+                position: "relative",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title={
+                godListening
+                  ? "god is listening — server-side STT is actively transcribing a peer right now"
+                  : "god-mode STT wired up — waiting for someone to talk"
+              }
+              aria-label={godListening ? "god is listening" : "god-mode STT idle"}
             >
-              🛰️
+              {/* Cyan halo behind the satellite. Faint at idle so the
+                  operator can see the wiring is up; expands + glows
+                  whenever a peer's audio is being captured. */}
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  width: godListening ? 24 : 8,
+                  height: godListening ? 24 : 8,
+                  borderRadius: "50%",
+                  background: "var(--slop-cyan)",
+                  opacity: godListening ? 0.55 : 0.18,
+                  boxShadow: godListening ? "0 0 14px 2px var(--slop-cyan)" : "0 0 4px var(--slop-cyan)",
+                  transform: "translate(-50%, -50%)",
+                  transition: "width 220ms ease, height 220ms ease, opacity 220ms ease, box-shadow 220ms ease",
+                  pointerEvents: "none",
+                  zIndex: 0,
+                }}
+              />
+              <span style={{ position: "relative", zIndex: 1 }}>🛰️</span>
             </span>
           ) : null}
           <span
@@ -505,6 +542,24 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
                   ? "[ failed — see console ]"
                   : "[ copy skill ]"}
           </button>
+          <a
+            href="https://github.com/clawdbotatg/slop-computer-live"
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setOpen(false)}
+            style={{ ...itemStyle, textDecoration: "none" }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLAnchorElement).style.background =
+                "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+              (e.currentTarget as HTMLAnchorElement).style.color = "#fff";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLAnchorElement).style.background = "transparent";
+              (e.currentTarget as HTMLAnchorElement).style.color = "var(--slop-text)";
+            }}
+          >
+            [ source code ]
+          </a>
         </div>
       ) : null}
     </span>

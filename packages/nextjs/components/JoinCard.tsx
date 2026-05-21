@@ -11,13 +11,13 @@ import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
-// localStorage keys that remember which passkey the user prefers. Once
-// they've signed in with an existing passkey once, we skip the chooser
-// modal AND the browser's picker on subsequent visits by passing the
-// stored credential id via `allowCredentials`. signOut() in useSession
-// nukes both keys so the next session can pick a different passkey.
+// localStorage key that remembers which passkey the user prefers. Once
+// they've signed in with a passkey once, we skip the chooser modal AND
+// the browser's picker on subsequent visits by passing the stored
+// credential id via `allowCredentials`. signOut() in useSession nukes
+// all `slop:passkey:*` keys so the next session can pick a different
+// passkey.
 const CREDENTIAL_ID_KEY = "slop:passkey:credId";
-const LAST_PATH_KEY = "slop:passkey:lastPath";
 
 const readStoredCredentialId = (): string | null => {
   if (typeof window === "undefined") return null;
@@ -32,17 +32,15 @@ const clearStoredCredential = () => {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(CREDENTIAL_ID_KEY);
-    window.localStorage.removeItem(LAST_PATH_KEY);
   } catch {
     /* private mode / quota */
   }
 };
 
-const writeStoredCredential = (id: string, path: "existing" | "create") => {
+const writeStoredCredential = (id: string) => {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(CREDENTIAL_ID_KEY, id);
-    window.localStorage.setItem(LAST_PATH_KEY, path);
   } catch {
     /* private mode / quota */
   }
@@ -160,7 +158,7 @@ export function JoinCard() {
         preferredCredentialId,
         onStage: stage => setProgressStage(stage),
       });
-      writeStoredCredential(result.credentialIdBase64Url, "existing");
+      writeStoredCredential(result.credentialIdBase64Url);
       setProgressOpen(false);
       setStatus("");
       await refresh();
@@ -190,7 +188,7 @@ export function JoinCard() {
       const result = await createPasskeyAndAuth({
         onStage: stage => setProgressStage(stage),
       });
-      writeStoredCredential(result.credentialIdBase64Url, "create");
+      writeStoredCredential(result.credentialIdBase64Url);
       setProgressOpen(false);
       setStatus("");
       await refresh();
@@ -219,12 +217,19 @@ export function JoinCard() {
   };
 
   const onChooserPickExisting = () => {
+    // Belt-and-suspenders: when the user explicitly picks "Use Existing
+    // Passkey" from the chooser, drop any stored credential id first so
+    // the flow ALWAYS hits the discoverable-credential picker (no
+    // allowCredentials). Defends against a stale localStorage entry
+    // surviving sign-out for any reason.
+    clearStoredCredential();
     setChooserOpen(false);
     setBusy("passkey");
     void runExistingFlow();
   };
 
   const onChooserPickCreate = () => {
+    clearStoredCredential();
     setChooserOpen(false);
     setBusy("passkey");
     void runCreateFlow();

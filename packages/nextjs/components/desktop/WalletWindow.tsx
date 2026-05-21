@@ -1,13 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
-import { type Address as AddressType, type Hex, decodeEventLog, formatEther, parseEther } from "viem";
+import { type Address as AddressType, type Hex, decodeEventLog, formatEther } from "viem";
 import { base, gnosis, mainnet } from "viem/chains";
 import {
   useAccount,
-  useBalance,
   useChainId,
   usePublicClient,
   useReadContract,
@@ -16,11 +14,18 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
-import { Button, LoadingBar, TextField } from "~~/components/ui";
+import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { computeExecHash, defaultDeadline, saltFromLabel, sortSignatures } from "~~/utils/multisig";
+
+// Embedded AI wallet — was its own desktop app; now folded into this
+// window as the Assets/Activity tabs. The iframe loads in "embedded"
+// mode (?embedded=1&multisig=...&chain=...&signer=...&view=...) so the
+// hosted app targets our multisig and renders the requested view.
+// Override the URL for local dev with NEXT_PUBLIC_AI_WALLET_URL.
+const AI_WALLET_URL = process.env.NEXT_PUBLIC_AI_WALLET_URL || "https://wallet.slop.computer";
 
 export type WalletWindowProps = {
   mesh: PeerMeshState;
@@ -48,22 +53,21 @@ const chainMeta = (chainId: number) =>
     explorer: "https://etherscan.io",
   };
 
+type WalletTab = "deploy" | "assets" | "activity";
+
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   const wallet = mesh.wallet;
-  const [tab, setTab] = useState<"deploy" | "activity">(wallet ? "activity" : "deploy");
+  const [tab, setTab] = useState<WalletTab>(wallet ? "assets" : "deploy");
 
-  // Auto-switch to activity the first time a wallet shows up (initial
-  // deploy). Don't yank the user back to deploy if they archive — they
-  // explicitly hit "new episode" and want the deploy tab.
+  // Auto-switch to Assets the first time a wallet shows up (initial
+  // deploy). Don't yank the user back if they archive — they explicitly
+  // hit "new episode" and want the deploy tab.
   useEffect(() => {
     if (wallet && tab === "deploy") {
-      // Only auto-switch if there's already at least one deployment and
-      // the user hasn't manually picked Deploy — heuristic: if the wallet
-      // is freshly minted (within a few seconds), bounce to activity.
       const justDeployed = Date.now() - wallet.createdAt < 8_000;
-      if (justDeployed) setTab("activity");
+      if (justDeployed) setTab("assets");
     }
-    if (!wallet && tab === "activity") setTab("deploy");
+    if (!wallet && tab !== "deploy") setTab("deploy");
   }, [wallet, tab]);
 
   return (
@@ -78,14 +82,58 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
         overflow: "hidden",
       }}
     >
-      <TabBar tab={tab} setTab={setTab} deployLabel={wallet ? "Deploy" : "Deploy"} activityDisabled={!wallet} />
-      <div style={{ flex: 1, overflow: "auto" }}>
-        {tab === "deploy" ? (
-          <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
-        ) : wallet ? (
-          <ActivityTab mesh={mesh} wallet={wallet} myAddress={myAddress} />
-        ) : null}
+      <TabBar tab={tab} setTab={setTab} walletReady={!!wallet} />
+      {/* Deploy tab body — full-width tab content, scrollable. */}
+      <div
+        style={{
+          flex: 1,
+          overflow: "auto",
+          display: tab === "deploy" ? "block" : "none",
+        }}
+      >
+        <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
       </div>
+      {/* Iframe panel — mounted once when wallet exists; stays alive
+       *  while user flips between Assets and Activity tabs so wallet
+       *  state inside the iframe doesn't reset on every tab change.
+       *  Hidden entirely on the Deploy tab via display:none. */}
+      {wallet ? <AssetsActivityPanel mesh={mesh} wallet={wallet} myAddress={myAddress} tab={tab} /> : null}
+    </div>
+  );
+};
+
+// Container for Assets + Activity tabs. The iframe lives at this layer
+// so it stays mounted across Assets ↔ Activity switches (we just tell
+// it which view to show via postMessage). The Activity tab appends our
+// multisig tx queue below the iframe.
+const AssetsActivityPanel = ({
+  mesh,
+  wallet,
+  myAddress,
+  tab,
+}: {
+  mesh: PeerMeshState;
+  wallet: WalletRecord;
+  myAddress: string | null;
+  tab: WalletTab;
+}) => {
+  const visible = tab === "assets" || tab === "activity";
+  return (
+    <div
+      style={{
+        flex: visible ? 1 : undefined,
+        display: visible ? "flex" : "none",
+        flexDirection: "column",
+        minHeight: 0,
+      }}
+    >
+      <AIWalletIframe
+        wallet={wallet}
+        myAddress={myAddress}
+        view={tab === "activity" ? "activity" : "assets"}
+        mesh={mesh}
+      />
+      {tab === "activity" ? <ActivityTxQueue mesh={mesh} wallet={wallet} myAddress={myAddress} /> : null}
     </div>
   );
 };
@@ -97,13 +145,11 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
 const TabBar = ({
   tab,
   setTab,
-  deployLabel,
-  activityDisabled,
+  walletReady,
 }: {
-  tab: "deploy" | "activity";
-  setTab: (t: "deploy" | "activity") => void;
-  deployLabel: string;
-  activityDisabled: boolean;
+  tab: WalletTab;
+  setTab: (t: WalletTab) => void;
+  walletReady: boolean;
 }) => {
   const tabStyle = (active: boolean, disabled: boolean): React.CSSProperties => ({
     flex: 1,
@@ -119,6 +165,11 @@ const TabBar = ({
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1,
   });
+  const tabs: { id: WalletTab; label: string }[] = [
+    { id: "deploy", label: "Deploy" },
+    { id: "assets", label: "Assets" },
+    { id: "activity", label: "Activity" },
+  ];
   return (
     <div
       style={{
@@ -127,18 +178,21 @@ const TabBar = ({
         background: "rgba(0,0,0,0.3)",
       }}
     >
-      <button type="button" style={tabStyle(tab === "deploy", false)} onClick={() => setTab("deploy")}>
-        {deployLabel}
-      </button>
-      <button
-        type="button"
-        style={tabStyle(tab === "activity", activityDisabled)}
-        disabled={activityDisabled}
-        title={activityDisabled ? "Deploy a wallet first to unlock activity." : undefined}
-        onClick={() => !activityDisabled && setTab("activity")}
-      >
-        Activity
-      </button>
+      {tabs.map(t => {
+        const disabled = t.id !== "deploy" && !walletReady;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            style={tabStyle(tab === t.id, disabled)}
+            disabled={disabled}
+            title={disabled ? "Deploy a wallet first to unlock this tab." : undefined}
+            onClick={() => !disabled && setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 };
@@ -249,7 +303,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
       {existing ? (
-        <DeployedSummary wallet={existing} />
+        <DeployedSummary wallet={existing} onArchive={() => mesh.walletNewEpisode()} />
       ) : (
         <>
           <div>
@@ -298,30 +352,16 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                         flex: 1,
                         fontSize: 12,
                         display: "flex",
-                        flexDirection: "column",
-                        gap: 1,
+                        alignItems: "center",
+                        gap: 6,
                         minWidth: 0,
                       }}
                     >
-                      <span
-                        style={{
-                          fontFamily: "var(--slop-font-display)",
-                          letterSpacing: "0.04em",
-                          color: "var(--slop-text)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {s.label}
-                        {s.isMe ? <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>(you)</span> : null}
-                        {s.source === "custom" ? (
-                          <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>· added</span>
-                        ) : null}
-                      </span>
-                      <span style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
-                        <Address address={s.address as AddressType} size="xs" onlyEnsOrAddress />
-                      </span>
+                      <SlopAddress address={s.address} customNames={mesh.customNames} />
+                      {s.isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                      {s.source === "custom" ? (
+                        <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>· added</span>
+                      ) : null}
                     </span>
                     {s.source === "custom" ? (
                       <button
@@ -418,7 +458,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
 // chain grid once the wallet exists.
 // ============================================================================
 
-const DeployedSummary = ({ wallet }: { wallet: WalletRecord }) => {
+const DeployedSummary = ({ wallet, onArchive }: { wallet: WalletRecord; onArchive: () => void }) => {
   return (
     <div
       style={{
@@ -431,16 +471,37 @@ const DeployedSummary = ({ wallet }: { wallet: WalletRecord }) => {
         borderRadius: 6,
       }}
     >
-      <div
-        style={{
-          fontSize: 11,
-          color: "var(--slop-text-muted)",
-          fontFamily: "var(--slop-font-display)",
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-        }}
-      >
-        {wallet.label}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--slop-text-muted)",
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+          }}
+        >
+          {wallet.label}
+        </div>
+        <button
+          type="button"
+          onClick={onArchive}
+          title="Archive this wallet and reset to the deploy form for a fresh episode."
+          style={{
+            background: "transparent",
+            border: "1px solid rgba(255,62,201,0.4)",
+            color: "var(--slop-text-muted)",
+            borderRadius: 3,
+            padding: "3px 8px",
+            fontSize: 10,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          New episode
+        </button>
       </div>
       <Address address={wallet.address as AddressType} size="sm" />
       <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
@@ -768,7 +829,179 @@ const ChainRow = ({
 };
 
 // ============================================================================
-// Activity tab — chain picker + balances + send + tx queue, scoped per chain
+// AI wallet iframe — assets / activity / send / swap UI lives in here.
+// Mounted once when the wallet exists; we pass the desired view via the
+// initial URL and via postMessage on tab change so the iframe doesn't
+// remount when the user flips between Assets and Activity.
+// ============================================================================
+
+type AIWalletIframeProps = {
+  wallet: WalletRecord;
+  myAddress: string | null;
+  view: "assets" | "activity";
+  mesh: PeerMeshState;
+};
+
+type SlopProposeTxMessage = {
+  type: "slop:propose_tx";
+  chainId: number;
+  target: string;
+  value: string;
+  data: string;
+  summary?: string;
+};
+
+const isProposeTxMessage = (v: unknown): v is SlopProposeTxMessage => {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return (
+    m.type === "slop:propose_tx" &&
+    typeof m.chainId === "number" &&
+    typeof m.target === "string" &&
+    typeof m.value === "string" &&
+    typeof m.data === "string"
+  );
+};
+
+type SlopCursorMessage = { type: "slop:cursor"; x: number; y: number };
+const isCursorMessage = (v: unknown): v is SlopCursorMessage => {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return m.type === "slop:cursor" && typeof m.x === "number" && typeof m.y === "number";
+};
+
+const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) => {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Pick the most-recently-deployed chain as the "primary" — the iframe
+  // initial URL uses this as its display chain; the agent can still
+  // target a different deployed chain via postMessage.
+  const primaryChainId = useMemo<number | null>(() => {
+    const ids = Object.keys(wallet.deployments)
+      .map(k => Number(k))
+      .filter(n => Number.isFinite(n))
+      .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt);
+    return ids[0] ?? null;
+  }, [wallet.deployments]);
+  const publicClient = usePublicClient({ chainId: primaryChainId ?? undefined });
+
+  // Initial URL — only set once. View changes go through postMessage so
+  // we don't reload the iframe on every tab switch.
+  const initialSrcRef = useRef<string | null>(null);
+  const initialSrc = useMemo(() => {
+    if (initialSrcRef.current) return initialSrcRef.current;
+    if (primaryChainId === null) return null;
+    const params = new URLSearchParams({
+      embedded: "1",
+      multisig: wallet.address,
+      chain: String(primaryChainId),
+      view,
+    });
+    if (myAddress) params.set("signer", myAddress);
+    const url = `${AI_WALLET_URL}/?${params.toString()}`;
+    initialSrcRef.current = url;
+    return url;
+    // Intentionally only the initial values — see ref pinning above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primaryChainId]);
+
+  // Tell the iframe which view to show whenever the tab changes.
+  useEffect(() => {
+    const el = iframeRef.current;
+    if (!el || !el.contentWindow) return;
+    el.contentWindow.postMessage({ type: "slop:set_view", view }, AI_WALLET_URL);
+  }, [view]);
+
+  // Inbound postMessages from the iframe.
+  useEffect(() => {
+    const handler = async (e: MessageEvent) => {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
+
+      // Cursor bridge: translate iframe-local coords to parent-viewport
+      // coords and dispatch a synthetic mousemove so useLocalCursor's
+      // capture-phase listener keeps the slop cursor tracking. The
+      // iframe hides the system cursor on its side.
+      if (isCursorMessage(e.data)) {
+        const rect = iframeRef.current.getBoundingClientRect();
+        const clientX = rect.left + e.data.x;
+        const clientY = rect.top + e.data.y;
+        window.dispatchEvent(new MouseEvent("mousemove", { clientX, clientY, bubbles: false }));
+        return;
+      }
+
+      if (!isProposeTxMessage(e.data)) return;
+      const msg = e.data;
+      if (!(msg.chainId in wallet.deployments)) {
+        console.warn("[wallet] tx chainId not deployed", msg.chainId, "have", Object.keys(wallet.deployments));
+        return;
+      }
+      if (!publicClient) {
+        console.warn("[wallet] no public client for chain", msg.chainId);
+        return;
+      }
+      try {
+        const nonce = (await publicClient.readContract({
+          address: wallet.address as AddressType,
+          abi: MultisigAbi,
+          functionName: "nonce",
+        })) as bigint;
+        const deadline = defaultDeadline();
+        const target = msg.target as AddressType;
+        const valueWei = BigInt(msg.value || "0");
+        const data = (msg.data || "0x") as Hex;
+        const execHash = computeExecHash({
+          chainId: msg.chainId,
+          multisig: wallet.address as AddressType,
+          nonce,
+          deadline,
+          target,
+          value: valueWei,
+          data,
+        });
+        mesh.walletProposeTx({
+          chainId: msg.chainId,
+          target,
+          value: valueWei.toString(),
+          data,
+          deadline: deadline.toString(),
+          nonce: nonce.toString(),
+          execHash,
+          source: "manual",
+          browserId: null,
+        });
+      } catch (err) {
+        console.warn("[wallet] failed to queue propose_tx", err);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [wallet, publicClient, mesh]);
+
+  if (!initialSrc) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <span style={{ color: "var(--slop-text-muted)", fontSize: 12 }}>preparing wallet view…</span>
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      ref={iframeRef}
+      src={initialSrc}
+      title="Slop wallet"
+      // Sandbox: scripts + same-origin so wagmi/RainbowKit (if it loads
+      // standalone-mode internals) can run; popups for WalletConnect;
+      // forms for in-iframe submissions; allow-modals for the AI wallet's
+      // confirmation dialog. No allow-top-navigation.
+      sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"
+      style={{ flex: 1, width: "100%", border: 0, background: "#06030d", minHeight: 0 }}
+    />
+  );
+};
+
+// ============================================================================
+// Activity tx queue — per-chain pending + recent multisig txs. Rendered
+// below the iframe in the Activity tab.
 // ============================================================================
 
 type ActivityProps = {
@@ -777,7 +1010,7 @@ type ActivityProps = {
   myAddress: string | null;
 };
 
-const ActivityTab = ({ mesh, wallet, myAddress }: ActivityProps) => {
+const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
   // Default to the most recently deployed chain.
   const deployedChainIds = useMemo(
     () =>
@@ -788,9 +1021,6 @@ const ActivityTab = ({ mesh, wallet, myAddress }: ActivityProps) => {
     [wallet.deployments],
   );
   const [activeChain, setActiveChain] = useState<number>(deployedChainIds[0] ?? mainnet.id);
-  // If the wallet gains a new deployment while we're looking and we
-  // happen to be on a now-removed chain (rare; archive flow), snap to
-  // the first available.
   useEffect(() => {
     if (deployedChainIds.length === 0) return;
     if (!deployedChainIds.includes(activeChain)) setActiveChain(deployedChainIds[0]);
@@ -800,20 +1030,54 @@ const ActivityTab = ({ mesh, wallet, myAddress }: ActivityProps) => {
   const pendingTxs = chainTxs.filter(t => t.status === "pending");
   const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 10);
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14 }}>
-      <WalletHeader wallet={wallet} onArchive={() => mesh.walletNewEpisode()} />
-      <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
-      <WalletBalances address={wallet.address} />
-      <WalletSendForm wallet={wallet} mesh={mesh} chainId={activeChain} />
+  if (pendingTxs.length === 0 && otherTxs.length === 0) {
+    // Nothing to show — keep the panel tight so the iframe gets the
+    // visual weight. A one-liner chain picker lives at the top in case
+    // the user wants to verify which chain they're scoped to.
+    return (
+      <div
+        style={{
+          padding: "10px 14px",
+          borderTop: "1px solid rgba(255,62,201,0.18)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span style={{ fontSize: 10, color: "var(--slop-text-muted)", letterSpacing: "0.1em" }}>multisig queue:</span>
+        <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
+          no signatures pending
+        </span>
+      </div>
+    );
+  }
 
-      <Section title={`Pending on ${chainMeta(activeChain).label} (${pendingTxs.length})`}>
-        {pendingTxs.length === 0 ? (
-          <Empty>No transactions to sign on this chain. Have the browser submit something — it lands here.</Empty>
-        ) : (
-          pendingTxs.map(tx => <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />)
-        )}
-      </Section>
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        padding: 14,
+        borderTop: "1px solid rgba(255,62,201,0.18)",
+        maxHeight: "40%",
+        overflow: "auto",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 10, color: "var(--slop-text-muted)", letterSpacing: "0.1em" }}>multisig queue:</span>
+        <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
+      </div>
+
+      {pendingTxs.length > 0 ? (
+        <Section title={`Pending on ${chainMeta(activeChain).label} (${pendingTxs.length})`}>
+          {pendingTxs.map(tx => (
+            <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />
+          ))}
+        </Section>
+      ) : null}
 
       {otherTxs.length > 0 ? (
         <Section title="Recent">
@@ -865,406 +1129,6 @@ const ChainPicker = ({
         );
       })}
     </div>
-  );
-};
-
-const WalletHeader = ({ wallet, onArchive }: { wallet: WalletRecord; onArchive: () => void }) => {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        padding: 12,
-        background: "linear-gradient(180deg, rgba(255,62,201,0.06) 0%, rgba(255,62,201,0.02) 100%)",
-        border: "1px solid rgba(255,62,201,0.3)",
-        borderRadius: 6,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div
-          style={{
-            fontSize: 11,
-            color: "var(--slop-text-muted)",
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-          }}
-        >
-          {wallet.label}
-        </div>
-        <button
-          type="button"
-          onClick={onArchive}
-          title="Archive this wallet and reset to the deploy form for a fresh episode."
-          style={{
-            background: "transparent",
-            border: "1px solid rgba(255,62,201,0.4)",
-            color: "var(--slop-text-muted)",
-            borderRadius: 3,
-            padding: "3px 8px",
-            fontSize: 10,
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            cursor: "pointer",
-          }}
-        >
-          New episode
-        </button>
-      </div>
-      <Address address={wallet.address as AddressType} size="sm" />
-      <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
-        Threshold {wallet.threshold} of {wallet.signers.length} · deployed on {Object.keys(wallet.deployments).length}{" "}
-        chain
-        {Object.keys(wallet.deployments).length === 1 ? "" : "s"}
-      </div>
-    </div>
-  );
-};
-
-// ----------------------------------------------------------------------------
-// Balances — Zerion (chain-agnostic, shows everything).
-// ----------------------------------------------------------------------------
-
-type PortfolioResp = {
-  ok: boolean;
-  address: string;
-  totalUsd: number;
-  change1d: { absolute: number; percent: number } | null;
-  byChain: Record<string, number>;
-  positions: {
-    blockchain: string;
-    tokenName: string;
-    tokenSymbol: string;
-    balance: number;
-    balanceUsd: number;
-    thumbnail: string | null;
-  }[];
-};
-
-const WalletBalances = ({ address }: { address: string }) => {
-  const [data, setData] = useState<PortfolioResp | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(`/api/portfolio?address=${address}`, { cache: "no-store" })
-      .then(async r => {
-        const j = await r.json();
-        if (cancelled) return;
-        if (!r.ok) {
-          setErr(j.error ?? `HTTP ${r.status}`);
-          setData(null);
-        } else {
-          setErr(null);
-          setData(j as PortfolioResp);
-        }
-      })
-      .catch(e => {
-        if (!cancelled) setErr(String(e).slice(0, 120));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [address]);
-
-  return (
-    <Section title="Balances">
-      {loading ? (
-        <Empty>loading…</Empty>
-      ) : err ? (
-        <Empty>
-          {err === "no-zerion-key"
-            ? "Set ZERION_API_KEY on the server to see balances."
-            : `Couldn't load balances: ${err}`}
-        </Empty>
-      ) : !data ? (
-        <Empty>no data</Empty>
-      ) : (
-        <div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0 8px" }}>
-            <div style={{ fontSize: 22, fontFamily: "var(--slop-font-display)" }}>${data.totalUsd.toFixed(2)}</div>
-            {data.change1d ? (
-              <div style={{ fontSize: 11, color: data.change1d.percent >= 0 ? "#7be88a" : "#ff7676" }}>
-                {data.change1d.percent >= 0 ? "▲" : "▼"} {Math.abs(data.change1d.percent).toFixed(2)}%
-              </div>
-            ) : null}
-          </div>
-          {data.positions.length === 0 ? (
-            <Empty>nothing held yet — fund the wallet to see balances</Empty>
-          ) : (
-            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-              {data.positions.slice(0, 8).map((p, i) => (
-                <li
-                  key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "6px 8px",
-                    background: "rgba(255,255,255,0.02)",
-                    borderRadius: 4,
-                    fontSize: 12,
-                  }}
-                >
-                  {p.thumbnail ? (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img src={p.thumbnail} alt="" width={20} height={20} style={{ borderRadius: 10 }} />
-                  ) : (
-                    <div style={{ width: 20, height: 20, borderRadius: 10, background: "rgba(255,62,201,0.2)" }} />
-                  )}
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.tokenSymbol}
-                    <span style={{ color: "var(--slop-text-muted)", marginLeft: 6 }}>{p.balance.toFixed(4)}</span>
-                  </span>
-                  <span style={{ color: "var(--slop-text-muted)" }}>${p.balanceUsd.toFixed(2)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </Section>
-  );
-};
-
-// ----------------------------------------------------------------------------
-// Send form — propose a manual outgoing tx, scoped to the selected chain.
-// ----------------------------------------------------------------------------
-
-const WalletSendForm = ({ wallet, mesh, chainId }: { wallet: WalletRecord; mesh: PeerMeshState; chainId: number }) => {
-  const publicClient = usePublicClient({ chainId });
-  const { price: ethPrice } = useFetchNativeCurrencyPrice();
-  const { data: balance } = useBalance({ address: wallet.address as AddressType, chainId });
-  const [open, setOpen] = useState(false);
-  const [recipient, setRecipient] = useState("");
-  const [amount, setAmount] = useState("");
-  const [data, setData] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const targetOk = /^0x[a-fA-F0-9]{40}$/.test(recipient.trim());
-  const dataOk = !data.trim() || /^0x([a-fA-F0-9]{2})*$/.test(data.trim());
-  let amountWei: bigint | null = null;
-  let amountErr: string | null = null;
-  let amountFloat: number | null = null;
-  if (amount.trim()) {
-    try {
-      amountWei = parseEther(amount.trim() as `${number}`);
-      amountFloat = parseFloat(amount.trim());
-      if (!Number.isFinite(amountFloat)) amountFloat = null;
-    } catch {
-      amountErr = "invalid amount";
-    }
-  } else {
-    amountWei = 0n;
-  }
-  const amountUsd = amountFloat !== null && ethPrice > 0 && !amountErr ? amountFloat * ethPrice : null;
-
-  const onPropose = useCallback(async () => {
-    setErr(null);
-    if (!publicClient) {
-      setErr("no RPC client for this chain");
-      return;
-    }
-    if (!targetOk) {
-      setErr("enter a valid recipient");
-      return;
-    }
-    if (amountErr || amountWei === null) {
-      setErr(amountErr ?? "invalid amount");
-      return;
-    }
-    if (!dataOk) {
-      setErr("calldata must be 0x-prefixed hex");
-      return;
-    }
-    if (amountWei === 0n && (!data.trim() || data.trim() === "0x")) {
-      setErr("send 0 ETH with no calldata? add an amount or some data");
-      return;
-    }
-    setBusy(true);
-    try {
-      const nonce = (await publicClient.readContract({
-        address: wallet.address as AddressType,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
-      const target = recipient.trim() as AddressType;
-      const calldata = (data.trim() || "0x") as Hex;
-      const execHash = computeExecHash({
-        chainId,
-        multisig: wallet.address as AddressType,
-        nonce,
-        deadline,
-        target,
-        value: amountWei,
-        data: calldata,
-      });
-      mesh.walletProposeTx({
-        chainId,
-        target,
-        value: amountWei.toString(),
-        data: calldata,
-        deadline: deadline.toString(),
-        nonce: nonce.toString(),
-        execHash,
-        source: "manual",
-        browserId: null,
-      });
-      setRecipient("");
-      setAmount("");
-      setData("");
-      setShowAdvanced(false);
-      setOpen(false);
-    } catch (e) {
-      setErr(String(e).slice(0, 200));
-    } finally {
-      setBusy(false);
-    }
-  }, [publicClient, targetOk, amountErr, amountWei, dataOk, data, recipient, wallet, mesh, chainId]);
-
-  if (!open) {
-    return (
-      <Button variant="primary" onClick={() => setOpen(true)}>
-        Send on {chainMeta(chainId).label}
-      </Button>
-    );
-  }
-
-  return (
-    <Section title={`Send on ${chainMeta(chainId).label}`}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <Field label="Recipient">
-          <AddressInput
-            value={recipient}
-            placeholder="0x… or vitalik.eth"
-            disabled={busy}
-            onChange={next => setRecipient(next ?? "")}
-          />
-        </Field>
-        <Field label="Amount (ETH)">
-          <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
-            <div style={{ flex: 1 }}>
-              <TextField
-                inputMode="decimal"
-                value={amount}
-                placeholder="0.01"
-                disabled={busy}
-                onChange={e => setAmount(e.target.value)}
-              />
-            </div>
-            <button
-              type="button"
-              disabled={busy || !balance || balance.value === 0n}
-              onClick={() => {
-                if (!balance) return;
-                setAmount(formatEther(balance.value));
-              }}
-              title={balance ? `Max: ${formatEther(balance.value)} ETH` : "loading balance…"}
-              style={{
-                padding: "0 12px",
-                fontSize: 10,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                background:
-                  !balance || balance.value === 0n ? "rgba(255,255,255,0.06)" : "var(--slop-magenta, #ff3ec9)",
-                color: !balance || balance.value === 0n ? "var(--slop-text-muted)" : "#06030d",
-                border: "none",
-                borderRadius: 4,
-                cursor: !balance || balance.value === 0n ? "not-allowed" : "pointer",
-                fontWeight: 700,
-              }}
-            >
-              Max
-            </button>
-          </div>
-          {amountErr ? (
-            <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>{amountErr}</div>
-          ) : amountUsd !== null ? (
-            <div style={{ fontSize: 11, color: "var(--slop-text-muted)", marginTop: 4 }}>
-              ≈ $
-              {amountUsd.toLocaleString(undefined, {
-                minimumFractionDigits: amountUsd < 1 ? 4 : 2,
-                maximumFractionDigits: amountUsd < 1 ? 4 : 2,
-              })}{" "}
-              USD
-            </div>
-          ) : null}
-        </Field>
-        {showAdvanced ? (
-          <Field label="Calldata (hex, optional)">
-            <TextField
-              value={data}
-              placeholder="0x"
-              disabled={busy}
-              onChange={e => setData(e.target.value)}
-              style={{ fontFamily: "monospace", fontSize: 11 }}
-            />
-            {!dataOk ? (
-              <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>must be 0x-prefixed hex</div>
-            ) : null}
-          </Field>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(true)}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--slop-text-muted)",
-              fontSize: 10,
-              textDecoration: "underline",
-              cursor: "pointer",
-              alignSelf: "flex-start",
-              padding: 0,
-            }}
-          >
-            + add calldata
-          </button>
-        )}
-        {err ? (
-          <div
-            style={{
-              fontSize: 11,
-              color: "#ff7676",
-              padding: 6,
-              background: "rgba(255,118,118,0.08)",
-              borderRadius: 3,
-            }}
-          >
-            {err}
-          </div>
-        ) : null}
-        <div style={{ display: "flex", gap: 6 }}>
-          <Button variant="primary" onClick={onPropose} disabled={busy || !targetOk || !!amountErr || !dataOk}>
-            {busy ? "Proposing…" : "Propose"}
-          </Button>
-          <Button
-            onClick={() => {
-              setOpen(false);
-              setErr(null);
-            }}
-            disabled={busy}
-          >
-            Cancel
-          </Button>
-        </div>
-        <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
-          This queues the tx in Pending. {wallet.threshold} of {wallet.signers.length} signer
-          {wallet.signers.length === 1 ? "" : "s"} must sign before it can execute.
-        </div>
-      </div>
-    </Section>
   );
 };
 
@@ -1568,10 +1432,6 @@ const Section = ({ title, children }: { title: string; children: React.ReactNode
     </div>
     <div style={{ display: "flex", flexDirection: "column" }}>{children}</div>
   </div>
-);
-
-const Empty = ({ children }: { children: React.ReactNode }) => (
-  <div style={{ padding: 8, fontSize: 12, color: "var(--slop-text-muted)", fontStyle: "italic" }}>{children}</div>
 );
 
 const AddSignerRow = ({
