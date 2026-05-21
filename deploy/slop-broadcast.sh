@@ -48,6 +48,13 @@ X264_PRESET="${X264_PRESET:-ultrafast}"
 # CROP_TOP px taller and discarding the top band gets clean output
 # at OUT_W x OUT_H without messing with aspect ratio.
 CROP_TOP="${CROP_TOP:-60}"
+# x11grab introduces a small capture delay while pulse-monitor is
+# essentially realtime, so audio tends to land ahead of video at the
+# muxer. Offset the audio input by this many milliseconds (positive =
+# delay audio further into the future relative to video, i.e. push
+# audio later to match video). 200ms is a reasonable starting point
+# on this box; tweak via the env file if drift is still visible.
+AUDIO_DELAY_MS="${AUDIO_DELAY_MS:-200}"
 
 # Internal Xvfb / chrome render size = output + crop band.
 WIN_H=$((OUT_H + CROP_TOP))
@@ -177,7 +184,10 @@ fi
 # Log a redacted form of the RTMP URL — the journal is world-readable
 # on the box and we don't want the publish password in plaintext there.
 RTMP_LOG="${RTMP_URL//pass=$RTMP_PASS/pass=****}"
-log "starting ffmpeg → $RTMP_LOG"
+log "starting ffmpeg → $RTMP_LOG (audio delay ${AUDIO_DELAY_MS}ms)"
+# ffmpeg -itsoffset wants seconds (float); divide-by-1000 here so the
+# env knob stays in millisecond units which are easier to reason about.
+AUDIO_DELAY_SEC=$(awk "BEGIN { printf \"%.3f\", $AUDIO_DELAY_MS / 1000 }")
 env \
   DISPLAY="$DISPLAY_NUM" \
   PULSE_RUNTIME_PATH="$PULSE_RUNTIME" \
@@ -186,6 +196,7 @@ env \
     -thread_queue_size 64 \
     -framerate "$FPS" -f x11grab -video_size "${WIN_W}x${WIN_H}" -i "$DISPLAY_NUM" \
     -thread_queue_size 64 \
+    -itsoffset "$AUDIO_DELAY_SEC" \
     -f pulse -i "${PULSE_SINK_NAME}.monitor" \
     -vf "crop=${OUT_W}:${OUT_H}:0:${CROP_TOP}" \
     -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
