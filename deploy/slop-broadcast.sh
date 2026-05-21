@@ -32,10 +32,26 @@ RTMP_URL="${RTMP_URL:-$RTMP_DEFAULT}"
 
 OUT_W="${OUT_W:-1280}"
 OUT_H="${OUT_H:-720}"
-FPS="${FPS:-30}"
-VBITRATE_K="${VBITRATE_K:-4500}"
+FPS="${FPS:-24}"
+VBITRATE_K="${VBITRATE_K:-3000}"
 ABITRATE_K="${ABITRATE_K:-160}"
 AUTO_ENTER="${AUTO_ENTER:-1}"
+# libx264 preset. ultrafast is ~2x faster than veryfast but with larger
+# files for the same quality. On a t3.xlarge with heavy CPU-steal we
+# need the headroom — choppy output is much worse than fatter segments.
+X264_PRESET="${X264_PRESET:-ultrafast}"
+# Crop pixels off the top of the chrome window before encoding —
+# Puppeteer's "Chrome for Testing" build always shows a ~80px yellow
+# automation-warning infobar at the top that we don't want in the
+# stream. Chrome's `--app` mode would normally hide all browser chrome
+# but this specific infobar is hardcoded on. Rendering the window
+# CROP_TOP px taller and discarding the top band gets clean output
+# at OUT_W x OUT_H without messing with aspect ratio.
+CROP_TOP="${CROP_TOP:-80}"
+
+# Internal Xvfb / chrome render size = output + crop band.
+WIN_H=$((OUT_H + CROP_TOP))
+WIN_W="$OUT_W"
 
 DISPLAY_NUM=":99"
 PULSE_SINK_NAME="slop"
@@ -73,8 +89,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── 1. Xvfb ───────────────────────────────────────────────────────────
-log "starting Xvfb ${DISPLAY_NUM} (${OUT_W}x${OUT_H}x24)"
-Xvfb "$DISPLAY_NUM" -screen 0 "${OUT_W}x${OUT_H}x24" -nolisten tcp &
+log "starting Xvfb ${DISPLAY_NUM} (${WIN_W}x${WIN_H}x24, crop top ${CROP_TOP})"
+Xvfb "$DISPLAY_NUM" -screen 0 "${WIN_W}x${WIN_H}x24" -nolisten tcp &
 PIDS+=($!)
 # Wait for the socket to exist (a couple hundred ms in practice)
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -111,7 +127,7 @@ PULSE_RUNTIME_PATH="$PULSE_RUNTIME" pactl load-module module-null-sink \
 log "null sink \"$PULSE_SINK_NAME\" loaded"
 
 # ── 3. Chromium ───────────────────────────────────────────────────────
-log "launching Chromium --app at ${OUT_W}x${OUT_H}"
+log "launching Chromium --app at ${WIN_W}x${WIN_H}"
 rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
 env \
@@ -128,7 +144,7 @@ env \
     --autoplay-policy=no-user-gesture-required \
     --use-fake-ui-for-media-stream \
     --window-position=0,0 \
-    --window-size="${OUT_W},${OUT_H}" \
+    --window-size="${WIN_W},${WIN_H}" \
     --user-data-dir="$PROFILE_DIR" \
     --enable-logging=stderr --v=0 \
   2>/dev/null &
@@ -149,7 +165,7 @@ sleep 6
 if [[ "$AUTO_ENTER" == "1" ]]; then
   if command -v xdotool >/dev/null 2>&1; then
     log "synth-click center of window to dismiss enter-modal"
-    DISPLAY="$DISPLAY_NUM" xdotool mousemove "$((OUT_W/2))" "$((OUT_H/2))" || true
+    DISPLAY="$DISPLAY_NUM" xdotool mousemove "$((WIN_W/2))" "$((WIN_H/2))" || true
     sleep 0.3
     DISPLAY="$DISPLAY_NUM" xdotool click 1 || true
   else
@@ -167,9 +183,12 @@ env \
   PULSE_RUNTIME_PATH="$PULSE_RUNTIME" \
   PULSE_SERVER="unix:$PULSE_RUNTIME/native" \
   ffmpeg -hide_banner -loglevel warning \
-    -framerate "$FPS" -f x11grab -video_size "${OUT_W}x${OUT_H}" -i "$DISPLAY_NUM" \
+    -thread_queue_size 64 \
+    -framerate "$FPS" -f x11grab -video_size "${WIN_W}x${WIN_H}" -i "$DISPLAY_NUM" \
+    -thread_queue_size 64 \
     -f pulse -i "${PULSE_SINK_NAME}.monitor" \
-    -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+    -vf "crop=${OUT_W}:${OUT_H}:0:${CROP_TOP}" \
+    -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
       -b:v "${VBITRATE_K}k" -maxrate "${VBITRATE_K}k" \
       -bufsize "$((VBITRATE_K * 2))k" \
       -g "$((FPS * 2))" -keyint_min "$((FPS * 2))" \
