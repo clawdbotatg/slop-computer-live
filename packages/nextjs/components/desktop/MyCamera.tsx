@@ -9,6 +9,11 @@ export type LocalStreamHandle = {
   id: string;
   kind: StreamKind;
   stream: MediaStream;
+  // Optional teardown for wrappers around the raw getUserMedia stream
+  // (e.g. the RNNoise denoise pipeline). Called by stopStream BEFORE the
+  // tracks on `stream` are stopped — the wrapper needs a chance to kill
+  // the upstream hardware track that isn't reachable through `stream`.
+  dispose?: () => void;
 };
 
 type StreamProps = {

@@ -18,6 +18,11 @@ export type ChatMessage = {
   address: string | null;
   // ENS / handle if available; falls back to short address client-side.
   handle: string | null;
+  // Stable per-session anon id, if the sender was an anon user. Lets
+  // SlopAddress look up customNames[anonId] for the current display
+  // name and derive a stable flag color across renames. Null for
+  // SIWE/passkey senders (address fills the same role).
+  anonId?: string | null;
   // Message text. Already trimmed + length-capped at acceptance time.
   text: string;
   // "live" = signed-in user inside the desktop session, "spectator" = SIWE
@@ -89,6 +94,7 @@ export class ChatHistory {
   append(input: {
     address: string | null;
     handle: string | null;
+    anonId?: string | null;
     text: string;
     source: ChatMessage["source"];
   }): ChatMessage | null {
@@ -100,6 +106,7 @@ export class ChatHistory {
       ts: Date.now(),
       address: input.address ? input.address.toLowerCase() : null,
       handle: input.handle ?? null,
+      anonId: input.anonId ?? null,
       text,
       source: input.source,
     };

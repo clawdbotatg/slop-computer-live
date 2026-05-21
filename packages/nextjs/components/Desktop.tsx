@@ -305,6 +305,9 @@ function DesktopInner({ slug }: { slug: string }) {
       role: session.role,
       address: session.address,
       handle: session.handle,
+      // Carry anonId so the self-Peer's customNames lookup + flag color
+      // work for anonymous sessions (no address to key off).
+      anonId: session.anonId,
       // Threads the god-mode flag through to usePeerMesh so the self-
       // peer it constructs locally matches what the relay stamps for
       // everyone else — otherwise visiblePeers would still show the
@@ -357,6 +360,10 @@ function DesktopInner({ slug }: { slug: string }) {
       const target = streamsRef.current.find(s => s.id === id);
       if (!target) return;
       mesh.unpublish(id);
+      // dispose first — for denoise-wrapped streams it stops the upstream
+      // mic that isn't reachable through `target.stream` (synthetic audio
+      // track only). Idempotent and safe when undefined.
+      target.dispose?.();
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
       const r = readResume(slug);
@@ -1254,6 +1261,7 @@ function DesktopInner({ slug }: { slug: string }) {
     () =>
       bandsFromIdentity({
         address: session.authenticated ? session.address : null,
+        anonId: session.authenticated ? session.anonId : null,
         handle: session.authenticated ? session.handle : null,
         fallback: mesh.myId,
       }),
@@ -1885,6 +1893,7 @@ function DesktopInner({ slug }: { slug: string }) {
           const peer = mesh.peers.find(p => p.id === pub.peerId);
           const pubBands = bandsFromIdentity({
             address: peer?.address ?? null,
+            anonId: peer?.anonId ?? null,
             handle: peer?.handle ?? null,
             fallback: pub.ownerKey || pub.peerId,
           });
@@ -2424,6 +2433,7 @@ function DesktopInner({ slug }: { slug: string }) {
         // Same fallback chain as cursors: registered peer > inline > peerId hash.
         const bands = bandsFromIdentity({
           address: peer?.address ?? click.address ?? null,
+          anonId: peer?.anonId ?? null,
           handle: peer?.handle ?? click.handle ?? null,
           fallback: click.peerId,
         });
@@ -2434,8 +2444,15 @@ function DesktopInner({ slug }: { slug: string }) {
           by its overflow:hidden when over the menubar. Position: fixed +
           zIndex 2^31 keeps them on top of every other layer. */}
       {remoteCursors.map(({ peerId, x, y, handle, address }) => {
-        const bands = bandsFromIdentity({ address, handle, fallback: peerId });
-        const customName = address ? mesh.customNames[address.toLowerCase()] : undefined;
+        // Pull the peer's stable id from the mesh so cursor flag colors
+        // + custom-name lookups stay in sync with the rest of the UI
+        // after an anon rename. Falls back to whatever the cursor
+        // broadcast itself carried for peers not in our local roster.
+        const peer = mesh.peers.find(p => p.id === peerId);
+        const anonId = peer?.anonId ?? null;
+        const bands = bandsFromIdentity({ address, anonId, handle, fallback: peerId });
+        const lookupKey = (address ?? anonId)?.toLowerCase();
+        const customName = lookupKey ? mesh.customNames[lookupKey] : undefined;
         return (
           <Cursor
             key={peerId}

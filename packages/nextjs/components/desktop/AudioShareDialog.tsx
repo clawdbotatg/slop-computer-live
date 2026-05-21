@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AmplitudeBall } from "~~/components/desktop/AmplitudeBall";
 import { uploadAvatar } from "~~/components/desktop/AudioDropZone";
+import { DenoiseToggle } from "~~/components/desktop/DenoiseToggle";
 import { Bevel, Button } from "~~/components/ui";
 import { MEDIA_PREF_KEYS } from "~~/hooks/useLocalMedia";
 import { useMediaDevices } from "~~/hooks/useMediaDevices";
@@ -49,6 +50,12 @@ export const AudioShareDialog = ({
   const [micId, setMicId] = useState(() => {
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem(MEDIA_PREF_KEYS.micId) ?? "";
+  });
+  // RNNoise toggle — default on, persisted as "0" when off. See
+  // VideoShareDialog for the same shape.
+  const [denoise, setDenoise] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(MEDIA_PREF_KEYS.denoise) !== "0";
   });
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [previewError, setPreviewError] = useState<string>("");
@@ -108,6 +115,8 @@ export const AudioShareDialog = ({
     if (typeof window === "undefined") return;
     if (micId) window.localStorage.setItem(MEDIA_PREF_KEYS.micId, micId);
     else window.localStorage.removeItem(MEDIA_PREF_KEYS.micId);
+    if (denoise) window.localStorage.removeItem(MEDIA_PREF_KEYS.denoise);
+    else window.localStorage.setItem(MEDIA_PREF_KEYS.denoise, "0");
     onSubmit(micId);
     onClose();
   };
@@ -275,6 +284,8 @@ export const AudioShareDialog = ({
         {previewError ? (
           <p style={{ color: "var(--slop-magenta, #ff3ec9)", fontSize: 11, marginTop: 6 }}>{previewError}</p>
         ) : null}
+
+        <DenoiseToggle denoise={denoise} setDenoise={setDenoise} />
 
         <div style={{ marginTop: 14 }}>
           <div

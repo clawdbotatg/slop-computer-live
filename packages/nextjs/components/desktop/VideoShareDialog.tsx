@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AmplitudeBall } from "~~/components/desktop/AmplitudeBall";
+import { DenoiseToggle } from "~~/components/desktop/DenoiseToggle";
 import { Bevel, Button } from "~~/components/ui";
 import { type CameraResolution, MEDIA_PREF_KEYS } from "~~/hooks/useLocalMedia";
 import { useMediaDevices } from "~~/hooks/useMediaDevices";
@@ -64,6 +65,12 @@ export const VideoShareDialog = ({ mode, onClose, onSubmit }: VideoShareDialogPr
   const [micId, setMicId] = useState(() => {
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem(MEDIA_PREF_KEYS.micId) ?? "";
+  });
+  // RNNoise toggle — default on, persisted as "0" when off. Applies on
+  // next acquire (the dialog's Save → parent's start/replace path).
+  const [denoise, setDenoise] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(MEDIA_PREF_KEYS.denoise) !== "0";
   });
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
@@ -140,6 +147,8 @@ export const VideoShareDialog = ({ mode, onClose, onSubmit }: VideoShareDialogPr
     else window.localStorage.setItem(MEDIA_PREF_KEYS.cameraRes, resolution);
     if (micId) window.localStorage.setItem(MEDIA_PREF_KEYS.micId, micId);
     else window.localStorage.removeItem(MEDIA_PREF_KEYS.micId);
+    if (denoise) window.localStorage.removeItem(MEDIA_PREF_KEYS.denoise);
+    else window.localStorage.setItem(MEDIA_PREF_KEYS.denoise, "0");
     onSubmit({ cameraId, resolution, micId });
     onClose();
   };
@@ -236,6 +245,8 @@ export const VideoShareDialog = ({ mode, onClose, onSubmit }: VideoShareDialogPr
         {audioError ? (
           <p style={{ color: "var(--slop-magenta, #ff3ec9)", fontSize: 11, marginTop: 6 }}>{audioError}</p>
         ) : null}
+
+        <DenoiseToggle denoise={denoise} setDenoise={setDenoise} />
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <Button onClick={onClose}>Cancel</Button>

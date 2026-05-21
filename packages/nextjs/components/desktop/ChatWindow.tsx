@@ -139,10 +139,11 @@ const ChatRow = ({
     () =>
       bandsFromIdentity({
         address: msg.address,
+        anonId: msg.anonId,
         handle: msg.handle,
         fallback: msg.id,
       }),
-    [msg.address, msg.handle, msg.id],
+    [msg.address, msg.anonId, msg.handle, msg.id],
   );
   const sourceTag = msg.source === "agent" ? "AGENT" : msg.source === "spectator" ? "SPECTATOR" : null;
   return (
@@ -178,7 +179,13 @@ const ChatRow = ({
             textTransform: "uppercase",
           }}
         >
-          <SlopAddress address={msg.address} handle={msg.handle} fallback={msg.id} customNames={customNames} />
+          <SlopAddress
+            address={msg.address}
+            handle={msg.handle}
+            anonId={msg.anonId}
+            fallback={msg.id}
+            customNames={customNames}
+          />
           {isMine ? <span style={{ opacity: 0.7 }}>(you)</span> : null}
           {sourceTag ? (
             <span

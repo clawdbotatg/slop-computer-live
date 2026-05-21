@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
 import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
-import { useSession } from "~~/hooks/useSession";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -30,17 +29,21 @@ const TOP_GAP = 10;
 const MAX_NAME_LEN = 30;
 
 export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
-  const { refresh } = useSession();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const me = peers.find(p => p.id === myId) ?? null;
-  const myLower = me?.address?.toLowerCase() ?? null;
-  const myCurrentName = myLower ? (customNames[myLower] ?? "") : (me?.handle ?? "");
-  // Anon users (no address) rename their server-side session.handle.
-  // Address-having users keep using the local peerNames alias system.
-  // Either way, they can edit — they just go through different paths.
+  // Same lookup key SlopAddress uses everywhere: address for
+  // SIWE/passkey, anonId for anon. Whatever's currently in customNames
+  // for that key is the name they're shown by.
+  const myKey = (me?.address ?? me?.anonId)?.toLowerCase() ?? null;
+  const myCurrentName = myKey ? (customNames[myKey] ?? "") : (me?.handle ?? "");
+  // Anon users go through POST /auth/handle (peerNames keyed on anonId).
+  // Address-having users go through the WS set_custom_name path
+  // (peerNames keyed on address). Both end up writing to the same
+  // customNames map on the client via the `peer_name` broadcast — so
+  // the new name lights up across chat, transcript, peer list, etc.
   const isAnon = !!me && !me.address;
   const canEdit = !!me;
 
@@ -61,23 +64,15 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
     const trimmed = draft.trim();
     setEditing(false);
     if (isAnon) {
-      // Anon path: server-side session.handle rename. Empty submission
-      // just bails — anon must have *some* handle, no falling back to
-      // an address-shortform like SIWE/passkey users have.
       if (!trimmed) return;
-      const next = trimmed.slice(0, MAX_NAME_LEN);
       void fetch(`${RELAY_BASE}/auth/handle`, {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ handle: next }),
-      })
-        .then(res => {
-          if (res.ok) void refresh();
-        })
-        .catch(() => {
-          /* network blip — leave UI as-is, peer_handle broadcast never lands */
-        });
+        body: JSON.stringify({ handle: trimmed.slice(0, MAX_NAME_LEN) }),
+      }).catch(() => {
+        /* network blip — peerNames broadcast never lands, UI stays put */
+      });
       return;
     }
     onSetCustomName(trimmed === "" ? null : trimmed.slice(0, MAX_NAME_LEN));
@@ -181,7 +176,13 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
                     />
                   ) : (
                     <>
-                      <SlopAddress address={p.address} handle={p.handle} fallback={p.id} customNames={customNames} />
+                      <SlopAddress
+                        address={p.address}
+                        handle={p.handle}
+                        anonId={p.anonId}
+                        fallback={p.id}
+                        customNames={customNames}
+                      />
                       {isMe && canEdit ? (
                         <button
                           type="button"

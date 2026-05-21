@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import type { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
+import { denoiseStream } from "~~/utils/noiseSuppression";
 
 export type UseLocalMedia = {
   startCamera: () => Promise<void>;
@@ -24,6 +25,10 @@ export const MEDIA_PREF_KEYS = {
   micId: "slop-pref-mic-id",
   cameraId: "slop-pref-camera-id",
   cameraRes: "slop-pref-camera-res",
+  // RNNoise denoise: ON unless explicitly opted out. The pref is stored
+  // as "0" when off, anything else (incl. missing) is on — matches the
+  // "default-on" UX the share dialogs render.
+  denoise: "slop-pref-denoise",
 } as const;
 
 const readPref = (key: string): string | null => {
@@ -33,6 +38,26 @@ const readPref = (key: string): string | null => {
   } catch {
     return null;
   }
+};
+
+// Default ON — missing key means "user hasn't touched it, leave denoise on".
+export const readDenoisePref = (): boolean => readPref(MEDIA_PREF_KEYS.denoise) !== "0";
+
+// Audio constraints with the standard WebRTC DSP pipeline pinned ON.
+// Browsers default these to true today but spelling them out is free
+// insurance against a future default flip + a clearer signal of intent
+// in the diff. `voiceIsolation` is a Chrome-experimental flag — most
+// browsers ignore the unknown key, Chrome 124+ uses Google's on-device
+// model as an additional layer on top of RNNoise.
+const buildAudioConstraints = (micId: string | null): MediaTrackConstraints => {
+  return {
+    ...(micId ? { deviceId: { exact: micId } } : {}),
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    // Cast — voiceIsolation isn't in the standard TS lib yet.
+    ...({ voiceIsolation: true } as Record<string, boolean>),
+  };
 };
 
 export const resolutionConstraints = (res: string | null): MediaTrackConstraints => {
@@ -102,17 +127,42 @@ export function useLocalMedia(
       setError("");
       setBusy(kind);
       try {
-        const stream = await getStream();
-        const handle: LocalStreamHandle = { id: stream.id, kind, stream };
+        const raw = await getStream();
+        // Conditionally wrap mic-bearing kinds (camera + audio, NOT
+        // screen — screen audio is system audio, not voice, and RNNoise
+        // would mangle music/game audio). Falls back to the raw stream
+        // if the worklet pipeline can't initialize.
+        let stream = raw;
+        let dispose: (() => void) | undefined;
+        if ((kind === "camera" || kind === "audio") && readDenoisePref()) {
+          const denoised = await denoiseStream(raw);
+          if (denoised) {
+            stream = denoised.stream;
+            dispose = denoised.dispose;
+          }
+        }
+        const handle: LocalStreamHandle = { id: stream.id, kind, stream, dispose };
         setActiveIds(s => ({ ...s, [kind]: handle.id }));
         addStream(handle);
         // If the user kills the stream from the browser UI (e.g. closes the
         // screen-share picker, revokes mic), drop the publication.
-        const tracks = stream.getTracks();
-        tracks.forEach(t =>
+        // Listen on BOTH the cleaned stream (video pass-through, synthetic
+        // audio) AND the raw stream's audio tracks — with denoise on, a
+        // mic revoke ends the raw audio track but not the synthetic one
+        // until the denoise pipeline tears it down internally.
+        const watchedTracks = new Set<MediaStreamTrack>(stream.getTracks());
+        if (stream !== raw) {
+          for (const t of raw.getAudioTracks()) watchedTracks.add(t);
+        }
+        watchedTracks.forEach(t =>
           t.addEventListener("ended", () => {
-            // Only stop if all tracks are ended (mic+cam can end independently).
-            if (stream.getTracks().every(x => x.readyState === "ended")) {
+            // "All ended" means the publication is fully dead. We check
+            // the cleaned stream + the raw audio tracks together — if
+            // any of them is still live, the pub can keep going (e.g.
+            // mic revoked but camera still streaming).
+            const cleanedDone = stream.getTracks().every(x => x.readyState === "ended");
+            const rawAudioDone = stream === raw || raw.getAudioTracks().every(x => x.readyState === "ended");
+            if (cleanedDone && rawAudioDone) {
               setActiveIds(s => ({ ...s, [kind]: null }));
               stopStream(handle.id);
             }
@@ -137,12 +187,11 @@ export function useLocalMedia(
           ...resolutionConstraints(res),
           ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
         };
-        const audio: MediaTrackConstraints | true = micId ? { deviceId: { exact: micId } } : true;
         // Camera bundles audio so peers hear the speaker through the same
         // window they see them in (no separate audio publication needed).
         // Share → Audio kicks off a standalone audio-only pub for the
         // avatar / no-camera flow.
-        return tryGetUserMedia({ video, audio });
+        return tryGetUserMedia({ video, audio: buildAudioConstraints(micId) });
       }),
     [acquire],
   );
@@ -154,8 +203,7 @@ export function useLocalMedia(
     () =>
       acquire("audio", () => {
         const micId = readPref(MEDIA_PREF_KEYS.micId);
-        const audio: MediaTrackConstraints | true = micId ? { deviceId: { exact: micId } } : true;
-        return tryGetUserMedia({ video: false, audio });
+        return tryGetUserMedia({ video: false, audio: buildAudioConstraints(micId) });
       }),
     [acquire],
   );

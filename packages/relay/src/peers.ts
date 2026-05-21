@@ -18,6 +18,11 @@ export type PeerInfo = {
   role: "host" | "guest";
   address: string | null;
   handle: string | null;
+  // Stable per-session public id for anon peers (no wallet/passkey →
+  // no address). Used as the customNames lookup key + flag-color seed
+  // so a rename doesn't break their visual identity. Null for SIWE/
+  // passkey peers — their `address` plays the same role.
+  anonId: string | null;
   connectedAt: number;
   // True for god-mode streaming sessions: still in the relay's peer
   // map so RTC signaling flows (the streaming box receives audio/

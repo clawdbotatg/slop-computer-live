@@ -56,13 +56,19 @@ export function bandsFromAddress(address: `0x${string}` | null | undefined): Ban
 
 export function bandsFromIdentity(opts: {
   address?: string | null;
+  /** Stable per-session anon id. Preferred over `handle` as the hash
+   *  seed for anon users so renaming doesn't shuffle their flag — every
+   *  chat row, transcript line, and peer entry for the same anon ends
+   *  up with the same three colors regardless of what they're currently
+   *  called. */
+  anonId?: string | null;
   handle?: string | null;
   fallback?: string | null;
 }): Bands {
   if (opts.address && /^0x[0-9a-fA-F]{40}$/.test(opts.address)) {
     return bandsFromAddress(opts.address as `0x${string}`);
   }
-  const seed = opts.handle ?? opts.fallback ?? null;
+  const seed = opts.anonId ?? opts.handle ?? opts.fallback ?? null;
   if (!seed) return NEUTRAL_BANDS;
   return bandsFromAddress(hashToFakeAddress(seed));
 }

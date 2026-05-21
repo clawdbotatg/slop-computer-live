@@ -43,7 +43,6 @@ import {
   deleteSession,
   getSession,
   issueNonce,
-  updateSessionHandle,
 } from "./sessions.js";
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
@@ -958,6 +957,7 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   const msg = chat.append({
     address: a.session.address,
     handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
     text: raw,
     source,
   });
@@ -1034,6 +1034,7 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
   const seg = transcript.append({
     address: a.session.address,
     handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
     text: raw,
     source,
   });
@@ -1063,7 +1064,7 @@ app.get("/v1/transcript", async (req, reply) => {
 // `address` / `handle` come from query params (URL-encoded) so the
 // request body can stay a raw audio Buffer.
 const STT_AUDIO_MAX_BYTES = 4 * 1024 * 1024; // ~30s of opus at 96kbps, with headroom
-type SttRelayQuery = { slug?: string; address?: string; handle?: string; lang?: string };
+type SttRelayQuery = { slug?: string; address?: string; handle?: string; anonId?: string; lang?: string };
 app.post<{ Querystring: SttRelayQuery }>(
   "/v1/transcript/relay",
   { bodyLimit: STT_AUDIO_MAX_BYTES },
@@ -1088,6 +1089,9 @@ app.post<{ Querystring: SttRelayQuery }>(
     const handle = typeof req.query?.handle === "string" && req.query.handle.length <= 64
       ? req.query.handle
       : null;
+    const anonId = typeof req.query?.anonId === "string" && req.query.anonId.length <= 64
+      ? req.query.anonId
+      : null;
     const lang = typeof req.query?.lang === "string" && req.query.lang.length <= 16
       ? req.query.lang
       : undefined;
@@ -1098,7 +1102,7 @@ app.post<{ Querystring: SttRelayQuery }>(
     // falls back to the god-mode session token when address is null
     // so we still cap unattributed spam.
     const room = roomFromReq(req);
-    const bucketKey = address ?? `gm:${a.session.token}`;
+    const bucketKey = address ?? anonId ?? `gm:${a.session.token}`;
     if (!room.transcript.allow(bucketKey)) {
       return reply.code(429).send({ error: "rate-limited" });
     }
@@ -1119,6 +1123,7 @@ app.post<{ Querystring: SttRelayQuery }>(
     const seg = room.transcript.append({
       address,
       handle,
+      anonId,
       text: trimmed,
       // Same "live" source the per-browser STT path used — keeps the
       // archive coherent for downstream consumers (no special "from
@@ -2065,7 +2070,12 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  const item = roomFromReq(req).todos.add({ address: a.session.address, handle: a.session.handle, text });
+  const item = roomFromReq(req).todos.add({
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+    text,
+  });
   if (!item) return reply.code(400).send({ error: "empty" });
   return { ok: true, item };
 });
@@ -2124,7 +2134,12 @@ app.post<{ Body: NoteTextBody }>("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const note = roomFromReq(req).notes.create({ address: a.session.address, handle: a.session.handle, text });
+  const note = roomFromReq(req).notes.create({
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+    text,
+  });
   if (!note) return reply.code(400).send({ error: "create-failed" });
   return { ok: true, note };
 });
@@ -2161,7 +2176,12 @@ app.post<{ Body: GlossaryTermBody }>("/v1/glossary", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const term = typeof req.body?.term === "string" ? req.body.term : "";
-  const entry = glossaryCreate({ term, address: a.session.address, handle: a.session.handle });
+  const entry = glossaryCreate({
+    term,
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+  });
   if (!entry) return reply.code(400).send({ error: "empty-term" });
   return { ok: true, item: entry };
 });
@@ -2809,7 +2829,12 @@ app.post("/auth/anon", async (req, reply) => {
     return reply.code(403).send({ error: "invite-required" });
   }
   const handle = `Anon${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}`;
-  const session = createSession({ role: "guest", address: null, handle });
+  // Stable per-session public identifier. Drives the flag colors and
+  // peerNames lookups so renaming doesn't change visual identity.
+  // Random 16-byte hex, not derived from the handle, so a rename can
+  // never collide with another anon's initial AnonXXXX.
+  const anonId = `anon-${randomBytes(8).toString("hex")}`;
+  const session = createSession({ role: "guest", address: null, handle, anonId });
   reply.setCookie(SESSION_COOKIE, session.token, {
     path: "/",
     httpOnly: true,
@@ -2822,11 +2847,15 @@ app.post("/auth/anon", async (req, reply) => {
 
 // --- Anon handle rename -----------------------------------------------------
 //
-// Anon-signed-in users get a random `AnonXXXX` handle at login. This lets
-// them swap it for something of their own. SIWE/passkey sessions are
-// blocked — their handle is the ENS reverse-lookup, which we can't let
-// a user forge. Those users should keep using the existing `peerNames`
-// local-alias system (set_custom_name WS message) instead.
+// Sets the anon user's display name. We DO NOT mutate session.handle —
+// that stays as the initial `AnonXXXX` forever, because chat/transcript/
+// peer records baked it in at write time and we'd never see consistent
+// identity if it changed. Instead we go through `peerNames` (the same
+// system SIWE users' set_custom_name WS path uses), keyed by the
+// session's stable `anonId`. The PeerNames subscriber fans a `peer_name`
+// broadcast to every room, and the client SlopAddress component looks
+// up customNames[anonId] — so the new name lights up everywhere
+// (chat history, transcript, peer list) without per-record migration.
 
 type HandleBody = { handle?: unknown };
 
@@ -2835,25 +2864,16 @@ app.post<{ Body: HandleBody }>("/auth/handle", async (req, reply) => {
   const session = getSession(token);
   if (!session || !token) return reply.code(401).send({ error: "unauthenticated" });
   if (session.address !== null) return reply.code(403).send({ error: "not-anon" });
+  if (!session.anonId) return reply.code(409).send({ error: "no-anon-id" });
 
   const body = (req.body ?? {}) as HandleBody;
-  const handle = typeof body.handle === "string" ? body.handle.trim().slice(0, 30) : "";
-  if (!handle) return reply.code(400).send({ error: "empty-handle" });
+  const handle = typeof body.handle === "string" ? body.handle : "";
+  // peerNames.set normalizes (trim, strip controls, max 30). Returns
+  // null if the result is empty — which we reject as a bad rename.
+  const next = peerNames.set(session.anonId, handle);
+  if (next == null) return reply.code(400).send({ error: "empty-handle" });
 
-  updateSessionHandle(token, handle);
-
-  // Mutate live peer records + broadcast so peers see the new name
-  // without having to reconnect. One session can be in multiple rooms
-  // simultaneously (multi-tab), so iterate all of them.
-  for (const peer of findPeersBySessionToken(token)) {
-    peer.handle = handle;
-    const peerRoom = findPeerRoom(peer.id);
-    if (peerRoom) {
-      peerRoom.broadcast({ type: "peer_handle", peerId: peer.id, handle });
-    }
-  }
-
-  return { ok: true, handle };
+  return { ok: true, handle: next };
 });
 
 // --- Password auth (guest) --------------------------------------------------
@@ -2943,6 +2963,7 @@ app.get("/auth/me", async req => {
     role: session.role,
     address: session.address,
     handle: session.handle,
+    anonId: session.anonId ?? null,
     isAdmin: session.role === "host" && !!session.address && isAdminAddress(session.address),
     spectator: session.spectator === true,
   };
@@ -3424,6 +3445,7 @@ app.register(async function signalRoutes(fastify) {
       role: session.role,
       address: session.address,
       handle: session.handle,
+      anonId: session.anonId ?? null,
       connectedAt: Date.now(),
       ...(isSpectator ? { spectator: true as const } : {}),
     };
@@ -3582,6 +3604,7 @@ app.register(async function signalRoutes(fastify) {
           room.chat.append({
             address: info.address,
             handle: info.handle,
+            anonId: info.anonId,
             text: msg.text,
             source: "live",
           });
@@ -3589,14 +3612,16 @@ app.register(async function signalRoutes(fastify) {
         }
         case "set_custom_name": {
           // User picks a display name that overrides ENS / address-short
-          // everywhere their identity is shown. Keyed by lowercased
-          // address — only peers with a SIWE/passkey-backed address can
-          // claim a name. The PeerNames subscriber above fans this out to
-          // every room so the change lands on tiles in other rooms too.
-          if (!info.address) {
-            return send(socket, { type: "error", error: "no_address" });
+          // everywhere their identity is shown. Keyed by the user's
+          // stable id — `address` for SIWE/passkey, `anonId` for anon.
+          // The PeerNames subscriber above fans this out to every room
+          // so chat, transcript, peer list, tile badges, etc. all flip
+          // through their customNames[stableId] lookup in lockstep.
+          const stableId = info.address ?? info.anonId ?? null;
+          if (!stableId) {
+            return send(socket, { type: "error", error: "no_stable_id" });
           }
-          const next = peerNames.set(info.address, typeof msg.name === "string" ? msg.name : null);
+          const next = peerNames.set(stableId, typeof msg.name === "string" ? msg.name : null);
           send(socket, { type: "custom_name_ack", name: next });
           return;
         }
@@ -3605,6 +3630,7 @@ app.register(async function signalRoutes(fastify) {
           room.todos.add({
             address: info.address,
             handle: info.handle,
+            anonId: info.anonId,
             text: msg.text,
           });
           return;
@@ -3639,6 +3665,7 @@ app.register(async function signalRoutes(fastify) {
           room.notes.create({
             address: info.address,
             handle: info.handle,
+            anonId: info.anonId,
             text: msg.text,
           });
           return;
@@ -3659,6 +3686,7 @@ app.register(async function signalRoutes(fastify) {
             term: msg.term,
             address: info.address,
             handle: info.handle,
+            anonId: info.anonId,
           });
           return;
         }

@@ -2858,6 +2858,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@sapphi-red/web-noise-suppressor@npm:^0.3.5":
+  version: 0.3.5
+  resolution: "@sapphi-red/web-noise-suppressor@npm:0.3.5"
+  checksum: 10/5d43a0c7acf235d36d50f3344924c5a1e44b0ce1fe3108c2b66d222354bb53a7d8949d1c7bb8921f2863d6f2e2a467e4edc8752ca2d55db399d4abdfeb13f256
+  languageName: node
+  linkType: hard
+
 "@scaffold-ui/components@npm:^0.1.8":
   version: 0.1.8
   resolution: "@scaffold-ui/components@npm:0.1.8"
@@ -3188,6 +3195,7 @@ __metadata:
     "@noble/hashes": "npm:^1.5.0"
     "@rainbow-me/rainbowkit": "npm:2.2.9"
     "@react-native-async-storage/async-storage": "npm:^2.2.0"
+    "@sapphi-red/web-noise-suppressor": "npm:^0.3.5"
     "@scaffold-ui/components": "npm:^0.1.8"
     "@scaffold-ui/hooks": "npm:^0.1.6"
     "@tailwindcss/postcss": "npm:latest"

@@ -11,6 +11,12 @@ export type Session = {
   address: string | null;
   handle: string | null;
   expiresAt: number;
+  // Stable per-session public identifier for anon users (no wallet/
+  // passkey, so no address). Generated once at /auth/anon and never
+  // changes — drives flag colors + peerNames lookups so renames don't
+  // break visual identity. Null for SIWE/passkey sessions (their
+  // address fills the same role). Safe to ship to clients.
+  anonId?: string | null;
   // True for "god mode" streaming sessions: receives broadcasts but
   // is invisible to other peers (no guest list entry, no cursor) and
   // is rejected if it tries to publish, chat, or write any shared
@@ -94,6 +100,7 @@ export function createSession(args: {
   role: Role;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
   spectator?: boolean;
 }): Session {
   pruneSessions();
@@ -127,19 +134,6 @@ export function createAgentSession(base: Pick<Session, "role" | "address" | "han
   sessions.set(token, session);
   persistToDisk();
   return session;
-}
-
-/**
- * Mutate the handle on an existing session and persist. Used by the
- * `/auth/handle` rename endpoint so an anon user can change the
- * `AnonXXXX` we minted at login into something of their own.
- */
-export function updateSessionHandle(token: string, handle: string | null): Session | null {
-  const s = sessions.get(token);
-  if (!s) return null;
-  s.handle = handle;
-  persistToDisk();
-  return s;
 }
 
 export function getSession(token: string | undefined | null): Session | null {

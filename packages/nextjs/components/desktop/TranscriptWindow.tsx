@@ -11,6 +11,7 @@ type TranscriptSegment = {
   ts: number;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
 };
@@ -142,10 +143,11 @@ const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames:
     () =>
       bandsFromIdentity({
         address: seg.address,
+        anonId: seg.anonId,
         handle: seg.handle,
         fallback: seg.id,
       }),
-    [seg.address, seg.handle, seg.id],
+    [seg.address, seg.anonId, seg.handle, seg.id],
   );
   const sourceTag = seg.source === "agent" ? "AGENT" : seg.source === "spectator" ? "SPECTATOR" : null;
   return (
@@ -180,7 +182,13 @@ const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames:
             textTransform: "uppercase",
           }}
         >
-          <SlopAddress address={seg.address} handle={seg.handle} fallback={seg.id} customNames={customNames} />
+          <SlopAddress
+            address={seg.address}
+            handle={seg.handle}
+            anonId={seg.anonId}
+            fallback={seg.id}
+            customNames={customNames}
+          />
           {sourceTag ? (
             <span
               style={{

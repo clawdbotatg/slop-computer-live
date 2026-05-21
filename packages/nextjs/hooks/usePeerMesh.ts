@@ -94,6 +94,10 @@ export type Peer = {
   role: "host" | "guest";
   address: string | null;
   handle: string | null;
+  /** Stable per-session anon id (no wallet/passkey). Used as the
+   *  customNames lookup key + flag-color seed so renaming an anon
+   *  doesn't shuffle their colors. Null for SIWE/passkey peers. */
+  anonId: string | null;
   connectedAt?: number;
   // Set by the relay for god-mode streaming sessions. Kept in the
   // peers array so RTC signaling works (the streamer needs audio/
@@ -256,6 +260,10 @@ export type ChatMessage = {
   ts: number;
   address: string | null;
   handle: string | null;
+  /** Stable anon id of the sender, if they signed in as anon. Lets
+   *  SlopAddress pull the current display name from customNames and
+   *  keep flag colors stable across renames. */
+  anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
 };
@@ -267,6 +275,7 @@ export type TodoItem = {
   ts: number;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
   text: string;
   done: boolean;
 };
@@ -279,6 +288,7 @@ export type Note = {
   updatedTs: number;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
   text: string;
 };
 
@@ -293,6 +303,7 @@ export type GlossaryTerm = {
   updatedTs: number;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
 };
 
 /** Jamendo / Custom playlist track. Mirrors
@@ -532,6 +543,10 @@ type SelfHint = {
   role: "host" | "guest";
   address: string | null;
   handle: string | null;
+  /** Stable anon id for non-wallet sessions — threaded into the
+   *  self-Peer so customNames lookups + flag colors work for anon
+   *  users. Null for SIWE/passkey sessions. */
+  anonId?: string | null;
   // Marks god-mode (streaming) sessions so the client-side self-Peer
   // carries the same flag the relay stamps on it server-side. Without
   // it, `visiblePeers` would filter every other peer's view of this
@@ -754,9 +769,15 @@ export type PeerMeshState = {
  *  short peer-id. Pass `mesh.customNames` so the rule lives in one
  *  place — every renderer (guest list, tile badge, cursor label,
  *  chat author) goes through here. */
-export function peerLabel(peer: Pick<Peer, "id" | "address" | "handle">, customNames: Record<string, string>): string {
-  const lower = peer.address?.toLowerCase();
-  if (lower && customNames[lower]) return customNames[lower];
+export function peerLabel(
+  peer: Pick<Peer, "id" | "address" | "handle" | "anonId">,
+  customNames: Record<string, string>,
+): string {
+  // Use the peer's stable id (address for SIWE/passkey, anonId for
+  // anon) to look up their chosen display name. Keeps the rule lined
+  // up with what SlopAddress shows in the rest of the UI.
+  const lookupKey = (peer.address ?? peer.anonId)?.toLowerCase();
+  if (lookupKey && customNames[lookupKey]) return customNames[lookupKey];
   if (peer.handle) return peer.handle;
   if (peer.address) return `${peer.address.slice(0, 6)}…${peer.address.slice(-4)}`;
   return peer.id.slice(0, 6);
@@ -1578,6 +1599,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             role: hint?.role ?? "guest",
             address: hint?.address ?? null,
             handle: hint?.handle ?? null,
+            anonId: hint?.anonId ?? null,
             ...(hint?.spectator ? { spectator: true as const } : {}),
           };
           setPeers([...others, me]);
@@ -1710,17 +1732,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const peer = msg.peer as Peer;
           setPeers(prev => prev.filter(p => p.id !== peer.id));
           closePeerConnection(peer.id);
-          return;
-        }
-
-        if (msg.type === "peer_handle") {
-          // Anon user renamed themselves via /auth/handle. The relay
-          // mutates session.handle and fires this so every peer's
-          // in-memory Peer record updates without a reconnect.
-          const peerId = typeof msg.peerId === "string" ? msg.peerId : null;
-          const handle = typeof msg.handle === "string" ? msg.handle : null;
-          if (!peerId || handle == null) return;
-          setPeers(prev => prev.map(p => (p.id === peerId ? { ...p, handle } : p)));
           return;
         }
 

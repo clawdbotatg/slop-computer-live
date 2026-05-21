@@ -28,6 +28,9 @@ export type TranscriptSegment = {
   address: string | null;
   // ENS / handle if available; falls back to short address client-side.
   handle: string | null;
+  // Stable anon id for anon speakers — lets SlopAddress look up the
+  // current display name + keep flag colors stable across renames.
+  anonId?: string | null;
   // Final-result text from the speaker's STT engine. Interim results MUST
   // NOT be sent here — they're noisy and self-correct.
   text: string;
@@ -107,6 +110,7 @@ export class Transcript {
   append(input: {
     address: string | null;
     handle: string | null;
+    anonId?: string | null;
     text: string;
     source: TranscriptSegment["source"];
   }): TranscriptSegment | null {
@@ -115,20 +119,25 @@ export class Transcript {
     if (!text) return null;
     const now = Date.now();
     const addr = input.address ? input.address.toLowerCase() : null;
+    const anonId = input.anonId ?? null;
+    // Speaker dedupe key: address for SIWE/passkey, anonId for anon.
+    // Same identity → same key → dedupe applies; different identities
+    // never collapse even if they say the same thing.
+    const speakerKey = addr ?? anonId;
 
     // Content dedupe — see DEDUPE_WINDOW_MS comment. Compare against
     // recent segments from the same speaker. Normalize whitespace +
     // case + trailing punctuation so "Hello." and "hello" collapse
     // (the two STT engines that race during a transition tend to
-    // differ on exactly those). Only applies when we have an address
-    // to key on — anonymous segments fall through.
-    if (addr) {
+    // differ on exactly those).
+    if (speakerKey) {
       const norm = normalizeForDedupe(text);
       for (let i = this.buffer.length - 1; i >= 0; i--) {
         const prev = this.buffer[i];
         if (!prev) continue;
         if (now - prev.ts > DEDUPE_WINDOW_MS) break;
-        if (prev.address !== addr) continue;
+        const prevKey = prev.address ?? prev.anonId ?? null;
+        if (prevKey !== speakerKey) continue;
         if (normalizeForDedupe(prev.text) === norm) return null;
       }
     }
@@ -138,6 +147,7 @@ export class Transcript {
       ts: now,
       address: addr,
       handle: input.handle ?? null,
+      anonId,
       text,
       source: input.source,
     };

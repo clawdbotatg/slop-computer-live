@@ -25,6 +25,10 @@ export type Session =
       role: "host" | "guest";
       address: string | null;
       handle: string | null;
+      // Stable per-session id for anon users (no wallet/passkey). Drives
+      // customNames lookups + flag colors so a rename doesn't break
+      // visual identity. Null for SIWE/passkey sessions.
+      anonId: string | null;
       isAdmin: boolean;
       // True when the session was minted via /auth/godmode. Invisible
       // streaming/observer session — UI hides itself (no JoinCard, no
@@ -198,9 +202,17 @@ export function shortAddress(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-export function sessionLabel(session: Session): string {
+export function sessionLabel(session: Session, customNames?: Record<string, string>): string {
   if (!session.authenticated) return "GUEST · sign in";
-  if (session.handle) return `${session.isAdmin ? "ADMIN" : "GUEST"} · ${session.handle}`;
-  if (session.address) return `${session.isAdmin ? "ADMIN" : "GUEST"} · ${shortAddress(session.address)}`;
-  return session.isAdmin ? "ADMIN" : "GUEST";
+  // Resolve the same way SlopAddress does: a custom name keyed by the
+  // user's stable id (address for SIWE/passkey, anonId for anon) wins
+  // over the original handle. Keeps the menubar in sync after a
+  // rename without making us refetch /auth/me.
+  const lookupKey = (session.address ?? session.anonId)?.toLowerCase();
+  const custom = lookupKey && customNames ? customNames[lookupKey] : undefined;
+  const prefix = session.isAdmin ? "ADMIN" : "GUEST";
+  if (custom) return `${prefix} · ${custom}`;
+  if (session.handle) return `${prefix} · ${session.handle}`;
+  if (session.address) return `${prefix} · ${shortAddress(session.address)}`;
+  return prefix;
 }

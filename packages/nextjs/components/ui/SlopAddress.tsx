@@ -22,6 +22,12 @@ export type SlopAddressProps = {
   /** ENS-resolved handle from the peer state. Used as a label when no
    *  custom name is set and no on-chain address is known. */
   handle?: string | null;
+  /** Stable per-session anon id (no wallet/passkey). Drives customNames
+   *  lookups + flag colors for anon users so renaming doesn't break
+   *  their visual identity across chat history, transcript, peer list,
+   *  etc. Use the same `anonId` baked into the record that we're
+   *  rendering — it's a stable id, not a name. */
+  anonId?: string | null;
   /** Last-resort hash input for BandFlag colors and label, e.g. the
    *  peer id or message id when neither address nor handle exists. */
   fallback?: string;
@@ -31,10 +37,17 @@ export type SlopAddressProps = {
   blockieSize?: number;
 };
 
-export const SlopAddress = ({ address, handle, fallback, customNames, blockieSize = 14 }: SlopAddressProps) => {
-  const lower = address?.toLowerCase();
-  const customName = lower && customNames ? customNames[lower] : undefined;
-  const bands = useMemo(() => bandsFromIdentity({ address, handle, fallback }), [address, handle, fallback]);
+export const SlopAddress = ({ address, handle, anonId, fallback, customNames, blockieSize = 14 }: SlopAddressProps) => {
+  // Lookup key for the global customNames map. Address for SIWE/passkey
+  // (set via the set_custom_name WS path), anonId for anon (set via
+  // POST /auth/handle). Either way, the same dictionary holds the
+  // user's chosen display name and broadcasts updates as `peer_name`.
+  const lookupKey = (address ?? anonId)?.toLowerCase();
+  const customName = lookupKey && customNames ? customNames[lookupKey] : undefined;
+  const bands = useMemo(
+    () => bandsFromIdentity({ address, anonId, handle, fallback }),
+    [address, anonId, handle, fallback],
+  );
 
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
@@ -44,6 +57,10 @@ export const SlopAddress = ({ address, handle, fallback, customNames, blockieSiz
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{customName}</span>
           <AddressBlockie address={address as AddressType} size={blockieSize} />
         </>
+      ) : customName ? (
+        // Anon with a chosen name — no blockie (no underlying address)
+        // and no copy icon, just the name.
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{customName}</span>
       ) : address ? (
         <Address address={address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
       ) : (
