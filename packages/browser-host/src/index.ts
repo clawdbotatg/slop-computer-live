@@ -293,7 +293,21 @@ async function createTab(
   }
   const rb = await getOrCreateRoomBrowser(slug);
   if (rb.tabs.size >= MAX_TABS_PER_ROOM) {
-    throw new Error(`tab cap reached (room ${slug} ${MAX_TABS_PER_ROOM})`);
+    // Room is full → evict the staleest tab (lowest `max(lastFrameAt,
+    // lastInputAt)`) to make room. Without this we'd throw, the WS would
+    // close with code 4290, and the client would show "HOST OFFLINE" —
+    // even though the host is fine. Eviction sends `evicted` to existing
+    // subscribers first so the kicked client can render a meaningful UI.
+    const lastActive = (t: Tab) => Math.max(t.lastFrameAt, t.lastInputAt);
+    const victim = [...rb.tabs.values()].reduce((a, b) => (lastActive(a) <= lastActive(b) ? a : b));
+    app.log.warn(
+      { slug, evictedId: victim.id, newId: id, lastFrameAt: victim.lastFrameAt, lastInputAt: victim.lastInputAt },
+      "room cap reached — evicting LRU tab",
+    );
+    for (const ws of victim.subscribers) {
+      send(ws, { type: "evicted", reason: "room_cap_lru", evictedBy: id });
+    }
+    await destroyTab(slug, victim.id);
   }
   const page = await rb.context.newPage();
 

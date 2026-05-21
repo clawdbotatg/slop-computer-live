@@ -187,6 +187,15 @@ const clearKindPersistedState = (slug: string, kind: StreamKind) => {
   }
 };
 
+// First-visit hint: until the user has either waited 10s or double-clicked
+// audio/video/screen once, hide every desktop icon except chat + the three
+// share actions and pin a big arrow next to them. Flag is global (not per-
+// slug) because the goal is "user has been to slop.computer once" — a
+// repeat visitor jumping between rooms shouldn't get the tutorial again.
+const HAS_BEEN_HERE_KEY = "slop-has-been-here-v1";
+const HINT_TIMEOUT_MS = 10_000;
+const HINT_ALLOWED_KINDS: ReadonlySet<string> = new Set(["chat", "audio", "video", "screen"]);
+
 function DesktopInner({ slug }: { slug: string }) {
   const { session, loading, refresh: refreshSession } = useSession();
 
@@ -618,6 +627,44 @@ function DesktopInner({ slug }: { slug: string }) {
     },
     [meshOpenBrowser, meshNavigateBrowser, meshUpdateSlotForOpenUrl],
   );
+
+  // First-visit hint state. `hintActive` controls icon filtering + arrow
+  // visibility; `hintDismissedAt` lets the formerly-hidden icons fade in
+  // with a slow stagger instead of popping in all at once. Both are
+  // useState so SSR renders without the hint (matches localStorage-empty)
+  // and the effect below promotes to active on the client if needed.
+  const [hintActive, setHintActive] = useState(false);
+  const [hintDismissedAt, setHintDismissedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) setHintActive(true);
+    } catch {
+      /* private mode → leave hint off, no biggie */
+    }
+  }, []);
+
+  const dismissHint = useCallback(() => {
+    setHintActive(prev => {
+      if (!prev) return prev;
+      try {
+        window.localStorage.setItem(HAS_BEEN_HERE_KEY, "1");
+      } catch {
+        /* quota / private mode */
+      }
+      setHintDismissedAt(Date.now());
+      return false;
+    });
+  }, []);
+
+  // Auto-dismiss after 10s — long enough for someone to read the arrow,
+  // short enough that the full icon set isn't gated behind it for users
+  // who already understand the desktop.
+  useEffect(() => {
+    if (!hintActive) return;
+    const t = window.setTimeout(dismissHint, HINT_TIMEOUT_MS);
+    return () => window.clearTimeout(t);
+  }, [hintActive, dismissHint]);
 
   // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
   // who lands on the page (signed in or not) eventually sees the right
@@ -1573,6 +1620,11 @@ function DesktopInner({ slug }: { slug: string }) {
             `bootstrapped` to avoid the position-flash on first paint. */}
         {session.authenticated && mesh.bootstrapped
           ? apps.map((app, i) => {
+              // First-visit hint: only chat + the three share kinds are
+              // visible. Everything else returns null so the layout is a
+              // clean column of 4 with the arrow image pointing at them.
+              const hidden = hintActive && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
+              if (hidden) return null;
               const slotId = `icon-${app.id}`;
               const fallback = defaultIconPosition(i);
               const slot = mesh.slots[slotId] ?? {
@@ -1583,6 +1635,17 @@ function DesktopInner({ slug }: { slug: string }) {
                 height: 110,
                 z: 1,
               };
+              // After dismiss, the non-priority icons fade in with a
+              // small per-icon stagger so it feels like the desktop is
+              // unlocking, not popping. The priority 4 are already on-
+              // screen and shouldn't re-animate, so they skip the class.
+              const fadingIn = hintDismissedAt !== null && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
+              const fadeStyle = fadingIn
+                ? {
+                    animation: `slop-icon-fade-in 700ms ease-out both`,
+                    animationDelay: `${Math.min(i * 80, 800)}ms`,
+                  }
+                : undefined;
               return (
                 <DesktopIcon
                   // Bump the key whenever this icon needs to snap back
@@ -1596,6 +1659,7 @@ function DesktopInner({ slug }: { slug: string }) {
                   x={slot.x}
                   y={slot.y}
                   zIndex={1}
+                  style={fadeStyle}
                   onMove={({ x, y }) => {
                     // Drop onto trash → apps can't be deleted. Bump
                     // the snap-back counter to force a re-render with
@@ -1660,14 +1724,17 @@ function DesktopInner({ slug }: { slug: string }) {
                         // Already publishing → bring the existing window
                         // to the front, mirroring how the app icons
                         // behave when their window is already open.
+                        dismissHint();
                         if (media.activeAudio) focusPub("audio");
                         else setAudioDialog("create");
                         return;
                       case "video":
+                        dismissHint();
                         if (media.activeCamera) focusPub("camera");
                         else setVideoDialog("create");
                         return;
                       case "screen":
+                        dismissHint();
                         if (media.activeScreen || wantScreenResume) focusPub("screen");
                         else void media.startScreen();
                         return;
@@ -1679,6 +1746,29 @@ function DesktopInner({ slug }: { slug: string }) {
               );
             })
           : null}
+
+        {/* First-visit hint arrow. Pinned just to the right of the
+            left-column icon stack and nudged horizontally so the eye
+            catches it. Pointer-events:none so it doesn't shadow the
+            icons it's pointing at. */}
+        {session.authenticated && mesh.bootstrapped && hintActive ? (
+          <img
+            src="/hint.png"
+            alt="double click Video, Audio, or Screen to share"
+            draggable={false}
+            className="slop-hint-arrow"
+            style={{
+              position: "absolute",
+              left: 120,
+              top: 170,
+              width: 480,
+              height: "auto",
+              pointerEvents: "none",
+              zIndex: 3,
+              filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.55))",
+            }}
+          />
+        ) : null}
 
         {/* Desktop files — server-stored, mesh-broadcast. Position lives
             in the slot system keyed `file-<id>`. Drop new files via the

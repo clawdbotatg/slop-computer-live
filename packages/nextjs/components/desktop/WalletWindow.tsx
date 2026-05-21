@@ -1113,19 +1113,37 @@ const AIWalletIframe = ({ wallet, myAddress, mesh }: AIWalletIframeProps) => {
         return;
       }
 
-      // Everything else gets logged so the user can verify in DevTools
-      // that the iframe is communicating. Stringify so the snapshot
-      // isn't mutated under us by React/etc.
+      // Drop cursor:leave too — pure noise in the console.
+      const dataType = e.data && typeof e.data === "object" ? (e.data as { type?: unknown }).type : undefined;
+      if (dataType === "slop:cursor:leave") return;
+
+      // Anything else gets a one-line log naming the type, so it's
+      // easy to spot `slop:propose_tx` (the message we care about)
+      // in DevTools. Stringify so the snapshot isn't mutated under us.
+      const typeStr = typeof dataType === "string" ? dataType : "(no type)";
       try {
-        console.log("[wallet] iframe → parent message", JSON.parse(JSON.stringify(e.data)));
+        console.log(`[wallet] iframe → ${typeStr}`, JSON.parse(JSON.stringify(e.data)));
       } catch {
-        console.log("[wallet] iframe → parent message (unserializable)", e.data);
+        console.log(`[wallet] iframe → ${typeStr} (unserializable)`, e.data);
       }
 
+      // If a propose_tx-shaped message arrives but doesn't validate,
+      // say why instead of silently dropping. Most common cause: the
+      // sender included `chainId: null` (no chain target).
+      if (dataType === "slop:propose_tx" && !isProposeTxMessage(e.data)) {
+        console.warn("[wallet] slop:propose_tx failed validation — required fields", {
+          chainId: "number",
+          target: "string (0x…)",
+          value: "string (decimal wei)",
+          data: "string (0x-prefixed hex)",
+          received: e.data,
+        });
+        return;
+      }
       if (!isProposeTxMessage(e.data)) return;
       const msg = e.data;
       if (!(msg.chainId in wallet.deployments)) {
-        console.warn("[wallet] propose_tx rejected — chainId not deployed", {
+        console.warn("[wallet] propose_tx rejected — chainId not deployed on this multisig", {
           received: msg.chainId,
           deployed: Object.keys(wallet.deployments),
         });

@@ -686,3 +686,35 @@
      global rule keeps the system cursor hidden; the custom cursor
      handles "this is interactive" cues. */
 }
+
+/* === First-visit hint ================================================
+   Big arrow + caption that nudges users toward Video/Audio/Screen on
+   their very first landing. Soft horizontal sway draws the eye without
+   strobing. Companion fade-in for the rest of the icons after dismiss. */
+@keyframes slop-hint-nudge {
+  0%,
+  100% {
+    transform: translateX(-6px);
+  }
+  50% {
+    transform: translateX(10px);
+  }
+}
+.slop-hint-arrow {
+  animation: slop-hint-nudge 1.6s ease-in-out infinite;
+}
+
+@keyframes slop-icon-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.slop-icon-fade-in {
+  animation: slop-icon-fade-in 600ms ease-out both;
+}
+
