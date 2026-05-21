@@ -1,4 +1,4 @@
-import { base as baseBase, mainnet as mainnetBase } from "viem/chains";
+import { base as baseBase, gnosis as gnosisBase, mainnet as mainnetBase } from "viem/chains";
 import type { Chain } from "viem/chains";
 
 export type ScaffoldConfig = {
@@ -12,6 +12,7 @@ export type ScaffoldConfig = {
 
 const ALCHEMY_MAINNET_RPC = `https://eth-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_BASE_RPC = `https://base-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+const ALCHEMY_GNOSIS_RPC = `https://gnosis-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
@@ -35,11 +36,21 @@ export const base = {
   },
 } as const satisfies Chain;
 
+export const gnosis = {
+  ...gnosisBase,
+  rpcUrls: {
+    default: { http: [ALCHEMY_GNOSIS_RPC] },
+    public: { http: [ALCHEMY_GNOSIS_RPC] },
+  },
+} as const satisfies Chain;
+
 const scaffoldConfig = {
   // Base first — wallet deploys + multisig txs cost pennies vs. dollars.
   // Mainnet stays in the list so ENS resolution and the existing Frontpage
-  // contract calls (which live on mainnet) keep working.
-  targetNetworks: [base, mainnet],
+  // contract calls (which live on mainnet) keep working. Gnosis is the
+  // third supported chain — the multisig factory is deployed at the same
+  // address there.
+  targetNetworks: [base, mainnet, gnosis],
 
   // The interval at which your front-end polls the RPC servers for new data
   // it has no effect if you only target the local network (default is 4000)
@@ -54,6 +65,7 @@ const scaffoldConfig = {
   rpcOverrides: {
     [mainnet.id]: ALCHEMY_MAINNET_RPC,
     [base.id]: ALCHEMY_BASE_RPC,
+    [gnosis.id]: ALCHEMY_GNOSIS_RPC,
   },
 
   // This is ours WalletConnect's default project ID.

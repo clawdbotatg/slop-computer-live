@@ -2753,6 +2753,16 @@ app.get("/admin/invite-password", async (req, reply) => {
   return { password: getInvitePassword() };
 });
 
+// Returns the configured GOD_MODE_PASSWORD as plaintext so the admin UI can
+// build a one-click shareable god-mode link. Read-only; the password lives
+// in env and isn't rotatable through the API. Returns null when unset so
+// the UI can hide the [god] affordance instead of generating a broken link.
+app.get("/admin/god-password", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return { password: config.godPassword || null };
+});
+
 app.post("/admin/invite-password", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });

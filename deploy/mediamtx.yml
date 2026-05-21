@@ -21,10 +21,18 @@ hlsAddress: :8888
 hlsAllowOrigin: "*"
 hlsEncryption: no
 hlsAlwaysRemux: yes
-hlsVariant: lowLatency
+# mpegts = traditional HLS with TS segments and audio+video muxed in a
+# single playlist. Plays in every player including Chrome's native <video>
+# tag when loaded directly. fmp4 was structurally correct but mediamtx
+# emits it as a master with a separate #EXT-X-MEDIA AUDIO group pointing
+# to its own playlist (audio2_stream.m3u8) — Chrome's native HLS chokes
+# on that combination and shows an empty player with no error event. ts
+# avoids the audio-group entirely. Latency ~8s (same as fmp4); ~5% larger
+# segments. LL-HLS (`lowLatency`) was tried first and broke every
+# non-LL-aware player because of EXT-X-PART/SERVER-CONTROL/PRELOAD-HINT.
+hlsVariant: mpegts
 hlsSegmentCount: 7
-hlsSegmentDuration: 1s
-hlsPartDuration: 200ms
+hlsSegmentDuration: 2s
 hlsSegmentMaxSize: 50M
 
 # Disable other protocols we don't need

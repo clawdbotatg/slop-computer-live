@@ -22,6 +22,7 @@ export const IMPERSONATED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 const SUPPORTED_NETWORKS: { chainId: number; label: string }[] = [
   { chainId: 1, label: "Ethereum" },
   { chainId: 8453, label: "Base" },
+  { chainId: 100, label: "Gnosis" },
 ];
 const DEFAULT_CHAIN_ID = 1;
 

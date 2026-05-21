@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
 import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
 import { type Address as AddressType, type Hex, decodeEventLog, formatEther, parseEther } from "viem";
-import { base, mainnet } from "viem/chains";
+import { base, gnosis, mainnet } from "viem/chains";
 import {
   useAccount,
   useBalance,
@@ -30,6 +30,18 @@ export type WalletWindowProps = {
 
 // Used everywhere — short addr render fallback when ENS isn't available.
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+// Per-chain bits the wallet UI needs: human label and the block-explorer
+// base URL used for tx links. Mainnet stays expensive; base + gnosis are
+// "cheap" deploy targets and skip the cost-warning banner.
+const CHAIN_META: Record<number, { label: string; explorer: string; cheap: boolean }> = {
+  [mainnet.id]: { label: "Ethereum mainnet", explorer: "https://etherscan.io", cheap: false },
+  [base.id]: { label: "Base", explorer: "https://basescan.org", cheap: true },
+  [gnosis.id]: { label: "Gnosis", explorer: "https://gnosisscan.io", cheap: true },
+};
+
+const chainMeta = (chainId: number) =>
+  CHAIN_META[chainId] ?? { label: `chain ${chainId}`, explorer: "https://etherscan.io", cheap: false };
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   return (
@@ -68,8 +80,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
   const { address: connectedAddress } = useAccount();
   const chainId = useChainId() ?? mainnet.id;
   const { switchChain, isPending: switching } = useSwitchChain();
-  const chainLabel = chainId === base.id ? "Base" : chainId === mainnet.id ? "Ethereum mainnet" : `chain ${chainId}`;
-  const onBase = chainId === base.id;
+  const { label: chainLabel, cheap: onCheapChain } = chainMeta(chainId);
   const { writeContractAsync, isPending: writePending } = useWriteContract();
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   // Pin the wait to the chain the deploy fired on — otherwise wagmi can
@@ -429,7 +440,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
             {receipt ? "confirmed, finalizing…" : receiptError ? "wait errored" : "waiting for inclusion…"}
           </div>
           <a
-            href={`${txChainId === 8453 ? "https://basescan.org" : "https://etherscan.io"}/tx/${txHash}`}
+            href={`${chainMeta(txChainId ?? mainnet.id).explorer}/tx/${txHash}`}
             target="_blank"
             rel="noreferrer"
             style={{
@@ -448,7 +459,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
         </div>
       ) : null}
 
-      {!onBase && connectedAddress ? (
+      {!onCheapChain && connectedAddress ? (
         <div
           style={{
             fontSize: 11,
@@ -463,10 +474,10 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
           }}
         >
           <div>
-            Your wallet is on <strong>{chainLabel}</strong>. Deploying here costs real ETH (≈$1). Base costs pennies and
-            the contracts are at the same address.
+            Your wallet is on <strong>{chainLabel}</strong>. Deploying here costs real ETH (≈$1). Base and Gnosis both
+            cost pennies and the contracts are at the same address.
           </div>
-          <div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button
               type="button"
               disabled={switching}
@@ -486,6 +497,26 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
               }}
             >
               {switching ? "Switching…" : "Switch to Base"}
+            </button>
+            <button
+              type="button"
+              disabled={switching}
+              onClick={() => switchChain({ chainId: gnosis.id })}
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                background: "var(--slop-cyan, #3fcfff)",
+                color: "#06030d",
+                border: "none",
+                borderRadius: 4,
+                cursor: switching ? "wait" : "pointer",
+                fontWeight: 700,
+              }}
+            >
+              {switching ? "Switching…" : "Switch to Gnosis"}
             </button>
           </div>
         </div>
@@ -609,7 +640,7 @@ const WalletHeader = ({ wallet, onArchive }: { wallet: WalletRecord; onArchive: 
       </div>
       <Address address={wallet.address as AddressType} size="sm" />
       <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
-        Threshold {wallet.threshold} of {wallet.signers.length} · chain {wallet.chainId}
+        Threshold {wallet.threshold} of {wallet.signers.length} · {chainMeta(wallet.chainId).label}
       </div>
     </div>
   );
@@ -1220,12 +1251,12 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       ) : tx.txHash ? (
         <a
-          href={`https://etherscan.io/tx/${tx.txHash}`}
+          href={`${chainMeta(wallet.chainId).explorer}/tx/${tx.txHash}`}
           target="_blank"
           rel="noreferrer"
           style={{ fontSize: 10, color: "var(--slop-magenta, #ff3ec9)", textDecoration: "underline" }}
         >
-          view on etherscan
+          view on explorer
         </a>
       ) : null}
     </div>

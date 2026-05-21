@@ -157,6 +157,10 @@ const AdminPage: NextPage = () => {
   };
   const [roomPasswords, setRoomPasswords] = useState<Record<string, string>>({});
   const [copyStatus, setCopyStatus] = useState<string>("");
+  // GOD_MODE_PASSWORD plaintext from the relay (host-only endpoint). Null
+  // when the env var isn't set — the [god] affordance is hidden in that
+  // case rather than producing a link that'll fail at /auth/godmode.
+  const [godPassword, setGodPassword] = useState<string | null>(null);
   const rememberRoomPassword = (slug: string, password: string) => {
     const next = { ...readAdminPasswords(), [slug]: password };
     writeAdminPasswords(next);
@@ -272,6 +276,27 @@ const AdminPage: NextPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost]);
 
+  // Pull the GOD_MODE_PASSWORD from the relay once when the host signs in.
+  // Plain GET — the relay returns null when unset, which collapses the
+  // [god] link affordance below.
+  useEffect(() => {
+    if (!isHost) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${RELAY_BASE}/admin/god-password`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { password?: string | null };
+        if (!cancelled) setGodPassword(data.password ?? null);
+      } catch {
+        /* relay offline — leave god link hidden */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isHost]);
+
   const rotateRoomPassword = async (slug: string, newPassword: string) => {
     setCopyStatus("");
     if (!newPassword) {
@@ -307,6 +332,31 @@ const AdminPage: NextPage = () => {
     try {
       await navigator.clipboard.writeText(url);
       setCopyStatus(password ? `copied /${slug} link with password ✓` : `copied /${slug} link ✓`);
+    } catch {
+      setCopyStatus("clipboard blocked — copy manually");
+    }
+  };
+
+  // Copy the spectator/streaming-box link: room password (so the gate
+  // clears) + godMode password (so /auth/godmode mints a spectator
+  // session on top). The relay's /auth/godmode requires a valid
+  // per-room cookie first, which `invite=` provides on landing.
+  const copyGodLink = async (slug: string) => {
+    if (typeof window === "undefined") return;
+    if (!godPassword) {
+      setCopyStatus("god mode not configured on the relay (GOD_MODE_PASSWORD unset)");
+      return;
+    }
+    const roomPw = roomPasswords[slug];
+    if (!roomPw) {
+      setCopyStatus(`no room password remembered for /${slug} — regenerate it first`);
+      return;
+    }
+    const base = `${window.location.origin}/${slug}`;
+    const url = `${base}?invite=${encodeURIComponent(roomPw)}&godMode=${encodeURIComponent(godPassword)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyStatus(`copied /${slug} god-mode link ✓`);
     } catch {
       setCopyStatus("clipboard blocked — copy manually");
     }
@@ -600,7 +650,7 @@ const AdminPage: NextPage = () => {
 
   const adminPanel = (
     <>
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 0 }}>
           <span>Authenticated as</span>
           {auth.authenticated && auth.address ? (
@@ -613,7 +663,7 @@ const AdminPage: NextPage = () => {
         </div>
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Create a room</h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
           Type a slug — the password is randomized for you and the shareable URL is previewed below. Hit{" "}
@@ -658,11 +708,12 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
           Every claimed room on disk. The relay only stores scrypt hashes, so <em>Copy link</em> embeds the password
-          only for rooms whose plaintext is remembered locally (created or regenerated in this browser).
+          only for rooms whose plaintext is remembered locally (created or regenerated in this browser). <em>[god]</em>{" "}
+          next to the slug copies the same link with <code>godMode</code> appended for the streaming box.
         </p>
         {rooms.length === 0 ? (
           <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: 0 }}>
@@ -698,10 +749,32 @@ const AdminPage: NextPage = () => {
                   href={`/${r.slug}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", flex: 1, minWidth: 0 }}
+                  style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", minWidth: 0 }}
                 >
                   /{r.slug}
                 </a>
+                {godPassword && roomPasswords[r.slug] ? (
+                  <button
+                    type="button"
+                    onClick={() => void copyGodLink(r.slug)}
+                    title="copy god-mode link (room password + GOD_MODE_PASSWORD inline)"
+                    style={{
+                      background: "transparent",
+                      border: 0,
+                      padding: 0,
+                      margin: 0,
+                      color: "var(--slop-text-muted)",
+                      fontFamily: "var(--slop-font-display)",
+                      fontSize: 11,
+                      cursor: "pointer",
+                      textTransform: "lowercase",
+                      letterSpacing: "0.06em",
+                    }}
+                  >
+                    [god]
+                  </button>
+                ) : null}
+                <span style={{ flex: 1 }} />
                 <Button
                   onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
                   style={
@@ -747,7 +820,7 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Services</h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
           live status · refreshes every 5s
@@ -851,7 +924,7 @@ const AdminPage: NextPage = () => {
         </div>
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Broadcast</h2>
         <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
           1. Click <strong>Set up OBS</strong> to fetch RTMP credentials. 2. Paste the URL + key into OBS, set the
@@ -897,7 +970,7 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
           Restream destinations
         </h2>
@@ -971,7 +1044,7 @@ const AdminPage: NextPage = () => {
         )}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 720 }}>
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
           Connected guests
         </h2>
@@ -1052,7 +1125,7 @@ const AdminPage: NextPage = () => {
         {heading}
         {showAdminPanel ? adminPanel : landing}
         {status ? (
-          <Bevel style={{ padding: 12, maxWidth: 720, color: "var(--slop-text-muted)" }}>{status}</Bevel>
+          <Bevel style={{ padding: 12, maxWidth: 960, color: "var(--slop-text-muted)" }}>{status}</Bevel>
         ) : null}
       </main>
       {localCursor.pos ? (

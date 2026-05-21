@@ -50,6 +50,7 @@ export const config = {
 export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label: string }> = {
   1: { alchemySubdomain: "eth-mainnet", label: "Ethereum" },
   8453: { alchemySubdomain: "base-mainnet", label: "Base" },
+  100: { alchemySubdomain: "gnosis-mainnet", label: "Gnosis" },
   11155111: { alchemySubdomain: "eth-sepolia", label: "Sepolia" },
 };
 
