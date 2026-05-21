@@ -43,6 +43,7 @@ import {
   deleteSession,
   getSession,
   issueNonce,
+  updateSessionHandle,
 } from "./sessions.js";
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
@@ -624,6 +625,7 @@ app.get("/v1/state", async (req, reply) => {
     walletDraft: roomFromReq(req).wallet.getDraft(),
     walletTxs: roomFromReq(req).wallet.listTxs(),
     cardState: readCardSnapshot(roomFromReq(req).id),
+    cardJob: readCardJob(roomFromReq(req).id),
   };
 });
 
@@ -1460,11 +1462,16 @@ app.delete("/v1/avatars", async (req, reply) => {
 });
 
 // --- Title card generator --------------------------------------------------
-// POST raw PFP bytes (image/jpeg|png|webp) -> gpt-image-2 composites the
-// guest face into the green circle on the template. Result is persisted at
-// ./.slop-data/rooms/<slug>/card.png and broadcast to the room as
-// `{ type: "card_state", state: { version } }` so every peer sees the new
-// card immediately. Survives relay restarts; one current card per room.
+// Multiplayer title card per room. Generation runs as a background job
+// owned by the relay — POST /v1/card kicks it off and returns
+// immediately (202), the relay broadcasts `card_job` so every peer in
+// the room sees a shared progress bar regardless of who started it,
+// and on completion the result PNG lands at
+// ./.slop-data/rooms/<slug>/card.png with a `card_state` broadcast.
+// Closing the CardWindow doesn't cancel anything — the server runs the
+// job to completion and the closer sees the result whenever they
+// reopen. Endpoints live under /v1/ so the prod Caddyfile's /v1/* proxy
+// rule catches them without needing a config change.
 const CARD_PFP_MAX_BYTES = 10 * 1024 * 1024;
 
 function cardFilePath(slug: string): string {
@@ -1478,6 +1485,16 @@ function readCardSnapshot(slug: string): { version: number } | null {
   } catch {
     return null;
   }
+}
+
+// In-memory job registry. Resets on relay restart by design — an
+// in-flight OpenAI call would be orphaned anyway, and the client clears
+// stale loading state on WS reconnect via hello.cardJob.
+type CardJob = { startedAt: number; startedBy: string | null };
+const cardJobs = new Map<string, CardJob>();
+
+function readCardJob(slug: string): CardJob | null {
+  return cardJobs.get(slug) ?? null;
 }
 
 app.post(
@@ -1494,26 +1511,49 @@ app.post(
     if (body.length > CARD_PFP_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
 
     const room = roomFromReq(req);
-    const ct = String(req.headers["content-type"] ?? "");
-    try {
-      const { png } = await generateCard(body, ct);
-      const out = cardFilePath(room.id);
-      await _mkdir(`./.slop-data/rooms/${room.id}`, { recursive: true });
-      await _writeFile(out, png);
-      const snap = readCardSnapshot(room.id);
-      room.broadcast({ type: "card_state", state: snap });
-      return { ok: true, state: snap };
-    } catch (err) {
-      req.log.error({ err }, "card generation failed");
-      const msg = err instanceof Error ? err.message : "unknown";
-      return reply.code(500).send({ error: "card-generation-failed", detail: msg });
+    const slug = room.id;
+
+    // One job at a time per room. If someone else's drop is already
+    // generating, tell the caller and let them watch the shared
+    // progress bar.
+    const existing = cardJobs.get(slug);
+    if (existing) {
+      return reply.code(409).send({ error: "already-generating", job: existing });
     }
+
+    const startedBy = (a.session.address ?? a.session.handle ?? null) || null;
+    const job: CardJob = { startedAt: Date.now(), startedBy };
+    cardJobs.set(slug, job);
+    room.broadcast({ type: "card_job", job });
+
+    // Fire-and-forget: the HTTP req returns now, the actual generation
+    // runs server-side independent of the connection. Peers learn about
+    // the result through `card_state` + `card_job: null` on the mesh,
+    // not through this response body.
+    const ct = String(req.headers["content-type"] ?? "");
+    void (async () => {
+      try {
+        const { png } = await generateCard(body, ct);
+        await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+        await _writeFile(cardFilePath(slug), png);
+        const snap = readCardSnapshot(slug);
+        room.broadcast({ type: "card_state", state: snap });
+      } catch (err) {
+        req.log.error({ err }, "card generation failed");
+      } finally {
+        cardJobs.delete(slug);
+        room.broadcast({ type: "card_job", job: null });
+      }
+    })();
+
+    return reply.code(202).send({ ok: true, job });
   },
 );
 
 // Clear the current card — anyone in the room may reset, mirroring the
 // per-peer reset button in CardWindow. After delete the room falls back
-// to the template until someone drops a new PFP.
+// to the template until someone drops a new PFP. Does NOT cancel an
+// in-flight job; that would leave peers' progress bars stuck.
 app.delete("/v1/card", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
@@ -1529,9 +1569,10 @@ app.delete("/v1/card", async (req, reply) => {
 
 // Serve the per-room card PNG. Slug validated against the same regex
 // the relay uses everywhere; filename is locked to `card.png` so this
-// can never be turned into an arbitrary-file-read primitive.
+// can never be turned into an arbitrary-file-read primitive. Lives
+// under /v1/ so prod Caddy proxies it without a config change.
 app.get<{ Params: { slug: string; filename: string } }>(
-  "/cards/:slug/:filename",
+  "/v1/cards/:slug/:filename",
   async (req, reply) => {
     const { slug, filename } = req.params;
     if (!isValidSlug(slug) || filename !== "card.png") {
@@ -2715,6 +2756,42 @@ app.post("/auth/anon", async (req, reply) => {
   return { ok: true, role: "guest", handle };
 });
 
+// --- Anon handle rename -----------------------------------------------------
+//
+// Anon-signed-in users get a random `AnonXXXX` handle at login. This lets
+// them swap it for something of their own. SIWE/passkey sessions are
+// blocked — their handle is the ENS reverse-lookup, which we can't let
+// a user forge. Those users should keep using the existing `peerNames`
+// local-alias system (set_custom_name WS message) instead.
+
+type HandleBody = { handle?: unknown };
+
+app.post<{ Body: HandleBody }>("/auth/handle", async (req, reply) => {
+  const token = req.cookies[SESSION_COOKIE];
+  const session = getSession(token);
+  if (!session || !token) return reply.code(401).send({ error: "unauthenticated" });
+  if (session.address !== null) return reply.code(403).send({ error: "not-anon" });
+
+  const body = (req.body ?? {}) as HandleBody;
+  const handle = typeof body.handle === "string" ? body.handle.trim().slice(0, 30) : "";
+  if (!handle) return reply.code(400).send({ error: "empty-handle" });
+
+  updateSessionHandle(token, handle);
+
+  // Mutate live peer records + broadcast so peers see the new name
+  // without having to reconnect. One session can be in multiple rooms
+  // simultaneously (multi-tab), so iterate all of them.
+  for (const peer of findPeersBySessionToken(token)) {
+    peer.handle = handle;
+    const peerRoom = findPeerRoom(peer.id);
+    if (peerRoom) {
+      peerRoom.broadcast({ type: "peer_handle", peerId: peer.id, handle });
+    }
+  }
+
+  return { ok: true, handle };
+});
+
 // --- Password auth (guest) --------------------------------------------------
 
 type PasswordBody = { password?: unknown; handle?: unknown };
@@ -3361,6 +3438,7 @@ app.register(async function signalRoutes(fastify) {
       walletTxs: room.wallet.listTxs(),
       customNames: peerNames.all(),
       cardState: readCardSnapshot(room.id),
+      cardJob: readCardJob(room.id),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 

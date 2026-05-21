@@ -430,6 +430,15 @@ export type CardState = {
   version: number;
 };
 
+/** A card generation in flight on the relay. Broadcast on POST /v1/card
+ *  start and cleared (broadcast `card_job: null`) on completion or
+ *  failure. Anyone in the room sees this and shows the shared progress
+ *  bar — closing the window doesn't cancel it. */
+export type CardJob = {
+  startedAt: number;
+  startedBy: string | null;
+};
+
 /** A user-uploaded file on the shared desktop. Mirrors
  *  `packages/relay/src/files.ts` FileEntry. */
 export type FileEntry = {
@@ -634,6 +643,10 @@ export type PeerMeshState = {
    *  someone dropped a PFP and the relay produced a result the room
    *  should show. */
   cardState: CardState | null;
+  /** In-flight card generation for the room. Non-null while the relay
+   *  is running gpt-image-2; every peer shows the shared loading bar
+   *  regardless of who dropped the PFP. */
+  cardJob: CardJob | null;
   /** Clear the current card and bring the template back for the
    *  whole room. */
   resetCard: () => void;
@@ -760,6 +773,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [musicCustom, setMusicCustomLocal] = useState<JamendoTrack[]>([]);
   const [clockState, setClockStateLocal] = useState<ClockState>(DEFAULT_CLOCK_STATE);
   const [cardState, setCardState] = useState<CardState | null>(null);
+  const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1629,6 +1643,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.cardState === null || (msg.cardState && typeof msg.cardState === "object")) {
             setCardState((msg.cardState ?? null) as CardState | null);
           }
+          if (msg.cardJob === null || (msg.cardJob && typeof msg.cardJob === "object")) {
+            setCardJob((msg.cardJob ?? null) as CardJob | null);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1658,6 +1675,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const peer = msg.peer as Peer;
           setPeers(prev => prev.filter(p => p.id !== peer.id));
           closePeerConnection(peer.id);
+          return;
+        }
+
+        if (msg.type === "peer_handle") {
+          // Anon user renamed themselves via /auth/handle. The relay
+          // mutates session.handle and fires this so every peer's
+          // in-memory Peer record updates without a reconnect.
+          const peerId = typeof msg.peerId === "string" ? msg.peerId : null;
+          const handle = typeof msg.handle === "string" ? msg.handle : null;
+          if (!peerId || handle == null) return;
+          setPeers(prev => prev.map(p => (p.id === peerId ? { ...p, handle } : p)));
           return;
         }
 
@@ -1953,6 +1981,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "card_job") {
+          // `job` is either { startedAt, startedBy } or null — non-null
+          // turns the shared progress bar on for everyone in the room;
+          // null clears it when generation completes or fails.
+          if (msg.job === null || (msg.job && typeof msg.job === "object")) {
+            setCardJob((msg.job ?? null) as CardJob | null);
+          }
+          return;
+        }
+
         if (msg.type === "wallet") {
           setWallet((msg.current ?? null) as WalletRecord | null);
           if (Array.isArray(msg.history)) {
@@ -2150,6 +2188,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     clockState,
     setClockState,
     cardState,
+    cardJob,
     resetCard,
     broadcastTxRequest,
     incomingForwards,

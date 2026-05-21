@@ -11,11 +11,14 @@ const TEMPLATE_SRC = "/card-template.png";
 const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 // Title-card generator. Multiplayer: a single shared card per room
-// lives on the relay at /cards/<slug>/card.png. Any peer can drop a
-// guest PFP, the relay calls gpt-image-2, persists the result, and
-// broadcasts `card_state` to everyone in the room so every CardWindow
-// flips from template to the new card in lockstep. Reset broadcasts
-// `card_state: null`, returning the room to the template.
+// lives on the relay at /v1/cards/<slug>/card.png (under /v1/ so the
+// prod Caddyfile's /v1/* proxy rule catches it). Any peer can drop a
+// guest PFP, the relay kicks off gpt-image-2 as a background job,
+// broadcasts `card_job` so every CardWindow in the room shows the
+// shared progress bar — closing the window does NOT cancel — and on
+// completion broadcasts `card_state` so everyone flips to the new
+// card in lockstep. Reset broadcasts `card_state: null`, returning
+// the room to the template.
 //
 // The title overlay (typed guest name, drag-to-position, wheel-to-
 // resize) stays per-peer — it's a tool for the host to prep a name
@@ -51,12 +54,16 @@ type Props = {
 
 export const CardWindow = ({ mesh }: Props) => {
   const slug = useRoomSlug();
-  const { cardState, resetCard } = mesh;
+  const { cardState, cardJob, resetCard } = mesh;
   const resultUrl = useMemo(() => {
     if (!cardState) return null;
-    return `${RELAY_HTTP}/cards/${encodeURIComponent(slug)}/card.png?v=${cardState.version}`;
+    return `${RELAY_HTTP}/v1/cards/${encodeURIComponent(slug)}/card.png?v=${cardState.version}`;
   }, [cardState, slug]);
-  const [loading, setLoading] = useState(false);
+  // Generation is room-wide: any in-flight job (mine or someone else's)
+  // shows the shared progress bar. Local upload-in-progress covers the
+  // brief window between drop and the server's `card_job` broadcast.
+  const [uploading, setUploading] = useState(false);
+  const loading = !!cardJob || uploading;
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -78,7 +85,6 @@ export const CardWindow = ({ mesh }: Props) => {
     cardStore.titleSizeFrac = titleSizeFrac;
   }, [titleSizeFrac]);
 
-  const abortRef = useRef<AbortController | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -98,7 +104,12 @@ export const CardWindow = ({ mesh }: Props) => {
     }
     const FAKE_DURATION_MS = 60_000;
     const CAP = 95;
-    const start = Date.now();
+    // Anchor the progress bar on the server-reported job start when
+    // we have one — otherwise a peer who joins mid-generation would
+    // see the bar restart at 0%. Falls back to "now" while the local
+    // upload is still uploading and we haven't heard back from the
+    // relay yet.
+    const start = cardJob?.startedAt ?? Date.now();
     let raf = 0;
     const tick = () => {
       const elapsed = Date.now() - start;
@@ -108,16 +119,7 @@ export const CardWindow = ({ mesh }: Props) => {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [loading]);
-
-  // Abort any in-flight generation if this peer closes the window.
-  // The card image itself lives on the relay, so we don't need to
-  // revoke anything client-side.
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
+  }, [loading, cardJob?.startedAt]);
 
   // Compute where inside the wrapper the image is actually drawn
   // (object-fit: contain leaves letterbox bars). Returns null until
@@ -160,23 +162,27 @@ export const CardWindow = ({ mesh }: Props) => {
       setError("drop an image file");
       return;
     }
+    if (cardJob) {
+      // Someone else's drop is already cooking — no point queueing a
+      // second job since the relay only tracks one per room.
+      setError("already generating — wait for this one to finish");
+      return;
+    }
     setError(null);
-    setLoading(true);
-    const ctrl = new AbortController();
-    abortRef.current?.abort();
-    abortRef.current = ctrl;
+    setUploading(true);
     try {
-      // Server persists the PNG and broadcasts `card_state` to the
-      // whole room — we don't read the response body. Our own mesh
-      // tick picks it up like any other peer's would.
+      // Fire-and-forget: server responds 202 once the background job
+      // is registered, then broadcasts `card_job` + `card_state` to
+      // the whole room. The HTTP body here is just an ack. Closing
+      // the window after this point does not cancel the job — the
+      // server runs it to completion.
       const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": file.type },
         body: file,
-        signal: ctrl.signal,
       });
-      if (!res.ok) {
+      if (!res.ok && res.status !== 409) {
         let detail = `HTTP ${res.status}`;
         try {
           const j = await res.json();
@@ -187,10 +193,9 @@ export const CardWindow = ({ mesh }: Props) => {
         throw new Error(detail);
       }
     } catch (e) {
-      if ((e as Error).name === "AbortError") return;
       setError((e as Error).message || "generation failed");
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 

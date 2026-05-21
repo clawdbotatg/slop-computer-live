@@ -129,6 +129,19 @@ export function createAgentSession(base: Pick<Session, "role" | "address" | "han
   return session;
 }
 
+/**
+ * Mutate the handle on an existing session and persist. Used by the
+ * `/auth/handle` rename endpoint so an anon user can change the
+ * `AnonXXXX` we minted at login into something of their own.
+ */
+export function updateSessionHandle(token: string, handle: string | null): Session | null {
+  const s = sessions.get(token);
+  if (!s) return null;
+  s.handle = handle;
+  persistToDisk();
+  return s;
+}
+
 export function getSession(token: string | undefined | null): Session | null {
   if (!token) return null;
   const s = sessions.get(token);

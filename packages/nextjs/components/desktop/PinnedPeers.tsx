@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
 import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
+import { useSession } from "~~/hooks/useSession";
+
+const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
 // Always-visible "who's here" panel pinned to the top-right of the
 // viewport, sitting just under the menubar. Replaces the old
@@ -27,14 +30,19 @@ const TOP_GAP = 10;
 const MAX_NAME_LEN = 30;
 
 export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
+  const { refresh } = useSession();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const me = peers.find(p => p.id === myId) ?? null;
   const myLower = me?.address?.toLowerCase() ?? null;
-  const myCurrentName = myLower ? (customNames[myLower] ?? "") : "";
-  const canEdit = !!me?.address;
+  const myCurrentName = myLower ? (customNames[myLower] ?? "") : (me?.handle ?? "");
+  // Anon users (no address) rename their server-side session.handle.
+  // Address-having users keep using the local peerNames alias system.
+  // Either way, they can edit — they just go through different paths.
+  const isAnon = !!me && !me.address;
+  const canEdit = !!me;
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -51,8 +59,28 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
 
   const commit = () => {
     const trimmed = draft.trim();
-    onSetCustomName(trimmed === "" ? null : trimmed.slice(0, MAX_NAME_LEN));
     setEditing(false);
+    if (isAnon) {
+      // Anon path: server-side session.handle rename. Empty submission
+      // just bails — anon must have *some* handle, no falling back to
+      // an address-shortform like SIWE/passkey users have.
+      if (!trimmed) return;
+      const next = trimmed.slice(0, MAX_NAME_LEN);
+      void fetch(`${RELAY_BASE}/auth/handle`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ handle: next }),
+      })
+        .then(res => {
+          if (res.ok) void refresh();
+        })
+        .catch(() => {
+          /* network blip — leave UI as-is, peer_handle broadcast never lands */
+        });
+      return;
+    }
+    onSetCustomName(trimmed === "" ? null : trimmed.slice(0, MAX_NAME_LEN));
   };
 
   const cancel = () => setEditing(false);
