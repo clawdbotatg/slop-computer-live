@@ -1387,6 +1387,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { address: connectedAddress } = useAccount();
   const { signMessageAsync, isPending: signing } = useSignMessage();
   const { writeContractAsync, isPending: writing } = useWriteContract();
+  const txPublicClient = usePublicClient({ chainId: tx.chainId });
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
   const { isLoading: execWaiting, data: execReceipt } = useWaitForTransactionReceipt({
     hash: execHash ?? undefined,
@@ -1443,12 +1444,38 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         })),
       );
       mesh.walletSetTxStatus(tx.id, "executing");
+      // Estimate gas with a 50% buffer. eth_estimateGas returns the minimum
+      // viable amount, but the 63/64 forwarding rule plus heavy inner calls
+      // (LI.FI swaps, multi-hop bridges) starve the inner frame if we don't
+      // overshoot the outer limit. A 1.5x multiplier matches what wallets
+      // like Safe use for the same reason. 800k floor in case estimate
+      // is wildly off — txs that need more than 800k still get the 1.5x.
+      const args = [tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted] as const;
+      let gasLimit: bigint | undefined;
+      if (txPublicClient && connectedAddress) {
+        try {
+          const estimate = await txPublicClient.estimateContractGas({
+            address: wallet.address as AddressType,
+            abi: MultisigAbi,
+            functionName: "execTransaction",
+            args,
+            account: connectedAddress as AddressType,
+          });
+          const buffered = (estimate * 3n) / 2n;
+          gasLimit = buffered < 800_000n ? 800_000n : buffered;
+        } catch {
+          // If estimate fails (sometimes happens with revert-prone calldata),
+          // fall back to a high fixed limit so the signer can still try.
+          gasLimit = 1_500_000n;
+        }
+      }
       const hash = await writeContractAsync({
         address: wallet.address as AddressType,
         abi: MultisigAbi,
         functionName: "execTransaction",
         chainId: tx.chainId,
-        args: [tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted],
+        args,
+        gas: gasLimit,
       });
       setExecHash(hash);
     } catch (e) {
@@ -1467,6 +1494,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     wallet.address,
     writeContractAsync,
     mesh,
+    txPublicClient,
   ]);
 
   const onRemove = useCallback(() => {

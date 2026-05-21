@@ -629,21 +629,16 @@ function DesktopInner({ slug }: { slug: string }) {
   );
 
   // First-visit hint state. `hintActive` controls icon filtering + arrow
-  // visibility; `firstVisitMode` outlives `hintActive` by a short grace
-  // period so the post-dismiss fade-in icons render at clean default
-  // positions instead of revealing whatever stacked mess the relay's
-  // slot store had from prior sessions. `hintDismissedAt` drives the
-  // fade-in animation timing.
+  // visibility; `hintDismissedAt` drives the fade-in animation timing.
+  // Positions are NOT overridden locally — we just call autoArrangeIcons
+  // once on first visit, which broadcasts cleanly cascading defaults
+  // through the normal slot system so every peer sees the same layout.
   const [hintActive, setHintActive] = useState(false);
-  const [firstVisitMode, setFirstVisitMode] = useState(false);
   const [hintDismissedAt, setHintDismissedAt] = useState<number | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) {
-        setHintActive(true);
-        setFirstVisitMode(true);
-      }
+      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) setHintActive(true);
     } catch {
       /* private mode → leave hint off, no biggie */
     }
@@ -660,11 +655,6 @@ function DesktopInner({ slug }: { slug: string }) {
       setHintDismissedAt(Date.now());
       return false;
     });
-    // Hold the default-position override past the fade-in (~700ms +
-    // 800ms max stagger) so the previously-hidden icons land at clean
-    // defaults visually, even if the relay broadcast for the auto-
-    // arrange hasn't fully round-tripped yet.
-    window.setTimeout(() => setFirstVisitMode(false), 2500);
   }, []);
 
   // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
@@ -1657,25 +1647,14 @@ function DesktopInner({ slug }: { slug: string }) {
               if (hidden) return null;
               const slotId = `icon-${app.id}`;
               const fallback = defaultIconPosition(i);
-              // While in first-visit mode, IGNORE the relay's slot
-              // positions for icons — they're often piled into stacks
-              // from previous sessions, which made the hint reveal a
-              // mess of overlapping icons. Force every icon to its
-              // default cascade position locally; the auto-arrange
-              // effect below also broadcasts these defaults so the
-              // room state catches up. After the hint dismisses + grace
-              // expires, we go back to honoring the shared slot
-              // positions so dragging still syncs.
-              const slot = firstVisitMode
-                ? { id: slotId, x: fallback.x, y: fallback.y, width: 88, height: 110, z: 1 }
-                : (mesh.slots[slotId] ?? {
-                    id: slotId,
-                    x: fallback.x,
-                    y: fallback.y,
-                    width: 88,
-                    height: 110,
-                    z: 1,
-                  });
+              const slot = mesh.slots[slotId] ?? {
+                id: slotId,
+                x: fallback.x,
+                y: fallback.y,
+                width: 88,
+                height: 110,
+                z: 1,
+              };
               // After dismiss, the non-priority icons fade in with a
               // small per-icon stagger so it feels like the desktop is
               // unlocking, not popping. The priority 4 are already on-
