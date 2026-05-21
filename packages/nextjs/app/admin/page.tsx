@@ -110,6 +110,7 @@ type BroadcastStatus = {
   enabled: string;
   activeForSeconds: number | null;
   recentLog: string[];
+  url: string | null;
 };
 
 const formatActiveFor = (seconds: number | null): string => {
@@ -134,8 +135,10 @@ const BroadcastPanel = ({
   setStatus: (msg: string) => void;
 }) => {
   const [data, setData] = useState<BroadcastStatus | null>(null);
-  const [busy, setBusy] = useState<"start" | "stop" | "restart" | null>(null);
+  const [busy, setBusy] = useState<"start" | "stop" | "restart" | "url" | null>(null);
   const [error, setError] = useState<string>("");
+  const [urlDraft, setUrlDraft] = useState<string>("");
+  const [urlDirty, setUrlDirty] = useState(false);
 
   useEffect(() => {
     if (!isHost) return;
@@ -145,7 +148,14 @@ const BroadcastPanel = ({
         const res = await fetch(`${relayBase}/admin/broadcast/status`, { credentials: "include" });
         if (!res.ok) return;
         const next = (await res.json()) as BroadcastStatus;
-        if (!cancelled) setData(next);
+        if (!cancelled) {
+          setData(next);
+          // Seed the URL input from the server's current value, but
+          // don't clobber the host's in-progress edits.
+          if (!urlDirty && next.url && urlDraft !== next.url) {
+            setUrlDraft(next.url);
+          }
+        }
       } catch {
         /* transient — next poll will retry */
       }
@@ -156,7 +166,33 @@ const BroadcastPanel = ({
       cancelled = true;
       clearInterval(t);
     };
-  }, [isHost, relayBase]);
+  }, [isHost, relayBase, urlDirty, urlDraft]);
+
+  const saveUrl = async () => {
+    setBusy("url");
+    setError("");
+    try {
+      const res = await fetch(`${relayBase}/admin/broadcast/url`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: urlDraft }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        const msg = (body && (body.error as string)) ?? res.statusText;
+        setError(msg);
+        setStatus(`broadcast url save failed: ${msg}`);
+      } else {
+        setUrlDirty(false);
+        setStatus("broadcast url updated, restarting…");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const act = async (action: "start" | "stop" | "restart") => {
     setBusy(action);
@@ -209,6 +245,22 @@ const BroadcastPanel = ({
         </Button>
         <Button onClick={() => act("stop")} disabled={!isHost || busy !== null}>
           {busy === "stop" ? "Stopping…" : "Stop"}
+        </Button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>Room URL:</label>
+        <TextField
+          value={urlDraft}
+          onChange={e => {
+            setUrlDraft(e.target.value);
+            setUrlDirty(true);
+          }}
+          style={{ flex: 1, minWidth: 320 }}
+          placeholder="https://live.slop.computer/<slug>?invite=…&godMode=…"
+        />
+        <Button onClick={saveUrl} disabled={!isHost || busy !== null || !urlDirty || urlDraft.length === 0}>
+          {busy === "url" ? "Saving…" : "Save & restart"}
         </Button>
       </div>
 

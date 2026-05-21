@@ -10,8 +10,13 @@
 // All endpoints are host-only (gated by requireHost at the call site).
 
 import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 
 const UNIT = "slop-broadcast.service";
+// Path to the env file the systemd unit reads. Lives next to the
+// committed example in deploy/. We own this file (relay runs as ubuntu,
+// deploy dir was created by the same user during `git clone`).
+const ENV_FILE = "/home/ubuntu/slop-computer-live/deploy/slop-broadcast.env";
 
 export type BroadcastStatus = {
   /** "active" | "activating" | "inactive" | "failed" | "unknown" */
@@ -127,4 +132,71 @@ export async function broadcastAction(
     ok: false,
     error: stderr.trim() || `systemctl ${action} exited ${code}`,
   };
+}
+
+/** Read the current SLOP_URL from the env file. Null if missing. */
+export async function getBroadcastUrl(): Promise<string | null> {
+  let body: string;
+  try {
+    body = await readFile(ENV_FILE, "utf8");
+  } catch {
+    return null;
+  }
+  // Match `SLOP_URL=<value>` on its own line. Values may contain `=`
+  // (query strings) but never a literal newline — we strip CRLF below.
+  const match = body.match(/^SLOP_URL=(.*)$/m);
+  if (!match || match[1] === undefined) return null;
+  return match[1].trim();
+}
+
+/**
+ * Rewrite SLOP_URL in the env file and restart the broadcaster so the
+ * change takes effect. Rejects non-http(s) URLs and anything with a
+ * newline (which would let an attacker inject other env vars).
+ */
+export async function setBroadcastUrl(
+  url: string,
+): Promise<{ ok: boolean; error?: string; url?: string }> {
+  // Strict validation. The env file is parsed line-by-line by systemd,
+  // so a newline in the value would leak into the next variable.
+  if (typeof url !== "string" || url.length === 0 || url.length > 2048) {
+    return { ok: false, error: "url must be a non-empty string under 2048 chars" };
+  }
+  if (/[\r\n\0]/.test(url)) {
+    return { ok: false, error: "url contains an illegal control character" };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "url is not a valid URL" };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { ok: false, error: "url must be http(s)" };
+  }
+
+  let body: string;
+  try {
+    body = await readFile(ENV_FILE, "utf8");
+  } catch (err) {
+    return { ok: false, error: `cannot read env file: ${(err as Error).message}` };
+  }
+  // Replace the existing SLOP_URL line; if no such line, append one.
+  let next: string;
+  if (/^SLOP_URL=.*$/m.test(body)) {
+    next = body.replace(/^SLOP_URL=.*$/m, `SLOP_URL=${url}`);
+  } else {
+    next = body.replace(/\n*$/, "") + `\nSLOP_URL=${url}\n`;
+  }
+  try {
+    await writeFile(ENV_FILE, next, { mode: 0o600 });
+  } catch (err) {
+    return { ok: false, error: `cannot write env file: ${(err as Error).message}` };
+  }
+
+  const restart = await broadcastAction("restart");
+  if (!restart.ok) {
+    return { ok: false, error: `env updated but restart failed: ${restart.error}` };
+  }
+  return { ok: true, url };
 }

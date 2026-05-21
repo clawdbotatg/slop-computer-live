@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
-import { broadcastAction, getBroadcastStatus } from "./broadcast.js";
+import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
   closeAllPeers,
@@ -2808,7 +2808,17 @@ app.post("/admin/stop", async (req, reply) => {
 app.get("/admin/broadcast/status", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return getBroadcastStatus();
+  const [status, url] = await Promise.all([getBroadcastStatus(), getBroadcastUrl()]);
+  return { ...status, url };
+});
+
+app.post<{ Body: { url?: string } }>("/admin/broadcast/url", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const url = req.body?.url ?? "";
+  const result = await setBroadcastUrl(url);
+  if (!result.ok) return reply.code(400).send(result);
+  return result;
 });
 
 app.post("/admin/broadcast/start", async (req, reply) => {

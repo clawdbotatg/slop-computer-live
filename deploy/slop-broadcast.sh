@@ -130,8 +130,14 @@ env \
     --window-position=0,0 \
     --window-size="${OUT_W},${OUT_H}" \
     --user-data-dir="$PROFILE_DIR" \
-  &
-PIDS+=($!)
+    --enable-logging=stderr --v=0 \
+  2>/dev/null &
+# Chrome on headless Linux fills the journal with dbus/UPower/GCM/gpu
+# errors that mean nothing to us. Discard chrome's stderr so the
+# admin-panel log view is actually useful. We still see the
+# broadcaster's own [broadcast] lines + ffmpeg warnings.
+CHROME_PID=$!
+PIDS+=("$CHROME_PID")
 
 # Give Chrome a few seconds to render the room and connect.
 sleep 6
@@ -171,15 +177,26 @@ env \
     -fps_mode cfr \
     -f flv "$RTMP_URL" \
   &
-PIDS+=($!)
-FFMPEG_PID=${PIDS[-1]}
+FFMPEG_PID=$!
+PIDS+=("$FFMPEG_PID")
 
-log "broadcast up. pids: xvfb=${PIDS[0]} chrome=${PIDS[1]} ffmpeg=$FFMPEG_PID"
+log "broadcast up. pids: xvfb=${PIDS[0]} chrome=$CHROME_PID ffmpeg=$FFMPEG_PID"
 
-# When ffmpeg exits (mediamtx died, RTMP got disconnected, etc.) we
-# want systemd to restart the whole thing. So we wait on ffmpeg
-# specifically, not the whole job. The `trap` above handles teardown
-# of chrome+xvfb+pulse when this shell exits.
+# Supervise BOTH ffmpeg and chrome. If chrome dies but ffmpeg keeps
+# reading the (now-frozen) x11 framebuffer we'd silently publish a
+# stuck frame forever — which already happened once during testing
+# (see broadcastPlan.md "Chrome crash recovery"). Exiting on either
+# child's death trips systemd's Restart=on-failure and cycles the
+# whole stack.
+while kill -0 "$FFMPEG_PID" 2>/dev/null && kill -0 "$CHROME_PID" 2>/dev/null; do
+  sleep 2
+done
+
+if ! kill -0 "$CHROME_PID" 2>/dev/null; then
+  log "chromium exited unexpectedly — cycling whole stack"
+  exit 1
+fi
+# ffmpeg exited — surface its exit code so systemd decides whether to retry.
 wait "$FFMPEG_PID"
 EXIT=$?
 log "ffmpeg exited with code $EXIT"
