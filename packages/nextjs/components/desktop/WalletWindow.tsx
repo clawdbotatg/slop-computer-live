@@ -114,17 +114,20 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
     for (const p of mesh.peers as Peer[]) {
       if (!p.address) continue;
       const lower = p.address.toLowerCase();
+      const custom = mesh.customNames[lower];
       out.set(lower, {
         address: lower,
-        label: p.handle ?? short(p.address),
+        label: custom ?? p.handle ?? short(p.address),
         isMe: p.id === mesh.myId,
         source: "peer",
       });
     }
     if (myAddress) {
       const lower = myAddress.toLowerCase();
+      const custom = mesh.customNames[lower];
       const existing = out.get(lower);
-      if (!existing) out.set(lower, { address: lower, label: myHandle ?? short(myAddress), isMe: true, source: "me" });
+      if (!existing)
+        out.set(lower, { address: lower, label: custom ?? myHandle ?? short(myAddress), isMe: true, source: "me" });
       else out.set(lower, { ...existing, isMe: true });
     }
     for (const c of customSigners) {
@@ -139,7 +142,7 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
       const rank = (s: Candidate["source"]) => (s === "me" ? 0 : s === "peer" ? 1 : 2);
       return rank(a.source) - rank(b.source);
     });
-  }, [mesh.peers, mesh.myId, myAddress, myHandle, customSigners]);
+  }, [mesh.peers, mesh.myId, myAddress, myHandle, customSigners, mesh.customNames]);
 
   const [selected, setSelected] = useState<Record<string, boolean>>({});
 

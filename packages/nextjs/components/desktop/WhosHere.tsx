@@ -8,15 +8,18 @@ type Props = {
   myId: string | null;
   peers: Peer[];
   connected: boolean;
+  customNames: Record<string, string>;
 };
 
-const labelOf = (p: Peer) => {
+const labelOf = (p: Peer, customNames: Record<string, string>) => {
+  const custom = p.address ? customNames[p.address.toLowerCase()] : undefined;
+  if (custom) return <span>{custom}</span>;
   if (p.handle) return <span>{p.handle}</span>;
   if (p.address) return <Address address={p.address as AddressType} size="xs" onlyEnsOrAddress />;
   return <span>{p.id.slice(0, 6)}</span>;
 };
 
-export const WhosHere = ({ myId, peers, connected }: Props) => {
+export const WhosHere = ({ myId, peers, connected, customNames }: Props) => {
   return (
     <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
       <p style={{ margin: 0, color: "var(--slop-text-muted)" }}>
@@ -50,7 +53,7 @@ export const WhosHere = ({ myId, peers, connected }: Props) => {
                   }}
                 >
                   {p.role === "host" ? <span aria-hidden>★</span> : null}
-                  {labelOf(p)}
+                  {labelOf(p, customNames)}
                   {isMe ? <span style={{ color: "var(--slop-text-muted)" }}>(you)</span> : null}
                 </span>
                 <span style={{ color: "var(--slop-text-muted)", flexShrink: 0 }}>{p.role}</span>

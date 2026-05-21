@@ -24,9 +24,10 @@ const POLL_MS = 1500;
 
 export type TranscriptWindowProps = {
   relayHttpUrl: string;
+  customNames: Record<string, string>;
 };
 
-export const TranscriptWindow = ({ relayHttpUrl }: TranscriptWindowProps) => {
+export const TranscriptWindow = ({ relayHttpUrl, customNames }: TranscriptWindowProps) => {
   const slug = useRoomSlug();
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -102,7 +103,7 @@ export const TranscriptWindow = ({ relayHttpUrl }: TranscriptWindowProps) => {
         ) : segments.length === 0 ? (
           <EmptyNote>waiting for someone to speak…</EmptyNote>
         ) : (
-          segments.map(s => <SegmentRow key={s.id} seg={s} />)
+          segments.map(s => <SegmentRow key={s.id} seg={s} customNames={customNames} />)
         )}
       </div>
       {error ? (
@@ -137,7 +138,8 @@ const EmptyNote = ({ children }: { children: React.ReactNode }) => (
   </div>
 );
 
-const SegmentRow = ({ seg }: { seg: TranscriptSegment }) => {
+const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames: Record<string, string> }) => {
+  const customName = seg.address ? customNames[seg.address.toLowerCase()] : undefined;
   const bands = useMemo<Bands>(
     () =>
       bandsFromIdentity({
@@ -180,7 +182,9 @@ const SegmentRow = ({ seg }: { seg: TranscriptSegment }) => {
             textTransform: "uppercase",
           }}
         >
-          {seg.address ? (
+          {customName ? (
+            <span>{customName}</span>
+          ) : seg.address ? (
             <Address address={seg.address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
           ) : (
             <span>{seg.handle ?? "anon"}</span>

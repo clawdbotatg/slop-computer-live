@@ -65,8 +65,8 @@ const Lobby = ({
   // every server-side AI player. Dedupe by ownerKey so a peer whose
   // peerId differs from their wallet address doesn't show twice.
   const options = useMemo(
-    () => buildOptions(mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers),
-    [mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers],
+    () => buildOptions(mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers, mesh.customNames),
+    [mesh.peers, myOwnerKey, myLabel, mesh.aiPlayers, mesh.customNames],
   );
   const [whiteKey, setWhiteKey] = useState<string>("");
   const [blackKey, setBlackKey] = useState<string>("");
@@ -949,22 +949,29 @@ const PIECE_GLYPH: Record<string, string> = {
 };
 
 const peerKey = (p: Peer) => (p.address ?? p.handle ?? p.id).toLowerCase();
-const peerLabel = (p: Peer) =>
-  p.handle ?? (p.address ? `${p.address.slice(0, 6)}…${p.address.slice(-4)}` : p.id.slice(0, 6));
+const peerLabel = (p: Peer, customNames: Record<string, string>) => {
+  const custom = p.address ? customNames[p.address.toLowerCase()] : undefined;
+  if (custom) return custom;
+  return p.handle ?? (p.address ? `${p.address.slice(0, 6)}…${p.address.slice(-4)}` : p.id.slice(0, 6));
+};
 
 function buildOptions(
   peers: Peer[],
   myKey: string | null,
   myLabel: string | null,
   aiPlayers: { ownerKey: string; label: string }[] = [],
+  customNames: Record<string, string> = {},
 ) {
   const map = new Map<string, { key: string; label: string }>();
   // Me first if known, then other connected humans.
-  if (myKey) map.set(myKey, { key: myKey, label: myLabel ?? myKey });
+  if (myKey) {
+    const myCustom = customNames[myKey.toLowerCase()];
+    map.set(myKey, { key: myKey, label: myCustom ?? myLabel ?? myKey });
+  }
   for (const p of peers) {
     const k = peerKey(p);
     if (map.has(k)) continue;
-    map.set(k, { key: k, label: peerLabel(p) });
+    map.set(k, { key: k, label: peerLabel(p, customNames) });
   }
   // Then the server-side AI roster — labels already carry a 🤖 marker
   // in the registry config, so the dropdown reads them as obviously bot.

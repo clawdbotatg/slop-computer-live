@@ -12,11 +12,12 @@ export type ChatWindowProps = {
   sendChat: (text: string) => void;
   myAddress: string | null;
   myHandle: string | null;
+  customNames: Record<string, string>;
 };
 
 // The chat panel body. The parent <Window> already supplies the title bar,
 // drag/resize, and shell — this just paints the scrollback + composer.
-export const ChatWindow = ({ messages, sendChat, myAddress, myHandle }: ChatWindowProps) => {
+export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customNames }: ChatWindowProps) => {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -83,7 +84,7 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle }: ChatWind
         ) : (
           messages.map(m => {
             const isMine = (m.address ?? m.handle ?? "").toLowerCase() === myKey && myKey !== "";
-            return <ChatRow key={m.id} msg={m} isMine={isMine} />;
+            return <ChatRow key={m.id} msg={m} isMine={isMine} customNames={customNames} />;
           })
         )}
       </div>
@@ -127,7 +128,16 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle }: ChatWind
   );
 };
 
-const ChatRow = ({ msg, isMine }: { msg: ChatMessage; isMine: boolean }) => {
+const ChatRow = ({
+  msg,
+  isMine,
+  customNames,
+}: {
+  msg: ChatMessage;
+  isMine: boolean;
+  customNames: Record<string, string>;
+}) => {
+  const customName = msg.address ? customNames[msg.address.toLowerCase()] : undefined;
   const bands = useMemo<Bands>(
     () =>
       bandsFromIdentity({
@@ -171,7 +181,9 @@ const ChatRow = ({ msg, isMine }: { msg: ChatMessage; isMine: boolean }) => {
             textTransform: "uppercase",
           }}
         >
-          {msg.address ? (
+          {customName ? (
+            <span>{customName}</span>
+          ) : msg.address ? (
             <Address address={msg.address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
           ) : (
             <span>{msg.handle ?? "anon"}</span>

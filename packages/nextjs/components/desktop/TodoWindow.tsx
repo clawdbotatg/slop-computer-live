@@ -21,7 +21,9 @@ export type TodoWindowProps = {
   mesh: PeerMeshState;
 };
 
-const sourceLabel = (item: TodoItem): string => {
+const sourceLabel = (item: TodoItem, customNames: Record<string, string>): string => {
+  const custom = item.address ? customNames[item.address.toLowerCase()] : undefined;
+  if (custom) return custom;
   if (item.handle) return item.handle;
   if (item.address) return shortAddress(item.address);
   return "anon";
@@ -227,10 +229,10 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
                       </button>
                     )}
                     <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>
-                      {item.address ? (
+                      {item.address && !mesh.customNames[item.address.toLowerCase()] ? (
                         <Address address={item.address as AddressType} size="xs" onlyEnsOrAddress />
                       ) : (
-                        <span>{sourceLabel(item)}</span>
+                        <span>{sourceLabel(item, mesh.customNames)}</span>
                       )}
                     </div>
                   </div>

@@ -314,7 +314,9 @@ function DesktopInner({ slug }: { slug: string }) {
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated
-    ? (session.handle ?? (session.address ? shortAddress(session.address) : "you"))
+    ? ((session.address ? mesh.customNames[session.address.toLowerCase()] : undefined) ??
+      session.handle ??
+      (session.address ? shortAddress(session.address) : "you"))
     : "guest";
 
   const peerLabel = useCallback(
@@ -1940,6 +1942,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 selfPeerId={mesh.myId}
                 forwardTxToPeer={mesh.forwardTxToPeer}
                 hideUrlBar={lockedToApp}
+                customNames={mesh.customNames}
               />
             </Window>
           );
@@ -2040,6 +2043,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 sendChat={mesh.sendChat}
                 myAddress={session.address}
                 myHandle={session.handle}
+                customNames={mesh.customNames}
               />
             </SharedAppWindow>
             <SharedAppWindow
@@ -2170,7 +2174,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={320}
               minHeight={280}
             >
-              <TranscriptWindow relayHttpUrl={RELAY_HTTP} />
+              <TranscriptWindow relayHttpUrl={RELAY_HTTP} customNames={mesh.customNames} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

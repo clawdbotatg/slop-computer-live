@@ -140,6 +140,9 @@ export type SharedBrowserProps = {
    *  that pin the window to a fixed dapp — e.g. ABINinja locks the
    *  iframe to abi.ninja and doesn't surface address controls. */
   hideUrlBar?: boolean;
+  /** Custom display names keyed by lowercased address — wins over the
+   *  peer's handle when labeling impersonator options. */
+  customNames?: Record<string, string>;
 };
 
 export const SharedBrowser = ({
@@ -155,6 +158,7 @@ export const SharedBrowser = ({
   selfPeerId,
   forwardTxToPeer,
   hideUrlBar,
+  customNames,
 }: SharedBrowserProps) => {
   const slug = useRoomSlug();
   const [draft, setDraft] = useState(browser.url);
@@ -218,18 +222,21 @@ export const SharedBrowser = ({
     const out: { address: AddressType; label: string }[] = [];
     const seen = new Set<string>();
     if (selfAddress && ADDRESS_RE.test(selfAddress)) {
-      seen.add(selfAddress.toLowerCase());
-      out.push({ address: selfAddress as AddressType, label: selfLabel ?? "you" });
+      const selfKey = selfAddress.toLowerCase();
+      seen.add(selfKey);
+      const selfCustom = customNames?.[selfKey];
+      out.push({ address: selfAddress as AddressType, label: selfCustom ?? selfLabel ?? "you" });
     }
     for (const p of peers ?? []) {
       if (!p.address || !ADDRESS_RE.test(p.address)) continue;
       const k = p.address.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ address: p.address as AddressType, label: p.handle ?? "peer" });
+      const custom = customNames?.[k];
+      out.push({ address: p.address as AddressType, label: custom ?? p.handle ?? "peer" });
     }
     return out;
-  }, [peers, selfAddress, selfLabel]);
+  }, [peers, selfAddress, selfLabel, customNames]);
 
   type ImpersonatorMode = "wallet" | `peer:${string}` | "custom";
 
