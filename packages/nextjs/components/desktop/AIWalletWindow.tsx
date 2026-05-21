@@ -65,18 +65,31 @@ export type AIWalletWindowProps = {
 export const AIWalletWindow = ({ mesh, myAddress }: AIWalletWindowProps) => {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const wallet = mesh.wallet;
-  const publicClient = usePublicClient({ chainId: wallet?.chainId });
+  // The wallet now lives on potentially multiple chains; pick the most
+  // recently-deployed one as the "primary" for the AI iframe and for any
+  // tx the iframe posts back. The agent can still target a different
+  // deployed chain — we accept any chainId in postMessage as long as
+  // the wallet has been deployed there.
+  const primaryChainId = useMemo<number | null>(() => {
+    if (!wallet) return null;
+    const ids = Object.keys(wallet.deployments)
+      .map(k => Number(k))
+      .filter(n => Number.isFinite(n))
+      .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt);
+    return ids[0] ?? null;
+  }, [wallet]);
+  const publicClient = usePublicClient({ chainId: primaryChainId ?? undefined });
 
   const iframeSrc = useMemo(() => {
-    if (!wallet) return null;
+    if (!wallet || primaryChainId === null) return null;
     const params = new URLSearchParams({
       embedded: "1",
       multisig: wallet.address,
-      chain: String(wallet.chainId),
+      chain: String(primaryChainId),
     });
     if (myAddress) params.set("signer", myAddress);
     return `${AI_WALLET_URL}/?${params.toString()}`;
-  }, [wallet, myAddress]);
+  }, [wallet, myAddress, primaryChainId]);
 
   useEffect(() => {
     if (!wallet) return;
@@ -87,13 +100,14 @@ export const AIWalletWindow = ({ mesh, myAddress }: AIWalletWindowProps) => {
       if (!isProposeTxMessage(e.data)) return;
 
       const msg = e.data;
-      // Sanity: chainId must match the wallet's chain.
-      if (msg.chainId !== wallet.chainId) {
-        console.warn("[ai-wallet] tx chainId mismatch", msg.chainId, "wallet chain", wallet.chainId);
+      // The wallet must be deployed on the chain the agent is targeting,
+      // otherwise the signed tx would be replay-vulnerable across chains.
+      if (!(msg.chainId in wallet.deployments)) {
+        console.warn("[ai-wallet] tx chainId not deployed", msg.chainId, "have", Object.keys(wallet.deployments));
         return;
       }
       if (!publicClient) {
-        console.warn("[ai-wallet] no public client for chain", wallet.chainId);
+        console.warn("[ai-wallet] no public client for chain", msg.chainId);
         return;
       }
       try {
@@ -107,7 +121,7 @@ export const AIWalletWindow = ({ mesh, myAddress }: AIWalletWindowProps) => {
         const valueWei = BigInt(msg.value || "0");
         const data = (msg.data || "0x") as Hex;
         const execHash = computeExecHash({
-          chainId: wallet.chainId,
+          chainId: msg.chainId,
           multisig: wallet.address as AddressType,
           nonce,
           deadline,
@@ -116,6 +130,7 @@ export const AIWalletWindow = ({ mesh, myAddress }: AIWalletWindowProps) => {
           data,
         });
         mesh.walletProposeTx({
+          chainId: msg.chainId,
           target,
           value: valueWei.toString(),
           data,

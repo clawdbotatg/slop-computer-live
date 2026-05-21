@@ -474,7 +474,13 @@ export const SharedBrowser = ({
         const propose = proposeRef.current;
         const imp = impersonatorRef.current;
         const impMatchesWallet = !!w && imp.toLowerCase() === w.address.toLowerCase();
-        if (w && propose && publicClient && to && calldata.startsWith("0x") && impMatchesWallet) {
+        // The browser host's current chain is what the dapp thinks it's
+        // on, and is the chain we should queue the multisig tx against
+        // — provided the wallet has been deployed there. If not, fall
+        // through to the local panel without queueing.
+        const browserChainId = hostChainIdRef.current;
+        const walletDeployedHere = !!w && browserChainId in w.deployments;
+        if (w && propose && publicClient && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
           void (async () => {
             try {
               const nonce = (await publicClient.readContract({
@@ -487,7 +493,7 @@ export const SharedBrowser = ({
               const valueWei = value && value !== "0x" ? BigInt(value) : 0n;
               const data = calldata as Hex;
               const execHash = computeExecHash({
-                chainId: w.chainId,
+                chainId: browserChainId,
                 multisig: w.address as AddressType,
                 nonce,
                 deadline,
@@ -496,6 +502,7 @@ export const SharedBrowser = ({
                 data,
               });
               propose({
+                chainId: browserChainId,
                 target,
                 value: valueWei.toString(),
                 data,

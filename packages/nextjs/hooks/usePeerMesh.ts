@@ -161,15 +161,18 @@ export type WalletSigner = {
   label: string;
   signerType: "eoa" | "passkey";
 };
+export type WalletDeployment = {
+  txHash: string | null;
+  deployedAt: number;
+};
 export type WalletRecord = {
   id: string;
   address: string;
-  chainId: number;
   deployer: string;
   salt: string;
   signers: WalletSigner[];
   threshold: number;
-  txHash: string | null;
+  deployments: Record<number, WalletDeployment>;
   createdAt: number;
   label: string;
 };
@@ -612,13 +615,17 @@ export type PeerMeshState = {
   walletHistory: WalletRecord[];
   /** Pending tx queue for `wallet` plus a tail of executed/failed txs. */
   walletTxs: WalletTx[];
-  /** Tell the relay a multisig has just been deployed. */
+  /** Tell the relay a multisig has just been deployed (first chain). */
   walletDeploy: (rec: WalletRecord) => void;
+  /** Record an additional chain the current wallet has been deployed
+   *  to. Same address, just a new entry under `deployments[chainId]`. */
+  walletAddDeployment: (chainId: number, txHash: string | null) => void;
   /** Archive `wallet` and reset the UI to the deploy state. */
   walletNewEpisode: () => void;
   /** Propose a transaction. The relay generates the id, applies the AI
    *  summary lazily, and broadcasts back as `wallet_txs`. */
   walletProposeTx: (req: {
+    chainId: number;
     target: string;
     value: string;
     data: string;
@@ -1251,11 +1258,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     },
     [send],
   );
+  const walletAddDeployment = useCallback(
+    (chainId: number, txHash: string | null) => {
+      send({ type: "wallet_add_deployment", chainId, txHash });
+    },
+    [send],
+  );
   const walletNewEpisode = useCallback(() => {
     send({ type: "wallet_new_episode" });
   }, [send]);
   const walletProposeTx = useCallback(
     (req: {
+      chainId: number;
       target: string;
       value: string;
       data: string;
@@ -1267,6 +1281,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }) => {
       send({
         type: "wallet_tx_propose",
+        chainId: req.chainId,
         target: req.target,
         value: req.value,
         data: req.data,
@@ -2015,6 +2030,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletHistory,
     walletTxs,
     walletDeploy,
+    walletAddDeployment,
     walletNewEpisode,
     walletProposeTx,
     walletSignTx,

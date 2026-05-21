@@ -28,22 +28,45 @@ export type WalletWindowProps = {
   myHandle: string | null;
 };
 
-// Used everywhere — short addr render fallback when ENS isn't available.
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
-// Per-chain bits the wallet UI needs: human label and the block-explorer
-// base URL used for tx links. Mainnet stays expensive; base + gnosis are
-// "cheap" deploy targets and skip the cost-warning banner.
-const CHAIN_META: Record<number, { label: string; explorer: string; cheap: boolean }> = {
-  [mainnet.id]: { label: "Ethereum mainnet", explorer: "https://etherscan.io", cheap: false },
-  [base.id]: { label: "Base", explorer: "https://basescan.org", cheap: true },
-  [gnosis.id]: { label: "Gnosis", explorer: "https://gnosisscan.io", cheap: true },
-};
+// The three chains the multisig factory is deployed on (same address
+// each). Order matters for the UI — cheap chains first since they're
+// the recommended default. Adding a new chain here lights up a new row
+// in the deploy grid and a new option in the activity picker — provided
+// it's also in `scaffold.config.ts` `targetNetworks`.
+const SUPPORTED_CHAINS = [
+  { id: base.id, label: "Base", explorer: "https://basescan.org", cheap: true },
+  { id: gnosis.id, label: "Gnosis", explorer: "https://gnosisscan.io", cheap: true },
+  { id: mainnet.id, label: "Ethereum mainnet", explorer: "https://etherscan.io", cheap: false },
+] as const;
 
 const chainMeta = (chainId: number) =>
-  CHAIN_META[chainId] ?? { label: `chain ${chainId}`, explorer: "https://etherscan.io", cheap: false };
+  SUPPORTED_CHAINS.find(c => c.id === chainId) ?? {
+    id: chainId,
+    label: `chain ${chainId}`,
+    explorer: "https://etherscan.io",
+    cheap: false,
+  };
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
+  const wallet = mesh.wallet;
+  const [tab, setTab] = useState<"deploy" | "activity">(wallet ? "activity" : "deploy");
+
+  // Auto-switch to activity the first time a wallet shows up (initial
+  // deploy). Don't yank the user back to deploy if they archive — they
+  // explicitly hit "new episode" and want the deploy tab.
+  useEffect(() => {
+    if (wallet && tab === "deploy") {
+      // Only auto-switch if there's already at least one deployment and
+      // the user hasn't manually picked Deploy — heuristic: if the wallet
+      // is freshly minted (within a few seconds), bounce to activity.
+      const justDeployed = Date.now() - wallet.createdAt < 8_000;
+      if (justDeployed) setTab("activity");
+    }
+    if (!wallet && tab === "activity") setTab("deploy");
+  }, [wallet, tab]);
+
   return (
     <div
       style={{
@@ -53,20 +76,76 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
         background: "#06030d",
         color: "var(--slop-text)",
         fontFamily: "var(--slop-font-body)",
-        overflow: "auto",
+        overflow: "hidden",
       }}
     >
-      {mesh.wallet ? (
-        <WalletDashboard mesh={mesh} wallet={mesh.wallet} myAddress={myAddress} myHandle={myHandle} />
-      ) : (
-        <WalletDeploy mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
-      )}
+      <TabBar tab={tab} setTab={setTab} deployLabel={wallet ? "Deploy" : "Deploy"} activityDisabled={!wallet} />
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {tab === "deploy" ? (
+          <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
+        ) : wallet ? (
+          <ActivityTab mesh={mesh} wallet={wallet} myAddress={myAddress} />
+        ) : null}
+      </div>
     </div>
   );
 };
 
 // ============================================================================
-// Deploy flow
+// Tab bar
+// ============================================================================
+
+const TabBar = ({
+  tab,
+  setTab,
+  deployLabel,
+  activityDisabled,
+}: {
+  tab: "deploy" | "activity";
+  setTab: (t: "deploy" | "activity") => void;
+  deployLabel: string;
+  activityDisabled: boolean;
+}) => {
+  const tabStyle = (active: boolean, disabled: boolean): React.CSSProperties => ({
+    flex: 1,
+    padding: "10px 12px",
+    background: active ? "rgba(255,62,201,0.12)" : "transparent",
+    border: 0,
+    borderBottom: active ? "2px solid var(--slop-magenta, #ff3ec9)" : "2px solid transparent",
+    color: disabled ? "var(--slop-text-muted)" : active ? "var(--slop-text)" : "var(--slop-text-muted)",
+    fontFamily: "var(--slop-font-display)",
+    fontSize: 11,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+  });
+  return (
+    <div
+      style={{
+        display: "flex",
+        borderBottom: "1px solid rgba(255,62,201,0.18)",
+        background: "rgba(0,0,0,0.3)",
+      }}
+    >
+      <button type="button" style={tabStyle(tab === "deploy", false)} onClick={() => setTab("deploy")}>
+        {deployLabel}
+      </button>
+      <button
+        type="button"
+        style={tabStyle(tab === "activity", activityDisabled)}
+        disabled={activityDisabled}
+        title={activityDisabled ? "Deploy a wallet first to unlock activity." : undefined}
+        onClick={() => !activityDisabled && setTab("activity")}
+      >
+        Activity
+      </button>
+    </div>
+  );
+};
+
+// ============================================================================
+// Deploy tab — signer form (initial) + chain grid (always)
 // ============================================================================
 
 type DeployProps = {
@@ -75,39 +154,17 @@ type DeployProps = {
   myHandle: string | null;
 };
 
-const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
+const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   const slug = useRoomSlug();
   const { address: connectedAddress } = useAccount();
-  const chainId = useChainId() ?? mainnet.id;
-  const { switchChain, isPending: switching } = useSwitchChain();
-  const { label: chainLabel, cheap: onCheapChain } = chainMeta(chainId);
-  const { writeContractAsync, isPending: writePending } = useWriteContract();
-  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
-  // Pin the wait to the chain the deploy fired on — otherwise wagmi can
-  // poll a different chain (mainnet) while the tx is mining on Base and
-  // never resolve. Capture the chainId at submit time alongside the hash.
-  const [txChainId, setTxChainId] = useState<number | null>(null);
-  const {
-    isLoading: receiptLoading,
-    isError: receiptError,
-    error: receiptErrorObj,
-    data: receipt,
-  } = useWaitForTransactionReceipt({
-    hash: txHash ?? undefined,
-    chainId: txChainId ?? undefined,
-  });
+  const existing = mesh.wallet;
 
+  // Form state — only used pre-first-deploy. After we have a wallet,
+  // signers/threshold/label/salt are locked into `wallet` and the form
+  // is replaced by a read-only summary.
   const [label, setLabel] = useState<string>(slug);
-
-  // Manually-added signers (typed into AddressInput). Keyed lowercased,
-  // separate from peer-derived so removing one doesn't conflict with the
-  // mesh refilling the list.
   const [customSigners, setCustomSigners] = useState<{ address: string; label: string }[]>([]);
 
-  // Candidate signers: peers with an ETH address + the current viewer +
-  // any addresses the host typed in. Dedupe by lowercased address so a
-  // typed-in address that matches a peer collapses to one row (and
-  // keeps the peer's label / "you" marker).
   type Candidate = { address: string; label: string; isMe: boolean; source: "peer" | "me" | "custom" };
   const candidateSigners = useMemo<Candidate[]>(() => {
     const out = new Map<string, Candidate>();
@@ -125,19 +182,16 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
     if (myAddress) {
       const lower = myAddress.toLowerCase();
       const custom = mesh.customNames[lower];
-      const existing = out.get(lower);
-      if (!existing)
+      const ex = out.get(lower);
+      if (!ex)
         out.set(lower, { address: lower, label: custom ?? myHandle ?? short(myAddress), isMe: true, source: "me" });
-      else out.set(lower, { ...existing, isMe: true });
+      else out.set(lower, { ...ex, isMe: true });
     }
     for (const c of customSigners) {
       const lower = c.address.toLowerCase();
-      if (!out.has(lower)) {
-        out.set(lower, { address: lower, label: c.label, isMe: false, source: "custom" });
-      }
+      if (!out.has(lower)) out.set(lower, { address: lower, label: c.label, isMe: false, source: "custom" });
     }
     return Array.from(out.values()).sort((a, b) => {
-      // Me first, then peers, then custom.
       if (a.isMe !== b.isMe) return a.isMe ? -1 : 1;
       const rank = (s: Candidate["source"]) => (s === "me" ? 0 : s === "peer" ? 1 : 2);
       return rank(a.source) - rank(b.source);
@@ -145,8 +199,6 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
   }, [mesh.peers, mesh.myId, myAddress, myHandle, customSigners, mesh.customNames]);
 
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-
-  // Default everyone to selected on first render / signer-list change.
   useEffect(() => {
     setSelected(prev => {
       const next = { ...prev };
@@ -162,7 +214,6 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
 
   const [threshold, setThreshold] = useState<number>(1);
   useEffect(() => {
-    // Default threshold to majority — ceil(n/2) — clamped to current count.
     if (selectedSigners.length === 0) return;
     setThreshold(t => {
       const next = Math.min(Math.max(1, Math.ceil(selectedSigners.length / 2)), selectedSigners.length);
@@ -170,416 +221,585 @@ const WalletDeploy = ({ mesh, myAddress, myHandle }: DeployProps) => {
     });
   }, [selectedSigners.length]);
 
-  const salt = useMemo(() => saltFromLabel(`${connectedAddress ?? "0x0"}:${label}`), [connectedAddress, label]);
+  // After deploy, we lock signers/threshold/salt into the wallet record.
+  // Before deploy, derive them live from the form.
+  const effectiveDeployer = existing ? (existing.deployer as AddressType) : (connectedAddress ?? null);
+  const effectiveSalt = useMemo(() => {
+    if (existing) return existing.salt as Hex;
+    return saltFromLabel(`${connectedAddress ?? "0x0"}:${label}`);
+  }, [existing, connectedAddress, label]);
+  const effectiveSigners = useMemo(
+    () => (existing ? existing.signers : selectedSigners.map(s => ({ address: s.address, label: s.label }))),
+    [existing, selectedSigners],
+  );
+  const effectiveThreshold = existing ? existing.threshold : threshold;
+  const effectiveLabel = existing ? existing.label : label;
 
-  // Predicted multisig address, recomputed when deployer/salt change.
-  // Pin the read to mainnet so it works regardless of which chain the
-  // user's wallet is currently selected on — the factory address is the
-  // same on every chain, and reading it on mainnet just predicts where
-  // the multisig *would* land for a (deployer, salt) pair.
-  const {
-    data: predicted,
-    error: predictError,
-    isLoading: predictLoading,
-  } = useReadContract({
+  // Predicted multisig address. Same on every chain since the factory
+  // address is identical — pin the read to mainnet RPC.
+  const { data: predicted } = useReadContract({
     address: FACTORY_ADDRESS,
     abi: MultisigFactoryAbi,
     functionName: "getMultisigAddress",
-    args: connectedAddress ? [connectedAddress, salt] : undefined,
+    args: effectiveDeployer ? [effectiveDeployer, effectiveSalt] : undefined,
     chainId: mainnet.id,
-    query: { enabled: !!connectedAddress },
+    query: { enabled: !!effectiveDeployer },
   });
-
-  const [error, setError] = useState<string | null>(null);
-
-  // Once the deploy tx confirms, build the WalletRecord from the
-  // MultisigCreated event log and tell the relay.
-  useEffect(() => {
-    if (!receipt || !connectedAddress) return;
-    try {
-      let multisigAddr: AddressType | null = null;
-      for (const log of receipt.logs) {
-        if (log.address.toLowerCase() !== FACTORY_ADDRESS.toLowerCase()) continue;
-        try {
-          const decoded = decodeEventLog({
-            abi: MultisigFactoryAbi,
-            data: log.data,
-            topics: log.topics,
-            strict: false,
-          });
-          if (decoded.eventName === "MultisigCreated") {
-            multisigAddr = (decoded.args as { multisig: AddressType }).multisig;
-            break;
-          }
-        } catch {
-          /* not our event */
-        }
-      }
-      if (!multisigAddr) {
-        setError("Couldn't find MultisigCreated log in receipt");
-        return;
-      }
-      const record: WalletRecord = {
-        id: Math.random().toString(36).slice(2),
-        address: multisigAddr.toLowerCase(),
-        chainId,
-        deployer: connectedAddress.toLowerCase(),
-        salt,
-        signers: selectedSigners.map(s => ({ address: s.address, label: s.label, signerType: "eoa" })),
-        threshold,
-        txHash: receipt.transactionHash,
-        createdAt: Date.now(),
-        label,
-      };
-      mesh.walletDeploy(record);
-      setTxHash(null);
-    } catch (err) {
-      setError(String(err).slice(0, 200));
-    }
-    // We intentionally only react to the receipt landing — selectedSigners /
-    // threshold / label are read from the closure at deploy time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receipt]);
-
-  const onDeploy = useCallback(async () => {
-    setError(null);
-    if (!connectedAddress) {
-      setError("connect your wallet first");
-      return;
-    }
-    if (selectedSigners.length === 0) {
-      setError("pick at least one signer");
-      return;
-    }
-    if (threshold < 1 || threshold > selectedSigners.length) {
-      setError("threshold out of range");
-      return;
-    }
-    try {
-      const hash = await writeContractAsync({
-        address: FACTORY_ADDRESS,
-        abi: MultisigFactoryAbi,
-        functionName: "createMultisig",
-        chainId,
-        args: [
-          selectedSigners.map(s => s.address as AddressType),
-          [], // passkeyQxs
-          [], // passkeyQys
-          [], // credentialIdHashes
-          BigInt(threshold),
-          salt,
-        ],
-      });
-      setTxHash(hash);
-      setTxChainId(chainId);
-    } catch (err) {
-      setError(String(err).slice(0, 200));
-    }
-  }, [connectedAddress, selectedSigners, threshold, salt, chainId, writeContractAsync]);
-
-  const deploying = writePending || receiptLoading;
+  const predictedAddress = (existing?.address ?? predicted ?? null) as AddressType | null;
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", letterSpacing: "0.08em" }}>
-          Deploy session wallet
-        </h2>
-        <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--slop-text-muted)" }}>
-          Spin up a multisig for this episode. The signers below all have to approve transactions before they execute.
-        </p>
-      </div>
-
-      <Field label="Episode label">
-        <TextField value={label} onChange={e => setLabel(e.target.value)} placeholder={slug} disabled={deploying} />
-      </Field>
-
-      <Field label={`Signers (${selectedSigners.length})`}>
-        {candidateSigners.length === 0 ? (
-          <div style={{ fontSize: 12, color: "var(--slop-text-muted)", fontStyle: "italic", marginBottom: 6 }}>
-            no guests with wallet addresses yet — type one below or wait for a peer to sign in
+      {existing ? (
+        <DeployedSummary wallet={existing} />
+      ) : (
+        <>
+          <div>
+            <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", letterSpacing: "0.08em" }}>
+              Deploy session wallet
+            </h2>
+            <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--slop-text-muted)" }}>
+              Spin up a multisig for this episode. The address is identical on every chain — deploy it on any of the
+              networks below now, then come back and add more later.
+            </p>
           </div>
-        ) : (
-          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-            {candidateSigners.map(s => (
-              <li
-                key={s.address}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "6px 8px",
-                  background: "rgba(255,255,255,0.03)",
-                  border: "1px solid rgba(255,62,201,0.18)",
-                  borderRadius: 4,
-                }}
+
+          <Field label="Episode label">
+            <TextField value={label} onChange={e => setLabel(e.target.value)} placeholder={slug} />
+          </Field>
+
+          <Field label={`Signers (${selectedSigners.length})`}>
+            {candidateSigners.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--slop-text-muted)", fontStyle: "italic", marginBottom: 6 }}>
+                no guests with wallet addresses yet — type one below or wait for a peer to sign in
+              </div>
+            ) : (
+              <ul
+                style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}
               >
-                <input
-                  type="checkbox"
-                  checked={!!selected[s.address]}
-                  disabled={deploying}
-                  onChange={e => setSelected(prev => ({ ...prev, [s.address]: e.target.checked }))}
-                />
-                <span style={{ flex: 1, fontSize: 12 }}>
-                  <Address address={s.address as AddressType} size="xs" onlyEnsOrAddress />
-                  {s.isMe ? <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>(you)</span> : null}
-                  {s.source === "custom" ? (
-                    <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>· added</span>
-                  ) : null}
-                </span>
-                {s.source === "custom" ? (
-                  <button
-                    type="button"
-                    aria-label="remove"
-                    title="remove this signer"
-                    disabled={deploying}
-                    onClick={() => {
-                      setCustomSigners(prev => prev.filter(c => c.address.toLowerCase() !== s.address));
-                      setSelected(prev => {
-                        const next = { ...prev };
-                        delete next[s.address];
-                        return next;
-                      });
-                    }}
+                {candidateSigners.map(s => (
+                  <li
+                    key={s.address}
                     style={{
-                      background: "transparent",
-                      border: 0,
-                      color: "var(--slop-text-muted)",
-                      fontSize: 14,
-                      cursor: deploying ? "not-allowed" : "pointer",
-                      padding: "0 4px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 8px",
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,62,201,0.18)",
+                      borderRadius: 4,
                     }}
                   >
-                    ×
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-        <AddSignerRow
-          disabled={deploying}
-          existing={new Set(candidateSigners.map(s => s.address))}
-          onAdd={addr => {
-            const lower = addr.toLowerCase();
-            setCustomSigners(prev =>
-              prev.some(c => c.address.toLowerCase() === lower)
-                ? prev
-                : [...prev, { address: lower, label: short(lower) }],
-            );
-            setSelected(prev => ({ ...prev, [lower]: true }));
-          }}
-        />
-      </Field>
-
-      <Field label={`Threshold (${threshold} of ${selectedSigners.length || 0})`}>
-        <input
-          type="range"
-          min={1}
-          max={Math.max(1, selectedSigners.length)}
-          value={threshold}
-          disabled={deploying || selectedSigners.length === 0}
-          onChange={e => setThreshold(parseInt(e.target.value, 10))}
-          style={{ width: "100%" }}
-        />
-      </Field>
-
-      <Field label="Predicted address">
-        <div style={{ fontSize: 12 }}>
-          {predicted ? (
-            <Address address={predicted as AddressType} size="sm" />
-          ) : !connectedAddress ? (
-            <span style={{ color: "var(--slop-text-muted)" }}>connect wallet</span>
-          ) : predictError ? (
-            <span style={{ color: "#ff7676" }}>error: {predictError.message.slice(0, 200)}</span>
-          ) : predictLoading ? (
-            <span style={{ color: "var(--slop-text-muted)" }}>reading factory on mainnet…</span>
-          ) : (
-            <span style={{ color: "var(--slop-text-muted)" }}>computing…</span>
-          )}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 10,
-            color: "var(--slop-text-muted)",
-            marginTop: 6,
-          }}
-        >
-          <span>chain {chainId} · deployer</span>
-          {connectedAddress ? (
-            <Address address={connectedAddress as AddressType} size="xs" onlyEnsOrAddress />
-          ) : (
-            <span>—</span>
-          )}
-        </div>
-      </Field>
-
-      {error ? (
-        <div
-          style={{ fontSize: 11, color: "#ff7676", padding: 8, background: "rgba(255,118,118,0.08)", borderRadius: 4 }}
-        >
-          {error}
-        </div>
-      ) : null}
-
-      {txHash ? (
-        <div
-          style={{
-            fontSize: 11,
-            color: "var(--slop-text-muted)",
-            padding: 8,
-            background: "rgba(255,62,201,0.06)",
-            borderRadius: 4,
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-          }}
-        >
-          <div>
-            tx submitted on chain {txChainId} —{" "}
-            {receipt ? "confirmed, finalizing…" : receiptError ? "wait errored" : "waiting for inclusion…"}
-          </div>
-          <a
-            href={`${chainMeta(txChainId ?? mainnet.id).explorer}/tx/${txHash}`}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              color: "var(--slop-magenta, #ff3ec9)",
-              textDecoration: "underline",
-              wordBreak: "break-all",
-              fontFamily: "monospace",
-              fontSize: 10,
-            }}
-          >
-            {txHash}
-          </a>
-          {receiptError ? (
-            <div style={{ color: "#ff7676" }}>{receiptErrorObj?.message?.slice(0, 240) ?? "wait failed"}</div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {!onCheapChain && connectedAddress ? (
-        <div
-          style={{
-            fontSize: 11,
-            color: "#ffce6a",
-            padding: 8,
-            background: "rgba(255,206,106,0.08)",
-            border: "1px solid rgba(255,206,106,0.3)",
-            borderRadius: 4,
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-          }}
-        >
-          <div>
-            Your wallet is on <strong>{chainLabel}</strong>. Deploying here costs real ETH (≈$1). Base and Gnosis both
-            cost pennies and the contracts are at the same address.
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              disabled={switching}
-              onClick={() => switchChain({ chainId: base.id })}
-              style={{
-                padding: "4px 10px",
-                fontSize: 11,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                background: "var(--slop-magenta, #ff3ec9)",
-                color: "#06030d",
-                border: "none",
-                borderRadius: 4,
-                cursor: switching ? "wait" : "pointer",
-                fontWeight: 700,
+                    <input
+                      type="checkbox"
+                      checked={!!selected[s.address]}
+                      onChange={e => setSelected(prev => ({ ...prev, [s.address]: e.target.checked }))}
+                    />
+                    <span style={{ flex: 1, fontSize: 12 }}>
+                      <Address address={s.address as AddressType} size="xs" onlyEnsOrAddress />
+                      {s.isMe ? <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>(you)</span> : null}
+                      {s.source === "custom" ? (
+                        <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>· added</span>
+                      ) : null}
+                    </span>
+                    {s.source === "custom" ? (
+                      <button
+                        type="button"
+                        aria-label="remove"
+                        title="remove this signer"
+                        onClick={() => {
+                          setCustomSigners(prev => prev.filter(c => c.address.toLowerCase() !== s.address));
+                          setSelected(prev => {
+                            const next = { ...prev };
+                            delete next[s.address];
+                            return next;
+                          });
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: 0,
+                          color: "var(--slop-text-muted)",
+                          fontSize: 14,
+                          cursor: "pointer",
+                          padding: "0 4px",
+                        }}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <AddSignerRow
+              disabled={false}
+              existing={new Set(candidateSigners.map(s => s.address))}
+              onAdd={addr => {
+                const lower = addr.toLowerCase();
+                setCustomSigners(prev =>
+                  prev.some(c => c.address.toLowerCase() === lower)
+                    ? prev
+                    : [...prev, { address: lower, label: short(lower) }],
+                );
+                setSelected(prev => ({ ...prev, [lower]: true }));
               }}
-            >
-              {switching ? "Switching…" : "Switch to Base"}
-            </button>
-            <button
-              type="button"
-              disabled={switching}
-              onClick={() => switchChain({ chainId: gnosis.id })}
-              style={{
-                padding: "4px 10px",
-                fontSize: 11,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                background: "var(--slop-cyan, #3fcfff)",
-                color: "#06030d",
-                border: "none",
-                borderRadius: 4,
-                cursor: switching ? "wait" : "pointer",
-                fontWeight: 700,
-              }}
-            >
-              {switching ? "Switching…" : "Switch to Gnosis"}
-            </button>
-          </div>
-        </div>
-      ) : null}
+            />
+          </Field>
 
-      {deploying ? (
-        <LoadingBar
-          caption={writePending ? "confirm in wallet…" : receiptLoading ? "waiting for inclusion…" : "finalizing…"}
+          <Field label={`Threshold (${threshold} of ${selectedSigners.length || 0})`}>
+            <input
+              type="range"
+              min={1}
+              max={Math.max(1, selectedSigners.length)}
+              value={threshold}
+              disabled={selectedSigners.length === 0}
+              onChange={e => setThreshold(parseInt(e.target.value, 10))}
+              style={{ width: "100%" }}
+            />
+          </Field>
+
+          <Field label="Predicted address">
+            <div style={{ fontSize: 12 }}>
+              {predictedAddress ? (
+                <Address address={predictedAddress} size="sm" />
+              ) : !connectedAddress ? (
+                <span style={{ color: "var(--slop-text-muted)" }}>connect wallet</span>
+              ) : (
+                <span style={{ color: "var(--slop-text-muted)" }}>computing…</span>
+              )}
+            </div>
+          </Field>
+        </>
+      )}
+
+      <Section title="Networks">
+        <p style={{ fontSize: 11, color: "var(--slop-text-muted)", margin: "0 0 8px" }}>
+          Deploy the multisig on the chains you need. The address is the same everywhere — funding the address before
+          deploying works too; you just can&apos;t execute txs on a chain until <code>createMultisig</code> runs there.
+        </p>
+        <ChainGrid
+          mesh={mesh}
+          existing={existing}
+          predicted={predictedAddress}
+          deployer={effectiveDeployer}
+          salt={effectiveSalt}
+          signers={effectiveSigners.map(s => s.address as AddressType)}
+          threshold={effectiveThreshold}
+          label={effectiveLabel}
         />
-      ) : null}
+      </Section>
+    </div>
+  );
+};
 
-      <div style={{ display: "flex", gap: 8 }}>
-        <Button
-          variant="primary"
-          onClick={onDeploy}
-          disabled={deploying || !connectedAddress || selectedSigners.length === 0}
-        >
-          {writePending ? "Confirm in wallet…" : receiptLoading ? "Waiting for inclusion…" : `Deploy on ${chainLabel}`}
-        </Button>
-        {txHash ? (
-          <Button
-            onClick={() => {
-              setTxHash(null);
-              setTxChainId(null);
-              setError(null);
-            }}
-            disabled={writePending}
-          >
-            Reset
-          </Button>
-        ) : null}
+// ============================================================================
+// DeployedSummary — read-only signer / threshold summary, shown above the
+// chain grid once the wallet exists.
+// ============================================================================
+
+const DeployedSummary = ({ wallet }: { wallet: WalletRecord }) => {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: 12,
+        background: "linear-gradient(180deg, rgba(255,62,201,0.06) 0%, rgba(255,62,201,0.02) 100%)",
+        border: "1px solid rgba(255,62,201,0.3)",
+        borderRadius: 6,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--slop-text-muted)",
+          fontFamily: "var(--slop-font-display)",
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+        }}
+      >
+        {wallet.label}
+      </div>
+      <Address address={wallet.address as AddressType} size="sm" />
+      <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
+        Threshold {wallet.threshold} of {wallet.signers.length}
+        {" · deployed on "}
+        {Object.keys(wallet.deployments)
+          .map(k => chainMeta(Number(k)).label)
+          .join(", ")}
       </div>
     </div>
   );
 };
 
 // ============================================================================
-// Dashboard (wallet deployed)
+// ChainGrid — one row per supported chain. Each row figures out its
+// own deployed-or-not status via either the wallet record or eth_getCode,
+// and renders either an explorer link or a [ deploy ] button.
 // ============================================================================
 
-type DashboardProps = {
+type ChainGridProps = {
+  mesh: PeerMeshState;
+  existing: WalletRecord | null;
+  predicted: AddressType | null;
+  deployer: AddressType | null;
+  salt: Hex;
+  signers: AddressType[];
+  threshold: number;
+  label: string;
+};
+
+const ChainGrid = ({ mesh, existing, predicted, deployer, salt, signers, threshold, label }: ChainGridProps) => {
+  return (
+    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+      {SUPPORTED_CHAINS.map(c => (
+        <ChainRow
+          key={c.id}
+          chainId={c.id}
+          chainLabel={c.label}
+          explorer={c.explorer}
+          cheap={c.cheap}
+          mesh={mesh}
+          existing={existing}
+          predicted={predicted}
+          deployer={deployer}
+          salt={salt}
+          signers={signers}
+          threshold={threshold}
+          label={label}
+        />
+      ))}
+    </ul>
+  );
+};
+
+type ChainRowProps = {
+  chainId: number;
+  chainLabel: string;
+  explorer: string;
+  cheap: boolean;
+  mesh: PeerMeshState;
+  existing: WalletRecord | null;
+  predicted: AddressType | null;
+  deployer: AddressType | null;
+  salt: Hex;
+  signers: AddressType[];
+  threshold: number;
+  label: string;
+};
+
+const ChainRow = ({
+  chainId,
+  chainLabel,
+  explorer,
+  cheap,
+  mesh,
+  existing,
+  predicted,
+  deployer,
+  salt,
+  signers,
+  threshold,
+  label,
+}: ChainRowProps) => {
+  const connectedChainId = useChainId() ?? mainnet.id;
+  const { switchChainAsync, isPending: switching } = useSwitchChain();
+  const { writeContractAsync, isPending: writePending } = useWriteContract();
+  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
+  const {
+    isLoading: receiptLoading,
+    data: receipt,
+    isError: receiptIsError,
+    error: receiptErr,
+  } = useWaitForTransactionReceipt({ hash: txHash ?? undefined, chainId });
+  const [err, setErr] = useState<string | null>(null);
+
+  // Code probe: does contract bytecode already exist at the predicted
+  // address on this chain? If so, someone already deployed it — even if
+  // we don't have a record locally. Used to gate the deploy button.
+  const publicClient = usePublicClient({ chainId });
+  const [hasCode, setHasCode] = useState<boolean | null>(null);
+  const probeKey = predicted ? `${chainId}:${predicted.toLowerCase()}` : null;
+  useEffect(() => {
+    if (!publicClient || !predicted) {
+      setHasCode(null);
+      return;
+    }
+    let cancelled = false;
+    publicClient
+      .getBytecode({ address: predicted })
+      .then(code => {
+        if (cancelled) return;
+        setHasCode(!!code && code !== "0x");
+      })
+      .catch(() => {
+        if (!cancelled) setHasCode(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // probeKey rolls up the inputs that change the answer; ignoring
+    // publicClient identity churn (wagmi re-creates it on every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeKey]);
+
+  // Did we already record a deployment for this chain?
+  const localDep = existing?.deployments[chainId] ?? null;
+  const alreadyDeployedOnChain = !!localDep || hasCode === true;
+
+  // When a deploy lands, tell the relay so every peer sees the new chain
+  // entry. Also retro-fill the WalletRecord on the very first deploy
+  // (no existing wallet → we need to call walletDeploy with the full
+  // record; subsequent deploys use walletAddDeployment).
+  useEffect(() => {
+    if (!receipt) return;
+    if (receipt.status !== "success") {
+      setErr("deploy tx reverted");
+      setTxHash(null);
+      return;
+    }
+    if (existing) {
+      mesh.walletAddDeployment(chainId, receipt.transactionHash);
+    } else {
+      // First-ever deploy — build the full WalletRecord from the
+      // MultisigCreated event in the receipt, just like the legacy flow.
+      try {
+        let multisigAddr: AddressType | null = null;
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== FACTORY_ADDRESS.toLowerCase()) continue;
+          try {
+            const decoded = decodeEventLog({
+              abi: MultisigFactoryAbi,
+              data: log.data,
+              topics: log.topics,
+              strict: false,
+            });
+            if (decoded.eventName === "MultisigCreated") {
+              multisigAddr = (decoded.args as { multisig: AddressType }).multisig;
+              break;
+            }
+          } catch {
+            /* not our event */
+          }
+        }
+        if (!multisigAddr) {
+          setErr("Couldn't find MultisigCreated log");
+          setTxHash(null);
+          return;
+        }
+        if (!deployer) {
+          setErr("missing deployer");
+          setTxHash(null);
+          return;
+        }
+        const record: WalletRecord = {
+          id: Math.random().toString(36).slice(2),
+          address: multisigAddr.toLowerCase(),
+          deployer: deployer.toLowerCase(),
+          salt,
+          signers: signers.map(addr => ({ address: addr.toLowerCase(), label: short(addr), signerType: "eoa" })),
+          threshold,
+          deployments: {
+            [chainId]: { txHash: receipt.transactionHash, deployedAt: Date.now() },
+          },
+          createdAt: Date.now(),
+          label,
+        };
+        mesh.walletDeploy(record);
+      } catch (e) {
+        setErr(String(e).slice(0, 200));
+      }
+    }
+    setTxHash(null);
+    // We deliberately key only on the receipt landing — every other
+    // input is captured at the time the deploy fired.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipt]);
+
+  const onDeploy = useCallback(async () => {
+    setErr(null);
+    if (!deployer) {
+      setErr("connect wallet first");
+      return;
+    }
+    if (signers.length === 0) {
+      setErr("pick at least one signer");
+      return;
+    }
+    try {
+      if (connectedChainId !== chainId) {
+        await switchChainAsync({ chainId });
+      }
+      const hash = await writeContractAsync({
+        address: FACTORY_ADDRESS,
+        abi: MultisigFactoryAbi,
+        functionName: "createMultisig",
+        chainId,
+        args: [signers, [], [], [], BigInt(threshold), salt],
+      });
+      setTxHash(hash);
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    }
+  }, [deployer, signers, connectedChainId, chainId, switchChainAsync, writeContractAsync, threshold, salt]);
+
+  const busy = writePending || receiptLoading || switching;
+
+  const statusNode = (() => {
+    if (alreadyDeployedOnChain) {
+      // Already deployed (either we have a record, or eth_getCode found
+      // bytecode at the address from some prior deploy).
+      const link = localDep?.txHash
+        ? `${explorer}/tx/${localDep.txHash}`
+        : predicted
+          ? `${explorer}/address/${predicted}`
+          : null;
+      const txt = localDep ? "already deployed" : "already deployed (on-chain)";
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: "#7be88a", fontSize: 11 }}>✓ {txt}</span>
+          {link ? (
+            <a
+              href={link}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                fontSize: 10,
+                color: "var(--slop-magenta, #ff3ec9)",
+                textDecoration: "underline",
+              }}
+            >
+              view
+            </a>
+          ) : null}
+        </div>
+      );
+    }
+    return (
+      <Button variant="primary" onClick={onDeploy} disabled={busy || !deployer || signers.length === 0}>
+        {switching
+          ? "Switching…"
+          : writePending
+            ? "Confirm in wallet…"
+            : receiptLoading
+              ? "Waiting…"
+              : `Deploy on ${chainLabel}`}
+      </Button>
+    );
+  })();
+
+  return (
+    <li
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        background: alreadyDeployedOnChain ? "rgba(123,232,138,0.04)" : "rgba(255,255,255,0.025)",
+        border: `1px solid ${alreadyDeployedOnChain ? "rgba(123,232,138,0.25)" : "rgba(255,62,201,0.18)"}`,
+        borderRadius: 6,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div
+            style={{
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.06em",
+              fontSize: 13,
+              color: "var(--slop-text)",
+            }}
+          >
+            {chainLabel}
+          </div>
+          <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>
+            chain {chainId}
+            {!cheap ? <span style={{ marginLeft: 6, color: "#ffce6a" }}>· ~$1 gas</span> : null}
+          </div>
+        </div>
+        {statusNode}
+      </div>
+      {txHash ? (
+        <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+          tx{" "}
+          <a
+            href={`${explorer}/tx/${txHash}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              color: "var(--slop-magenta, #ff3ec9)",
+              textDecoration: "underline",
+              fontFamily: "monospace",
+              wordBreak: "break-all",
+            }}
+          >
+            {txHash.slice(0, 10)}…{txHash.slice(-6)}
+          </a>{" "}
+          {receipt ? "confirmed" : receiptIsError ? "failed" : "waiting…"}
+        </div>
+      ) : null}
+      {receiptIsError ? (
+        <div style={{ fontSize: 10, color: "#ff7676" }}>{receiptErr?.message?.slice(0, 160) ?? "wait failed"}</div>
+      ) : null}
+      {err ? (
+        <div
+          style={{ fontSize: 10, color: "#ff7676", padding: 4, background: "rgba(255,118,118,0.08)", borderRadius: 3 }}
+        >
+          {err}
+        </div>
+      ) : null}
+      {writePending || receiptLoading ? (
+        <LoadingBar
+          caption={writePending ? "confirm in wallet…" : receiptLoading ? "waiting for inclusion…" : "finalizing…"}
+        />
+      ) : null}
+    </li>
+  );
+};
+
+// ============================================================================
+// Activity tab — chain picker + balances + send + tx queue, scoped per chain
+// ============================================================================
+
+type ActivityProps = {
   mesh: PeerMeshState;
   wallet: WalletRecord;
   myAddress: string | null;
-  myHandle: string | null;
 };
 
-const WalletDashboard = ({ mesh, wallet, myAddress }: DashboardProps) => {
-  const pendingTxs = mesh.walletTxs.filter(t => t.status === "pending");
-  const otherTxs = mesh.walletTxs.filter(t => t.status !== "pending").slice(0, 10);
+const ActivityTab = ({ mesh, wallet, myAddress }: ActivityProps) => {
+  // Default to the most recently deployed chain.
+  const deployedChainIds = useMemo(
+    () =>
+      Object.keys(wallet.deployments)
+        .map(k => Number(k))
+        .filter(n => Number.isFinite(n))
+        .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt),
+    [wallet.deployments],
+  );
+  const [activeChain, setActiveChain] = useState<number>(deployedChainIds[0] ?? mainnet.id);
+  // If the wallet gains a new deployment while we're looking and we
+  // happen to be on a now-removed chain (rare; archive flow), snap to
+  // the first available.
+  useEffect(() => {
+    if (deployedChainIds.length === 0) return;
+    if (!deployedChainIds.includes(activeChain)) setActiveChain(deployedChainIds[0]);
+  }, [deployedChainIds, activeChain]);
+
+  const chainTxs = mesh.walletTxs.filter(t => t.chainId === activeChain);
+  const pendingTxs = chainTxs.filter(t => t.status === "pending");
+  const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 10);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14 }}>
       <WalletHeader wallet={wallet} onArchive={() => mesh.walletNewEpisode()} />
+      <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
       <WalletBalances address={wallet.address} />
-      <WalletSendForm wallet={wallet} mesh={mesh} />
+      <WalletSendForm wallet={wallet} mesh={mesh} chainId={activeChain} />
 
-      <Section title={`Pending (${pendingTxs.length})`}>
+      <Section title={`Pending on ${chainMeta(activeChain).label} (${pendingTxs.length})`}>
         {pendingTxs.length === 0 ? (
-          <Empty>No transactions to sign. Have the browser submit something — it lands here.</Empty>
+          <Empty>No transactions to sign on this chain. Have the browser submit something — it lands here.</Empty>
         ) : (
           pendingTxs.map(tx => <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />)
         )}
@@ -592,6 +812,48 @@ const WalletDashboard = ({ mesh, wallet, myAddress }: DashboardProps) => {
           ))}
         </Section>
       ) : null}
+    </div>
+  );
+};
+
+const ChainPicker = ({
+  deployedChainIds,
+  active,
+  onPick,
+}: {
+  deployedChainIds: number[];
+  active: number;
+  onPick: (id: number) => void;
+}) => {
+  if (deployedChainIds.length === 0) return null;
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+      {deployedChainIds.map(id => {
+        const meta = chainMeta(id);
+        const isActive = id === active;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onPick(id)}
+            style={{
+              padding: "4px 10px",
+              fontSize: 10,
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              background: isActive ? "var(--slop-magenta, #ff3ec9)" : "rgba(255,255,255,0.04)",
+              color: isActive ? "#06030d" : "var(--slop-text)",
+              border: `1px solid ${isActive ? "var(--slop-magenta, #ff3ec9)" : "rgba(255,62,201,0.25)"}`,
+              borderRadius: 4,
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            {meta.label}
+          </button>
+        );
+      })}
     </div>
   );
 };
@@ -643,14 +905,16 @@ const WalletHeader = ({ wallet, onArchive }: { wallet: WalletRecord; onArchive: 
       </div>
       <Address address={wallet.address as AddressType} size="sm" />
       <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
-        Threshold {wallet.threshold} of {wallet.signers.length} · {chainMeta(wallet.chainId).label}
+        Threshold {wallet.threshold} of {wallet.signers.length} · deployed on {Object.keys(wallet.deployments).length}{" "}
+        chain
+        {Object.keys(wallet.deployments).length === 1 ? "" : "s"}
       </div>
     </div>
   );
 };
 
 // ----------------------------------------------------------------------------
-// Balances panel — hits the local /api/portfolio proxy.
+// Balances — Zerion (chain-agnostic, shows everything).
 // ----------------------------------------------------------------------------
 
 type PortfolioResp = {
@@ -761,25 +1025,13 @@ const WalletBalances = ({ address }: { address: string }) => {
 };
 
 // ----------------------------------------------------------------------------
-// Send form — propose a manual outgoing tx for signers to approve.
-// Reads the multisig's current on-chain nonce, computes the execHash, and
-// hands the result to the relay via walletProposeTx. The tx then shows up
-// in "Pending" below where signers can sign + execute through TxCard.
+// Send form — propose a manual outgoing tx, scoped to the selected chain.
 // ----------------------------------------------------------------------------
 
-const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMeshState }) => {
-  const publicClient = usePublicClient({ chainId: wallet.chainId });
-  // ETH price for the live USD readout under the amount field. The hook
-  // reads Uniswap V2 on mainnet — same price applies whether the wallet's
-  // on Base or mainnet since both use ETH as the native asset.
+const WalletSendForm = ({ wallet, mesh, chainId }: { wallet: WalletRecord; mesh: PeerMeshState; chainId: number }) => {
+  const publicClient = usePublicClient({ chainId });
   const { price: ethPrice } = useFetchNativeCurrencyPrice();
-  // Multisig's own native balance — drives the [Max] button. The multisig
-  // pays the `value` portion of the tx; gas is paid by the executor's
-  // wallet, so "max" really is the full balance here.
-  const { data: balance } = useBalance({
-    address: wallet.address as AddressType,
-    chainId: wallet.chainId,
-  });
+  const { data: balance } = useBalance({ address: wallet.address as AddressType, chainId });
   const [open, setOpen] = useState(false);
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
@@ -839,7 +1091,7 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
       const target = recipient.trim() as AddressType;
       const calldata = (data.trim() || "0x") as Hex;
       const execHash = computeExecHash({
-        chainId: wallet.chainId,
+        chainId,
         multisig: wallet.address as AddressType,
         nonce,
         deadline,
@@ -848,6 +1100,7 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
         data: calldata,
       });
       mesh.walletProposeTx({
+        chainId,
         target,
         value: amountWei.toString(),
         data: calldata,
@@ -867,18 +1120,18 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
     } finally {
       setBusy(false);
     }
-  }, [publicClient, targetOk, amountErr, amountWei, dataOk, data, recipient, wallet, mesh]);
+  }, [publicClient, targetOk, amountErr, amountWei, dataOk, data, recipient, wallet, mesh, chainId]);
 
   if (!open) {
     return (
       <Button variant="primary" onClick={() => setOpen(true)}>
-        Send
+        Send on {chainMeta(chainId).label}
       </Button>
     );
   }
 
   return (
-    <Section title="Send">
+    <Section title={`Send on ${chainMeta(chainId).label}`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <Field label="Recipient">
           <AddressInput
@@ -1006,7 +1259,7 @@ const WalletSendForm = ({ wallet, mesh }: { wallet: WalletRecord; mesh: PeerMesh
 };
 
 // ----------------------------------------------------------------------------
-// Tx card + per-tx sign/execute flow
+// Tx card — sign + execute. Chain comes from the tx itself, not the wallet.
 // ----------------------------------------------------------------------------
 
 type TxCardProps = {
@@ -1022,7 +1275,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { signMessageAsync, isPending: signing } = useSignMessage();
   const { writeContractAsync, isPending: writing } = useWriteContract();
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
-  const { isLoading: execWaiting, data: execReceipt } = useWaitForTransactionReceipt({ hash: execHash ?? undefined });
+  const { isLoading: execWaiting, data: execReceipt } = useWaitForTransactionReceipt({
+    hash: execHash ?? undefined,
+    chainId: tx.chainId,
+  });
   const [err, setErr] = useState<string | null>(null);
 
   const myLowerAddress = (connectedAddress ?? myAddress ?? "").toLowerCase();
@@ -1047,17 +1303,13 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       setErr("connect your wallet to sign");
       return;
     }
-    if (connectedAddress.toLowerCase() !== myLowerAddress) {
-      // This is informational — the connected wallet's address must match one
-      // of the registered signers, otherwise the multisig will reject the sig.
-    }
     try {
       const sig = await signMessageAsync({ message: { raw: tx.execHash as Hex } });
       mesh.walletSignTx(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
     } catch (e) {
       setErr(String(e).slice(0, 200));
     }
-  }, [connectedAddress, myLowerAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
+  }, [connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
 
   const onExecute = useCallback(async () => {
     setErr(null);
@@ -1078,6 +1330,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         address: wallet.address as AddressType,
         abi: MultisigAbi,
         functionName: "execTransaction",
+        chainId: tx.chainId,
         args: [tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted],
       });
       setExecHash(hash);
@@ -1093,6 +1346,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     tx.data,
     tx.deadline,
     tx.id,
+    tx.chainId,
     wallet.address,
     writeContractAsync,
     mesh,
@@ -1254,7 +1508,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       ) : tx.txHash ? (
         <a
-          href={`${chainMeta(wallet.chainId).explorer}/tx/${tx.txHash}`}
+          href={`${chainMeta(tx.chainId).explorer}/tx/${tx.txHash}`}
           target="_blank"
           rel="noreferrer"
           style={{ fontSize: 10, color: "var(--slop-magenta, #ff3ec9)", textDecoration: "underline" }}
@@ -1310,10 +1564,6 @@ const Empty = ({ children }: { children: React.ReactNode }) => (
   <div style={{ padding: 8, fontSize: 12, color: "var(--slop-text-muted)", fontStyle: "italic" }}>{children}</div>
 );
 
-// Inline form for adding a signer that's not on the guest list.
-// AddressInput resolves ENS → 0x and shows the ENS avatar inside the field,
-// so the host gets the same "feels right" preview as the rest of the app.
-// Caller is responsible for dedupe against existing peers/custom signers.
 const AddSignerRow = ({
   disabled,
   existing,
@@ -1327,8 +1577,6 @@ const AddSignerRow = ({
   const [hint, setHint] = useState<string | null>(null);
 
   const trimmed = value.trim();
-  // AddressInput hands back the *resolved* 0x address once ENS resolves,
-  // so by the time we see a 42-char 0x… string in `value` we're good to add.
   const resolved = /^0x[a-fA-F0-9]{40}$/.test(trimmed) ? (trimmed as `0x${string}`) : null;
   const isDup = resolved && existing.has(resolved.toLowerCase());
 

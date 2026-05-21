@@ -22,15 +22,25 @@ export type WalletSigner = {
   signerType: WalletSignerType;
 };
 
+// The multisig's CREATE2 address is the same on every chain (factory at
+// the same address; deterministic from deployer+salt). A WalletRecord is
+// therefore one logical wallet, with N deployment entries — one per
+// chain it's been created on. Funding the address before deploying
+// works fine; you just can't execute txs on a chain until createMultisig
+// runs there.
+export type WalletDeployment = {
+  txHash: string | null; // deploy tx hash (null until receipt lands)
+  deployedAt: number; // unix ms when the record was created
+};
+
 export type WalletRecord = {
   id: string;
-  address: string; // 0x-lowercased
-  chainId: number;
+  address: string; // 0x-lowercased — identical across chains
   deployer: string;
   salt: string; // 0x-prefixed bytes32
   signers: WalletSigner[];
   threshold: number;
-  txHash: string | null; // deploy tx (null until tx confirmed)
+  deployments: Record<number, WalletDeployment>; // keyed by chainId
   createdAt: number;
   label: string; // human-readable, e.g. "Episode 12"
 };
@@ -72,6 +82,51 @@ type WalletStateData = {
   txs: WalletTx[];
 };
 
+// One-shot translation from the pre-multi-chain record shape
+// `{chainId, txHash}` into the new `deployments` map. Old records on
+// disk are rewritten lazily the first time they're loaded; new writes
+// always use the new shape.
+function migrateRecord(rec: unknown): WalletRecord | null {
+  if (!rec || typeof rec !== "object") return null;
+  const r = rec as Partial<WalletRecord> & { chainId?: number; txHash?: string | null };
+  if (typeof r.address !== "string") return null;
+  if (r.deployments && typeof r.deployments === "object") {
+    // Already in the new shape — coerce numeric keys (JSON makes them strings).
+    const normalized: Record<number, WalletDeployment> = {};
+    for (const [k, v] of Object.entries(r.deployments)) {
+      const chainId = Number(k);
+      if (!Number.isFinite(chainId)) continue;
+      if (!v || typeof v !== "object") continue;
+      const dep = v as Partial<WalletDeployment>;
+      normalized[chainId] = {
+        txHash: typeof dep.txHash === "string" ? dep.txHash : null,
+        deployedAt: typeof dep.deployedAt === "number" ? dep.deployedAt : (r.createdAt ?? Date.now()),
+      };
+    }
+    return { ...(r as WalletRecord), deployments: normalized };
+  }
+  // Legacy: single-chain record.
+  if (typeof r.chainId !== "number") return null;
+  const deployments: Record<number, WalletDeployment> = {
+    [r.chainId]: {
+      txHash: typeof r.txHash === "string" ? r.txHash : null,
+      deployedAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
+    },
+  };
+  const next: WalletRecord = {
+    id: r.id ?? Math.random().toString(36).slice(2),
+    address: r.address,
+    deployer: r.deployer ?? "",
+    salt: r.salt ?? "",
+    signers: Array.isArray(r.signers) ? r.signers : [],
+    threshold: typeof r.threshold === "number" ? r.threshold : 1,
+    deployments,
+    createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
+    label: typeof r.label === "string" ? r.label : "",
+  };
+  return next;
+}
+
 type Subscriber = (s: WalletStateData) => void;
 
 export type ProposeTxInput = {
@@ -111,8 +166,10 @@ export class WalletState {
       const raw = readFileSync(path, "utf8");
       const parsed = JSON.parse(raw) as Partial<WalletStateData>;
       this.state = {
-        current: parsed.current ?? null,
-        history: Array.isArray(parsed.history) ? parsed.history.slice(0, MAX_HISTORY) : [],
+        current: migrateRecord(parsed.current ?? null),
+        history: Array.isArray(parsed.history)
+          ? (parsed.history.slice(0, MAX_HISTORY).map(migrateRecord).filter(Boolean) as WalletRecord[])
+          : [],
         txs: Array.isArray(parsed.txs) ? parsed.txs.slice(0, MAX_TXS) : [],
       };
       return true;
@@ -176,6 +233,28 @@ export class WalletState {
     this.state.current = rec;
     this.persist();
     this.emit();
+  }
+
+  // Record a deployment of the current wallet on an additional chain.
+  // The address is deterministic from (deployer, salt) so we don't take
+  // it as a parameter — it must equal `current.address`. No-op if there
+  // is no current wallet, or if a deployment for that chain already
+  // exists with a tx hash (we don't clobber prior records).
+  addDeployment(chainId: number, txHash: string | null): WalletRecord | null {
+    this.load();
+    if (!this.state.current) return null;
+    const existing = this.state.current.deployments[chainId];
+    if (existing && existing.txHash) return this.state.current;
+    this.state.current = {
+      ...this.state.current,
+      deployments: {
+        ...this.state.current.deployments,
+        [chainId]: { txHash, deployedAt: Date.now() },
+      },
+    };
+    this.persist();
+    this.emit();
+    return this.state.current;
   }
 
   archiveCurrent(): void {

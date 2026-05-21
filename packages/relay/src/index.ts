@@ -3630,11 +3630,12 @@ app.register(async function signalRoutes(fastify) {
           if (
             !rec ||
             typeof rec.address !== "string" ||
-            typeof rec.chainId !== "number" ||
             typeof rec.deployer !== "string" ||
             typeof rec.salt !== "string" ||
             typeof rec.threshold !== "number" ||
-            !Array.isArray(rec.signers)
+            !Array.isArray(rec.signers) ||
+            !rec.deployments ||
+            typeof rec.deployments !== "object"
           ) {
             return send(socket, { type: "error", error: "bad_wallet_deploy" });
           }
@@ -3645,18 +3646,45 @@ app.register(async function signalRoutes(fastify) {
             )
             .map(s => ({ address: s.address.toLowerCase(), label: s.label, signerType: s.signerType }));
           if (signers.length === 0) return send(socket, { type: "error", error: "no_signers" });
+          const deployments: Record<number, { txHash: string | null; deployedAt: number }> = {};
+          for (const [k, v] of Object.entries(rec.deployments)) {
+            const chainId = Number(k);
+            if (!Number.isFinite(chainId)) continue;
+            if (!v || typeof v !== "object") continue;
+            const dep = v as { txHash?: unknown; deployedAt?: unknown };
+            deployments[chainId] = {
+              txHash: typeof dep.txHash === "string" ? dep.txHash : null,
+              deployedAt: typeof dep.deployedAt === "number" ? dep.deployedAt : Date.now(),
+            };
+          }
+          if (Object.keys(deployments).length === 0) {
+            return send(socket, { type: "error", error: "no_deployments" });
+          }
           room.wallet.setCurrent({
             id: typeof rec.id === "string" ? rec.id : Math.random().toString(36).slice(2),
             address: rec.address.toLowerCase(),
-            chainId: rec.chainId,
             deployer: rec.deployer.toLowerCase(),
             salt: rec.salt,
             signers,
             threshold: rec.threshold,
-            txHash: typeof rec.txHash === "string" ? rec.txHash : null,
+            deployments,
             createdAt: typeof rec.createdAt === "number" ? rec.createdAt : Date.now(),
             label: typeof rec.label === "string" ? rec.label : `Episode ${new Date().toISOString().slice(0, 10)}`,
           });
+          return;
+        }
+        case "wallet_add_deployment": {
+          // Record a deployment of the current wallet on an additional
+          // chain. The client computed the deploy tx + chain themselves
+          // and confirmed the receipt; we just persist the entry so
+          // every peer sees the same set of chains.
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : null;
+          const txHash = typeof msg.txHash === "string" ? msg.txHash : null;
+          if (chainId === null || !Number.isFinite(chainId)) {
+            return send(socket, { type: "error", error: "bad_chain_id" });
+          }
+          const updated = room.wallet.addDeployment(chainId, txHash);
+          if (!updated) return send(socket, { type: "error", error: "no_wallet" });
           return;
         }
         case "wallet_new_episode": {
@@ -3677,9 +3705,18 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_propose" });
           }
+          // chainId is now per-tx, not per-wallet — the client tells us
+          // which chain it's executing on. Fall back to a deployment we
+          // know exists when older clients send no chainId field.
+          const incomingChainId = typeof msg.chainId === "number" ? msg.chainId : null;
+          const fallbackChain = Number(Object.keys(cur.deployments)[0] ?? "0");
+          const chainId = incomingChainId ?? fallbackChain;
+          if (!Number.isFinite(chainId) || chainId === 0) {
+            return send(socket, { type: "error", error: "no_chain" });
+          }
           const tx = room.wallet.proposeTx({
             multisigAddress: cur.address,
-            chainId: cur.chainId,
+            chainId,
             from: info.address,
             fromLabel: info.handle ?? info.address ?? null,
             source: msg.source === "browser" ? "browser" : "manual",
@@ -3693,7 +3730,7 @@ app.register(async function signalRoutes(fastify) {
           });
           // Fire-and-forget AI summary — broadcasts when it lands.
           void summarizeTransaction({
-            chainId: cur.chainId,
+            chainId,
             multisigAddress: cur.address,
             target: tx.target,
             value: tx.value,
@@ -3738,7 +3775,7 @@ app.register(async function signalRoutes(fastify) {
           const cur = room.wallet.getCurrent();
           if (!tx || !cur) return;
           void summarizeTransaction({
-            chainId: cur.chainId,
+            chainId: tx.chainId,
             multisigAddress: cur.address,
             target: tx.target,
             value: tx.value,
