@@ -1210,6 +1210,10 @@ const AIWalletIframe = ({ wallet, myAddress, mesh }: AIWalletIframeProps) => {
       ref={iframeRef}
       src={initialSrc}
       title="Slop wallet"
+      // data-grab="false" short-circuits useLocalCursor's closest() walk so
+      // the cursor doesn't inherit the parent WalletWindow's "grab" — the
+      // iframe content is interactive UI, not a draggable surface.
+      data-grab="false"
       // Sandbox: scripts + same-origin so wagmi/RainbowKit (if it loads
       // standalone-mode internals) can run; popups for WalletConnect;
       // forms for in-iframe submissions; allow-modals for the AI wallet's
