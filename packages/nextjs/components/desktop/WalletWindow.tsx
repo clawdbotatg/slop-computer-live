@@ -650,23 +650,47 @@ const ChainRow = ({
     data: receipt,
     isError: receiptIsError,
     error: receiptErr,
-  } = useWaitForTransactionReceipt({ hash: txHash ?? undefined, chainId });
+  } = useWaitForTransactionReceipt({
+    hash: txHash ?? undefined,
+    chainId,
+    // App-wide pollingInterval is 30s (set in scaffold.config) which is
+    // fine for ambient state but makes "waiting for deploy receipt"
+    // feel broken. Override to 2s for this specific wait — once we have
+    // a hash, the user just wants to see it land.
+    pollingInterval: 2000,
+  });
   const [err, setErr] = useState<string | null>(null);
+
+  // Self-predict on this chain as a backup. The parent computes the
+  // predicted address via mainnet RPC (factory at same address on every
+  // chain so the answer's identical) — but if mainnet RPC is slow or
+  // down at the moment we need it, having a second source pinned to
+  // *this* chain's RPC means we still know where the multisig will land.
+  const { data: selfPredicted } = useReadContract({
+    address: FACTORY_ADDRESS,
+    abi: MultisigFactoryAbi,
+    functionName: "getMultisigAddress",
+    args: deployer ? [deployer, salt] : undefined,
+    chainId,
+    query: { enabled: !!deployer },
+  });
+  const localPredicted = (predicted ?? (selfPredicted as AddressType | undefined) ?? null) as AddressType | null;
 
   // Code probe: does contract bytecode already exist at the predicted
   // address on this chain? If so, someone already deployed it — even if
-  // we don't have a record locally. Used to gate the deploy button.
+  // we don't have a record locally. Used to gate the deploy button and
+  // to surface the [Register] affordance when the receipt path missed.
   const publicClient = usePublicClient({ chainId });
   const [hasCode, setHasCode] = useState<boolean | null>(null);
-  const probeKey = predicted ? `${chainId}:${predicted.toLowerCase()}` : null;
+  const probeKey = localPredicted ? `${chainId}:${localPredicted.toLowerCase()}` : null;
   useEffect(() => {
-    if (!publicClient || !predicted) {
+    if (!publicClient || !localPredicted) {
       setHasCode(null);
       return;
     }
     let cancelled = false;
     publicClient
-      .getBytecode({ address: predicted })
+      .getBytecode({ address: localPredicted })
       .then(code => {
         if (cancelled) return;
         setHasCode(!!code && code !== "0x");
@@ -677,8 +701,6 @@ const ChainRow = ({
     return () => {
       cancelled = true;
     };
-    // probeKey rolls up the inputs that change the answer; ignoring
-    // publicClient identity churn (wagmi re-creates it on every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [probeKey]);
 
@@ -728,12 +750,13 @@ const ChainRow = ({
           }
         }
         if (!multisigAddr) {
-          if (predicted) {
+          const fallback = localPredicted;
+          if (fallback) {
             console.warn(
               "[wallet] MultisigCreated event not found in receipt; falling back to CREATE2-predicted address",
-              { chainId, txHash: receipt.transactionHash, predicted },
+              { chainId, txHash: receipt.transactionHash, predicted: fallback },
             );
-            multisigAddr = predicted;
+            multisigAddr = fallback;
           } else {
             setErr("Deploy confirmed but couldn't determine multisig address (no event log, no prediction)");
             setTxHash(null);
@@ -806,16 +829,48 @@ const ChainRow = ({
 
   const busy = writePending || receiptLoading || switching;
 
+  // Recovery path: bytecode exists at the predicted address on this
+  // chain but we have no record. Either a previous deploy receipt
+  // never closed the loop (RPC flake) or someone deployed off-app.
+  // Host clicks [ Register ] to construct the WalletRecord from the
+  // current form + the predicted address. Same as the normal post-
+  // receipt path, just without the receipt.
+  const onRegister = useCallback(() => {
+    setErr(null);
+    if (!canDeploy) return;
+    if (!localPredicted || !deployer) {
+      setErr("missing predicted address or deployer");
+      return;
+    }
+    if (existing) {
+      mesh.walletAddDeployment(chainId, null);
+      return;
+    }
+    const record: WalletRecord = {
+      id: Math.random().toString(36).slice(2),
+      address: localPredicted.toLowerCase(),
+      deployer: deployer.toLowerCase(),
+      salt,
+      signers: signers.map(addr => ({ address: addr.toLowerCase(), label: short(addr), signerType: "eoa" })),
+      threshold,
+      deployments: { [chainId]: { txHash: null, deployedAt: Date.now() } },
+      createdAt: Date.now(),
+      label,
+    };
+    mesh.walletDeploy(record);
+  }, [canDeploy, localPredicted, deployer, existing, chainId, salt, signers, threshold, label, mesh]);
+
   const statusNode = (() => {
     if (alreadyDeployedOnChain) {
       // Already deployed (either we have a record, or eth_getCode found
       // bytecode at the address from some prior deploy).
       const link = localDep?.txHash
         ? `${explorer}/tx/${localDep.txHash}`
-        : predicted
-          ? `${explorer}/address/${predicted}`
+        : localPredicted
+          ? `${explorer}/address/${localPredicted}`
           : null;
       const txt = localDep ? "already deployed" : "already deployed (on-chain)";
+      const orphaned = hasCode === true && !localDep;
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ color: "#7be88a", fontSize: 11 }}>✓ {txt}</span>
@@ -832,6 +887,14 @@ const ChainRow = ({
             >
               view
             </a>
+          ) : null}
+          {orphaned && canDeploy ? (
+            <Button
+              onClick={onRegister}
+              title="The contract is on-chain but we don't have a wallet record yet — click to register it from this chain."
+            >
+              Register
+            </Button>
           ) : null}
         </div>
       );
@@ -1254,6 +1317,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { isLoading: execWaiting, data: execReceipt } = useWaitForTransactionReceipt({
     hash: execHash ?? undefined,
     chainId: tx.chainId,
+    // Same reason as the deploy receipt: app-wide pollingInterval is 30s
+    // for ambient state, but once we have a hash the user just wants to
+    // see it confirm. 2s feels live.
+    pollingInterval: 2000,
   });
   const [err, setErr] = useState<string | null>(null);
 
