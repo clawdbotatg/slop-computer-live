@@ -22,15 +22,41 @@ const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 
 const RP_NAME = "Slop Computer Live";
 
-export type PasskeyAuthResult = { address: string };
+export type PasskeyAuthResult = { address: string; credentialIdBase64Url: string };
+
+// Stages reported via onStage so a progress UI can advance in lockstep
+// with the two passkey prompts:
+//   first  — about to show the first passkey sheet
+//   second — about to show the second passkey sheet
+//   verify — both sigs collected, posting to the relay
+export type PasskeyStage = "first" | "second" | "verify";
+
+export type PasskeyFlowOptions = {
+  onStage?: (stage: PasskeyStage) => void;
+  /** Pause between the first and second prompt, in ms. Lets the UI
+   *  advance the progress bar before the next browser sheet steals
+   *  focus. Defaults to 500. */
+  betweenStagesDelayMs?: number;
+};
+
+export type LoginOptions = PasskeyFlowOptions & {
+  /** Base64url-encoded rawId of a previously-used passkey. When set,
+   *  both sign calls are scoped via `allowCredentials` so the browser
+   *  skips its passkey picker entirely. Throws `preferred-credential-failed`
+   *  if the first sign rejects — caller should clear the stored id and
+   *  retry without a preference. */
+  preferredCredentialId?: string;
+};
 
 // ---- public API ------------------------------------------------------------
 
-export async function createPasskeyAndAuth(): Promise<PasskeyAuthResult> {
+export async function createPasskeyAndAuth(opts: PasskeyFlowOptions = {}): Promise<PasskeyAuthResult> {
   if (typeof window === "undefined") throw new Error("no-window");
+  const { onStage, betweenStagesDelayMs = 500 } = opts;
   // Throwaway challenge for the create step — the create response carries
   // the public key directly, we don't need it to be server-issued.
   const createChallenge = crypto.getRandomValues(new Uint8Array(32));
+  onStage?.("first");
   const cred = (await navigator.credentials.create({
     publicKey: {
       challenge: createChallenge,
@@ -56,6 +82,11 @@ export async function createPasskeyAndAuth(): Promise<PasskeyAuthResult> {
   if (!spki) throw new Error("no-public-key");
   const { qx, qy } = parseSpkiPublicKey(new Uint8Array(spki));
 
+  // Brief pause so the modal can advance to stage 2 before the next
+  // browser sheet pops.
+  if (betweenStagesDelayMs > 0) await sleep(betweenStagesDelayMs);
+  onStage?.("second");
+
   // Now sign a real server nonce with the freshly-created passkey.
   const nonceHex = await fetchServerNonce();
   const sign = await signWithCredentialId({
@@ -63,6 +94,7 @@ export async function createPasskeyAndAuth(): Promise<PasskeyAuthResult> {
     challenge: hexToBytes(nonceHex),
   });
 
+  onStage?.("verify");
   return postPasskeyAuth({
     qx,
     qy,
@@ -71,24 +103,53 @@ export async function createPasskeyAndAuth(): Promise<PasskeyAuthResult> {
     authenticatorData: sign.authenticatorData,
     clientDataJSON: sign.clientDataJSON,
     nonceHex,
+    credentialIdBase64Url: base64UrlFromBytes(new Uint8Array(cred.rawId)),
   });
 }
 
-export async function loginWithExistingPasskey(): Promise<PasskeyAuthResult> {
+export async function loginWithExistingPasskey(opts: LoginOptions = {}): Promise<PasskeyAuthResult> {
   if (typeof window === "undefined") throw new Error("no-window");
+  const { onStage, betweenStagesDelayMs = 500, preferredCredentialId } = opts;
 
-  // First sign — no allowCredentials, the user picks any local passkey.
-  // The challenge here is purely client-side; only the SECOND sig
+  // When the caller has a remembered passkey id, scope both prompts to it
+  // via allowCredentials so the browser skips its picker. Otherwise the
+  // first call has no allowCredentials → discoverable-credential picker.
+  const allowList = preferredCredentialId
+    ? [
+        {
+          id: bytesFromBase64Url(preferredCredentialId),
+          type: "public-key" as const,
+          transports: ["internal", "hybrid"] as AuthenticatorTransport[],
+        },
+      ]
+    : undefined;
+
+  // First sign — the challenge is purely client-side; only the SECOND sig
   // (which gets server-bound to the server nonce) is sent to the relay.
   const challenge1 = crypto.getRandomValues(new Uint8Array(32));
-  const cred1 = (await navigator.credentials.get({
-    publicKey: {
-      challenge: challenge1,
-      rpId: window.location.hostname,
-      userVerification: "required",
-      // intentionally no allowCredentials → discoverable-credential picker
-    },
-  })) as PublicKeyCredential | null;
+  onStage?.("first");
+  let cred1: PublicKeyCredential | null;
+  try {
+    cred1 = (await navigator.credentials.get({
+      publicKey: {
+        challenge: challenge1,
+        rpId: window.location.hostname,
+        userVerification: "required",
+        ...(allowList ? { allowCredentials: allowList } : {}),
+      },
+    })) as PublicKeyCredential | null;
+  } catch (err) {
+    // With a preferred credential set, a NotAllowedError might mean the
+    // passkey no longer exists (deleted, device switched). Signal that
+    // distinctly so the caller can clear storage and retry without a
+    // preference instead of giving up.
+    if (preferredCredentialId) {
+      const e = new Error("preferred-credential-failed");
+      (e as Error & { cause?: unknown }).cause = err;
+      throw e;
+    }
+    throw err;
+  }
   if (!cred1) throw new Error("passkey-pick-cancelled");
   const a1 = cred1.response as AuthenticatorAssertionResponse;
   const sig1 = parseDerSignature(new Uint8Array(a1.signature));
@@ -101,6 +162,11 @@ export async function loginWithExistingPasskey(): Promise<PasskeyAuthResult> {
   // one will verify the SECOND signature below.
   const candidates = recoverCandidatePubkeys({ r: sig1.r, s: sig1.s, message: message1 });
   if (candidates.length === 0) throw new Error("no-candidates");
+
+  // Brief pause so the modal can advance to stage 2 before the next
+  // browser sheet pops.
+  if (betweenStagesDelayMs > 0) await sleep(betweenStagesDelayMs);
+  onStage?.("second");
 
   // Second sign — same credential, this time signing the server's nonce.
   const nonceHex = await fetchServerNonce();
@@ -139,6 +205,7 @@ export async function loginWithExistingPasskey(): Promise<PasskeyAuthResult> {
   }
   if (!chosen) throw new Error("no-candidate-matched-second-sig");
 
+  onStage?.("verify");
   return postPasskeyAuth({
     qx: chosen.qx,
     qy: chosen.qy,
@@ -147,6 +214,7 @@ export async function loginWithExistingPasskey(): Promise<PasskeyAuthResult> {
     authenticatorData: authData2,
     clientDataJSON: clientData2,
     nonceHex,
+    credentialIdBase64Url: base64UrlFromBytes(new Uint8Array(cred1.rawId)),
   });
 }
 
@@ -172,6 +240,7 @@ async function postPasskeyAuth(args: {
   authenticatorData: Uint8Array;
   clientDataJSON: Uint8Array;
   nonceHex: string;
+  credentialIdBase64Url: string;
 }): Promise<PasskeyAuthResult> {
   const body = {
     qx: bytesToHex(args.qx),
@@ -194,7 +263,7 @@ async function postPasskeyAuth(args: {
   }
   const j = (await res.json()) as { address?: string };
   if (!j.address) throw new Error("no-address-returned");
-  return { address: j.address };
+  return { address: j.address, credentialIdBase64Url: args.credentialIdBase64Url };
 }
 
 // ---- helpers (signing) -----------------------------------------------------
@@ -332,5 +401,24 @@ function bigintTo32(v: bigint): Uint8Array {
     out[i] = Number(x & 0xffn);
     x >>= 8n;
   }
+  return out;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function base64UrlFromBytes(b: Uint8Array): string {
+  let bin = "";
+  for (const byte of b) bin += String.fromCharCode(byte);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function bytesFromBase64Url(s: string): Uint8Array {
+  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+  const std = s.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  const bin = atob(std);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }

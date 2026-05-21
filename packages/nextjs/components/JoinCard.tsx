@@ -1,27 +1,76 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useAccount, useSignMessage } from "wagmi";
-import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+import { PasskeyChooserModal } from "~~/components/PasskeyChooserModal";
+import { type ProgressMode, type ProgressStage, SignatureProgressModal } from "~~/components/SignatureProgressModal";
 import { Bevel, Button } from "~~/components/ui";
 import { useSession } from "~~/hooks/useSession";
 import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
-// Sign-in card. Logo + two paths:
-//   1. Connect Wallet → connect via wagmi/RainbowKit → auto-trigger SIWE
-//      so the user signs once. The slop_session cookie persists for
-//      sessionTTLSeconds (24h), so reload doesn't re-prompt.
-//   2. Use Passkey → WebAuthn flow ported from slopwallet. Uses an
-//      existing passkey if one is registered for this rpId; otherwise
-//      a small "Create new passkey" affordance below.
+// localStorage keys that remember which passkey the user prefers. Once
+// they've signed in with an existing passkey once, we skip the chooser
+// modal AND the browser's picker on subsequent visits by passing the
+// stored credential id via `allowCredentials`. signOut() in useSession
+// nukes both keys so the next session can pick a different passkey.
+const CREDENTIAL_ID_KEY = "slop:passkey:credId";
+const LAST_PATH_KEY = "slop:passkey:lastPath";
+
+const readStoredCredentialId = (): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(CREDENTIAL_ID_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const clearStoredCredential = () => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(CREDENTIAL_ID_KEY);
+    window.localStorage.removeItem(LAST_PATH_KEY);
+  } catch {
+    /* private mode / quota */
+  }
+};
+
+const writeStoredCredential = (id: string, path: "existing" | "create") => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CREDENTIAL_ID_KEY, id);
+    window.localStorage.setItem(LAST_PATH_KEY, path);
+  } catch {
+    /* private mode / quota */
+  }
+};
+
+// Sign-in card. Two same-size buttons:
+//   1. Connect Wallet (primary) → RainbowKit connect modal, then SIWE.
+//      The slop_session cookie persists for sessionTTLSeconds (24h), so
+//      reload doesn't re-prompt.
+//   2. Sign in with Passkey (secondary) → opens a second modal for
+//      picking existing vs create. Subsequent visits remember the chosen
+//      credential id and skip both the chooser modal AND the browser's
+//      picker.
 export function JoinCard() {
   const { refresh } = useSession();
   const { address, isConnected } = useAccount();
+  const { openConnectModal } = useConnectModal();
   const { signMessageAsync } = useSignMessage();
   const [status, setStatus] = useState("");
-  const [busy, setBusy] = useState<"siwe" | "passkey-existing" | "passkey-create" | null>(null);
+  const [busy, setBusy] = useState<"siwe" | "passkey" | null>(null);
+
+  // Passkey modal state. `chooserOpen` shows the existing-vs-create
+  // picker; `progressOpen` shows the LoadingBar walkthrough during the
+  // two browser sheets.
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressMode, setProgressMode] = useState<ProgressMode>("existing");
+  const [progressStage, setProgressStage] = useState<ProgressStage>("first");
 
   const runSiwe = async (addr: string) => {
     setStatus("Requesting nonce...");
@@ -86,26 +135,46 @@ export function JoinCard() {
   }, [isConnected, address]);
 
   const onConnectWalletClick = () => {
+    if (busy) return;
     wantsSiweRef.current = true;
     if (isConnected && address) {
       // Already connected — kick off SIWE directly.
       setBusy("siwe");
       void runSiwe(address);
+      return;
     }
-    // If not connected, the RainbowKit button below handles the modal;
-    // the useEffect picks up the resulting connection.
+    // Not connected yet — open the RainbowKit modal; the useEffect picks
+    // up the resulting connection and runs SIWE.
+    openConnectModal?.();
   };
 
-  const onPasskeyExisting = async () => {
-    if (busy) return;
-    setBusy("passkey-existing");
-    setStatus("Pick a passkey…");
+  // Drive the existing-passkey flow with progress modal. When called
+  // with `preferredCredentialId`, the browser sheet pre-targets that
+  // passkey (no picker). If that fails, retry without preference.
+  const runExistingFlow = async (preferredCredentialId?: string) => {
+    setProgressMode("existing");
+    setProgressStage("first");
+    setProgressOpen(true);
     try {
-      await loginWithExistingPasskey();
+      const result = await loginWithExistingPasskey({
+        preferredCredentialId,
+        onStage: stage => setProgressStage(stage),
+      });
+      writeStoredCredential(result.credentialIdBase64Url, "existing");
+      setProgressOpen(false);
       setStatus("");
       await refresh();
     } catch (err) {
       const msg = (err as Error).message || "";
+      setProgressOpen(false);
+      if (msg === "preferred-credential-failed" && preferredCredentialId) {
+        // Stored passkey didn't work — drop the preference and reopen
+        // the chooser so the user can pick again.
+        clearStoredCredential();
+        setChooserOpen(true);
+        setStatus("");
+        return;
+      }
       if (/cancel|NotAllowed/i.test(msg)) setStatus("");
       else setStatus(`Passkey sign-in failed: ${msg}`);
     } finally {
@@ -113,16 +182,21 @@ export function JoinCard() {
     }
   };
 
-  const onPasskeyCreate = async () => {
-    if (busy) return;
-    setBusy("passkey-create");
-    setStatus("Creating passkey…");
+  const runCreateFlow = async () => {
+    setProgressMode("create");
+    setProgressStage("first");
+    setProgressOpen(true);
     try {
-      await createPasskeyAndAuth();
+      const result = await createPasskeyAndAuth({
+        onStage: stage => setProgressStage(stage),
+      });
+      writeStoredCredential(result.credentialIdBase64Url, "create");
+      setProgressOpen(false);
       setStatus("");
       await refresh();
     } catch (err) {
       const msg = (err as Error).message || "";
+      setProgressOpen(false);
       if (/cancel|NotAllowed/i.test(msg)) setStatus("");
       else setStatus(`Passkey create failed: ${msg}`);
     } finally {
@@ -130,55 +204,84 @@ export function JoinCard() {
     }
   };
 
+  const onPasskeyClick = () => {
+    if (busy) return;
+    const storedId = readStoredCredentialId();
+    if (storedId) {
+      // Returning user — skip the chooser and the browser picker, go
+      // straight to signing with their remembered passkey.
+      setBusy("passkey");
+      void runExistingFlow(storedId);
+      return;
+    }
+    // First-time visitor — open the chooser modal.
+    setChooserOpen(true);
+  };
+
+  const onChooserPickExisting = () => {
+    setChooserOpen(false);
+    setBusy("passkey");
+    void runExistingFlow();
+  };
+
+  const onChooserPickCreate = () => {
+    setChooserOpen(false);
+    setBusy("passkey");
+    void runCreateFlow();
+  };
+
   return (
-    <Bevel style={{ padding: 24, width: "min(360px, 92vw)", textAlign: "center" }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src="/logo-mark.png"
-        alt="slop"
-        width={84}
-        height={84}
-        style={{ display: "block", margin: "0 auto 16px", imageRendering: "pixelated" }}
+    <>
+      <Bevel style={{ padding: 24, width: "min(360px, 92vw)", textAlign: "center" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-mark.png"
+          alt="slop"
+          width={84}
+          height={84}
+          style={{ display: "block", margin: "0 auto 16px", imageRendering: "pixelated" }}
+        />
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Button variant="primary" onClick={onConnectWalletClick} disabled={busy !== null} style={{ width: "100%" }}>
+            {busy === "siwe"
+              ? "Signing in…"
+              : isConnected && address
+                ? `Sign in as ${address.slice(0, 6)}…${address.slice(-4)}`
+                : "Connect Wallet"}
+          </Button>
+
+          <Button onClick={onPasskeyClick} disabled={busy !== null} style={{ width: "100%" }}>
+            {busy === "passkey" ? "Waiting for passkey…" : "Sign in with Passkey"}
+          </Button>
+        </div>
+
+        {status ? <p style={{ marginTop: 12, color: "var(--slop-text-muted)", fontSize: 12 }}>{status}</p> : null}
+
+        {/* Force the pointer-hand cursor SVG into the browser cache the
+            moment the JoinCard mounts. Once the user signs in, Cursor.tsx
+            renders the same asset — having it pre-warmed means no blank
+            frame while it fetches. 1px is enough to trigger the GET. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/cursors/six_finger_pointer_exact_band_masks_no_bleed.svg"
+          alt=""
+          width={1}
+          height={1}
+          aria-hidden="true"
+          style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+        />
+      </Bevel>
+
+      <PasskeyChooserModal
+        open={chooserOpen}
+        busy={busy === "passkey"}
+        onSelectExisting={onChooserPickExisting}
+        onSelectCreate={onChooserPickCreate}
+        onClose={() => setChooserOpen(false)}
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {/* Connect Wallet — wagmi/RainbowKit handles the connect modal. */}
-        {!isConnected ? (
-          <div onClickCapture={onConnectWalletClick}>
-            <RainbowKitCustomConnectButton />
-          </div>
-        ) : (
-          <Button variant="primary" onClick={onConnectWalletClick} disabled={busy === "siwe"}>
-            {busy === "siwe" ? "Signing in…" : `Sign in as ${address?.slice(0, 6)}…${address?.slice(-4)}`}
-          </Button>
-        )}
-
-        <Button onClick={onPasskeyExisting} disabled={busy !== null}>
-          {busy === "passkey-existing" ? "Waiting for passkey…" : "Use Passkey"}
-        </Button>
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <button
-          type="button"
-          onClick={onPasskeyCreate}
-          disabled={busy !== null}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--slop-text-muted)",
-            fontSize: 11,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            cursor: busy ? "default" : "pointer",
-            padding: 0,
-          }}
-        >
-          {busy === "passkey-create" ? "Creating…" : "+ create new passkey"}
-        </button>
-      </div>
-
-      {status ? <p style={{ marginTop: 12, color: "var(--slop-text-muted)", fontSize: 12 }}>{status}</p> : null}
-    </Bevel>
+      <SignatureProgressModal open={progressOpen} mode={progressMode} stage={progressStage} />
+    </>
   );
 }

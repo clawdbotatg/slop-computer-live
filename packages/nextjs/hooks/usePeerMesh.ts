@@ -1932,9 +1932,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     };
   }, [enabled, slug, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, initiateOffer]);
 
-  // Cursor broadcast at ~30 Hz.
+  // Cursor broadcast at ~30 Hz. Spectator (god-mode) sessions skip the
+  // broadcast entirely — they still render their own local slop cursor
+  // so the operator can navigate, but other peers (and the OBS-captured
+  // frame god-mode streams to the world) shouldn't see god-mode's
+  // pointer overlaid on the live participants.
+  const isSpectator = self?.spectator === true;
   useEffect(() => {
     if (!connected) return;
+    if (isSpectator) return;
     let lastSent = 0;
     const handler = (e: MouseEvent) => {
       const now = Date.now();
@@ -1944,7 +1950,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     };
     window.addEventListener("mousemove", handler);
     return () => window.removeEventListener("mousemove", handler);
-  }, [connected, send]);
+  }, [connected, isSpectator, send]);
 
   // Spectators (god-mode streaming sessions) stay in the internal
   // peers state so RTC signaling still wires them up — without that

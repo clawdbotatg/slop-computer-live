@@ -79,12 +79,19 @@ export function useSession(): UseSessionResult {
     // those survive, the next page load silently re-establishes the connection
     // and JoinCard skips the Connect Wallet button. Sign-out should be a
     // total reset, so blow them all away.
+    //
+    // The passkey keys are also cleared here: JoinCard remembers the last
+    // credential id + path so returning users skip the chooser modal AND
+    // the browser picker. Sign-out should let them pick a different passkey
+    // next time, so we trash that preference along with the wallet state.
     if (typeof window !== "undefined") {
       try {
         const prefixes = ["wagmi", "rk-", "wc@", "@w3m", "@appkit", "WCM_VERSION"];
         Object.keys(window.localStorage)
           .filter(k => prefixes.some(p => k.startsWith(p)))
           .forEach(k => window.localStorage.removeItem(k));
+        window.localStorage.removeItem("slop:passkey:credId");
+        window.localStorage.removeItem("slop:passkey:lastPath");
       } catch {
         /* private mode / quota */
       }

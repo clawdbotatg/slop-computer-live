@@ -2394,11 +2394,12 @@ function DesktopInner({ slug }: { slug: string }) {
         );
       })}
 
-      {/* God-mode (spectator) is invisible by design — the relay drops
-          their cursor broadcasts, and we suppress the local slop cursor
-          render here too so the streamer's OBS capture doesn't include
-          a wandering pointer on top of the live participants. */}
-      {localCursor.pos && !isGodMode ? (
+      {/* God-mode (spectator) still renders its own local slop cursor so
+          the operator can navigate — but usePeerMesh suppresses the
+          mousemove broadcast for spectator sessions, so other peers
+          (and the OBS-captured frame the world sees) don't get the
+          god-mode cursor overlaid on top of the live participants. */}
+      {localCursor.pos ? (
         <Cursor
           x={localCursor.pos.x}
           y={localCursor.pos.y}
