@@ -47,7 +47,7 @@ X264_PRESET="${X264_PRESET:-ultrafast}"
 # but this specific infobar is hardcoded on. Rendering the window
 # CROP_TOP px taller and discarding the top band gets clean output
 # at OUT_W x OUT_H without messing with aspect ratio.
-CROP_TOP="${CROP_TOP:-80}"
+CROP_TOP="${CROP_TOP:-65}"
 
 # Internal Xvfb / chrome render size = output + crop band.
 WIN_H=$((OUT_H + CROP_TOP))
