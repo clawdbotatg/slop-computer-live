@@ -165,6 +165,14 @@ export type WalletDeployment = {
   txHash: string | null;
   deployedAt: number;
 };
+// Collaborative pre-deploy form state — mirrors relay's WalletDraft.
+// Cleared once a wallet is deployed.
+export type WalletDraft = {
+  selected: Record<string, boolean>;
+  threshold: number;
+  label: string;
+  customSigners: { address: string; label: string }[];
+};
 export type WalletRecord = {
   id: string;
   address: string;
@@ -611,6 +619,14 @@ export type PeerMeshState = {
   /** Currently-deployed session multisig. `null` until someone hits
    *  "Deploy wallet" in the wallet window. */
   wallet: WalletRecord | null;
+  /** Collaborative pre-deploy form state. Anyone in the room may
+   *  edit; only the host can submit. `null` when nobody has touched
+   *  the form yet or after a successful deploy clears it. */
+  walletDraft: WalletDraft | null;
+  /** Replace the entire draft (or clear it with null). Each peer
+   *  sends a full snapshot rather than per-field diffs — keeps merge
+   *  semantics trivial. */
+  walletDraftUpdate: (draft: WalletDraft | null) => void;
   /** Archive of past-episode multisigs (newest first). */
   walletHistory: WalletRecord[];
   /** Pending tx queue for `wallet` plus a tail of executed/failed txs. */
@@ -698,6 +714,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [wallet, setWallet] = useState<WalletRecord | null>(null);
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
   const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
+  const [walletDraft, setWalletDraft] = useState<WalletDraft | null>(null);
   // User-chosen display names keyed by lowercased address. Wins over
   // ENS handle and address-shorthand in the label-fallback chain (see
   // `peerLabel` below). Server-authoritative — `set_custom_name` round-
@@ -1264,6 +1281,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     },
     [send],
   );
+  const walletDraftUpdate = useCallback(
+    (draft: WalletDraft | null) => {
+      send({ type: "wallet_draft_update", draft });
+    },
+    [send],
+  );
   const walletNewEpisode = useCallback(() => {
     send({ type: "wallet_new_episode" });
   }, [send]);
@@ -1516,6 +1539,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
           if (msg.wallet === null || (msg.wallet && typeof msg.wallet === "object")) {
             setWallet((msg.wallet ?? null) as WalletRecord | null);
+          }
+          if (msg.walletDraft === null || (msg.walletDraft && typeof msg.walletDraft === "object")) {
+            setWalletDraft((msg.walletDraft ?? null) as WalletDraft | null);
           }
           if (Array.isArray(msg.walletTxs)) {
             setWalletTxs(msg.walletTxs as WalletTx[]);
@@ -1847,6 +1873,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.history)) {
             setWalletHistory(msg.history as WalletRecord[]);
           }
+          if (msg.draft === null || (msg.draft && typeof msg.draft === "object")) {
+            setWalletDraft((msg.draft ?? null) as WalletDraft | null);
+          }
           return;
         }
 
@@ -2035,6 +2064,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     wallet,
     walletHistory,
     walletTxs,
+    walletDraft,
+    walletDraftUpdate,
     walletDeploy,
     walletAddDeployment,
     walletNewEpisode,

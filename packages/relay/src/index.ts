@@ -598,6 +598,7 @@ app.get("/v1/state", async (req, reply) => {
     musicCustom: roomFromReq(req).jamendo.getCustomPlaylist().tracks,
     clockState: roomFromReq(req).clock.getState(),
     wallet: roomFromReq(req).wallet.getCurrent(),
+    walletDraft: roomFromReq(req).wallet.getDraft(),
     walletTxs: roomFromReq(req).wallet.listTxs(),
   };
 });
@@ -3242,6 +3243,7 @@ app.register(async function signalRoutes(fastify) {
       musicCustom: room.jamendo.getCustomPlaylist().tracks,
       clockState: room.clock.getState(),
       wallet: room.wallet.getCurrent(),
+      walletDraft: room.wallet.getDraft(),
       walletTxs: room.wallet.listTxs(),
       customNames: peerNames.all(),
     });
@@ -3683,6 +3685,48 @@ app.register(async function signalRoutes(fastify) {
         case "wallet_new_episode": {
           // Archive `current` and let the deploy flow surface again.
           room.wallet.archiveCurrent();
+          return;
+        }
+        case "wallet_draft_update": {
+          // Collaborative pre-deploy form state. Anyone in the room may
+          // edit; the host is the only one who can ultimately submit the
+          // deploy (enforced client-side and implicitly by which wallet
+          // signs createMultisig). Sending null clears the draft.
+          const d = msg.draft;
+          if (d === null || d === undefined) {
+            room.wallet.setDraft(null);
+            return;
+          }
+          if (typeof d !== "object") return send(socket, { type: "error", error: "bad_draft" });
+          const draft = d as Partial<import("./wallet.js").WalletDraft>;
+          if (
+            typeof draft.selected !== "object" ||
+            draft.selected === null ||
+            typeof draft.threshold !== "number" ||
+            typeof draft.label !== "string" ||
+            !Array.isArray(draft.customSigners)
+          ) {
+            return send(socket, { type: "error", error: "bad_draft" });
+          }
+          // Normalize: lowercased addresses, bounded sizes.
+          const selected: Record<string, boolean> = {};
+          for (const [k, v] of Object.entries(draft.selected)) {
+            if (typeof k === "string" && /^0x[a-f0-9]{40}$/i.test(k)) {
+              selected[k.toLowerCase()] = !!v;
+            }
+          }
+          const customSigners = draft.customSigners
+            .filter((c): c is { address: string; label: string } =>
+              !!c && typeof c.address === "string" && /^0x[a-f0-9]{40}$/i.test(c.address) && typeof c.label === "string",
+            )
+            .map(c => ({ address: c.address.toLowerCase(), label: c.label.slice(0, 60) }))
+            .slice(0, 50);
+          room.wallet.setDraft({
+            selected,
+            threshold: Math.max(1, Math.min(50, Math.floor(draft.threshold))),
+            label: draft.label.slice(0, 100),
+            customSigners,
+          });
           return;
         }
         case "wallet_tx_propose": {

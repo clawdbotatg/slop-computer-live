@@ -238,7 +238,12 @@ export class Room {
       else this.broadcast({ type: "files", items: event.items });
     });
     this.wallet.subscribe(state => {
-      this.broadcast({ type: "wallet", current: state.current, history: state.history });
+      this.broadcast({
+        type: "wallet",
+        current: state.current,
+        history: state.history,
+        draft: state.draft,
+      });
       this.broadcast({ type: "wallet_txs", txs: state.txs });
     });
   }

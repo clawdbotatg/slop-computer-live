@@ -209,14 +209,37 @@ type DeployProps = {
 
 const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   const slug = useRoomSlug();
-  const { address: connectedAddress } = useAccount();
   const existing = mesh.wallet;
 
-  // Form state — only used pre-first-deploy. After we have a wallet,
-  // signers/threshold/label/salt are locked into `wallet` and the form
-  // is replaced by a read-only summary.
-  const [label, setLabel] = useState<string>(slug);
-  const [customSigners, setCustomSigners] = useState<{ address: string; label: string }[]>([]);
+  // Host detection — the host's wallet is what signs createMultisig, so
+  // the predicted address depends on their address (not whoever's
+  // viewing). Non-hosts see a disabled Deploy button.
+  const hostPeer = useMemo(
+    () => (mesh.peers as Peer[]).find(p => p.role === "host" && !!p.address) ?? null,
+    [mesh.peers],
+  );
+  const isHost = useMemo(
+    () => (mesh.peers as Peer[]).some(p => p.id === mesh.myId && p.role === "host"),
+    [mesh.peers, mesh.myId],
+  );
+
+  // Collaborative draft: shared across all peers via the relay. Local
+  // edits push a full snapshot through mesh.walletDraftUpdate; inbound
+  // updates land in mesh.walletDraft. We don't keep a local mirror —
+  // the relay roundtrip is sub-100ms so typing feels immediate.
+  const draft = mesh.walletDraft;
+  const draftOrDefault = useMemo(
+    () =>
+      draft ?? { selected: {}, threshold: 1, label: slug, customSigners: [] as { address: string; label: string }[] },
+    [draft, slug],
+  );
+
+  const updateDraft = useCallback(
+    (patch: Partial<typeof draftOrDefault>) => {
+      mesh.walletDraftUpdate({ ...draftOrDefault, ...patch });
+    },
+    [draftOrDefault, mesh],
+  );
 
   type Candidate = { address: string; label: string; isMe: boolean; source: "peer" | "me" | "custom" };
   const candidateSigners = useMemo<Candidate[]>(() => {
@@ -240,7 +263,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
         out.set(lower, { address: lower, label: custom ?? myHandle ?? short(myAddress), isMe: true, source: "me" });
       else out.set(lower, { ...ex, isMe: true });
     }
-    for (const c of customSigners) {
+    for (const c of draftOrDefault.customSigners) {
       const lower = c.address.toLowerCase();
       if (!out.has(lower)) out.set(lower, { address: lower, label: c.label, isMe: false, source: "custom" });
     }
@@ -249,44 +272,49 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
       const rank = (s: Candidate["source"]) => (s === "me" ? 0 : s === "peer" ? 1 : 2);
       return rank(a.source) - rank(b.source);
     });
-  }, [mesh.peers, mesh.myId, myAddress, myHandle, customSigners, mesh.customNames]);
+  }, [mesh.peers, mesh.myId, myAddress, myHandle, draftOrDefault.customSigners, mesh.customNames]);
 
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  // First-touch seed: when no draft exists yet AND we have at least one
+  // candidate, publish a sensible default (everyone selected, majority
+  // threshold). Only one peer needs to do this — first-write wins; the
+  // others' subsequent renders will see the draft and skip the seed.
   useEffect(() => {
-    setSelected(prev => {
-      const next = { ...prev };
-      for (const s of candidateSigners) if (next[s.address] === undefined) next[s.address] = true;
-      return next;
+    if (existing) return;
+    if (draft) return;
+    if (candidateSigners.length === 0) return;
+    const selected: Record<string, boolean> = {};
+    for (const c of candidateSigners) selected[c.address] = true;
+    mesh.walletDraftUpdate({
+      selected,
+      threshold: Math.max(1, Math.ceil(candidateSigners.length / 2)),
+      label: slug,
+      customSigners: [],
     });
-  }, [candidateSigners]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, candidateSigners.length, existing]);
 
   const selectedSigners = useMemo(
-    () => candidateSigners.filter(s => selected[s.address]),
-    [candidateSigners, selected],
+    () => candidateSigners.filter(s => draftOrDefault.selected[s.address]),
+    [candidateSigners, draftOrDefault.selected],
   );
 
-  const [threshold, setThreshold] = useState<number>(1);
-  useEffect(() => {
-    if (selectedSigners.length === 0) return;
-    setThreshold(t => {
-      const next = Math.min(Math.max(1, Math.ceil(selectedSigners.length / 2)), selectedSigners.length);
-      return t > selectedSigners.length ? next : t;
-    });
-  }, [selectedSigners.length]);
-
-  // After deploy, we lock signers/threshold/salt into the wallet record.
-  // Before deploy, derive them live from the form.
-  const effectiveDeployer = existing ? (existing.deployer as AddressType) : (connectedAddress ?? null);
+  // After deploy, signers/threshold/salt/label are locked into the
+  // wallet record. Before deploy, they come from the shared draft and
+  // the deployer is the *host's* address — so all peers compute the
+  // same predicted CREATE2 address regardless of who's viewing.
+  const effectiveDeployer = existing
+    ? (existing.deployer as AddressType)
+    : ((hostPeer?.address as AddressType | undefined) ?? null);
+  const effectiveLabel = existing ? existing.label : draftOrDefault.label;
   const effectiveSalt = useMemo(() => {
     if (existing) return existing.salt as Hex;
-    return saltFromLabel(`${connectedAddress ?? "0x0"}:${label}`);
-  }, [existing, connectedAddress, label]);
+    return saltFromLabel(`${effectiveDeployer ?? "0x0"}:${effectiveLabel}`);
+  }, [existing, effectiveDeployer, effectiveLabel]);
   const effectiveSigners = useMemo(
     () => (existing ? existing.signers : selectedSigners.map(s => ({ address: s.address, label: s.label }))),
     [existing, selectedSigners],
   );
-  const effectiveThreshold = existing ? existing.threshold : threshold;
-  const effectiveLabel = existing ? existing.label : label;
+  const effectiveThreshold = existing ? existing.threshold : draftOrDefault.threshold;
 
   // Predicted multisig address. Same on every chain since the factory
   // address is identical — pin the read to mainnet RPC.
@@ -317,7 +345,11 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
           </div>
 
           <Field label="Episode label">
-            <TextField value={label} onChange={e => setLabel(e.target.value)} placeholder={slug} />
+            <TextField
+              value={draftOrDefault.label}
+              onChange={e => updateDraft({ label: e.target.value })}
+              placeholder={slug}
+            />
           </Field>
 
           <Field label={`Signers (${selectedSigners.length})`}>
@@ -344,8 +376,12 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                   >
                     <input
                       type="checkbox"
-                      checked={!!selected[s.address]}
-                      onChange={e => setSelected(prev => ({ ...prev, [s.address]: e.target.checked }))}
+                      checked={!!draftOrDefault.selected[s.address]}
+                      onChange={e =>
+                        updateDraft({
+                          selected: { ...draftOrDefault.selected, [s.address]: e.target.checked },
+                        })
+                      }
                     />
                     <span
                       style={{
@@ -369,11 +405,13 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                         aria-label="remove"
                         title="remove this signer"
                         onClick={() => {
-                          setCustomSigners(prev => prev.filter(c => c.address.toLowerCase() !== s.address));
-                          setSelected(prev => {
-                            const next = { ...prev };
-                            delete next[s.address];
-                            return next;
+                          const nextSelected = { ...draftOrDefault.selected };
+                          delete nextSelected[s.address];
+                          updateDraft({
+                            customSigners: draftOrDefault.customSigners.filter(
+                              c => c.address.toLowerCase() !== s.address,
+                            ),
+                            selected: nextSelected,
                           });
                         }}
                         style={{
@@ -397,24 +435,25 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
               existing={new Set(candidateSigners.map(s => s.address))}
               onAdd={addr => {
                 const lower = addr.toLowerCase();
-                setCustomSigners(prev =>
-                  prev.some(c => c.address.toLowerCase() === lower)
-                    ? prev
-                    : [...prev, { address: lower, label: short(lower) }],
-                );
-                setSelected(prev => ({ ...prev, [lower]: true }));
+                const exists = draftOrDefault.customSigners.some(c => c.address.toLowerCase() === lower);
+                updateDraft({
+                  customSigners: exists
+                    ? draftOrDefault.customSigners
+                    : [...draftOrDefault.customSigners, { address: lower, label: short(lower) }],
+                  selected: { ...draftOrDefault.selected, [lower]: true },
+                });
               }}
             />
           </Field>
 
-          <Field label={`Threshold (${threshold} of ${selectedSigners.length || 0})`}>
+          <Field label={`Threshold (${draftOrDefault.threshold} of ${selectedSigners.length || 0})`}>
             <input
               type="range"
               min={1}
               max={Math.max(1, selectedSigners.length)}
-              value={threshold}
+              value={draftOrDefault.threshold}
               disabled={selectedSigners.length === 0}
-              onChange={e => setThreshold(parseInt(e.target.value, 10))}
+              onChange={e => updateDraft({ threshold: parseInt(e.target.value, 10) })}
               style={{ width: "100%" }}
             />
           </Field>
@@ -423,8 +462,10 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
             <div style={{ fontSize: 12 }}>
               {predictedAddress ? (
                 <Address address={predictedAddress} size="sm" />
-              ) : !connectedAddress ? (
-                <span style={{ color: "var(--slop-text-muted)" }}>connect wallet</span>
+              ) : !effectiveDeployer ? (
+                <span style={{ color: "var(--slop-text-muted)" }}>
+                  waiting for host (deploys go through their wallet so the address is the same for everyone)
+                </span>
               ) : (
                 <span style={{ color: "var(--slop-text-muted)" }}>computing…</span>
               )}
@@ -437,6 +478,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
         <p style={{ fontSize: 11, color: "var(--slop-text-muted)", margin: "0 0 8px" }}>
           Deploy the multisig on the chains you need. The address is the same everywhere — funding the address before
           deploying works too; you just can&apos;t execute txs on a chain until <code>createMultisig</code> runs there.
+          {!isHost ? " Only the host can deploy — their wallet pays gas and signs createMultisig." : null}
         </p>
         <ChainGrid
           mesh={mesh}
@@ -447,6 +489,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
           signers={effectiveSigners.map(s => s.address as AddressType)}
           threshold={effectiveThreshold}
           label={effectiveLabel}
+          canDeploy={isHost}
         />
       </Section>
     </div>
@@ -530,9 +573,22 @@ type ChainGridProps = {
   signers: AddressType[];
   threshold: number;
   label: string;
+  /** Local user can submit a deploy tx. False for non-hosts — the
+   *  button still renders but is disabled with a "host only" tooltip. */
+  canDeploy: boolean;
 };
 
-const ChainGrid = ({ mesh, existing, predicted, deployer, salt, signers, threshold, label }: ChainGridProps) => {
+const ChainGrid = ({
+  mesh,
+  existing,
+  predicted,
+  deployer,
+  salt,
+  signers,
+  threshold,
+  label,
+  canDeploy,
+}: ChainGridProps) => {
   return (
     <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
       {SUPPORTED_CHAINS.map(c => (
@@ -549,6 +605,7 @@ const ChainGrid = ({ mesh, existing, predicted, deployer, salt, signers, thresho
           signers={signers}
           threshold={threshold}
           label={label}
+          canDeploy={canDeploy}
         />
       ))}
     </ul>
@@ -567,6 +624,7 @@ type ChainRowProps = {
   signers: AddressType[];
   threshold: number;
   label: string;
+  canDeploy: boolean;
 };
 
 const ChainRow = ({
@@ -581,6 +639,7 @@ const ChainRow = ({
   signers,
   threshold,
   label,
+  canDeploy,
 }: ChainRowProps) => {
   const connectedChainId = useChainId() ?? mainnet.id;
   const { switchChainAsync, isPending: switching } = useSwitchChain();
@@ -641,8 +700,14 @@ const ChainRow = ({
     if (existing) {
       mesh.walletAddDeployment(chainId, receipt.transactionHash);
     } else {
-      // First-ever deploy — build the full WalletRecord from the
-      // MultisigCreated event in the receipt, just like the legacy flow.
+      // First-ever deploy — build the full WalletRecord. We try to
+      // pull the multisig address from the MultisigCreated event log
+      // (canonical), but the address is also CREATE2-deterministic
+      // from (deployer, salt), so we fall back to the predicted value
+      // if log decoding fails. This makes the deploy path resilient
+      // to flaky RPC responses that drop or mangle event logs — the
+      // tx confirmed, the contract is live; we shouldn't lose the
+      // wallet record over a parse error.
       try {
         let multisigAddr: AddressType | null = null;
         for (const log of receipt.logs) {
@@ -658,14 +723,22 @@ const ChainRow = ({
               multisigAddr = (decoded.args as { multisig: AddressType }).multisig;
               break;
             }
-          } catch {
-            /* not our event */
+          } catch (logErr) {
+            console.warn("[wallet] failed to decode factory log; will try next", logErr);
           }
         }
         if (!multisigAddr) {
-          setErr("Couldn't find MultisigCreated log");
-          setTxHash(null);
-          return;
+          if (predicted) {
+            console.warn(
+              "[wallet] MultisigCreated event not found in receipt; falling back to CREATE2-predicted address",
+              { chainId, txHash: receipt.transactionHash, predicted },
+            );
+            multisigAddr = predicted;
+          } else {
+            setErr("Deploy confirmed but couldn't determine multisig address (no event log, no prediction)");
+            setTxHash(null);
+            return;
+          }
         }
         if (!deployer) {
           setErr("missing deployer");
@@ -687,6 +760,7 @@ const ChainRow = ({
         };
         mesh.walletDeploy(record);
       } catch (e) {
+        console.warn("[wallet] post-receipt walletDeploy failed", e);
         setErr(String(e).slice(0, 200));
       }
     }
@@ -698,6 +772,13 @@ const ChainRow = ({
 
   const onDeploy = useCallback(async () => {
     setErr(null);
+    if (!canDeploy) {
+      // The button is disabled when !canDeploy, but belt-and-braces:
+      // also short-circuit the handler in case the button is reached
+      // via a programmatic click (e.g. dev tools).
+      setErr("only the host can deploy");
+      return;
+    }
     if (!deployer) {
       setErr("connect wallet first");
       return;
@@ -721,7 +802,7 @@ const ChainRow = ({
     } catch (e) {
       setErr(String(e).slice(0, 200));
     }
-  }, [deployer, signers, connectedChainId, chainId, switchChainAsync, writeContractAsync, threshold, salt]);
+  }, [canDeploy, deployer, signers, connectedChainId, chainId, switchChainAsync, writeContractAsync, threshold, salt]);
 
   const busy = writePending || receiptLoading || switching;
 
@@ -756,8 +837,29 @@ const ChainRow = ({
       );
     }
     return (
-      <Button variant="primary" onClick={onDeploy} disabled={busy || !deployer || signers.length === 0}>
-        {switching ? "Switching…" : writePending ? "Confirm…" : receiptLoading ? "Waiting…" : "Deploy"}
+      <Button
+        variant="primary"
+        onClick={onDeploy}
+        disabled={busy || !deployer || signers.length === 0 || !canDeploy}
+        title={
+          !canDeploy
+            ? "Only the host can deploy. The host's wallet pays gas and signs createMultisig — that's what makes the address the same for everyone."
+            : !deployer
+              ? "Waiting for the host to connect their wallet."
+              : signers.length === 0
+                ? "Pick at least one signer."
+                : undefined
+        }
+      >
+        {switching
+          ? "Switching…"
+          : writePending
+            ? "Confirm…"
+            : receiptLoading
+              ? "Waiting…"
+              : !canDeploy
+                ? "Deploy (host only)"
+                : "Deploy"}
       </Button>
     );
   })();

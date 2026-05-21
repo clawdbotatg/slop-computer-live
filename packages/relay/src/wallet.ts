@@ -76,10 +76,28 @@ export type WalletTx = {
   updatedAt: number;
 };
 
+// Collaborative pre-deploy form state — replicated to every peer so
+// hosts + guests see the same selected signers / threshold / label as
+// they're being edited. Cleared once `current` is set (a wallet has
+// actually deployed). Anyone can update; only the host can submit the
+// deploy itself.
+export type WalletDraft = {
+  // Lowercased address → selected. Includes peer addresses + custom-
+  // typed addresses; the candidate list itself is derived from mesh
+  // peers locally on each client so we don't replicate that.
+  selected: Record<string, boolean>;
+  threshold: number;
+  label: string;
+  // Addresses manually typed in via AddSignerRow that aren't otherwise
+  // connected as peers. Display labels travel with them.
+  customSigners: { address: string; label: string }[];
+};
+
 type WalletStateData = {
   current: WalletRecord | null;
   history: WalletRecord[];
   txs: WalletTx[];
+  draft: WalletDraft | null;
 };
 
 // One-shot translation from the pre-multi-chain record shape
@@ -145,7 +163,7 @@ export type ProposeTxInput = {
 };
 
 export class WalletState {
-  private state: WalletStateData = { current: null, history: [], txs: [] };
+  private state: WalletStateData = { current: null, history: [], txs: [], draft: null };
   private loaded = false;
   private subscribers = new Set<Subscriber>();
 
@@ -171,6 +189,7 @@ export class WalletState {
           ? (parsed.history.slice(0, MAX_HISTORY).map(migrateRecord).filter(Boolean) as WalletRecord[])
           : [],
         txs: Array.isArray(parsed.txs) ? parsed.txs.slice(0, MAX_TXS) : [],
+        draft: parsed.draft && typeof parsed.draft === "object" ? (parsed.draft as WalletDraft) : null,
       };
       return true;
     } catch {
@@ -203,12 +222,32 @@ export class WalletState {
 
   snapshot(): WalletStateData {
     this.load();
-    return { current: this.state.current, history: [...this.state.history], txs: [...this.state.txs] };
+    return {
+      current: this.state.current,
+      history: [...this.state.history],
+      txs: [...this.state.txs],
+      draft: this.state.draft,
+    };
   }
 
   getCurrent(): WalletRecord | null {
     this.load();
     return this.state.current;
+  }
+
+  getDraft(): WalletDraft | null {
+    this.load();
+    return this.state.draft;
+  }
+
+  // Replace the entire draft. Pass null to clear (e.g. after deploy).
+  // We replace rather than merge — clients send full snapshots, which
+  // is simpler and avoids field-by-field merge races between peers.
+  setDraft(draft: WalletDraft | null): void {
+    this.load();
+    this.state.draft = draft;
+    this.persist();
+    this.emit();
   }
 
   listTxs(): WalletTx[] {
@@ -231,6 +270,10 @@ export class WalletState {
       this.state.txs = this.state.txs.filter(t => t.status === "executed");
     }
     this.state.current = rec;
+    // Once a wallet is deployed, the draft is consumed — clear it so
+    // a future "new episode" starts from a fresh form, not the prior
+    // session's selections.
+    this.state.draft = null;
     this.persist();
     this.emit();
   }
@@ -351,7 +394,7 @@ export class WalletState {
   // scratch without having to ssh in and delete the JSON by hand.
   wipeAll(): void {
     this.load();
-    this.state = { current: null, history: [], txs: [] };
+    this.state = { current: null, history: [], txs: [], draft: null };
     this.persist();
     this.emit();
   }

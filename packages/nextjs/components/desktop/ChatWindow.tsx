@@ -203,11 +203,53 @@ const ChatRow = ({
             whiteSpace: "pre-wrap",
           }}
         >
-          {msg.text}
+          {linkify(msg.text)}
         </div>
       </div>
     </div>
   );
+};
+
+// Matches bare http(s)://… and www.… URLs. Trailing punctuation that's
+// almost certainly sentence-terminal (.,!?;:) gets trimmed back so we
+// don't eat the period at the end of "check out https://foo.com."
+const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"']+)/gi;
+
+const linkify = (text: string) => {
+  const parts: (string | { url: string; key: string })[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  URL_RE.lastIndex = 0;
+  while ((match = URL_RE.exec(text)) !== null) {
+    let url = match[1];
+    let tail = "";
+    while (url.length > 0 && /[.,!?;:)\]}]/.test(url[url.length - 1])) {
+      tail = url[url.length - 1] + tail;
+      url = url.slice(0, -1);
+    }
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    parts.push({ url, key: `u${i++}` });
+    if (tail) parts.push(tail);
+    lastIndex = match.index + match[1].length;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  if (parts.length === 0) return text;
+  return parts.map((p, idx) => {
+    if (typeof p === "string") return <span key={`s${idx}`}>{p}</span>;
+    const href = p.url.startsWith("http") ? p.url : `https://${p.url}`;
+    return (
+      <a
+        key={p.key}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ color: "var(--slop-cyan, #00e5ff)", textDecoration: "underline" }}
+      >
+        {p.url}
+      </a>
+    );
+  });
 };
 
 export default ChatWindow;
