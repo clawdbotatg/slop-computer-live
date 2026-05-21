@@ -948,9 +948,12 @@ const PIECE_GLYPH: Record<string, string> = {
   k: "♚",
 };
 
-const peerKey = (p: Peer) => (p.address ?? p.handle ?? p.id).toLowerCase();
+const peerKey = (p: Peer) => (p.address ?? p.anonId ?? p.handle ?? p.id).toLowerCase();
 const peerLabel = (p: Peer, customNames: Record<string, string>) => {
-  const custom = p.address ? customNames[p.address.toLowerCase()] : undefined;
+  // Match the global rule: customNames keyed by address (SIWE/passkey)
+  // or anonId (anon) wins over the original handle.
+  const lookupKey = (p.address ?? p.anonId)?.toLowerCase();
+  const custom = lookupKey ? customNames[lookupKey] : undefined;
   if (custom) return custom;
   return p.handle ?? (p.address ? `${p.address.slice(0, 6)}…${p.address.slice(-4)}` : p.id.slice(0, 6));
 };

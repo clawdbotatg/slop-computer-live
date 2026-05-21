@@ -214,9 +214,9 @@ function lookupSpeaker(
   streamId: string,
   publications: Publication[],
   peers: Peer[],
-): { address: string | null; handle: string | null } {
+): { address: string | null; handle: string | null; anonId: string | null } {
   const pub = publications.find(p => p.streamId === streamId);
-  if (!pub) return { address: null, handle: null };
+  if (!pub) return { address: null, handle: null, anonId: null };
   const peer = peers.find(p => p.id === pub.peerId);
   if (!peer) {
     // Publication exists but the peer hasn't been reconciled yet (or
@@ -226,15 +226,16 @@ function lookupSpeaker(
     return {
       address: isAddr ? pub.ownerKey.toLowerCase() : null,
       handle: isAddr ? null : pub.ownerKey,
+      anonId: null,
     };
   }
-  return { address: peer.address ?? null, handle: peer.handle ?? null };
+  return { address: peer.address ?? null, handle: peer.handle ?? null, anonId: peer.anonId ?? null };
 }
 
 type StartArgs = {
   track: MediaStreamTrack;
-  getSpeakerIdentity: () => { address: string | null; handle: string | null };
-  upload: (blob: Blob, identity: { address: string | null; handle: string | null }) => void;
+  getSpeakerIdentity: () => { address: string | null; handle: string | null; anonId: string | null };
+  upload: (blob: Blob, identity: { address: string | null; handle: string | null; anonId: string | null }) => void;
   onRecordingOpen: () => void;
   onRecordingClose: () => void;
 };
@@ -271,7 +272,7 @@ function startTranscriberForTrack(args: StartArgs): TranscriberHandle {
   let segmentStartedAt = 0;
   let lastLoudAt = 0;
   let stopped = false;
-  let lockedIdentity: { address: string | null; handle: string | null } | null = null;
+  let lockedIdentity: { address: string | null; handle: string | null; anonId: string | null } | null = null;
 
   const closeRecording = () => {
     if (!recording || !recorder) return;
@@ -417,7 +418,7 @@ function pickMime(): string | undefined {
 
 type UploadArgs = {
   blob: Blob;
-  identity: { address: string | null; handle: string | null };
+  identity: { address: string | null; handle: string | null; anonId: string | null };
   relayUrl: string;
   slug: string;
   lang: string | undefined;
@@ -431,6 +432,7 @@ async function uploadSegment(args: UploadArgs): Promise<void> {
   const extra = new URLSearchParams();
   if (identity.address) extra.set("address", identity.address);
   if (identity.handle) extra.set("handle", identity.handle);
+  if (identity.anonId) extra.set("anonId", identity.anonId);
   if (lang) extra.set("lang", lang);
   if (extra.toString()) {
     const sep = url.includes("?") ? "&" : "?";

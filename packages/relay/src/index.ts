@@ -794,6 +794,7 @@ app.post<{ Body: XYBody }>("/v1/cursor", async (req, reply) => {
     from: agentPeerId(a.session.token),
     address: a.session.address,
     handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
     x,
     y,
   });
@@ -811,6 +812,7 @@ app.post<{ Body: XYBody }>("/v1/click", async (req, reply) => {
     from: agentPeerId(a.session.token),
     address: a.session.address,
     handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
     x,
     y,
   });

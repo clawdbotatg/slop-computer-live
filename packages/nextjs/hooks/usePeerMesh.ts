@@ -133,6 +133,7 @@ type CursorData = {
    *  colors without a peers-list lookup. */
   address?: string | null;
   handle?: string | null;
+  anonId?: string | null;
 };
 
 export type ClickEvent = {
@@ -144,6 +145,7 @@ export type ClickEvent = {
   /** Same inline-identity shape as CursorData. */
   address?: string | null;
   handle?: string | null;
+  anonId?: string | null;
   receivedAt: number;
 };
 
@@ -1773,7 +1775,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (typeof from !== "string" || typeof x !== "number" || typeof y !== "number") return;
           const address = typeof msg.address === "string" ? (msg.address as string) : null;
           const handle = typeof msg.handle === "string" ? (msg.handle as string) : null;
-          setCursors(prev => ({ ...prev, [from]: { x, y, address, handle } }));
+          const anonId = typeof msg.anonId === "string" ? (msg.anonId as string) : null;
+          setCursors(prev => ({ ...prev, [from]: { x, y, address, handle, anonId } }));
           return;
         }
 
@@ -1784,6 +1787,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (typeof from !== "string" || typeof x !== "number" || typeof y !== "number") return;
           const address = typeof msg.address === "string" ? (msg.address as string) : null;
           const handle = typeof msg.handle === "string" ? (msg.handle as string) : null;
+          const anonId = typeof msg.anonId === "string" ? (msg.anonId as string) : null;
           clickIdRef.current += 1;
           const evt: ClickEvent = {
             id: clickIdRef.current,
@@ -1792,6 +1796,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             y,
             address,
             handle,
+            anonId,
             receivedAt: Date.now(),
           };
           // Cap to 30 in flight so a click-spammer doesn't blow up the

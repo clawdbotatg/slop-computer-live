@@ -1239,6 +1239,7 @@ function DesktopInner({ slug }: { slug: string }) {
       y: number;
       handle: string | null;
       address: string | null;
+      anonId: string | null;
     }> = [];
     Object.entries(mesh.cursors).forEach(([peerId, pos]) => {
       if (peerId === mesh.myId) return;
@@ -1252,6 +1253,7 @@ function DesktopInner({ slug }: { slug: string }) {
         y: pos.y,
         handle: peer?.handle ?? pos.handle ?? null,
         address: peer?.address ?? pos.address ?? null,
+        anonId: peer?.anonId ?? pos.anonId ?? null,
       });
     });
     return result;
@@ -2443,13 +2445,10 @@ function DesktopInner({ slug }: { slug: string }) {
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +
           zIndex 2^31 keeps them on top of every other layer. */}
-      {remoteCursors.map(({ peerId, x, y, handle, address }) => {
-        // Pull the peer's stable id from the mesh so cursor flag colors
-        // + custom-name lookups stay in sync with the rest of the UI
-        // after an anon rename. Falls back to whatever the cursor
-        // broadcast itself carried for peers not in our local roster.
-        const peer = mesh.peers.find(p => p.id === peerId);
-        const anonId = peer?.anonId ?? null;
+      {remoteCursors.map(({ peerId, x, y, handle, address, anonId }) => {
+        // anonId already resolved in remoteCursors: peer record wins,
+        // falls back to the cursor broadcast's inline value for HTTP
+        // agents that aren't in our roster.
         const bands = bandsFromIdentity({ address, anonId, handle, fallback: peerId });
         const lookupKey = (address ?? anonId)?.toLowerCase();
         const customName = lookupKey ? mesh.customNames[lookupKey] : undefined;
