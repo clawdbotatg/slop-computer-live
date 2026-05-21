@@ -756,6 +756,7 @@ const AdminPage: NextPage = () => {
                 <button
                   type="button"
                   onClick={() => void copyGodLink(r.slug)}
+                  className="slop-link"
                   title={
                     !godPassword
                       ? "GOD_MODE_PASSWORD not set on the relay"
@@ -768,14 +769,10 @@ const AdminPage: NextPage = () => {
                     border: 0,
                     padding: 0,
                     margin: 0,
-                    color:
-                      godPassword && roomPasswords[r.slug] ? "var(--slop-cyan, #3fcfff)" : "var(--slop-text-muted)",
                     fontFamily: "var(--slop-font-display)",
-                    fontSize: 11,
-                    cursor: "pointer",
                     textTransform: "lowercase",
-                    letterSpacing: "0.06em",
-                    opacity: godPassword && roomPasswords[r.slug] ? 1 : 0.55,
+                    cursor: "pointer",
+                    opacity: godPassword && roomPasswords[r.slug] ? 1 : 0.5,
                   }}
                 >
                   [god]
