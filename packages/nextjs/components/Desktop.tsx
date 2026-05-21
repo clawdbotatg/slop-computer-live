@@ -53,7 +53,6 @@ import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useGodModeStt } from "~~/hooks/useGodModeStt";
-import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
@@ -370,68 +369,17 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const media = useLocalMedia(addStream, stopStream);
 
-  // Live transcript gate. STT flows ONLY when the user is actively
-  // presenting:
-  //   - audio publication exists AND at least one audio track is
-  //     unmuted (AudioVisualizer flips audio-track.enabled), OR
-  //   - camera publication exists AND at least one video track is
-  //     unpaused (VideoView flips video-track.enabled).
-  //
-  // We deliberately check VIDEO-track.enabled on the camera stream
-  // (not its bundled audio track) so that "pause video" — the user's
-  // explicit "I'm off" signal — kills STT even though the camera's mic
-  // sub-track may still be live to peers. The rule: if you're not
-  // visibly on the show, you don't get transcribed.
-  //
-  // Web Speech reads from the mic hardware directly (not the WebRTC
-  // track), so muting peers in the UI doesn't stop the recognizer
-  // unless we gate it here. track.enabled has no change event, so we
-  // poll the self streams at 500ms. Cheap, and the start/stop latency
-  // is imperceptible.
-  const [sttEligible, setSttEligible] = useState(false);
-  useEffect(() => {
-    const compute = () => {
-      let on = false;
-      for (const s of streamsRef.current) {
-        if (s.kind === "audio") {
-          for (const t of s.stream.getAudioTracks()) {
-            if (t.enabled && t.readyState === "live") {
-              on = true;
-              break;
-            }
-          }
-        } else if (s.kind === "camera") {
-          for (const t of s.stream.getVideoTracks()) {
-            if (t.enabled && t.readyState === "live") {
-              on = true;
-              break;
-            }
-          }
-        }
-        if (on) break;
-      }
-      setSttEligible(prev => (prev === on ? prev : on));
-    };
-    compute();
-    const id = setInterval(compute, 500);
-    return () => clearInterval(id);
-  }, []);
+  // Per-browser Web Speech STT was retired when god-mode server-side
+  // STT shipped — the god-mode tab transcribes every peer's audio
+  // centrally via OpenAI, so running Web Speech in parallel produced
+  // near-duplicate rows with slightly different formatting from each
+  // engine. `~~/hooks/useLiveTranscript` is left in place as a possible
+  // fallback path if god-mode ever needs to be off, but it's not wired
+  // up here. Same for `sttEligible` — the gating signal it computed
+  // (audio unmuted ∧ track published ∧ video unpaused) only mattered
+  // when the per-browser recognizer needed an enable signal.
   const episode = useEpisodeState(RELAY_HTTP, slug);
-  // Per-browser Web Speech STT. Still active for non-god-mode peers as a
-  // belt-and-braces fallback — but if a god-mode peer is in the room
-  // running server-side STT, the user can mute their browser's Web Speech
-  // by toggling episode.sttOn off centrally without per-peer config.
   const isGodMode = session.authenticated && session.spectator === true;
-  useLiveTranscript({
-    // God-mode never publishes its own audio (spectator session) so
-    // sttEligible is structurally false for it — but skipping the
-    // hook entirely for god-mode keeps the recognizer object from
-    // being constructed at all on the streaming box.
-    enabled: sttEligible && !isGodMode,
-    episodeSttOn: episode.sttOn,
-    relayHttpUrl: RELAY_HTTP,
-    slug,
-  });
   // God-mode server-side STT. Only the streaming box runs this. It
   // walks every other peer's audio track in the mesh, VAD-gates,
   // captures Opus segments, and POSTs them to /v1/transcript/relay

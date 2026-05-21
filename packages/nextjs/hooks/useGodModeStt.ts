@@ -303,7 +303,27 @@ function startTranscriberForTrack(args: StartArgs): TranscriberHandle {
           const type = chunks[0].type || "audio/webm";
           const blob = new Blob(chunks, { type });
           if (blob.size < 1024) return; // <1KB ≈ no real audio captured
-          const identity = lockedIdentity ?? getSpeakerIdentity();
+
+          // Identity resolution. The publish WS frame *should* arrive
+          // before the WebRTC track does, but in practice there's a
+          // race where audio starts flowing 100-300ms before the
+          // publication entry is in the client's mesh state. If that
+          // race hit at speech-open, `lockedIdentity` will be
+          // {address: null, handle: null} (a non-null object with
+          // null fields — note ?? wouldn't catch that). Re-lookup at
+          // upload time, which is 1-15s later — the publication has
+          // definitely arrived by then. If we STILL can't attribute,
+          // drop the upload entirely: an anonymous transcript row
+          // tagged with a 6-char hex from seg.id is worse UX than
+          // missing the segment.
+          let identity = lockedIdentity;
+          if (!identity || (!identity.address && !identity.handle)) {
+            identity = getSpeakerIdentity();
+          }
+          if (!identity.address && !identity.handle) {
+            console.warn("[godStt] dropping segment — speaker unknown");
+            return;
+          }
           upload(blob, identity);
         };
         recording = true;

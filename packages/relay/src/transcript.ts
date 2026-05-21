@@ -48,6 +48,16 @@ type Subscriber = (seg: TranscriptSegment) => void;
 const BURST = 20;
 const REFILL_PER_SEC = 2;
 
+// Content dedupe window. When two STT engines independently transcribe
+// the same speech (e.g. two god-mode tabs accidentally open, or the
+// old per-browser Web Speech path still running alongside god-mode),
+// we'd get back-to-back rows with the same speaker + same (or nearly
+// the same) text. Drop the second if it lands within this many ms of
+// the previous one with the same address. Keyed on address so two
+// people genuinely echoing each other word-for-word still both
+// appear; the goal is filtering retransmits, not legitimate repeats.
+const DEDUPE_WINDOW_MS = 3500;
+
 export class Transcript {
   private buffer: TranscriptSegment[] = [];
   private loaded = false;
@@ -103,10 +113,30 @@ export class Transcript {
     this.load();
     const text = input.text.trim().slice(0, MAX_TEXT_LEN);
     if (!text) return null;
+    const now = Date.now();
+    const addr = input.address ? input.address.toLowerCase() : null;
+
+    // Content dedupe — see DEDUPE_WINDOW_MS comment. Compare against
+    // recent segments from the same speaker. Normalize whitespace +
+    // case + trailing punctuation so "Hello." and "hello" collapse
+    // (the two STT engines that race during a transition tend to
+    // differ on exactly those). Only applies when we have an address
+    // to key on — anonymous segments fall through.
+    if (addr) {
+      const norm = normalizeForDedupe(text);
+      for (let i = this.buffer.length - 1; i >= 0; i--) {
+        const prev = this.buffer[i];
+        if (!prev) continue;
+        if (now - prev.ts > DEDUPE_WINDOW_MS) break;
+        if (prev.address !== addr) continue;
+        if (normalizeForDedupe(prev.text) === norm) return null;
+      }
+    }
+
     const seg: TranscriptSegment = {
       id: randomBytes(8).toString("hex"),
-      ts: Date.now(),
-      address: input.address ? input.address.toLowerCase() : null,
+      ts: now,
+      address: addr,
       handle: input.handle ?? null,
       text,
       source: input.source,
@@ -177,4 +207,16 @@ export class Transcript {
     this.subscribers.add(fn);
     return () => this.subscribers.delete(fn);
   }
+}
+
+// Strip whitespace, lowercase, and remove trailing punctuation so the
+// dedupe path sees "Hello, there." and "hello there" as the same row.
+// Whisper variants from two independent runs of the same audio
+// typically differ on case + commas + periods.
+function normalizeForDedupe(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[.,!?;:…"'`]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
