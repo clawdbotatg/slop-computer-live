@@ -53,7 +53,7 @@ const chainMeta = (chainId: number) =>
     explorer: "https://etherscan.io",
   };
 
-type WalletTab = "deploy" | "assets" | "activity";
+type WalletTab = "deploy" | "assets" | "transactions";
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   const wallet = mesh.wallet;
@@ -70,6 +70,20 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     if (!wallet && tab !== "deploy") setTab("deploy");
   }, [wallet, tab]);
 
+  // Auto-jump to the Transactions tab whenever a new pending signature
+  // appears — this is the spot where the user *acts*, so don't make
+  // them go hunting for it after a tx is captured from the AI wallet
+  // iframe or a SharedBrowser dapp. We track the count, not identity,
+  // so dismissing one and a new one arriving still triggers.
+  const pendingCount = useMemo(() => mesh.walletTxs.filter(t => t.status === "pending").length, [mesh.walletTxs]);
+  const lastPendingCountRef = useRef(pendingCount);
+  useEffect(() => {
+    if (pendingCount > lastPendingCountRef.current && wallet && tab !== "deploy") {
+      setTab("transactions");
+    }
+    lastPendingCountRef.current = pendingCount;
+  }, [pendingCount, wallet, tab]);
+
   return (
     <div
       style={{
@@ -82,58 +96,40 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
         overflow: "hidden",
       }}
     >
-      <TabBar tab={tab} setTab={setTab} walletReady={!!wallet} />
-      {/* Deploy tab body — full-width tab content, scrollable. */}
-      <div
-        style={{
-          flex: 1,
-          overflow: "auto",
-          display: tab === "deploy" ? "block" : "none",
-        }}
-      >
+      <TabBar tab={tab} setTab={setTab} walletReady={!!wallet} pendingCount={pendingCount} />
+      {/* Deploy tab body. */}
+      <div style={{ flex: 1, overflow: "auto", display: tab === "deploy" ? "block" : "none" }}>
         <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
       </div>
-      {/* Iframe panel — mounted once when wallet exists; stays alive
-       *  while user flips between Assets and Activity tabs so wallet
-       *  state inside the iframe doesn't reset on every tab change.
-       *  Hidden entirely on the Deploy tab via display:none. */}
-      {wallet ? <AssetsActivityPanel mesh={mesh} wallet={wallet} myAddress={myAddress} tab={tab} /> : null}
-    </div>
-  );
-};
-
-// Container for Assets + Activity tabs. The iframe lives at this layer
-// so it stays mounted across Assets ↔ Activity switches (we just tell
-// it which view to show via postMessage). The Activity tab appends our
-// multisig tx queue below the iframe.
-const AssetsActivityPanel = ({
-  mesh,
-  wallet,
-  myAddress,
-  tab,
-}: {
-  mesh: PeerMeshState;
-  wallet: WalletRecord;
-  myAddress: string | null;
-  tab: WalletTab;
-}) => {
-  const visible = tab === "assets" || tab === "activity";
-  return (
-    <div
-      style={{
-        flex: visible ? 1 : undefined,
-        display: visible ? "flex" : "none",
-        flexDirection: "column",
-        minHeight: 0,
-      }}
-    >
-      <AIWalletIframe
-        wallet={wallet}
-        myAddress={myAddress}
-        view={tab === "activity" ? "activity" : "assets"}
-        mesh={mesh}
-      />
-      {tab === "activity" ? <ActivityTxQueue mesh={mesh} wallet={wallet} myAddress={myAddress} /> : null}
+      {/* Iframe — mounted once when wallet exists, visible only on the
+       *  Assets tab. Stays alive when the user flips to Transactions so
+       *  wallet state inside the iframe doesn't reset on every flip. */}
+      {wallet ? (
+        <div
+          style={{
+            flex: tab === "assets" ? 1 : undefined,
+            display: tab === "assets" ? "flex" : "none",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
+        >
+          <AIWalletIframe wallet={wallet} myAddress={myAddress} mesh={mesh} />
+        </div>
+      ) : null}
+      {/* Transactions tab body — dedicated to the multisig queue (txs
+       *  proposed from the AI wallet, SharedBrowser dapps, or future
+       *  in-app send forms all land here for signing + execute). */}
+      {wallet ? (
+        <div
+          style={{
+            flex: tab === "transactions" ? 1 : undefined,
+            display: tab === "transactions" ? "block" : "none",
+            overflow: "auto",
+          }}
+        >
+          <ActivityTxQueue mesh={mesh} wallet={wallet} myAddress={myAddress} />
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -146,10 +142,12 @@ const TabBar = ({
   tab,
   setTab,
   walletReady,
+  pendingCount,
 }: {
   tab: WalletTab;
   setTab: (t: WalletTab) => void;
   walletReady: boolean;
+  pendingCount: number;
 }) => {
   const tabStyle = (active: boolean, disabled: boolean): React.CSSProperties => ({
     flex: 1,
@@ -164,11 +162,15 @@ const TabBar = ({
     textTransform: "uppercase",
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
   });
   const tabs: { id: WalletTab; label: string }[] = [
     { id: "deploy", label: "Deploy" },
     { id: "assets", label: "Assets" },
-    { id: "activity", label: "Activity" },
+    { id: "transactions", label: "Transactions" },
   ];
   return (
     <div
@@ -180,6 +182,7 @@ const TabBar = ({
     >
       {tabs.map(t => {
         const disabled = t.id !== "deploy" && !walletReady;
+        const showBadge = t.id === "transactions" && pendingCount > 0;
         return (
           <button
             key={t.id}
@@ -189,7 +192,28 @@ const TabBar = ({
             title={disabled ? "Deploy a wallet first to unlock this tab." : undefined}
             onClick={() => !disabled && setTab(t.id)}
           >
-            {t.label}
+            <span>{t.label}</span>
+            {showBadge ? (
+              <span
+                aria-label={`${pendingCount} pending`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minWidth: 18,
+                  height: 16,
+                  padding: "0 5px",
+                  borderRadius: 8,
+                  background: "var(--slop-magenta, #ff3ec9)",
+                  color: "#06030d",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: 0,
+                }}
+              >
+                {pendingCount}
+              </span>
+            ) : null}
           </button>
         );
       })}
@@ -1003,7 +1027,6 @@ const ChainRow = ({
 type AIWalletIframeProps = {
   wallet: WalletRecord;
   myAddress: string | null;
-  view: "assets" | "activity";
   mesh: PeerMeshState;
 };
 
@@ -1035,7 +1058,7 @@ const isCursorMessage = (v: unknown): v is SlopCursorMessage => {
   return m.type === "slop:cursor" && typeof m.x === "number" && typeof m.y === "number";
 };
 
-const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) => {
+const AIWalletIframe = ({ wallet, myAddress, mesh }: AIWalletIframeProps) => {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   // Pick the most-recently-deployed chain as the "primary" — the iframe
   // initial URL uses this as its display chain; the agent can still
@@ -1049,8 +1072,10 @@ const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) 
   }, [wallet.deployments]);
   const publicClient = usePublicClient({ chainId: primaryChainId ?? undefined });
 
-  // Initial URL — only set once. View changes go through postMessage so
-  // we don't reload the iframe on every tab switch.
+  // Initial URL — only set once. The hosted AI wallet decides which
+  // section to render based on its own internal navigation; we no
+  // longer try to remote-control its view from the parent because the
+  // Transactions tab is now our own panel (the multisig queue).
   const initialSrcRef = useRef<string | null>(null);
   const initialSrc = useMemo(() => {
     if (initialSrcRef.current) return initialSrcRef.current;
@@ -1059,32 +1084,27 @@ const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) 
       embedded: "1",
       multisig: wallet.address,
       chain: String(primaryChainId),
-      view,
     });
     if (myAddress) params.set("signer", myAddress);
     const url = `${AI_WALLET_URL}/?${params.toString()}`;
     initialSrcRef.current = url;
     return url;
-    // Intentionally only the initial values — see ref pinning above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryChainId]);
 
-  // Tell the iframe which view to show whenever the tab changes.
-  useEffect(() => {
-    const el = iframeRef.current;
-    if (!el || !el.contentWindow) return;
-    el.contentWindow.postMessage({ type: "slop:set_view", view }, AI_WALLET_URL);
-  }, [view]);
-
-  // Inbound postMessages from the iframe.
+  // Inbound postMessages from the iframe. Logs everything from the
+  // iframe at log-level so it's easy to spot in DevTools whether the
+  // hosted AI wallet is talking to us at all when Send is hit. Without
+  // a propose_tx postMessage from the iframe, the multisig queue can't
+  // populate — this is the single most common reason "tx didn't show
+  // up": the hosted wallet just doesn't emit the message yet.
   useEffect(() => {
     const handler = async (e: MessageEvent) => {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
 
-      // Cursor bridge: translate iframe-local coords to parent-viewport
-      // coords and dispatch a synthetic mousemove so useLocalCursor's
-      // capture-phase listener keeps the slop cursor tracking. The
-      // iframe hides the system cursor on its side.
+      // Cursor bridge — translates iframe-local coords to parent-viewport
+      // coords so useLocalCursor's capture-phase listener keeps the slop
+      // cursor tracking over the iframe. High volume; don't log.
       if (isCursorMessage(e.data)) {
         const rect = iframeRef.current.getBoundingClientRect();
         const clientX = rect.left + e.data.x;
@@ -1093,14 +1113,26 @@ const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) 
         return;
       }
 
+      // Everything else gets logged so the user can verify in DevTools
+      // that the iframe is communicating. Stringify so the snapshot
+      // isn't mutated under us by React/etc.
+      try {
+        console.log("[wallet] iframe → parent message", JSON.parse(JSON.stringify(e.data)));
+      } catch {
+        console.log("[wallet] iframe → parent message (unserializable)", e.data);
+      }
+
       if (!isProposeTxMessage(e.data)) return;
       const msg = e.data;
       if (!(msg.chainId in wallet.deployments)) {
-        console.warn("[wallet] tx chainId not deployed", msg.chainId, "have", Object.keys(wallet.deployments));
+        console.warn("[wallet] propose_tx rejected — chainId not deployed", {
+          received: msg.chainId,
+          deployed: Object.keys(wallet.deployments),
+        });
         return;
       }
       if (!publicClient) {
-        console.warn("[wallet] no public client for chain", msg.chainId);
+        console.warn("[wallet] propose_tx rejected — no public client for chain", msg.chainId);
         return;
       }
       try {
@@ -1121,6 +1153,12 @@ const AIWalletIframe = ({ wallet, myAddress, view, mesh }: AIWalletIframeProps) 
           target,
           value: valueWei,
           data,
+        });
+        console.log("[wallet] queueing multisig tx from iframe", {
+          chainId: msg.chainId,
+          target,
+          value: valueWei.toString(),
+          nonce: nonce.toString(),
         });
         mesh.walletProposeTx({
           chainId: msg.chainId,
@@ -1191,58 +1229,72 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
     if (!deployedChainIds.includes(activeChain)) setActiveChain(deployedChainIds[0]);
   }, [deployedChainIds, activeChain]);
 
-  const chainTxs = mesh.walletTxs.filter(t => t.chainId === activeChain);
+  // Distinct from chainTxs below — used by the "txs exist on other
+  // chains" hint so the user knows to switch the chain picker if their
+  // tx landed on a chain that isn't currently selected.
+  const allTxs = mesh.walletTxs;
+  const chainTxs = allTxs.filter(t => t.chainId === activeChain);
   const pendingTxs = chainTxs.filter(t => t.status === "pending");
-  const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 10);
-
-  if (pendingTxs.length === 0 && otherTxs.length === 0) {
-    // Nothing to show — keep the panel tight so the iframe gets the
-    // visual weight. A one-liner chain picker lives at the top in case
-    // the user wants to verify which chain they're scoped to.
-    return (
-      <div
-        style={{
-          padding: "10px 14px",
-          borderTop: "1px solid rgba(255,62,201,0.18)",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        <span style={{ fontSize: 10, color: "var(--slop-text-muted)", letterSpacing: "0.1em" }}>multisig queue:</span>
-        <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
-          no signatures pending
-        </span>
-      </div>
-    );
-  }
+  const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 20);
+  const txsOnOtherChains = allTxs.filter(t => t.chainId !== activeChain);
 
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 10,
+        gap: 12,
         padding: 14,
-        borderTop: "1px solid rgba(255,62,201,0.18)",
-        maxHeight: "40%",
-        overflow: "auto",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 10, color: "var(--slop-text-muted)", letterSpacing: "0.1em" }}>multisig queue:</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--slop-text-muted)",
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+          }}
+        >
+          Chain
+        </span>
         <ChainPicker deployedChainIds={deployedChainIds} active={activeChain} onPick={setActiveChain} />
       </div>
 
-      {pendingTxs.length > 0 ? (
-        <Section title={`Pending on ${chainMeta(activeChain).label} (${pendingTxs.length})`}>
-          {pendingTxs.map(tx => (
-            <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />
-          ))}
-        </Section>
-      ) : null}
+      <Section title={`Pending on ${chainMeta(activeChain).label} (${pendingTxs.length})`}>
+        {pendingTxs.length === 0 ? (
+          <div
+            style={{
+              padding: 12,
+              fontSize: 12,
+              color: "var(--slop-text-muted)",
+              background: "rgba(255,255,255,0.02)",
+              border: "1px dashed rgba(255,62,201,0.18)",
+              borderRadius: 6,
+              lineHeight: 1.5,
+            }}
+          >
+            No transactions to sign on {chainMeta(activeChain).label}.
+            <br />
+            <span style={{ fontSize: 11 }}>
+              When the AI wallet sends a transaction (Send / Swap / etc.), it lands here for signers to approve and
+              execute. Captured txs from in-room dapps (SharedBrowser) land here too. If you sent something and
+              don&apos;t see it, check the browser console for <code>[wallet] iframe → parent message</code> entries to
+              see whether the iframe posted the propose_tx message.
+            </span>
+            {txsOnOtherChains.length > 0 ? (
+              <div style={{ marginTop: 8, fontSize: 11, color: "var(--slop-cyan, #3fcfff)" }}>
+                {txsOnOtherChains.length} transaction{txsOnOtherChains.length === 1 ? "" : "s"} on{" "}
+                {Array.from(new Set(txsOnOtherChains.map(t => chainMeta(t.chainId).label))).join(", ")} — switch the
+                chain picker above to view.
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          pendingTxs.map(tx => <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />)
+        )}
+      </Section>
 
       {otherTxs.length > 0 ? (
         <Section title="Recent">
