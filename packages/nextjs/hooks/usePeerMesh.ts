@@ -439,6 +439,18 @@ export type CardJob = {
   startedBy: string | null;
 };
 
+/** Shared title overlay state for the card. Coordinates are fractions
+ *  of the displayed image rect (matches the bake math at download
+ *  time), `sizeFrac` is font-size as a fraction of image width.
+ *  `null` = the room has never edited the title yet; the client falls
+ *  back to defaults derived from the slug. */
+export type CardTitle = {
+  text: string;
+  x: number;
+  y: number;
+  sizeFrac: number;
+};
+
 /** A user-uploaded file on the shared desktop. Mirrors
  *  `packages/relay/src/files.ts` FileEntry. */
 export type FileEntry = {
@@ -647,6 +659,14 @@ export type PeerMeshState = {
    *  is running gpt-image-2; every peer shows the shared loading bar
    *  regardless of who dropped the PFP. */
   cardJob: CardJob | null;
+  /** Shared title overlay (text + fractional position + size) sitting
+   *  on top of the card. `null` until anyone in the room edits it; the
+   *  CardWindow falls back to slug-based defaults until then. */
+  cardTitle: CardTitle | null;
+  /** Broadcast a new title state to the room. Optimistically updates
+   *  local state; server persists last-write-wins. Safe to call on
+   *  every pointer-move during a drag (matches the `cursor` cadence). */
+  setCardTitle: (title: CardTitle) => void;
   /** Clear the current card and bring the template back for the
    *  whole room. */
   resetCard: () => void;
@@ -774,6 +794,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [clockState, setClockStateLocal] = useState<ClockState>(DEFAULT_CLOCK_STATE);
   const [cardState, setCardState] = useState<CardState | null>(null);
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
+  const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1314,6 +1335,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("resetCard failed", err));
   }, [slug]);
 
+  // Broadcast a new title overlay state. Updates local optimistically
+  // so the dragging peer sees no lag; server fans the change out to
+  // everyone else (excluding sender) and persists last-write-wins.
+  const setCardTitle = useCallback(
+    (title: CardTitle) => {
+      setCardTitleLocal(title);
+      send({ type: "card_title", title });
+    },
+    [send],
+  );
+
   // Update the shared clock state. Partial patch — fields you omit
   // are preserved server-side. Relay broadcasts `clock_state` to
   // every peer (including us) so the WS echo is authoritative.
@@ -1645,6 +1677,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
           if (msg.cardJob === null || (msg.cardJob && typeof msg.cardJob === "object")) {
             setCardJob((msg.cardJob ?? null) as CardJob | null);
+          }
+          if (msg.cardTitle === null || (msg.cardTitle && typeof msg.cardTitle === "object")) {
+            setCardTitleLocal((msg.cardTitle ?? null) as CardTitle | null);
           }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
@@ -1991,6 +2026,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "card_title") {
+          // Another peer dragged / resized / renamed the title overlay.
+          // Server excludes us when we're the sender, so this is always
+          // a foreign update — overwrite local without checking who
+          // sent it. Race resolution is last-write-wins.
+          if (msg.title && typeof msg.title === "object") {
+            setCardTitleLocal(msg.title as CardTitle);
+          }
+          return;
+        }
+
         if (msg.type === "wallet") {
           setWallet((msg.current ?? null) as WalletRecord | null);
           if (Array.isArray(msg.history)) {
@@ -2189,6 +2235,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setClockState,
     cardState,
     cardJob,
+    cardTitle,
+    setCardTitle,
     resetCard,
     broadcastTxRequest,
     incomingForwards,

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
-import type { PeerMeshState } from "~~/hooks/usePeerMesh";
+import type { CardTitle, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 
@@ -21,9 +21,11 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 // the room to the template.
 //
 // The title overlay (typed guest name, drag-to-position, wheel-to-
-// resize) stays per-peer — it's a tool for the host to prep a name
-// before recording, then baked into the downloaded PNG at the host's
-// machine. Other viewers see their own local title text.
+// resize) is ALSO shared — drags broadcast `card_title` at pointer-
+// move cadence so every peer sees the move live; text is committed
+// on blur. While a peer is actively editing the text via
+// contentEditable, incoming text updates are skipped so we don't
+// clobber their typing — position + size still update.
 //
 // Position + size are stored as fractions of the IMAGE content rect
 // (not the window) so values stay correct across window resizes AND
@@ -31,22 +33,8 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 type Frac = { x: number; y: number };
 
-// Module-scope store so the title overlay survives the window being
-// closed and reopened in the same page session. SharedAppWindow
-// unmounts the body on close, which would otherwise wipe the host's
-// typed-in name. We rehydrate from here on mount and write through on
-// every change. The generated card itself lives in the mesh now, so
-// there's no resultUrl here anymore — closing + reopening shows
-// whatever the room is currently displaying.
-const cardStore: {
-  titleText: string | null;
-  titlePos: Frac;
-  titleSizeFrac: number;
-} = {
-  titleText: null,
-  titlePos: { x: 0.5, y: 0.93 },
-  titleSizeFrac: 0.055,
-};
+const DEFAULT_TITLE_POS: Frac = { x: 0.5, y: 0.93 };
+const DEFAULT_TITLE_SIZE_FRAC = 0.055;
 
 type Props = {
   mesh: PeerMeshState;
@@ -54,7 +42,7 @@ type Props = {
 
 export const CardWindow = ({ mesh }: Props) => {
   const slug = useRoomSlug();
-  const { cardState, cardJob, resetCard } = mesh;
+  const { cardState, cardJob, cardTitle, setCardTitle, resetCard } = mesh;
   const resultUrl = useMemo(() => {
     if (!cardState) return null;
     return `${RELAY_HTTP}/v1/cards/${encodeURIComponent(slug)}/card.png?v=${cardState.version}`;
@@ -68,22 +56,39 @@ export const CardWindow = ({ mesh }: Props) => {
   const [hover, setHover] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  // Title overlay state. Defaults to the room slug (uppercased) on the
-  // very first open in this page session.
-  const [titleText, setTitleText] = useState(cardStore.titleText ?? slug.toUpperCase());
-  const [titlePos, setTitlePos] = useState<Frac>(cardStore.titlePos); // fraction of image rect
-  const [titleSizeFrac, setTitleSizeFrac] = useState(cardStore.titleSizeFrac); // font-size as fraction of image width
+  // Resolve the title overlay state with slug-derived defaults when the
+  // room has never edited it. Once any peer drags / types, mesh.cardTitle
+  // becomes non-null and wins for everyone.
+  const slugUpper = slug.toUpperCase();
+  const titleText = cardTitle?.text ?? slugUpper;
+  const titlePos: Frac = cardTitle ? { x: cardTitle.x, y: cardTitle.y } : DEFAULT_TITLE_POS;
+  const titleSizeFrac = cardTitle?.sizeFrac ?? DEFAULT_TITLE_SIZE_FRAC;
+  // Editing is purely local UX — entering edit mode reflects on this
+  // peer only. Other peers keep seeing the last-committed text until
+  // we blur and call setCardTitle.
   const [titleEditing, setTitleEditing] = useState(false);
+  // contentEditable can't be controlled by React without fighting the
+  // caret. We render `committedText` as its children — it tracks mesh
+  // titleText whenever we're NOT editing, and freezes at the value
+  // we started with as soon as `titleEditing` flips on. That way an
+  // incoming `card_title` broadcast from another peer mid-edit can't
+  // yank the text out from under whoever is typing.
+  const [committedText, setCommittedText] = useState(titleText);
+  useEffect(() => {
+    if (!titleEditing) setCommittedText(titleText);
+  }, [titleText, titleEditing]);
 
-  useEffect(() => {
-    cardStore.titleText = titleText;
-  }, [titleText]);
-  useEffect(() => {
-    cardStore.titlePos = titlePos;
-  }, [titlePos]);
-  useEffect(() => {
-    cardStore.titleSizeFrac = titleSizeFrac;
-  }, [titleSizeFrac]);
+  // Resolve a full CardTitle from the current mesh state + any patched
+  // fields. Used by every interaction that wants to broadcast a single
+  // dimension (drag → x/y, wheel → sizeFrac, blur → text) without
+  // dropping the others.
+  const buildTitle = (patch: Partial<CardTitle>): CardTitle => ({
+    text: titleText,
+    x: titlePos.x,
+    y: titlePos.y,
+    sizeFrac: titleSizeFrac,
+    ...patch,
+  });
 
   const rootRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -95,6 +100,9 @@ export const CardWindow = ({ mesh }: Props) => {
     startPos: Frac;
     moved: boolean;
     startedOnBody: boolean;
+    // Capture the full title at drag-start so concurrent text/size
+    // edits from other peers don't get clobbered by the move broadcast.
+    startTitle: CardTitle;
   }>(null);
 
   useEffect(() => {
@@ -242,6 +250,7 @@ export const CardWindow = ({ mesh }: Props) => {
       startPos: titlePos,
       moved: false,
       startedOnBody,
+      startTitle: buildTitle({}),
     };
   };
   const onTitlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -253,10 +262,13 @@ export const CardWindow = ({ mesh }: Props) => {
     const dy = e.clientY - d.startClientY;
     if (!d.moved && Math.hypot(dx, dy) < 4) return;
     d.moved = true;
-    setTitlePos({
-      x: Math.max(0, Math.min(1, d.startPos.x + dx / rect.width)),
-      y: Math.max(0, Math.min(1, d.startPos.y + dy / rect.height)),
-    });
+    const x = Math.max(0, Math.min(1, d.startPos.x + dx / rect.width));
+    const y = Math.max(0, Math.min(1, d.startPos.y + dy / rect.height));
+    // Broadcast through mesh — server fans the update out to other
+    // peers (excluding us) and persists last-write-wins. Local mesh
+    // state updates optimistically inside setCardTitle so this peer's
+    // overlay tracks the cursor without WS round-trip lag.
+    setCardTitle({ ...d.startTitle, x, y });
   };
   const onTitlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
@@ -287,13 +299,16 @@ export const CardWindow = ({ mesh }: Props) => {
     const fineStep = e.ctrlKey || e.metaKey;
     const step = fineStep ? 0.002 : 0.005;
     const delta = e.deltaY > 0 ? -step : step;
-    setTitleSizeFrac(prev => Math.max(0.015, Math.min(0.25, prev + delta)));
+    const next = Math.max(0.015, Math.min(0.25, titleSizeFrac + delta));
+    setCardTitle(buildTitle({ sizeFrac: next }));
   };
 
   const onTitleBlur = () => {
     setTitleEditing(false);
     const el = titleBodyRef.current;
-    if (el) setTitleText(el.innerText.replace(/\n/g, " ").trim() || " ");
+    if (!el) return;
+    const next = el.innerText.replace(/\n/g, " ").trim() || " ";
+    if (next !== titleText) setCardTitle(buildTitle({ text: next }));
   };
   const onTitleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter") {
@@ -302,8 +317,10 @@ export const CardWindow = ({ mesh }: Props) => {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      // Reset edits + blur.
-      if (titleBodyRef.current) titleBodyRef.current.innerText = titleText;
+      // Reset edits + blur. Use the snapshot we took on enter-edit so
+      // a concurrent rename broadcast doesn't surprise the user with
+      // someone else's new value as the "reverted" text.
+      if (titleBodyRef.current) titleBodyRef.current.innerText = committedText;
       titleBodyRef.current?.blur();
     }
   };
@@ -574,7 +591,7 @@ export const CardWindow = ({ mesh }: Props) => {
             textShadow: "0 2px 6px rgba(0,0,0,0.7)",
           }}
         >
-          {titleText}
+          {committedText}
         </div>
       </div>
 

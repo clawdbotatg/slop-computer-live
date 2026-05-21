@@ -626,6 +626,7 @@ app.get("/v1/state", async (req, reply) => {
     walletTxs: roomFromReq(req).wallet.listTxs(),
     cardState: readCardSnapshot(roomFromReq(req).id),
     cardJob: readCardJob(roomFromReq(req).id),
+    cardTitle: readCardTitle(roomFromReq(req).id),
   };
 });
 
@@ -1495,6 +1496,69 @@ const cardJobs = new Map<string, CardJob>();
 
 function readCardJob(slug: string): CardJob | null {
   return cardJobs.get(slug) ?? null;
+}
+
+// Shared title overlay (text + fractional position + size) sitting on
+// top of the card image. Persisted alongside card.png so a host who
+// staged a guest name doesn't lose it when the relay restarts mid-show.
+// Coordinates are fractions of the IMAGE content rect, matching the
+// client's `getImageRect` math — `sizeFrac` is font-size as a fraction
+// of image width.
+type CardTitle = { text: string; x: number; y: number; sizeFrac: number };
+const cardTitles = new Map<string, CardTitle>();
+
+function cardTitleFilePath(slug: string): string {
+  return `./.slop-data/rooms/${slug}/card-title.json`;
+}
+
+function readCardTitle(slug: string): CardTitle | null {
+  const cached = cardTitles.get(slug);
+  if (cached) return cached;
+  try {
+    const raw = _readFileSync(cardTitleFilePath(slug), "utf8");
+    const j = JSON.parse(raw);
+    if (
+      j && typeof j === "object" &&
+      typeof j.text === "string" &&
+      typeof j.x === "number" &&
+      typeof j.y === "number" &&
+      typeof j.sizeFrac === "number"
+    ) {
+      const title: CardTitle = { text: j.text, x: j.x, y: j.y, sizeFrac: j.sizeFrac };
+      cardTitles.set(slug, title);
+      return title;
+    }
+  } catch {
+    /* not yet persisted */
+  }
+  return null;
+}
+
+function writeCardTitle(slug: string, title: CardTitle): void {
+  cardTitles.set(slug, title);
+  void (async () => {
+    try {
+      await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+      await _writeFile(cardTitleFilePath(slug), JSON.stringify(title));
+    } catch (err) {
+      app.log.warn({ err, slug }, "card title persist failed");
+    }
+  })();
+}
+
+function sanitizeCardTitle(input: unknown): CardTitle | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = input as Record<string, unknown>;
+  if (typeof raw.text !== "string") return null;
+  if (typeof raw.x !== "number" || !Number.isFinite(raw.x)) return null;
+  if (typeof raw.y !== "number" || !Number.isFinite(raw.y)) return null;
+  if (typeof raw.sizeFrac !== "number" || !Number.isFinite(raw.sizeFrac)) return null;
+  return {
+    text: raw.text.slice(0, 200),
+    x: Math.max(0, Math.min(1, raw.x)),
+    y: Math.max(0, Math.min(1, raw.y)),
+    sizeFrac: Math.max(0.015, Math.min(0.25, raw.sizeFrac)),
+  };
 }
 
 app.post(
@@ -3439,6 +3503,7 @@ app.register(async function signalRoutes(fastify) {
       customNames: peerNames.all(),
       cardState: readCardSnapshot(room.id),
       cardJob: readCardJob(room.id),
+      cardTitle: readCardTitle(room.id),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -3491,6 +3556,19 @@ app.register(async function signalRoutes(fastify) {
           // clicker's own screen at the same time it appears for everyone
           // else, otherwise click+ripple feel desynced.
           room.broadcast({ type: "click", from: peerId, x: msg.x, y: msg.y });
+          return;
+        }
+        case "card_title": {
+          // Shared title overlay sitting on top of the card image. Any
+          // peer can drag (x/y), wheel-resize (sizeFrac), or rename
+          // (text on blur) — server persists last-write-wins and fans
+          // the change out to everyone EXCEPT the sender, who has
+          // already updated optimistically. Drags fire at pointer-move
+          // cadence (~60Hz) so the same pattern as `cursor` applies.
+          const sanitized = sanitizeCardTitle(msg.title);
+          if (!sanitized) return;
+          writeCardTitle(room.id, sanitized);
+          room.broadcast({ type: "card_title", title: sanitized }, peerId);
           return;
         }
         case "chat_send": {
