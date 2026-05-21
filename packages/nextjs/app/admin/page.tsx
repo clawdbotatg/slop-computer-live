@@ -105,6 +105,165 @@ const generatePassword = () => {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
+type BroadcastStatus = {
+  active: string;
+  enabled: string;
+  activeForSeconds: number | null;
+  recentLog: string[];
+};
+
+const formatActiveFor = (seconds: number | null): string => {
+  if (seconds === null || seconds < 0) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ${seconds % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+};
+
+// Server-side broadcast control. Backs the slop-broadcast.service unit
+// running next to mediamtx on the EC2 box. Polls /admin/broadcast/status
+// every 4s to reflect systemctl state without the host needing to ssh.
+const BroadcastPanel = ({
+  isHost,
+  relayBase,
+  setStatus,
+}: {
+  isHost: boolean;
+  relayBase: string;
+  setStatus: (msg: string) => void;
+}) => {
+  const [data, setData] = useState<BroadcastStatus | null>(null);
+  const [busy, setBusy] = useState<"start" | "stop" | "restart" | null>(null);
+  const [error, setError] = useState<string>("");
+
+  useEffect(() => {
+    if (!isHost) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${relayBase}/admin/broadcast/status`, { credentials: "include" });
+        if (!res.ok) return;
+        const next = (await res.json()) as BroadcastStatus;
+        if (!cancelled) setData(next);
+      } catch {
+        /* transient — next poll will retry */
+      }
+    };
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [isHost, relayBase]);
+
+  const act = async (action: "start" | "stop" | "restart") => {
+    setBusy(action);
+    setError("");
+    try {
+      const res = await fetch(`${relayBase}/admin/broadcast/${action}`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        const msg = (body && (body.error as string)) ?? res.statusText;
+        setError(msg);
+        setStatus(`broadcast ${action} failed: ${msg}`);
+      } else {
+        setStatus(`broadcast ${action} → ok`);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const activeColor =
+    data?.active === "active"
+      ? "#46d369"
+      : data?.active === "activating"
+        ? "#e6b800"
+        : data?.active === "failed"
+          ? "#ff3ec9"
+          : "var(--slop-text-muted)";
+
+  return (
+    <Bevel style={{ padding: 16, maxWidth: 960 }}>
+      <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+        Server-side broadcast
+      </h2>
+      <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px" }}>
+        Headless broadcaster running next to mediamtx — Chromium joins the live room with godMode and ffmpeg pushes the
+        window + audio to RTMP. No OBS needed.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <Button variant="primary" onClick={() => act("start")} disabled={!isHost || busy !== null}>
+          {busy === "start" ? "Starting…" : "Start"}
+        </Button>
+        <Button onClick={() => act("restart")} disabled={!isHost || busy !== null}>
+          {busy === "restart" ? "Restarting…" : "Restart"}
+        </Button>
+        <Button onClick={() => act("stop")} disabled={!isHost || busy !== null}>
+          {busy === "stop" ? "Stopping…" : "Stop"}
+        </Button>
+      </div>
+
+      {data ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            columnGap: 12,
+            rowGap: 6,
+            fontSize: 13,
+            fontFamily: "var(--slop-font-body)",
+            padding: 12,
+            background: "var(--slop-bevel-dark)",
+          }}
+        >
+          <span style={{ color: "var(--slop-text-muted)" }}>state:</span>
+          <code style={{ color: activeColor }}>{data.active}</code>
+          <span style={{ color: "var(--slop-text-muted)" }}>enabled:</span>
+          <code>{data.enabled}</code>
+          <span style={{ color: "var(--slop-text-muted)" }}>uptime:</span>
+          <code>{formatActiveFor(data.activeForSeconds)}</code>
+        </div>
+      ) : (
+        <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: 0 }}>fetching status…</p>
+      )}
+
+      {error ? <p style={{ color: "#ff3ec9", fontSize: 12, marginTop: 8 }}>{error}</p> : null}
+
+      {data && data.recentLog.length > 0 ? (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: "pointer", color: "var(--slop-text-muted)", fontSize: 12 }}>
+            recent log ({data.recentLog.length})
+          </summary>
+          <pre
+            style={{
+              maxHeight: 240,
+              overflow: "auto",
+              fontSize: 11,
+              lineHeight: 1.4,
+              background: "var(--slop-bevel-dark)",
+              padding: 8,
+              margin: "6px 0 0",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {data.recentLog.join("\n")}
+          </pre>
+        </details>
+      ) : null}
+    </Bevel>
+  );
+};
+
 const AdminPage: NextPage = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -972,6 +1131,8 @@ const AdminPage: NextPage = () => {
           </div>
         ) : null}
       </Bevel>
+
+      <BroadcastPanel isHost={isHost} relayBase={RELAY_BASE} setStatus={setStatus} />
 
       <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>

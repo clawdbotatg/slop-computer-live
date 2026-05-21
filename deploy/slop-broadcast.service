@@ -1,0 +1,25 @@
+[Unit]
+Description=slop-computer server-side broadcaster (Xvfb + Chromium + ffmpeg -> RTMP)
+After=network-online.target mediamtx.service
+Wants=network-online.target
+Requires=mediamtx.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+EnvironmentFile=/home/ubuntu/slop-computer-live/deploy/slop-broadcast.env
+ExecStart=/home/ubuntu/slop-computer-live/deploy/slop-broadcast.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Give ffmpeg + Chromium enough fds for sockets + segments
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

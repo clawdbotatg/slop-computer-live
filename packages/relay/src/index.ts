@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
+import { broadcastAction, getBroadcastStatus } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
   closeAllPeers,
@@ -2797,6 +2798,41 @@ app.post("/admin/stop", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return { ok: true };
+});
+
+// Server-side broadcaster control. The slop-broadcast.service unit runs
+// next to mediamtx on this box, capturing a Chromium --app window of
+// the live room and pushing it to mediamtx over loopback RTMP. These
+// endpoints control that unit so a host can start/stop the broadcast
+// from the admin panel without ssh.
+app.get("/admin/broadcast/status", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return getBroadcastStatus();
+});
+
+app.post("/admin/broadcast/start", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const result = await broadcastAction("start");
+  if (!result.ok) return reply.code(500).send(result);
+  return result;
+});
+
+app.post("/admin/broadcast/stop", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const result = await broadcastAction("stop");
+  if (!result.ok) return reply.code(500).send(result);
+  return result;
+});
+
+app.post("/admin/broadcast/restart", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const result = await broadcastAction("restart");
+  if (!result.ok) return reply.code(500).send(result);
+  return result;
 });
 
 // Peek at the latest recording on disk without uploading. Used by the host

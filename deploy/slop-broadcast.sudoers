@@ -1,0 +1,10 @@
+# Allow the `ubuntu` user (which runs slop-relay) to start/stop/restart
+# the slop-broadcast systemd unit without a password. Scoped to this
+# specific unit + these specific verbs — broader sudo privileges are
+# NOT granted.
+#
+# Install:
+#   sudo cp deploy/slop-broadcast.sudoers /etc/sudoers.d/slop-broadcast
+#   sudo chmod 0440 /etc/sudoers.d/slop-broadcast
+#   sudo visudo -c -f /etc/sudoers.d/slop-broadcast
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start slop-broadcast.service, /usr/bin/systemctl stop slop-broadcast.service, /usr/bin/systemctl restart slop-broadcast.service

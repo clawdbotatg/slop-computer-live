@@ -30,6 +30,11 @@ scripts/
 # Relay's local password file — generated at runtime, dev-only path.
 .slop-data/
 
+# slop-broadcast env contains the MediaMTX publish password — lives on
+# the EC2 box only, never committed. The .env.example next to it shows
+# the schema.
+deploy/slop-broadcast.env
+
 # Music + user-uploaded files live on the box (`/var/lib/slop-relay/{music,files}`),
 # served by the relay. Never commit binary blobs into the repo.
 packages/nextjs/public/music/
