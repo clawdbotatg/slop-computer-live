@@ -17,6 +17,10 @@ export type TodoItem = {
   address: string | null;
   /** Free-form display name. */
   handle: string | null;
+  /** Stable anon id of the creator (no wallet/passkey). Lets the UI's
+   *  SlopAddress component pick up rename broadcasts + keep flag
+   *  colors stable for the creator across renames. */
+  anonId?: string | null;
   text: string;
   done: boolean;
 };
@@ -91,6 +95,7 @@ export class TodoList {
   add(input: {
     address: string | null;
     handle: string | null;
+    anonId?: string | null;
     text: string;
   }): TodoItem | null {
     this.load();
@@ -101,6 +106,7 @@ export class TodoList {
       ts: Date.now(),
       address: input.address ? input.address.toLowerCase() : null,
       handle: input.handle ?? null,
+      anonId: input.anonId ?? null,
       text,
       done: false,
     };

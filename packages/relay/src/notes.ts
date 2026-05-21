@@ -16,6 +16,9 @@ export type Note = {
   updatedTs: number;
   address: string | null;
   handle: string | null;
+  /** Stable anon id of the author, for anon users. Lets SlopAddress
+   *  pick up rename broadcasts + keep flag colors stable. */
+  anonId?: string | null;
   text: string;
 };
 
@@ -83,6 +86,7 @@ export class NoteList {
   create(input: {
     address: string | null;
     handle: string | null;
+    anonId?: string | null;
     text: string;
   }): Note | null {
     this.load();
@@ -94,6 +98,7 @@ export class NoteList {
       updatedTs: now,
       address: input.address ? input.address.toLowerCase() : null,
       handle: input.handle ?? null,
+      anonId: input.anonId ?? null,
       text,
     };
     this.items.push(note);

@@ -25,6 +25,9 @@ export type GlossaryTerm = {
   updatedTs: number;
   address: string | null;
   handle: string | null;
+  /** Stable anon id of the creator (no wallet/passkey). Lets SlopAddress
+   *  pick up rename broadcasts + keep flag colors stable across renames. */
+  anonId?: string | null;
 };
 
 let items: GlossaryTerm[] = [];
@@ -114,6 +117,7 @@ export function create(input: {
   term: string;
   address: string | null;
   handle: string | null;
+  anonId?: string | null;
 }): GlossaryTerm | null {
   load();
   const term = input.term.trim().slice(0, MAX_TERM_LEN);
@@ -134,6 +138,7 @@ export function create(input: {
     updatedTs: now,
     address: input.address ? input.address.toLowerCase() : null,
     handle: input.handle ?? null,
+    anonId: input.anonId ?? null,
   };
   items.push(entry);
   if (items.length > MAX_ITEMS) items = items.slice(-MAX_ITEMS);

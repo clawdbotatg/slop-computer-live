@@ -222,6 +222,7 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
                       <SlopAddress
                         address={item.address}
                         handle={item.handle}
+                        anonId={item.anonId}
                         fallback={item.id}
                         customNames={mesh.customNames}
                       />
