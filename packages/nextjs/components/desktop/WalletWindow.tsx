@@ -36,9 +36,9 @@ const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 // in the deploy grid and a new option in the activity picker — provided
 // it's also in `scaffold.config.ts` `targetNetworks`.
 const SUPPORTED_CHAINS = [
-  { id: base.id, label: "Base", explorer: "https://basescan.org", cheap: true },
-  { id: gnosis.id, label: "Gnosis", explorer: "https://gnosisscan.io", cheap: true },
-  { id: mainnet.id, label: "Ethereum mainnet", explorer: "https://etherscan.io", cheap: false },
+  { id: base.id, label: "Base", explorer: "https://basescan.org" },
+  { id: gnosis.id, label: "Gnosis", explorer: "https://gnosisscan.io" },
+  { id: mainnet.id, label: "Ethereum", explorer: "https://etherscan.io" },
 ] as const;
 
 const chainMeta = (chainId: number) =>
@@ -46,7 +46,6 @@ const chainMeta = (chainId: number) =>
     id: chainId,
     label: `chain ${chainId}`,
     explorer: "https://etherscan.io",
-    cheap: false,
   };
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
@@ -294,12 +293,35 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                       checked={!!selected[s.address]}
                       onChange={e => setSelected(prev => ({ ...prev, [s.address]: e.target.checked }))}
                     />
-                    <span style={{ flex: 1, fontSize: 12 }}>
-                      <Address address={s.address as AddressType} size="xs" onlyEnsOrAddress />
-                      {s.isMe ? <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>(you)</span> : null}
-                      {s.source === "custom" ? (
-                        <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>· added</span>
-                      ) : null}
+                    <span
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 1,
+                        minWidth: 0,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: "var(--slop-font-display)",
+                          letterSpacing: "0.04em",
+                          color: "var(--slop-text)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {s.label}
+                        {s.isMe ? <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>(you)</span> : null}
+                        {s.source === "custom" ? (
+                          <span style={{ marginLeft: 6, color: "var(--slop-text-muted)" }}>· added</span>
+                        ) : null}
+                      </span>
+                      <span style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+                        <Address address={s.address as AddressType} size="xs" onlyEnsOrAddress />
+                      </span>
                     </span>
                     {s.source === "custom" ? (
                       <button
@@ -458,7 +480,6 @@ const ChainGrid = ({ mesh, existing, predicted, deployer, salt, signers, thresho
           chainId={c.id}
           chainLabel={c.label}
           explorer={c.explorer}
-          cheap={c.cheap}
           mesh={mesh}
           existing={existing}
           predicted={predicted}
@@ -477,7 +498,6 @@ type ChainRowProps = {
   chainId: number;
   chainLabel: string;
   explorer: string;
-  cheap: boolean;
   mesh: PeerMeshState;
   existing: WalletRecord | null;
   predicted: AddressType | null;
@@ -492,7 +512,6 @@ const ChainRow = ({
   chainId,
   chainLabel,
   explorer,
-  cheap,
   mesh,
   existing,
   predicted,
@@ -677,13 +696,7 @@ const ChainRow = ({
     }
     return (
       <Button variant="primary" onClick={onDeploy} disabled={busy || !deployer || signers.length === 0}>
-        {switching
-          ? "Switching…"
-          : writePending
-            ? "Confirm in wallet…"
-            : receiptLoading
-              ? "Waiting…"
-              : `Deploy on ${chainLabel}`}
+        {switching ? "Switching…" : writePending ? "Confirm…" : receiptLoading ? "Waiting…" : "Deploy"}
       </Button>
     );
   })();
@@ -712,10 +725,7 @@ const ChainRow = ({
           >
             {chainLabel}
           </div>
-          <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>
-            chain {chainId}
-            {!cheap ? <span style={{ marginLeft: 6, color: "#ffce6a" }}>· ~$1 gas</span> : null}
-          </div>
+          <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>chain {chainId}</div>
         </div>
         {statusNode}
       </div>
