@@ -229,35 +229,7 @@ export const Window = ({
         overflow: "hidden",
       }}
       onMouseDown={onFocus}
-      onDragStart={e => {
-        const me = e as MouseEvent;
-        // TEMP diagnostic — Windows users report windows only move ~25% of
-        // the cursor distance. Compare start vs stop in the console to see
-        // which number is wrong. Remove once root cause is known.
-        console.log("[drag-diag] start", {
-          title,
-          clientX: me.clientX,
-          clientY: me.clientY,
-          propX: x,
-          propY: y,
-          dpr: window.devicePixelRatio,
-          innerW: window.innerWidth,
-          outerW: window.outerWidth,
-          innerH: window.innerHeight,
-        });
-      }}
-      onDragStop={(e, d) => {
-        const me = e as MouseEvent;
-        console.log("[drag-diag] stop", {
-          title,
-          clientX: me.clientX,
-          clientY: me.clientY,
-          dX: d.x,
-          dY: d.y,
-          propX: x,
-          propY: y,
-          innerW: window.innerWidth,
-        });
+      onDragStop={(_e, d) => {
         // react-rnd fires onDragStop on every mouseup, even when the user
         // didn't actually move the window (e.g. a click on a titlebar dot).
         // Only treat this as a manual move if something changed — otherwise
