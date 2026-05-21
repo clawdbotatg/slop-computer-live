@@ -48,8 +48,46 @@ async function fetchIceConfig(): Promise<RTCConfiguration> {
 }
 
 const PING_INTERVAL_MS = 25_000;
-const CURSOR_THROTTLE_MS = 33; // ~30hz
+const CURSOR_THROTTLE_MS = 50; // 20Hz — was 30Hz; imperceptible at slop tile sizes
+const CURSOR_MIN_DELTA_PX = 4; // skip the broadcast for sub-jitter movement
 const RECONNECT_DELAY_MS = 2000;
+
+// Per-kind outgoing-encoder caps applied via RTCRtpSender.setParameters
+// after every addTrack. Full mesh means one encoder per peer-connection,
+// so capping bitrate/framerate/resolution here is the single biggest
+// CPU lever on the publisher side.
+const CAMERA_MAX_BITRATE = 600_000; // 600 kbps — tile-sized video
+const CAMERA_MAX_FRAMERATE = 24;
+const SCREEN_MAX_BITRATE = 1_500_000; // higher for text legibility
+const SCREEN_MAX_FRAMERATE = 15;
+
+function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotKind): void {
+  // Audio is cheap to encode and voice quality matters — leave it alone.
+  if (kind === "audio") return;
+  const streamTracks = new Set(stream.getTracks());
+  for (const sender of pc.getSenders()) {
+    if (!sender.track || sender.track.kind !== "video") continue;
+    if (!streamTracks.has(sender.track)) continue;
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}];
+    }
+    if (kind === "camera") {
+      params.encodings[0] = {
+        ...params.encodings[0],
+        maxBitrate: CAMERA_MAX_BITRATE,
+        maxFramerate: CAMERA_MAX_FRAMERATE,
+      };
+    } else if (kind === "screen") {
+      params.encodings[0] = {
+        ...params.encodings[0],
+        maxBitrate: SCREEN_MAX_BITRATE,
+        maxFramerate: SCREEN_MAX_FRAMERATE,
+      };
+    }
+    sender.setParameters(params).catch(err => console.warn("[mesh] setParameters failed", err));
+  }
+}
 
 export type Peer = {
   id: string;
@@ -749,8 +787,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  // Local streams we are publishing, mapped streamId -> MediaStream.
-  const localStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  // Local streams we are publishing, mapped streamId -> { stream, kind }.
+  // Kind travels with the stream so `createPeerConnection` (which attaches
+  // existing local media to newly-formed PCs) can apply the right sender
+  // caps without having to sniff track labels.
+  const localStreamsRef = useRef<Map<string, { stream: MediaStream; kind: SlotKind }>>(new Map());
   const selfRef = useRef<SelfHint | null>(self);
   selfRef.current = self;
   // ICE config (STUN+TURN) — refreshed once per session/credential expiry.
@@ -803,7 +844,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       const pc = new RTCPeerConnection(iceConfigRef.current);
 
       // Attach existing local streams so newly-formed pcs get our outgoing media.
-      for (const stream of localStreamsRef.current.values()) {
+      for (const { stream, kind } of localStreamsRef.current.values()) {
         for (const track of stream.getTracks()) {
           try {
             pc.addTrack(track, stream);
@@ -811,6 +852,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             /* track already added */
           }
         }
+        applySenderCaps(pc, stream, kind);
       }
 
       pc.ontrack = event => {
@@ -901,7 +943,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const publish = useCallback(
     (stream: MediaStream, kind: SlotKind, label: string) => {
       if (localStreamsRef.current.has(stream.id)) return;
-      localStreamsRef.current.set(stream.id, stream);
+      localStreamsRef.current.set(stream.id, { stream, kind });
       // Add tracks to all existing PCs; onnegotiationneeded handles the rest.
       for (const pc of peerConnectionsRef.current.values()) {
         for (const track of stream.getTracks()) {
@@ -911,6 +953,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             /* duplicate */
           }
         }
+        applySenderCaps(pc, stream, kind);
       }
       send({ type: "publish", streamId: stream.id, kind, label });
     },
@@ -919,8 +962,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
   const replaceTrack = useCallback(
     async (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack): Promise<MediaStream | null> => {
-      const stream = localStreamsRef.current.get(streamId);
-      if (!stream) return null;
+      const entry = localStreamsRef.current.get(streamId);
+      if (!entry) return null;
+      const { stream, kind: pubKind } = entry;
       // Swap the sender on every PC. Sender lookup is by track.kind on
       // the *current* track — works because we only have one of each
       // kind per pub (audio pubs are audio-only, video pubs are video-only).
@@ -944,7 +988,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       for (const t of oldTracks) t.stop();
       // Map key is the ORIGINAL publication streamId, not fresh.id — peers
       // and the unpublish path both look up by the published id.
-      localStreamsRef.current.set(streamId, fresh);
+      localStreamsRef.current.set(streamId, { stream: fresh, kind: pubKind });
+      // Re-apply sender caps — replaceTrack swaps the underlying track on
+      // the existing sender, and although setParameters values persist
+      // through that, the safest path is to re-pin them so a freshly-
+      // attached hardware encoder picks up the right bitrate/framerate.
+      for (const pc of peerConnectionsRef.current.values()) {
+        applySenderCaps(pc, fresh, pubKind);
+      }
       return fresh;
     },
     [],
@@ -957,8 +1008,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       // fall through to just the WS message — the relay will broadcast
       // `unpublished`, the publisher's reconcile effect will stop their
       // hardware, every peer (including us) drops the pub from state.
-      const stream = localStreamsRef.current.get(streamId);
-      if (stream) {
+      const entry = localStreamsRef.current.get(streamId);
+      if (entry) {
+        const { stream } = entry;
         localStreamsRef.current.delete(streamId);
         const tracks = new Set(stream.getTracks());
         for (const pc of peerConnectionsRef.current.values()) {
@@ -1447,12 +1499,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
         }, PING_INTERVAL_MS);
         // Re-announce any locally-published streams (e.g. after reconnect).
-        for (const [streamId, stream] of localStreamsRef.current) {
-          const kind: SlotKind = stream
-            .getVideoTracks()
-            .some(t => (t as MediaStreamTrack).label.toLowerCase().includes("screen"))
-            ? "screen"
-            : "camera";
+        for (const [streamId, { kind }] of localStreamsRef.current) {
           const hint = selfRef.current;
           ws.send(
             JSON.stringify({
@@ -2009,10 +2056,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     if (!connected) return;
     if (isSpectator) return;
     let lastSent = 0;
+    let lastX = -9999;
+    let lastY = -9999;
     const handler = (e: MouseEvent) => {
       const now = Date.now();
       if (now - lastSent < CURSOR_THROTTLE_MS) return;
+      if (Math.abs(e.clientX - lastX) < CURSOR_MIN_DELTA_PX && Math.abs(e.clientY - lastY) < CURSOR_MIN_DELTA_PX) {
+        return;
+      }
       lastSent = now;
+      lastX = e.clientX;
+      lastY = e.clientY;
       send({ type: "cursor", x: e.clientX, y: e.clientY });
     };
     window.addEventListener("mousemove", handler);

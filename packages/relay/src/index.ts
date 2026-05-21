@@ -2380,7 +2380,10 @@ app.delete<{ Params: { id: string } }>("/v1/files/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const ownerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || "";
-  const result = roomFromReq(req).files.remove(req.params.id, ownerKey, a.isHost);
+  // godMode (spectator) sessions act as ops — they can delete anyone's
+  // file, same as the room host. Treat them as elevated for this call.
+  const elevated = a.isHost || a.session.spectator === true;
+  const result = roomFromReq(req).files.remove(req.params.id, ownerKey, elevated);
   if (result === "not-found") return reply.code(404).send({ error: "not-found" });
   if (result === "forbidden") return reply.code(403).send({ error: "forbidden" });
   return { ok: true };
@@ -2682,6 +2685,34 @@ app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
     maxAge: config.sessionTTLSeconds,
   });
   return { ok: true, role: "guest", address: result.address, isAdmin: false };
+});
+
+// --- Anonymous auth ---------------------------------------------------------
+//
+// No wallet, no passkey, no password — just mint a guest session with a
+// random `AnonXXXX` handle. The handle seeds `bandsFromIdentity` on the
+// client, so each anon ends up with their own deterministic 3-color flag.
+// Same invite gate as SIWE/passkey: the global slop_invite cookie OR any
+// per-room password cookie has to be present, otherwise this is a free
+// bypass of the gates we already ship.
+
+app.post("/auth/anon", async (req, reply) => {
+  if (
+    !isInvited(req.cookies[INVITE_COOKIE]) &&
+    !hasAnyValidRoomCookie(req.cookies, config.sessionSecret)
+  ) {
+    return reply.code(403).send({ error: "invite-required" });
+  }
+  const handle = `Anon${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}`;
+  const session = createSession({ role: "guest", address: null, handle });
+  reply.setCookie(SESSION_COOKIE, session.token, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: config.sessionTTLSeconds,
+  });
+  return { ok: true, role: "guest", handle };
 });
 
 // --- Password auth (guest) --------------------------------------------------

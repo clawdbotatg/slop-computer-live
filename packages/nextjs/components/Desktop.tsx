@@ -1767,7 +1767,13 @@ function DesktopInner({ slug }: { slug: string }) {
                 z: 1,
               };
               const myKey = session.authenticated ? (session.address ?? session.handle ?? "").toLowerCase() : "";
-              const canDelete = !!myKey && (f.ownerKey === myKey || session.role === "host");
+              // Uploader can delete their own files; host can delete any;
+              // godMode (spectator) ops can delete any. Mirrors the relay
+              // check at /v1/files/:id DELETE — if we got this wrong the
+              // relay 403s and DesktopFile snaps back, but it's worth
+              // gating client-side so a doomed request never fires.
+              const canDelete =
+                !!myKey && (f.ownerKey === myKey || session.role === "host" || session.spectator === true);
               return (
                 <DesktopFile
                   key={slotId}
@@ -1779,12 +1785,19 @@ function DesktopInner({ slug }: { slug: string }) {
                   onDelete={() => mesh.deleteFile(f.id)}
                   onPreview={() => focusApp(`preview-${f.id}`)}
                   isOverTrash={isOverTrash}
-                  onDragEnd={({ x, y }) => {
-                    // Dropped on the trash → delete the file. The
+                  onDragEnd={({ x, y, startX, startY }) => {
+                    // Dropped on the trash → delete IF allowed. The
                     // file_removed broadcast clears the icon for every
-                    // peer; the orphan slot at the trash position is
-                    // harmless (no icon points at it anymore).
-                    if (isOverTrash(x, y)) mesh.deleteFile(f.id);
+                    // peer; the orphan slot is harmless. If the dragger
+                    // isn't allowed (not owner, host, or godMode), snap
+                    // the icon back to where the drag started rather
+                    // than firing a DELETE the relay will just 403.
+                    if (!isOverTrash(x, y)) return;
+                    if (canDelete) {
+                      mesh.deleteFile(f.id);
+                    } else {
+                      mesh.updateSlot({ id: slotId, x: startX, y: startY, width: 88, height: 110 });
+                    }
                   }}
                 />
               );

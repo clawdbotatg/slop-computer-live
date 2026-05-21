@@ -135,8 +135,12 @@ export const AudioVisualizer = ({
     const lineColor = bands.band1; // waveform
     const dotColor = bands.band2; // inner circle fill
     // band3 is used as a hard ring border on the circle element itself,
-    // not in the RAF — see the JSX below.
-    let raf = 0;
+    // not in the loop — see the JSX below.
+    // 24Hz instead of rAF (60Hz). On a 60px tile the eye can't see a
+    // difference, and at 4-6 audio tiles per call this halves the
+    // per-tile canvas-paint cost.
+    const FRAME_INTERVAL_MS = 1000 / 24;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const loop = () => {
       analyser.getByteTimeDomainData(buf);
@@ -192,12 +196,12 @@ export const AudioVisualizer = ({
         }
       }
 
-      raf = requestAnimationFrame(loop);
+      timer = setTimeout(loop, FRAME_INTERVAL_MS);
     };
     loop();
 
     return () => {
-      cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
       try {
         source.disconnect();
       } catch {

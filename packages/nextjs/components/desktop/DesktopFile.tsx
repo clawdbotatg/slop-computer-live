@@ -29,10 +29,12 @@ export type DesktopFileProps = {
   onDelete: () => void;
   /** Double-click handler — opens the preview window. */
   onPreview: () => void;
-  /** Fires once on pointerup with the final position, if the user
-   *  actually moved the icon. Lets the parent intercept drops onto
-   *  the trash can. */
-  onDragEnd?: (pos: { x: number; y: number }) => void;
+  /** Fires once on pointerup with the final position AND the position
+   *  the drag started from, if the user actually moved the icon. Lets
+   *  the parent intercept drops onto the trash can — and, when the
+   *  dragger lacks delete permission, snap the icon back to startX/Y
+   *  instead of leaving it parked on top of the trash. */
+  onDragEnd?: (pos: { x: number; y: number; startX: number; startY: number }) => void;
   /** Predicate the icon polls during drag to know whether its current
    *  position overlaps the trash. When true, the icon visibly shrinks
    *  + fades to telegraph the impending delete. The icon's z is also
@@ -129,13 +131,21 @@ export const DesktopFile = ({
       /* already released */
     }
     // If the user actually moved (movedRef), fire onDragEnd with the
-    // final position. Parent uses this to detect "dropped on trash"
-    // — onMove fires continuously during drag so it can't be the
-    // trash-check trigger by itself.
+    // final position AND the start position. Parent uses this to
+    // detect "dropped on trash" — onMove fires continuously during
+    // drag so it can't be the trash-check trigger by itself. startX/Y
+    // let the parent revert the slot to the pre-drag position when a
+    // non-allowed dragger drops on the trash (slot would otherwise be
+    // parked on top of the can after onMove's running updates).
     if (movedRef.current && onDragEnd) {
       const dx = e.clientX - dragRef.current.startX;
       const dy = e.clientY - dragRef.current.startY;
-      onDragEnd({ x: dragRef.current.x + dx, y: dragRef.current.y + dy });
+      onDragEnd({
+        x: dragRef.current.x + dx,
+        y: dragRef.current.y + dy,
+        startX: dragRef.current.x,
+        startY: dragRef.current.y,
+      });
     }
     dragRef.current = null;
     setIsDragging(false);
@@ -161,19 +171,26 @@ export const DesktopFile = ({
         width: ICON_SIZE,
         // While dragging, slot a high z so the icon paints above
         // every other desktop element (including the trash at z=50).
-        // When the cursor enters the trash zone the icon also shrinks
-        // + fades to telegraph that releasing here will delete it.
+        // When the cursor enters the trash zone, the visual cue
+        // depends on whether the dragger is allowed to delete:
+        //   - allowed (owner / host / godMode): shrink + fade to
+        //     telegraph the impending delete on release.
+        //   - not allowed: keep full size but apply a red glow +
+        //     no-drop cursor so the user can read "this isn't going
+        //     to delete" before they release. Parent snaps the icon
+        //     back on drop in that case.
         zIndex: isDragging ? 1000 : zIndex,
         userSelect: "none",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         gap: 4,
-        cursor: "grab",
-        transform: overTrash ? "scale(0.6)" : "scale(1)",
+        cursor: overTrash && !canDelete ? "not-allowed" : "grab",
+        transform: overTrash && canDelete ? "scale(0.6)" : "scale(1)",
         transformOrigin: "center",
-        opacity: overTrash ? 0.5 : 1,
-        transition: "transform 0.12s ease-out, opacity 0.12s ease-out",
+        opacity: overTrash && canDelete ? 0.5 : 1,
+        filter: overTrash && !canDelete ? "drop-shadow(0 0 10px #ff3b6b) drop-shadow(0 0 4px #ff3b6b)" : undefined,
+        transition: "transform 0.12s ease-out, opacity 0.12s ease-out, filter 0.12s ease-out",
       }}
     >
       <div

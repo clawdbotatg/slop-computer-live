@@ -44,7 +44,10 @@ export const resolutionConstraints = (res: string | null): MediaTrackConstraints
     case "480p":
       return { width: { ideal: 640 }, height: { ideal: 480 } };
     default:
-      return {};
+      // No explicit preference → capture at 480p so first-time users
+      // don't burn capture CPU on a 1080p source the encoder is going
+      // to scale down anyway. Anyone can pick higher from VideoShareDialog.
+      return { width: { ideal: 854 }, height: { ideal: 480 } };
   }
 };
 

@@ -60,7 +60,7 @@ export function JoinCard() {
   const { openConnectModal } = useConnectModal();
   const { signMessageAsync } = useSignMessage();
   const [status, setStatus] = useState("");
-  const [busy, setBusy] = useState<"siwe" | "passkey" | null>(null);
+  const [busy, setBusy] = useState<"siwe" | "passkey" | "anon" | null>(null);
 
   // Passkey modal state. `chooserOpen` shows the existing-vs-create
   // picker; `progressOpen` shows the LoadingBar walkthrough during the
@@ -216,6 +216,28 @@ export function JoinCard() {
     setChooserOpen(true);
   };
 
+  const onAnonClick = async () => {
+    if (busy) return;
+    setBusy("anon");
+    setStatus("");
+    try {
+      const res = await fetch(`${RELAY_BASE}/auth/anon`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(`Anon sign-in failed: ${data.error ?? res.statusText}`);
+        return;
+      }
+      await refresh();
+    } catch (err) {
+      setStatus(`Anon sign-in error: ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onChooserPickExisting = () => {
     // Belt-and-suspenders: when the user explicitly picks "Use Existing
     // Passkey" from the chooser, drop any stored credential id first so
@@ -258,6 +280,10 @@ export function JoinCard() {
 
           <Button onClick={onPasskeyClick} disabled={busy !== null} style={{ width: "100%" }}>
             {busy === "passkey" ? "Waiting for passkey…" : "Sign in with Passkey"}
+          </Button>
+
+          <Button onClick={onAnonClick} disabled={busy !== null} style={{ width: "100%" }}>
+            {busy === "anon" ? "Signing in…" : "Sign in as Anon"}
           </Button>
         </div>
 
