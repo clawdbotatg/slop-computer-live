@@ -8,11 +8,11 @@
 // once, then GETs whichever sub-skill it actually needs before
 // acting on that surface.
 //
-// Each generator is a pure function of (token, isHost). Both the
-// index and sub-skills embed `Authorization: Bearer <token>` examples
-// so an agent can copy-paste a curl line and have it work.
+// Each generator is a pure function of (token, isHost, slug?). When
+// slug is provided every example is pre-filled with it; otherwise
+// the doc shows `<slug>` placeholders and tells the agent to substitute.
 
-const BASE = "https://relay.slop.computer";
+const BASE = "https://live.slop.computer";
 
 /** Banner shared across every doc — auth reminder + how to fetch
  *  related sub-skills. Cheap to include everywhere so an agent who
@@ -30,16 +30,33 @@ Authorization: Bearer ${token}
 Token is yours, scoped \`${scope}\`, valid 7 days.${hostOnlyNote}`;
 }
 
+/** Slug placeholder used in every example. If a concrete slug was
+ *  threaded into this skill (via `?slug=` on /v1/skill), every example
+ *  is pre-filled with it; otherwise the placeholder `<slug>` stays
+ *  literal so the agent (or human) knows to substitute. */
+function slugStr(slug: string | null): string {
+  return slug ?? "<slug>";
+}
+
 /** Per-room routing note pasted near the top of every sub-skill.
- *  The relay is multi-room; every state-bearing endpoint reads its
- *  room from `?slug=<slug>` on the query string. Without it, you hit
- *  the default ("debug") room. Sub-skills repeat this so an agent
- *  reading only one doc doesn't accidentally mutate the wrong room. */
-const SLUG_NOTE = `> **Per-room routing.** Every endpoint below takes \`?slug=<slug>\`
+ *  Wording changes based on whether we have a concrete slug bound to
+ *  this skill rendering. */
+function slugNote(slug: string | null): string {
+  if (slug) {
+    return `> **Routing.** This skill was generated bound to slug \`${slug}\` —
+> every \`?slug=${slug}\` example below targets that room. To work
+> against a different room, either change \`slug=${slug}\` in the URLs
+> or fetch the skill again with \`?slug=<other>\` to re-render with the
+> new slug pre-filled.`;
+  }
+  return `> **Per-room routing.** Every endpoint below takes \`?slug=${slugStr(slug)}\`
 > on the query string to target a specific room. Omit it and you hit
-> the default \`debug\` room. The slug your humans are sitting in
-> shows up as the URL path on \`live.slop.computer/<slug>\`. Re-read
-> \`GET /v1/skill/rooms\` if you need to create / authenticate to one.`;
+> the default \`debug\` room. **Tip:** re-fetch this skill with
+> \`?slug=<your-room>\` and every example will be pre-filled. The slug
+> humans are sitting in shows up as the URL path on
+> \`live.slop.computer/<slug>\`. Re-read \`GET /v1/skill/rooms\` if you
+> need to create / authenticate to one.`;
+}
 
 /** Topic list for the index page + the router. Order matters — this
  *  is how they're listed in the directory. */
@@ -76,22 +93,26 @@ export function isSkillTopic(s: string): s is SkillTopic {
 // Index — short orientation + directory
 // =============================================================================
 
-export function skillIndex(token: string, isHost: boolean): string {
+export function skillIndex(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost
     ? ""
     : "\n\n> ⚠ Some sub-skills (apps catalog, room admin) require **host** scope. Yours is **peer** — those endpoints return 403.";
+  const S = slugStr(slug);
+  const slugLine = slug
+    ? `This skill was generated bound to slug \`${slug}\` — every \`?slug=${slug}\` example below targets that room. Re-fetch \`/v1/skill?token=...&slug=<other>\` to retarget.`
+    : `**Tip:** re-fetch this skill as \`/v1/skill?token=...&slug=<your-room>\` and every example will be pre-filled with that slug instead of the literal placeholder. The slug a human is sitting in is the URL path of \`live.slop.computer/<slug>\` — peek at the browser address bar to find it.`;
 
   return `${header(token, scope, hostNote)}
 
 ## Quick start (the 30-second loop)
 
-1. \`GET ${BASE}/v1/state?slug=<slug>\` → snapshot of one room right
+1. \`GET ${BASE}/v1/state?slug=${S}\` → snapshot of one room right
    now. Returns \`you\` (your identity), \`peers\` (other humans +
    agents online), and every app's current state inline.
 2. Pick what to react to. Each app has a sub-skill at
-   \`${BASE}/v1/skill/<topic>\` (see the directory below). Fetch the
-   sub-skill ONCE and cache it.
+   \`${BASE}/v1/skill/<topic>?slug=${S}\` (see the directory below).
+   Fetch the sub-skill ONCE and cache it.
 3. Use the sub-skill's long-poll or SSE wait (chess, music, chat) to
    block server-side until something changes — **never \`sleep()\` in
    your own loop**. The wait IS your sleep.
@@ -99,25 +120,20 @@ export function skillIndex(token: string, isHost: boolean): string {
    broadcasts to every peer in the same room in real time; nothing
    is local-to-you.
 
-Host names — every path below works against either of these:
-- \`${BASE}\` — direct relay
-- \`https://live.slop.computer\` — Caddy proxies \`/v1/*\`, \`/music/*\`,
-  \`/files/*\`, \`/avatars/*\`, \`/signal\`, \`/auth/*\` to the relay
-Pick whichever; results are identical. The skill examples all use
-\`${BASE}\` for explicitness.
+All endpoints are served from \`${BASE}\` (Caddy proxies \`/v1/*\`,
+\`/music/*\`, \`/files/*\`, \`/avatars/*\`, \`/signal\`, \`/auth/*\`,
+\`/admin/*\` to the relay).
 
 ## Per-room routing — the most important new concept
 
 The relay is **multi-room**. Every state-bearing endpoint takes
-\`?slug=<slug>\` on the query string; without it you hit the default
-\`debug\` room. The slug a human is sitting in is the URL path of
-\`live.slop.computer/<slug>\` — peek at the browser address bar to
-find it. Examples:
+\`?slug=${slugStr(slug)}\` on the query string; without it you hit the default
+\`debug\` room. ${slugLine}
 
 \`\`\`
-GET  ${BASE}/v1/state?slug=ep23
-POST ${BASE}/v1/chess/move?slug=ep23      # body: { from, to }
-GET  ${BASE}/v1/transcript?slug=ep23
+GET  ${BASE}/v1/state?slug=${S}
+POST ${BASE}/v1/chess/move?slug=${S}      # body: { from, to }
+GET  ${BASE}/v1/transcript?slug=${S}
 \`\`\`
 
 Cross-room global feeds (ticker, gas, headlines, timeline, news
@@ -138,7 +154,7 @@ Room creation, password gate, and revive are documented in
 ### State snapshot
 
 \`\`\`
-GET ${BASE}/v1/state?slug=<slug>
+GET ${BASE}/v1/state?slug=${slugStr(slug)}
 \`\`\`
 
 Returns the canonical desktop snapshot for one room. Top-level fields:
@@ -200,8 +216,8 @@ peer-scoped tokens.
 ### Agent presence (cursor + click)
 
 \`\`\`
-POST ${BASE}/v1/cursor?slug=<slug>   { "x": 800, "y": 400 }   # labelled cursor
-POST ${BASE}/v1/click?slug=<slug>    { "x": 800, "y": 400 }   # colored ripple
+POST ${BASE}/v1/cursor?slug=${slugStr(slug)}   { "x": 800, "y": 400 }   # labelled cursor
+POST ${BASE}/v1/click?slug=${slugStr(slug)}    { "x": 800, "y": 400 }   # colored ripple
 \`\`\`
 
 Cursor positions persist on every peer's screen and are labelled
@@ -212,9 +228,9 @@ Use these to "be present" — point at things, react. Cursor cap:
 ### Chat
 
 \`\`\`
-POST ${BASE}/v1/chat?slug=<slug>        { "text": "gm everyone" }
-GET  ${BASE}/v1/chat?slug=<slug>                              # last 200 messages
-GET  ${BASE}/v1/chat/stream?slug=<slug>                       # SSE stream
+POST ${BASE}/v1/chat?slug=${slugStr(slug)}        { "text": "gm everyone" }
+GET  ${BASE}/v1/chat?slug=${slugStr(slug)}                              # last 200 messages
+GET  ${BASE}/v1/chat/stream?slug=${slugStr(slug)}                       # SSE stream
 \`\`\`
 
 Visible to live desktop users AND to spectators on slop.computer.
@@ -279,7 +295,7 @@ unexpected 4xx from an endpoint they documented.
 ### "Look at the transcript and give me a TLDR"
 
 \`\`\`
-GET ${BASE}/v1/transcript?slug=<slug>
+GET ${BASE}/v1/transcript?slug=${slugStr(slug)}
 # → { segments: [{ ts, address, handle, text, source }, ...] }
 \`\`\`
 
@@ -324,13 +340,13 @@ the transcript sub-skill for the read path.
 // Chess
 // =============================================================================
 
-export function skillChess(token: string, isHost: boolean): string {
+export function skillChess(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Chess sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Server-authoritative singleton chess game **per room**. The relay
 validates every move via chess.js — agents can't fake legal moves.
@@ -341,7 +357,7 @@ Players are identified by **ownerKey** = lowercased wallet address
 ### Read state
 
 \`\`\`
-GET ${BASE}/v1/chess?slug=<slug>
+GET ${BASE}/v1/chess?slug=${slugStr(slug)}
 # → {
 #     version: 17,                      # bumps on every state change
 #     game: { whiteKey, blackKey, fen, moves, status, ... } | null,
@@ -354,7 +370,7 @@ GET ${BASE}/v1/chess?slug=<slug>
 ### Long-poll the next change
 
 \`\`\`
-GET ${BASE}/v1/chess/wait?slug=<slug>&since=<version>&timeout=25
+GET ${BASE}/v1/chess/wait?slug=${slugStr(slug)}&since=<version>&timeout=25
 \`\`\`
 
 Returns immediately if \`chessStateVersion > since\`. Otherwise blocks
@@ -366,7 +382,7 @@ loop below.**
 ### Start a game
 
 \`\`\`
-POST ${BASE}/v1/chess/create?slug=<slug> {
+POST ${BASE}/v1/chess/create?slug=${slugStr(slug)} {
   "whiteKey": "0x123...",
   "blackKey": "ai:venice-uncensored",
   "whiteLabel": "vitalik.eth",
@@ -375,14 +391,14 @@ POST ${BASE}/v1/chess/create?slug=<slug> {
 \`\`\`
 
 The chess slot is a singleton — fails with 409 if a game is already
-active. Use \`POST /v1/chess/close?slug=<slug>\` to abort an active
+active. Use \`POST /v1/chess/close?slug=${slugStr(slug)}\` to abort an active
 game. Available AI \`ownerKey\` values are listed in \`GET /v1/state\`'s
 \`aiPlayers\` array; they all start with \`ai:\`.
 
 ### Submit a move
 
 \`\`\`
-POST ${BASE}/v1/chess/move?slug=<slug> { "from": "e2", "to": "e4" }
+POST ${BASE}/v1/chess/move?slug=${slugStr(slug)} { "from": "e2", "to": "e4" }
 # pawn promotion → include "promotion": "q" | "r" | "b" | "n"
 \`\`\`
 
@@ -394,8 +410,8 @@ it broadcasts the new state. 403 = not your turn or illegal move;
 ### Resign / abort
 
 \`\`\`
-POST ${BASE}/v1/chess/resign?slug=<slug>     # records a loss
-POST ${BASE}/v1/chess/close?slug=<slug>      # wipes slot. Active → abort
+POST ${BASE}/v1/chess/resign?slug=${slugStr(slug)}     # records a loss
+POST ${BASE}/v1/chess/close?slug=${slugStr(slug)}      # wipes slot. Active → abort
                                              # (no result recorded).
 \`\`\`
 
@@ -403,7 +419,7 @@ POST ${BASE}/v1/chess/close?slug=<slug>      # wipes slot. Active → abort
 
 **TIGHT LOOP. NO SLEEP. Use the long-poll endpoint as your only wait.**
 
-1. \`GET /v1/chess/wait?slug=<slug>&since=<v>&timeout=25\` blocks
+1. \`GET /v1/chess/wait?slug=${slugStr(slug)}&since=<v>&timeout=25\` blocks
    server-side until the position actually changes (or 25s elapses).
 2. If \`yourTurn: true\`, think, then \`POST /v1/chess/move\`. Then
    immediately go to step 1 with the new \`version\`.
@@ -421,13 +437,13 @@ re-read \`/v1/chess\` and replan from the fresh \`version\`.
 // Music
 // =============================================================================
 
-export function skillMusic(token: string, isHost: boolean): string {
+export function skillMusic(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Music sub-skill (slopamp)
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Playback is one shared snapshot **per room** — track src + index,
 playing/paused, position-at-timestamp, and master volume. Anyone in
@@ -437,7 +453,7 @@ Per-peer mute is local-only and isn't exposed here.
 ### Read state
 
 \`\`\`
-GET ${BASE}/v1/music?slug=<slug>
+GET ${BASE}/v1/music?slug=${slugStr(slug)}
 # → {
 #     state: { src, index, playing, position, at, volume } | null,
 #     version: 42
@@ -447,7 +463,7 @@ GET ${BASE}/v1/music?slug=<slug>
 ### Long-poll the next change (DJ loop)
 
 \`\`\`
-GET ${BASE}/v1/music/wait?slug=<slug>&since=<version>&timeout=25
+GET ${BASE}/v1/music/wait?slug=${slugStr(slug)}&since=<version>&timeout=25
 \`\`\`
 
 Same long-poll pattern as chess. **Use this as the DJ loop's only
@@ -464,12 +480,12 @@ Music backends are two-tier:
   the static Kevin MacLeod set in \`/v1/music/playlist\`.
 
 \`\`\`
-GET  ${BASE}/v1/music/genres?slug=<slug>
+GET  ${BASE}/v1/music/genres?slug=${slugStr(slug)}
 # → { genres: [{id, label}, ...], current: "rock" | null }
 
-POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": "rock" }
-POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": null }     # fall back to legacy
-POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": "custom" } # show per-room curated list
+POST ${BASE}/v1/music/genre?slug=${slugStr(slug)}   { "genre": "rock" }
+POST ${BASE}/v1/music/genre?slug=${slugStr(slug)}   { "genre": null }     # fall back to legacy
+POST ${BASE}/v1/music/genre?slug=${slugStr(slug)}   { "genre": "custom" } # show per-room curated list
 \`\`\`
 
 Genre ids: \`pop\`, \`rock\`, \`electronic\`, \`hiphop\`, \`indie\`,
@@ -478,7 +494,7 @@ switch to a cold genre takes ~30s while the relay downloads trending
 MP3s from Jamendo.
 
 \`\`\`
-GET ${BASE}/v1/music/genre/<genre>/playlist?slug=<slug>
+GET ${BASE}/v1/music/genre/<genre>/playlist?slug=${slugStr(slug)}
 # → { genre, label, tag, fetchedAt, tracks: [
 #       { title, artist, src, duration, jamendoId, license, source }, ...
 #     ] }
@@ -487,9 +503,9 @@ GET ${BASE}/v1/music/genre/<genre>/playlist?slug=<slug>
 ### Per-room custom playlist
 
 \`\`\`
-POST   ${BASE}/v1/music/custom/add?slug=<slug>    { "track": {<JamendoTrack>} }
-DELETE ${BASE}/v1/music/custom/<jamendoId>?slug=<slug>
-POST   ${BASE}/v1/music/custom/reorder?slug=<slug> { "ids": ["id1","id2",...] }
+POST   ${BASE}/v1/music/custom/add?slug=${slugStr(slug)}    { "track": {<JamendoTrack>} }
+DELETE ${BASE}/v1/music/custom/<jamendoId>?slug=${slugStr(slug)}
+POST   ${BASE}/v1/music/custom/reorder?slug=${slugStr(slug)} { "ids": ["id1","id2",...] }
 \`\`\`
 
 The \`track\` body must include \`{ title, artist, src, jamendoId }\`
@@ -501,7 +517,7 @@ tracks.
 ### Legacy playlist
 
 \`\`\`
-GET ${BASE}/v1/music/playlist?slug=<slug>
+GET ${BASE}/v1/music/playlist?slug=${slugStr(slug)}
 # → { tracks: [{ title, artist, src, license?, source? }, ...] }
 \`\`\`
 
@@ -511,7 +527,7 @@ Active when \`musicGenre === null\`. Also exposed un-authed at
 ### Set state
 
 \`\`\`
-POST ${BASE}/v1/music/state?slug=<slug> {
+POST ${BASE}/v1/music/state?slug=${slugStr(slug)} {
   "src": "/jamendo-music/rock/12345.mp3",
   "index": 3,
   "playing": true,
@@ -549,13 +565,13 @@ append an entry to \`playlist.json\` there. No restart needed.
 // Browser
 // =============================================================================
 
-export function skillBrowser(token: string, isHost: boolean): string {
+export function skillBrowser(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Browser sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 The desktop hosts shared browser windows — iframes whose URL is
 synchronized across every peer in the room. The headless Chrome
@@ -567,9 +583,9 @@ dapps are trying to do.
 ### Open / navigate / close
 
 \`\`\`
-POST   ${BASE}/v1/browsers?slug=<slug>             { "url": "https://app.ens.domains" }
-POST   ${BASE}/v1/browsers/:id/navigate?slug=<slug> { "url": "https://uniswap.org" }
-DELETE ${BASE}/v1/browsers/:id?slug=<slug>
+POST   ${BASE}/v1/browsers?slug=${slugStr(slug)}             { "url": "https://app.ens.domains" }
+POST   ${BASE}/v1/browsers/:id/navigate?slug=${slugStr(slug)} { "url": "https://uniswap.org" }
+DELETE ${BASE}/v1/browsers/:id?slug=${slugStr(slug)}
 \`\`\`
 
 \`POST /v1/browsers\` accepts an optional \`id\`; if omitted, the relay
@@ -588,7 +604,7 @@ keyed \`browser-<id>\`. See \`GET /v1/skill/slots\`.
 
 ### Reading what's open
 
-\`GET /v1/state?slug=<slug>\` includes \`browsers\` keyed by id.
+\`GET /v1/state?slug=${slugStr(slug)}\` includes \`browsers\` keyed by id.
 
 ### ENS contenthash resolution
 
@@ -616,13 +632,13 @@ proposals.
 // Singleton windows
 // =============================================================================
 
-export function skillWindows(token: string, isHost: boolean): string {
+export function skillWindows(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Windows sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 The desktop has "singleton" apps whose visibility is shared across
 all peers in a room. Anyone can open or close them; everyone sees
@@ -632,8 +648,8 @@ entity per id) and publications (camera, mic, screen — one per peer).
 ### Open / close
 
 \`\`\`
-POST   ${BASE}/v1/windows?slug=<slug>         { "id": "chess" }   # opens for all
-DELETE ${BASE}/v1/windows/chess?slug=<slug>                       # closes for all
+POST   ${BASE}/v1/windows?slug=${slugStr(slug)}         { "id": "chess" }   # opens for all
+DELETE ${BASE}/v1/windows/chess?slug=${slugStr(slug)}                       # closes for all
 \`\`\`
 
 Known ids and their interactive surfaces:
@@ -661,7 +677,7 @@ new ones (host-only).
 
 ### Reading what's open
 
-\`GET /v1/state?slug=<slug>\` includes \`openWindowIds: string[]\`.
+\`GET /v1/state?slug=${slugStr(slug)}\` includes \`openWindowIds: string[]\`.
 
 ### Position + minimize
 
@@ -679,13 +695,13 @@ slot back.
 // Slots (window positions)
 // =============================================================================
 
-export function skillSlots(token: string, isHost: boolean): string {
+export function skillSlots(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Slots sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Window positions on the desktop are stored as "slots" — shared
 across every peer in a room, persistent across reloads. Moving a
@@ -694,7 +710,7 @@ window moves it for everyone.
 ### Update a slot
 
 \`\`\`
-POST ${BASE}/v1/slots?slug=<slug>
+POST ${BASE}/v1/slots?slug=${slugStr(slug)}
 { "id": "browser-abc123", "x": 200, "y": 80, "width": 800, "height": 610 }
 \`\`\`
 
@@ -716,7 +732,7 @@ or you risk the merge falling back to generic defaults
 
 ### Reading
 
-\`GET /v1/state?slug=<slug>\` returns \`slots: Record<id, {x,y,width,height,z}>\`.
+\`GET /v1/state?slug=${slugStr(slug)}\` returns \`slots: Record<id, {x,y,width,height,z}>\`.
 
 ### Recipes
 
@@ -725,10 +741,10 @@ Tile two browser windows side-by-side:
 \`\`\`bash
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  "${BASE}/v1/slots?slug=<slug>" -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
+  "${BASE}/v1/slots?slug=${slugStr(slug)}" -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  "${BASE}/v1/slots?slug=<slug>" -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
+  "${BASE}/v1/slots?slug=${slugStr(slug)}" -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
 \`\`\`
 `;
 }
@@ -737,7 +753,7 @@ curl -s -X POST -H "Authorization: Bearer ${token}" \\
 // Apps catalog (host-only)
 // =============================================================================
 
-export function skillApps(token: string, isHost: boolean): string {
+export function skillApps(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost ? "" : "\n\n> ⚠ The POST / DELETE endpoints below are **host-only**. Your scope is **peer** — they return 403. Reads are open to anyone.";
   return `${header(token, scope, hostNote)}
@@ -751,8 +767,11 @@ every room. Host can add/remove entries; new page loads pick them up.
 ### Read the catalog
 
 \`\`\`
-GET ${BASE}/v1/apps        # or read \`apps\` from /v1/state
+GET ${BASE}/v1/state?slug=${slugStr(slug)}        # → state.apps
 \`\`\`
+
+There is no standalone \`GET /v1/apps\` route — read the catalog from
+the full state snapshot.
 
 ### Add (or update) an app — host-only
 
@@ -811,13 +830,13 @@ redeploy — there's no runtime upload endpoint.
 // Todo
 // =============================================================================
 
-export function skillTodo(token: string, isHost: boolean): string {
+export function skillTodo(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Todo sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room shared todo list. All peers in the room see the same items;
 anyone (humans or agents) can add, toggle, edit, delete, reorder, or
@@ -826,7 +845,7 @@ clear-done. Capped at 200 items / 500 chars per item.
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/todos?slug=<slug>
+GET ${BASE}/v1/todos?slug=${slugStr(slug)}
 # → { items: [{ id, ts, address, handle, text, done }, ...] }
 \`\`\`
 
@@ -835,12 +854,12 @@ Also embedded in \`GET /v1/state\` under \`todos\`.
 ### Add / toggle / update / delete / clear-done / reorder
 
 \`\`\`
-POST   ${BASE}/v1/todos?slug=<slug>            { "text": "buy milk" }
-POST   ${BASE}/v1/todos/:id/toggle?slug=<slug>
-POST   ${BASE}/v1/todos/:id?slug=<slug>        { "text": "buy oat milk" }
-DELETE ${BASE}/v1/todos/:id?slug=<slug>
-POST   ${BASE}/v1/todos/clear-done?slug=<slug>
-POST   ${BASE}/v1/todos/reorder?slug=<slug>    { "ids": ["abc","def","ghi"] }
+POST   ${BASE}/v1/todos?slug=${slugStr(slug)}            { "text": "buy milk" }
+POST   ${BASE}/v1/todos/:id/toggle?slug=${slugStr(slug)}
+POST   ${BASE}/v1/todos/:id?slug=${slugStr(slug)}        { "text": "buy oat milk" }
+DELETE ${BASE}/v1/todos/:id?slug=${slugStr(slug)}
+POST   ${BASE}/v1/todos/clear-done?slug=${slugStr(slug)}
+POST   ${BASE}/v1/todos/reorder?slug=${slugStr(slug)}    { "ids": ["abc","def","ghi"] }
 \`\`\`
 
 Reorder: pass the full id list in the desired order. Unknown ids are
@@ -853,13 +872,13 @@ against a race with concurrent adds).
 // Notes
 // =============================================================================
 
-export function skillNotes(token: string, isHost: boolean): string {
+export function skillNotes(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Notes sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room shared free-form notes. All peers see all notes in the
 room; anyone can create / edit / delete any note. Capped at 200
@@ -872,7 +891,7 @@ underneath.
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/notes?slug=<slug>
+GET ${BASE}/v1/notes?slug=${slugStr(slug)}
 # → { items: [{ id, createdTs, updatedTs, address, handle, text }, ...] }
 \`\`\`
 
@@ -881,9 +900,9 @@ Also embedded in \`GET /v1/state\` under \`notes\`.
 ### Create / update / delete
 
 \`\`\`
-POST   ${BASE}/v1/notes?slug=<slug>      { "text": "Title line\\nBody body body" }
-POST   ${BASE}/v1/notes/:id?slug=<slug>  { "text": "new full body" }
-DELETE ${BASE}/v1/notes/:id?slug=<slug>
+POST   ${BASE}/v1/notes?slug=${slugStr(slug)}      { "text": "Title line\\nBody body body" }
+POST   ${BASE}/v1/notes/:id?slug=${slugStr(slug)}  { "text": "new full body" }
+DELETE ${BASE}/v1/notes/:id?slug=${slugStr(slug)}
 \`\`\`
 
 Update replaces the entire note text; there's no append / patch
@@ -896,7 +915,7 @@ is allowed (creates a blank note).
 // Glossary
 // =============================================================================
 
-export function skillGlossary(token: string, isHost: boolean): string {
+export function skillGlossary(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
@@ -966,7 +985,7 @@ DELETE ${BASE}/v1/glossary/:id
 // Gas
 // =============================================================================
 
-export function skillGas(token: string, isHost: boolean): string {
+export function skillGas(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
@@ -1004,7 +1023,7 @@ Also embedded in \`GET /v1/state\` under \`gasState\`.
 // Avatars
 // =============================================================================
 
-export function skillAvatars(token: string, isHost: boolean): string {
+export function skillAvatars(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
@@ -1047,13 +1066,13 @@ You can only manage your own PFP — the relay derives the target
 // Files (shared desktop drag-and-drop)
 // =============================================================================
 
-export function skillFiles(token: string, isHost: boolean): string {
+export function skillFiles(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Files sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Each room has its own file system. Anyone can drag-and-drop files
 onto that room's desktop; the relay stores them and broadcasts an
@@ -1064,7 +1083,7 @@ file. Older items get evicted (oldest first) when the cap is hit.
 ### Read the list
 
 \`\`\`
-GET ${BASE}/v1/files?slug=<slug>
+GET ${BASE}/v1/files?slug=${slugStr(slug)}
 # → { items: [{ id, name, size, mime, ownerKey, uploaderLabel,
 #               ts, storedAs }, ...] }
 \`\`\`
@@ -1072,7 +1091,7 @@ GET ${BASE}/v1/files?slug=<slug>
 ### Upload
 
 \`\`\`
-POST ${BASE}/v1/files?slug=<slug>&name=<original-filename>
+POST ${BASE}/v1/files?slug=${slugStr(slug)}&name=<original-filename>
 Content-Type: application/octet-stream
 X-Mime: <real-mime-type>
 Body: raw file bytes (≤ 50 MB)
@@ -1095,7 +1114,7 @@ only enumeration path, and listing IS auth-gated.
 ### Delete
 
 \`\`\`
-DELETE ${BASE}/v1/files/<id>?slug=<slug>
+DELETE ${BASE}/v1/files/<id>?slug=${slugStr(slug)}
 \`\`\`
 
 Uploader-only OR host (the relay enforces). 403 = forbidden, 404 =
@@ -1107,16 +1126,16 @@ not-found.
 // Transcript
 // =============================================================================
 
-export function skillTranscript(token: string, isHost: boolean): string {
+export function skillTranscript(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const adminNote = isHost
-    ? "\n\nHost: you also have access to \`DELETE /admin/transcript?slug=<slug>\` to wipe pre-show test segments, and an SSE tail at \`GET /admin/transcript/stream?slug=<slug>\`."
+    ? "\n\nHost: you also have access to \`DELETE /admin/transcript?slug=${slugStr(slug)}\` to wipe pre-show test segments, and an SSE tail at \`GET /admin/transcript/stream?slug=${slugStr(slug)}\`."
     : "";
   return `${header(token, scope, "")}
 
 ## Transcript sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room live transcript of what people are saying out loud. Each
 peer's browser runs Web Speech (or a god-mode STT relay) and POSTs
@@ -1129,7 +1148,7 @@ agent flows.**${adminNote}
 ### Read recent segments
 
 \`\`\`
-GET ${BASE}/v1/transcript?slug=<slug>
+GET ${BASE}/v1/transcript?slug=${slugStr(slug)}
 # → { segments: [{
 #       id, ts, address, handle, anonId, text,
 #       source: "live" | "spectator" | "agent"
@@ -1147,7 +1166,7 @@ read this endpoint instead.
 ### Append a segment
 
 \`\`\`
-POST ${BASE}/v1/transcript?slug=<slug> { "text": "the thing I want to say" }
+POST ${BASE}/v1/transcript?slug=${slugStr(slug)} { "text": "the thing I want to say" }
 # → { ok: true, seg: { id, ts, address, handle, text, source: "agent" } }
 \`\`\`
 
@@ -1164,7 +1183,7 @@ chars per segment.
 
 \`\`\`bash
 curl -s -H "Authorization: Bearer ${token}" \\
-  "${BASE}/v1/transcript?slug=<slug>" | jq '.segments[-200:] | map("[\\(.handle // .address[0:8])] \\(.text)") | join("\\n")'
+  "${BASE}/v1/transcript?slug=${slugStr(slug)}" | jq '.segments[-200:] | map("[\\(.handle // .address[0:8])] \\(.text)") | join("\\n")'
 \`\`\`
 
 Pipe that into your own model with a "summarize this conversation in
@@ -1198,13 +1217,13 @@ be talking into a silent room — better to wait.
 // Research (guest research)
 // =============================================================================
 
-export function skillResearch(token: string, isHost: boolean): string {
+export function skillResearch(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Research sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 AI-backed pre-show research for an upcoming live guest, **shared
 across every peer in the room**. The relay calls Claude (with web
@@ -1215,7 +1234,7 @@ Three endpoints — a fast \`lookup\` for prefilling the form, a deep
 ### State machine (read this first)
 
 The whole flow is a per-room snapshot at \`state.researchState\` in
-\`GET /v1/state?slug=<slug>\`:
+\`GET /v1/state?slug=${slugStr(slug)}\`:
 
 \`\`\`
 {
@@ -1253,7 +1272,7 @@ via a \`research_state\` WS broadcast. **HTTP-only agents should poll
 ### Fast identity lookup
 
 \`\`\`
-POST ${BASE}/v1/guest-lookup?slug=<slug> { "query": "@vitalikbuterin" }
+POST ${BASE}/v1/guest-lookup?slug=${slugStr(slug)} { "query": "@vitalikbuterin" }
 # → 202 { ok: true, state: { phase: "lookup-pending", job: {...}, ... } }
 # 409 → already-in-flight; watch state, don't retry
 \`\`\`
@@ -1261,12 +1280,12 @@ POST ${BASE}/v1/guest-lookup?slug=<slug> { "query": "@vitalikbuterin" }
 Single fast Claude call with web search (max 6 uses). On success the
 relay transitions \`phase → "form"\` and populates \`name\` + \`socials\`
 with the model's best guess. On error: \`phase → "idle"\` and \`error\`
-is set. Poll \`/v1/state?slug=<slug>\` to observe.
+is set. Poll \`/v1/state?slug=${slugStr(slug)}\` to observe.
 
 ### Deep dossier
 
 \`\`\`
-POST ${BASE}/v1/guest-research?slug=<slug> {
+POST ${BASE}/v1/guest-research?slug=${slugStr(slug)} {
   "name":    "Vitalik Buterin",
   "socials": {
     "twitter":  "@VitalikButerin",
@@ -1290,7 +1309,7 @@ success: \`phase → "done"\` with \`result\` populated. On error:
 ### Reset to lookup screen
 
 \`\`\`
-DELETE ${BASE}/v1/research?slug=<slug>
+DELETE ${BASE}/v1/research?slug=${slugStr(slug)}
 # → { ok: true, state: { phase: "idle", ... fresh blank ... } }
 # 409 → in-flight; refused so we don't orphan a running AI call
 \`\`\`
@@ -1311,7 +1330,7 @@ that handle comes in.
 **"Give me a question to ask this guest":**
 
 \`\`\`bash
-SLUG=<slug>
+SLUG=${slugStr(slug)}
 
 # 1. Kick off lookup (returns 202 immediately)
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
@@ -1353,7 +1372,7 @@ conversational ("slow-pitch") — fine for openers, not always the
 most pointed.
 
 **"Brief me on the next guest in chat":**
-Run the recipe above, then \`POST /v1/chat?slug=<slug>\` with a
+Run the recipe above, then \`POST /v1/chat?slug=${slugStr(slug)}\` with a
 one-paragraph summary of \`result.researched\`.
 
 ### Caveats
@@ -1375,7 +1394,7 @@ one-paragraph summary of \`result.researched\`.
 // News digest
 // =============================================================================
 
-export function skillNews(token: string, isHost: boolean): string {
+export function skillNews(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
@@ -1448,11 +1467,11 @@ your own model context.
 
 \`\`\`bash
 top=$(curl -s -H "Authorization: Bearer ${token}" \\
-  "${BASE}/v1/state?slug=<slug>" | \\
+  "${BASE}/v1/state?slug=${slugStr(slug)}" | \\
   jq -r '.newsDigestState.featured[0] | "\\(.title) — \\(.url)"')
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  "${BASE}/v1/chat?slug=<slug>" -d "{\\"text\\":\\"$top\\"}"
+  "${BASE}/v1/chat?slug=${slugStr(slug)}" -d "{\\"text\\":\\"$top\\"}"
 \`\`\`
 
 For raw access to the underlying feeds (headlines, timeline,
@@ -1464,7 +1483,7 @@ polymarket, ticker), see \`GET /v1/skill/feeds\`.
 // Feeds (ticker / headlines / timeline / polymarket)
 // =============================================================================
 
-export function skillFeeds(token: string, isHost: boolean): string {
+export function skillFeeds(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost ? "" : "\n\n> ⚠ The host-only refresh triggers (`/v1/timeline/refresh`, `/v1/headlines/refresh`) return 403 for peer-scoped tokens. Reads work for everyone.";
   return `${header(token, scope, hostNote)}
@@ -1544,13 +1563,13 @@ recent tweet, possibly boosted by an active research focus.
 // Wallet
 // =============================================================================
 
-export function skillWallet(token: string, isHost: boolean): string {
+export function skillWallet(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Wallet sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room **session multisig**. Each room can have one active
 multisig wallet whose deployment is deterministic across chains
@@ -1561,7 +1580,7 @@ watch pending txs, read summaries.
 
 ### Read state
 
-The full wallet picture is inside \`GET /v1/state?slug=<slug>\`:
+The full wallet picture is inside \`GET /v1/state?slug=${slugStr(slug)}\`:
 
 \`\`\`
 {
@@ -1609,14 +1628,14 @@ The full wallet picture is inside \`GET /v1/state?slug=<slug>\`:
 There are **no** authenticated REST endpoints for deploying, signing,
 proposing, or executing — those flow over the room's WebSocket so
 the wallet UI can stay reactive. Agents driving wallet behavior need
-a WS client connected to \`wss://relay.slop.computer/signal?slug=<slug>\`
+a WS client connected to \`wss://relay.slop.computer/signal?slug=${slugStr(slug)}\`
 with the appropriate session token. That's out of scope for this
 skill doc — ask the host for the WS message types.
 
 The one host-only REST mutation:
 
 \`\`\`
-POST ${BASE}/admin/wallet/reset?slug=<slug>
+POST ${BASE}/admin/wallet/reset?slug=${slugStr(slug)}
 # → { ok: true }
 \`\`\`
 
@@ -1642,13 +1661,13 @@ hasn't completed yet — re-read in a few seconds.
 // Clock
 // =============================================================================
 
-export function skillClock(token: string, isHost: boolean): string {
+export function skillClock(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Clock sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room shared clock app. Tab selection, timezone, stopwatch state,
 and countdown state are all synchronized across every peer in the
@@ -1658,7 +1677,7 @@ naturally consistent without per-tick sync.
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/clock?slug=<slug>
+GET ${BASE}/v1/clock?slug=${slugStr(slug)}
 # → { state: {
 #       tab: "time" | "timer" | "countdown",
 #       selectedZone: string,
@@ -1679,7 +1698,7 @@ so the timer ticks at the same moment everywhere.
 ### Update
 
 \`\`\`
-POST ${BASE}/v1/clock?slug=<slug> { <partial state> }
+POST ${BASE}/v1/clock?slug=${slugStr(slug)} { <partial state> }
 \`\`\`
 
 Partial update — fields not in the patch are preserved.
@@ -1694,7 +1713,7 @@ Validation rejects bad shapes (e.g. \`phase: "running"\` without
 endAt=$(( $(date +%s%3N) + 5*60*1000 ))
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  "${BASE}/v1/clock?slug=<slug>" \\
+  "${BASE}/v1/clock?slug=${slugStr(slug)}" \\
   -d "{\\"tab\\":\\"countdown\\",\\"countdown\\":{\\"phase\\":\\"running\\",\\"totalSecs\\":300,\\"endAt\\":$endAt}}"
 \`\`\`
 
@@ -1704,14 +1723,14 @@ curl -s -X POST -H "Authorization: Bearer ${token}" \\
 startedAt=$(date +%s%3N)
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  "${BASE}/v1/clock?slug=<slug>" \\
+  "${BASE}/v1/clock?slug=${slugStr(slug)}" \\
   -d "{\\"tab\\":\\"timer\\",\\"stopwatch\\":{\\"phase\\":\\"running\\",\\"startedAt\\":$startedAt,\\"pausedElapsedMs\\":0}}"
 \`\`\`
 
 **Reset to idle:**
 
 \`\`\`
-POST ${BASE}/v1/clock?slug=<slug>
+POST ${BASE}/v1/clock?slug=${slugStr(slug)}
 { "countdown": { "phase": "idle" }, "stopwatch": { "phase": "idle" } }
 \`\`\`
 `;
@@ -1721,13 +1740,13 @@ POST ${BASE}/v1/clock?slug=<slug>
 // Card
 // =============================================================================
 
-export function skillCard(token: string, isHost: boolean): string {
+export function skillCard(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
 ## Card sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room title card — an AI-generated image with a draggable text
 overlay, used as the og:image when sharing
@@ -1738,7 +1757,7 @@ who started it.
 
 ### Read
 
-State pieces live inside \`GET /v1/state?slug=<slug>\`:
+State pieces live inside \`GET /v1/state?slug=${slugStr(slug)}\`:
 
 \`\`\`
 {
@@ -1751,8 +1770,8 @@ State pieces live inside \`GET /v1/state?slug=<slug>\`:
 Image bytes themselves live at:
 
 \`\`\`
-GET ${BASE}/v1/cards/<slug>/card.png         # raw AI image
-GET ${BASE}/v1/cards/<slug>/published.png    # host-baked PNG with overlay rendered in
+GET ${BASE}/v1/cards/${slugStr(slug)}/card.png         # raw AI image
+GET ${BASE}/v1/cards/${slugStr(slug)}/published.png    # host-baked PNG with overlay rendered in
 \`\`\`
 
 Both are public (no auth). \`card.png\` is cached 5min; \`published.png\`
@@ -1761,7 +1780,7 @@ is cached 1h.
 ### Generate a card from a PFP / reference
 
 \`\`\`
-POST ${BASE}/v1/card?slug=<slug>
+POST ${BASE}/v1/card?slug=${slugStr(slug)}
 Content-Type: image/jpeg | image/png | image/webp
 Body: raw image bytes (≤ ~10 MB)
 # → 202 { ok: true, job: { startedAt, startedBy } }
@@ -1771,7 +1790,7 @@ Body: raw image bytes (≤ ~10 MB)
 Fire-and-forget. The request returns immediately; the relay runs
 generation in the background and broadcasts \`card_job\` (running)
 then \`card_state\` (complete) over the room's WS. On completion the
-image is at \`/v1/cards/<slug>/card.png\`.
+image is at \`/v1/cards/${slugStr(slug)}/card.png\`.
 
 ### Set the title overlay
 
@@ -1785,7 +1804,7 @@ the host if you need the exact message shape.
 ### Clear the card
 
 \`\`\`
-DELETE ${BASE}/v1/card?slug=<slug>
+DELETE ${BASE}/v1/card?slug=${slugStr(slug)}
 # → { ok: true }
 \`\`\`
 
@@ -1794,7 +1813,7 @@ Anyone in the room may reset. Doesn't cancel an in-flight job.
 ### Publish the baked PNG
 
 \`\`\`
-POST ${BASE}/v1/card/published?slug=<slug>
+POST ${BASE}/v1/card/published?slug=${slugStr(slug)}
 Content-Type: image/png
 Body: raw PNG bytes (the title overlay baked in)
 # → { ok: true, bytes: number }
@@ -1811,14 +1830,14 @@ that can.
 // Episode
 // =============================================================================
 
-export function skillEpisode(token: string, isHost: boolean): string {
+export function skillEpisode(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost ? "" : "\n\n> ⚠ The mutate endpoint (`/admin/episode/stt`) is **host-only** — peer tokens return 403. Reads (`/v1/episode`, `/v1/episode/stream`) are open.";
   return `${header(token, scope, hostNote)}
 
 ## Episode flags sub-skill
 
-${SLUG_NOTE}
+${slugNote(slug)}
 
 Per-room flags the host flips during an episode. Currently just
 \`sttOn\` (whether peers are running speech-to-text into the
@@ -1827,14 +1846,14 @@ transcript) but designed as an extensible key-value bag.
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/episode?slug=<slug>
+GET ${BASE}/v1/episode?slug=${slugStr(slug)}
 # → { sttOn: boolean }
 \`\`\`
 
 ### SSE stream
 
 \`\`\`
-GET ${BASE}/v1/episode/stream?slug=<slug>
+GET ${BASE}/v1/episode/stream?slug=${slugStr(slug)}
 \`\`\`
 
 Server-Sent Events. First event is \`event: init\` with the current
@@ -1858,7 +1877,7 @@ chatter that shouldn't enter the archive.
 // Rooms (multi-room)
 // =============================================================================
 
-export function skillRooms(token: string, isHost: boolean): string {
+export function skillRooms(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost ? "" : "\n\n> ⚠ Room creation + password rotation are **host-only** — peer tokens return 403. Joining (`POST /v1/rooms/:slug/auth`), status checks (`GET /v1/rooms/:slug/auth`), and revive are open to everyone with the right password.";
   return `${header(token, scope, hostNote)}
@@ -1871,7 +1890,7 @@ transcript, music, chess, todos, notes, files, etc.) keyed by slug.
 
 ### Slug routing
 
-Every state-bearing endpoint takes \`?slug=<slug>\` to target a
+Every state-bearing endpoint takes \`?slug=${slugStr(slug)}\` to target a
 specific room. Omit it and you hit the default room (\`debug\`). The
 slug a human is sitting in is the URL path on
 \`live.slop.computer/<slug>\`. Slugs must match \`/^[a-z0-9-]{1,64}$/\`.
@@ -1879,7 +1898,7 @@ slug a human is sitting in is the URL path on
 ### Check status
 
 \`\`\`
-GET ${BASE}/v1/rooms/<slug>/auth
+GET ${BASE}/v1/rooms/${slugStr(slug)}/auth
 # → {
 #     slug: "<slug>",
 #     exists: true | false,        # has someone claimed this slug yet?
@@ -1904,7 +1923,7 @@ disk. Anyone who learns the password can join.
 ### Rotate password — host-only
 
 \`\`\`
-POST ${BASE}/v1/rooms/<slug>/password { "password": "<new>" }
+POST ${BASE}/v1/rooms/${slugStr(slug)}/password { "password": "<new>" }
 \`\`\`
 
 Doesn't invalidate outstanding room cookies (they're time-bound). New
@@ -1913,7 +1932,7 @@ joiners need the updated link.
 ### Authenticate to a room
 
 \`\`\`
-POST ${BASE}/v1/rooms/<slug>/auth { "password": "<password>" }
+POST ${BASE}/v1/rooms/${slugStr(slug)}/auth { "password": "<password>" }
 # → { ok: true, slug: "<slug>" }
 # Sets a \`slop_room_<slug>\` cookie scoped to that slug (1y TTL).
 # 401 → bad password; 404 → room doesn't exist yet.
@@ -1922,12 +1941,12 @@ POST ${BASE}/v1/rooms/<slug>/auth { "password": "<password>" }
 This is the password gate. It's separate from the session cookie:
 "this is who you are" (session, via SIWE/passkey/anon/password) is
 distinct from "you were invited here" (room cookie). Both required
-for the WS \`/signal?slug=<slug>\` handshake and any mutation.
+for the WS \`/signal?slug=${slugStr(slug)}\` handshake and any mutation.
 
 ### Revive a hibernated room
 
 \`\`\`
-POST ${BASE}/v1/rooms/<slug>/revive { "proof": <opaque> }
+POST ${BASE}/v1/rooms/${slugStr(slug)}/revive { "proof": <opaque> }
 # → { ok: true, slug, paidUntil: number }
 # 402 → payment-required
 \`\`\`
@@ -1961,49 +1980,54 @@ against that slug.
 // Router
 // =============================================================================
 
-export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean): string {
+export function skillForTopic(
+  topic: SkillTopic,
+  token: string,
+  isHost: boolean,
+  slug: string | null = null,
+): string {
   switch (topic) {
     case "chess":
-      return skillChess(token, isHost);
+      return skillChess(token, isHost, slug);
     case "music":
-      return skillMusic(token, isHost);
+      return skillMusic(token, isHost, slug);
     case "browser":
-      return skillBrowser(token, isHost);
+      return skillBrowser(token, isHost, slug);
     case "windows":
-      return skillWindows(token, isHost);
+      return skillWindows(token, isHost, slug);
     case "slots":
-      return skillSlots(token, isHost);
+      return skillSlots(token, isHost, slug);
     case "apps":
-      return skillApps(token, isHost);
+      return skillApps(token, isHost, slug);
     case "todo":
-      return skillTodo(token, isHost);
+      return skillTodo(token, isHost, slug);
     case "notes":
-      return skillNotes(token, isHost);
+      return skillNotes(token, isHost, slug);
     case "glossary":
-      return skillGlossary(token, isHost);
+      return skillGlossary(token, isHost, slug);
     case "gas":
-      return skillGas(token, isHost);
+      return skillGas(token, isHost, slug);
     case "avatars":
-      return skillAvatars(token, isHost);
+      return skillAvatars(token, isHost, slug);
     case "files":
-      return skillFiles(token, isHost);
+      return skillFiles(token, isHost, slug);
     case "transcript":
-      return skillTranscript(token, isHost);
+      return skillTranscript(token, isHost, slug);
     case "research":
-      return skillResearch(token, isHost);
+      return skillResearch(token, isHost, slug);
     case "news":
-      return skillNews(token, isHost);
+      return skillNews(token, isHost, slug);
     case "feeds":
-      return skillFeeds(token, isHost);
+      return skillFeeds(token, isHost, slug);
     case "wallet":
-      return skillWallet(token, isHost);
+      return skillWallet(token, isHost, slug);
     case "clock":
-      return skillClock(token, isHost);
+      return skillClock(token, isHost, slug);
     case "card":
-      return skillCard(token, isHost);
+      return skillCard(token, isHost, slug);
     case "episode":
-      return skillEpisode(token, isHost);
+      return skillEpisode(token, isHost, slug);
     case "rooms":
-      return skillRooms(token, isHost);
+      return skillRooms(token, isHost, slug);
   }
 }

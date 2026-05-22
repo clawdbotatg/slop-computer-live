@@ -1272,16 +1272,26 @@ function resolveSkillAuth(req: import("fastify").FastifyRequest, queryToken: str
   return { auth, token };
 }
 
-app.get<{ Querystring: { token?: string } }>("/v1/skill", async (req, reply) => {
+/** Pull `?slug=<slug>` off the request, validate it, and return the
+ *  concrete slug or null. Null means the skill renders with `<slug>`
+ *  placeholders; a concrete slug pre-fills every example. */
+function skillSlugFromReq(req: { query?: unknown }): string | null {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const raw = typeof q.slug === "string" ? q.slug.trim() : "";
+  if (!raw) return null;
+  return isValidSlug(raw) ? raw : null;
+}
+
+app.get<{ Querystring: { token?: string; slug?: string } }>("/v1/skill", async (req, reply) => {
   const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
   const got = resolveSkillAuth(req, queryToken);
   if (!got) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("content-type", "text/markdown; charset=utf-8");
   reply.header("cache-control", "no-store");
-  return skillIndex(got.token, got.auth.isHost);
+  return skillIndex(got.token, got.auth.isHost, skillSlugFromReq(req));
 });
 
-app.get<{ Params: { topic: string }; Querystring: { token?: string } }>(
+app.get<{ Params: { topic: string }; Querystring: { token?: string; slug?: string } }>(
   "/v1/skill/:topic",
   async (req, reply) => {
     const topic = req.params.topic;
@@ -1293,7 +1303,7 @@ app.get<{ Params: { topic: string }; Querystring: { token?: string } }>(
     if (!got) return reply.code(401).send({ error: "unauthenticated" });
     reply.header("content-type", "text/markdown; charset=utf-8");
     reply.header("cache-control", "no-store");
-    return skillForTopic(topic, got.token, got.auth.isHost);
+    return skillForTopic(topic, got.token, got.auth.isHost, skillSlugFromReq(req));
   },
 );
 
@@ -3160,11 +3170,22 @@ app.get("/peers", async (req, reply) => {
 
 // --- Admin host-only --------------------------------------------------------
 
-function requireHost(req: { cookies: Record<string, string | undefined> }):
+function requireHost(req: { cookies: Record<string, string | undefined>; headers?: Record<string, unknown> }):
   | { ok: true; address: string }
   | { ok: false; error: string } {
-  const token = req.cookies[SESSION_COOKIE];
-  const session = getSession(token);
+  // Cookie session first (browser admin panel), then fall back to
+  // bearer (host-scoped agent tokens minted via /v1/agent-token). Both
+  // paths require role=host AND an admin address — bearer is not a
+  // privilege escalation, it just lets a host's agent reach the same
+  // surfaces the host can reach in their browser.
+  const cookieToken = req.cookies[SESSION_COOKIE];
+  let session = getSession(cookieToken);
+  if (!session && req.headers) {
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+      session = getSession(authHeader.slice("Bearer ".length).trim());
+    }
+  }
   if (!session) return { ok: false, error: "Unauthenticated" };
   if (session.role !== "host" || !session.address || !isAdminAddress(session.address)) {
     return { ok: false, error: "Not authorized as host" };
