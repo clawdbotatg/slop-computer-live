@@ -255,6 +255,11 @@ export async function finalizeRecording(opts: {
    *  recordings.ts decoupled from per-room subsystem APIs. */
   chatArchive: { content: string; messageCount: number } | null;
   transcriptArchive: { content: string; segmentCount: number } | null;
+  /** Long-running participant roster captured every time a peer joined the
+   *  room. Inlined into the manifest under `participants` — no separate IPFS
+   *  pin (the list is tiny relative to chat/transcript/video). Pass `null`
+   *  to omit. */
+  participants: { address: string; handle: string | null; role: "host" | "guest" }[] | null;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -352,6 +357,7 @@ export async function finalizeRecording(opts: {
           video: { cid: string; sizeBytes: number; format: string };
           chat?: { cid: string; messageCount: number };
           transcript?: { cid: string; segmentCount: number };
+          participants?: { address: string; role: "host" | "guest"; handle: string | null }[];
           meta?: EpisodeMeta;
         } = {
           version: 1,
@@ -363,6 +369,15 @@ export async function finalizeRecording(opts: {
         };
         if (chatPin) manifestJson.chat = chatPin;
         if (transcriptPin) manifestJson.transcript = transcriptPin;
+        if (opts.participants && opts.participants.length > 0) {
+          // Strip extras the frontend doesn't read (firstSeenAt etc.) so the
+          // manifest stays minimal. Frontend schema: { address, role?, ens? }.
+          manifestJson.participants = opts.participants.map(p => ({
+            address: p.address,
+            role: p.role,
+            handle: p.handle,
+          }));
+        }
         if (aiMeta) manifestJson.meta = aiMeta;
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
 

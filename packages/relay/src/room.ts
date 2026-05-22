@@ -21,6 +21,7 @@ import { FileIndex } from "./files.js";
 import { JAMENDO_DIR, JamendoRoomState } from "./jamendo.js";
 import { MusicState } from "./music-state.js";
 import { NoteList } from "./notes.js";
+import { Participants } from "./participants.js";
 import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
 import { QrState } from "./qr-state.js";
@@ -76,6 +77,7 @@ function roomPaths(id: string): {
   clock: SubsystemPath;
   chat: SubsystemPath;
   transcript: SubsystemPath;
+  participants: { path: string };
   jamendo: { path: string; legacyState: string | null; legacyCustom: string | null };
   files: {
     blobsDir: string;
@@ -122,6 +124,9 @@ function roomPaths(id: string): {
     transcript: {
       path: `${dir}/transcript.jsonl`,
       legacy: legacy ? (process.env.TRANSCRIPT_LOG_FILE ?? "./.slop-data/transcript.jsonl") : null,
+    },
+    participants: {
+      path: `${dir}/participants.jsonl`,
     },
     jamendo: {
       path: `${dir}/jamendo.json`,
@@ -190,6 +195,7 @@ export class Room {
   readonly clock: Clock;
   readonly chat: ChatHistory;
   readonly transcript: Transcript;
+  readonly participants: Participants;
   readonly jamendo: JamendoRoomState;
   readonly files: FileIndex;
   readonly browsers: BrowserRegistry;
@@ -220,6 +226,7 @@ export class Room {
     this.clock = new Clock(paths.clock.path, paths.clock.legacy);
     this.chat = new ChatHistory(paths.chat.path, paths.chat.legacy);
     this.transcript = new Transcript(paths.transcript.path, paths.transcript.legacy);
+    this.participants = new Participants(paths.participants.path);
     this.jamendo = new JamendoRoomState(paths.jamendo.path, paths.jamendo.legacyState, paths.jamendo.legacyCustom);
     this.files = new FileIndex(
       paths.files.blobsDir,
@@ -288,6 +295,13 @@ export class Room {
   addPeer(peer: Peer): void {
     this.peers.set(peer.id, peer);
     this.touch();
+    // Spectators are god-mode streaming sessions, not actual participants —
+    // they're filtered out of the visible guest list elsewhere and shouldn't
+    // appear in the manifest either. Anon peers (no address) are skipped by
+    // the Participants module itself; we don't need to gate on that here.
+    if (!peer.spectator && (peer.role === "host" || peer.role === "guest")) {
+      this.participants.record({ address: peer.address, handle: peer.handle, role: peer.role });
+    }
   }
 
   removePeer(id: string): void {
