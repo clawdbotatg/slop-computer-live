@@ -11,12 +11,12 @@ import { config } from "./config.js";
 // the past few hours float to the top, and broadcast a trimmed list to
 // the client. The TimelineBar marquee renders them as scrolling chips.
 //
-// Twitter API reads are metered/billed, so the auto-poll runs only
-// once a day. The host triggers an on-demand `refreshNow()` from the
-// client (click the TIMELINE badge) right before going live.
+// Twitter API reads are metered/billed and the per-tweet cost adds
+// up fast, so there is *no* scheduled auto-poll — the bar stays empty
+// until the host clicks the TIMELINE badge right before going live,
+// which fires `refreshNow()`. `start()` is still called at boot but
+// only wires subscribers; nothing crawls until a manual refresh.
 
-const POLL_INTERVAL_MS = 24 * 60 * 60_000;
-const ERROR_RETRY_MS = 60_000;
 // Min spacing between manual refreshes — protects against double-clicks
 // or accidental button-mashing turning into a burst of paginated reads.
 const MANUAL_REFRESH_MIN_MS = 60_000;
@@ -159,12 +159,12 @@ type V2Response = {
   meta?: { next_token?: string };
 };
 
-// Pages to walk per poll. 100 tweets/page × 8 pages = 800 tweets in
-// the pool, which on a firehose-tier feed (Austin's crypto Twitter)
-// is needed to push the window back far enough that slower-posting
-// accounts like @banteg get into the candidate set. 8 is the
-// practical ceiling given the 15-req/15-min Twitter rate limit.
-const MAX_PAGES = 8;
+// Pages to walk per refresh. 100 tweets/page × 3 pages = 300 tweets
+// in the pool. Trimmed from 8 → 3 to cut per-refresh API cost; on a
+// firehose-tier feed 300 still covers a few hours and the host-only
+// manual-refresh model (no scheduled crawls) means we'd rather pay
+// less per click than chase slow-posting accounts on every refresh.
+const MAX_PAGES = 3;
 
 async function fetchTimeline(): Promise<TimelineItem[]> {
   const userId = config.twitterUserId;
@@ -365,7 +365,6 @@ async function fetchUserTweets(username: string): Promise<TimelineItem[]> {
   return out;
 }
 
-let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 let lastManualRefreshAt = 0;
 let inflightRefresh: Promise<TimelineState | null> | null = null;
@@ -386,9 +385,8 @@ async function pollOnce(): Promise<void> {
 /** Manual refresh triggered by the host clicking the TIMELINE badge.
  *  Coalesces concurrent callers onto the same in-flight fetch, and
  *  rate-limits to one refresh per MANUAL_REFRESH_MIN_MS so accidental
- *  button-mashing doesn't burst paginated reads. Also resets the daily
- *  auto-poll timer so the next scheduled crawl is 24h *after* this
- *  refresh, not 24h after the last scheduled tick. */
+ *  button-mashing doesn't burst paginated reads. This is the *only*
+ *  path that hits Twitter — there is no scheduled auto-poll. */
 export async function refreshNow(): Promise<
   { ok: true; state: TimelineState | null } | { ok: false; reason: "rate-limited" | "no-creds"; retryAfterMs?: number }
 > {
@@ -408,12 +406,6 @@ export async function refreshNow(): Promise<
   inflightRefresh = (async () => {
     try {
       await pollOnce();
-      // Push the next auto-poll out by a full interval — we just
-      // crawled, no need to crawl again sooner than that.
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
-      }
       return state;
     } finally {
       inflightRefresh = null;
@@ -422,35 +414,16 @@ export async function refreshNow(): Promise<
   return { ok: true, state: await inflightRefresh };
 }
 
-async function scheduledLoop(): Promise<void> {
-  try {
-    await pollOnce();
-    pollTimer = setTimeout(() => void scheduledLoop(), POLL_INTERVAL_MS);
-  } catch (err) {
-    console.warn("[timeline] poll failed", err);
-    pollTimer = setTimeout(() => void scheduledLoop(), ERROR_RETRY_MS);
-  }
-}
-
 export function start(): void {
   if (started) return;
   started = true;
 
   if (!config.twitterUserId || !config.twitterConsumerKey) {
-    // No creds configured — silently skip. The client renders a
-    // "loading…" placeholder forever, which is fine for local dev
-    // without Twitter access.
-    console.warn("[timeline] twitter creds missing — skipping poll loop");
+    console.warn("[timeline] twitter creds missing — manual refresh will no-op");
     return;
   }
-
-  void scheduledLoop();
 }
 
 export function stop(): void {
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }
   started = false;
 }
