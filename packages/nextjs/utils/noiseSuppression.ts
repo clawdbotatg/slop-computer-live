@@ -24,8 +24,16 @@
 // static handler. The library autoselects the SIMD build when the
 // browser supports SIMD WASM (Chrome 91+/Firefox 89+), otherwise falls
 // back to plain.
-import { RnnoiseWorkletNode, loadRnnoise } from "@sapphi-red/web-noise-suppressor";
-
+// NOTE: do NOT add a static `import` of @sapphi-red/web-noise-suppressor
+// here. The package's `RnnoiseWorkletNode` is declared as
+// `class RnnoiseWorkletNode extends AudioWorkletNode {…}` at module
+// scope — the class body is evaluated at import time, and on the SSR
+// server (Node) `AudioWorkletNode` is undefined, so the page's pre-
+// render throws `ReferenceError: AudioWorkletNode is not defined` and
+// every /<slug> route 500s. Social-card scrapers (Twitter, Discord)
+// then refuse to render unfurls. Import dynamically inside
+// `denoiseStream` instead — that path only executes after a user
+// interaction in the browser.
 const RNNOISE_WASM_URL = "/noise/rnnoise.wasm";
 const RNNOISE_SIMD_WASM_URL = "/noise/rnnoise_simd.wasm";
 const RNNOISE_WORKLET_URL = "/noise/rnnoise-worklet.js";
@@ -37,7 +45,9 @@ const RNNOISE_WORKLET_URL = "/noise/rnnoise-worklet.js";
 let cachedWasm: ArrayBuffer | null = null;
 let cachedWasmPromise: Promise<ArrayBuffer> | null = null;
 
-async function loadWasmOnce(): Promise<ArrayBuffer> {
+async function loadWasmOnce(
+  loadRnnoise: (opts: { url: string; simdUrl: string }) => Promise<ArrayBuffer>,
+): Promise<ArrayBuffer> {
   if (cachedWasm) return cachedWasm;
   if (!cachedWasmPromise) {
     cachedWasmPromise = loadRnnoise({
@@ -75,11 +85,16 @@ export async function denoiseStream(raw: MediaStream): Promise<DenoisedStream | 
   if (typeof AudioWorkletNode === "undefined") return null;
 
   try {
+    // Dynamic import so the `class RnnoiseWorkletNode extends AudioWorkletNode`
+    // declaration only executes in the browser — see the top-of-file
+    // note explaining why a static import would crash SSR.
+    const { RnnoiseWorkletNode, loadRnnoise } = await import("@sapphi-red/web-noise-suppressor");
+
     // RNNoise is pinned at 48 kHz mono; without an explicit sampleRate
     // the AudioContext picks the device's preferred rate (44.1 kHz on
     // many laptops) and the model outputs garbled audio.
     const ctx = new AudioContext({ sampleRate: 48000 });
-    const wasmBinary = await loadWasmOnce();
+    const wasmBinary = await loadWasmOnce(loadRnnoise);
     await ctx.audioWorklet.addModule(RNNOISE_WORKLET_URL);
 
     // Source from an audio-only view of the stream so the AudioContext

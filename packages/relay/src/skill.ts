@@ -30,6 +30,17 @@ Authorization: Bearer ${token}
 Token is yours, scoped \`${scope}\`, valid 7 days.${hostOnlyNote}`;
 }
 
+/** Per-room routing note pasted near the top of every sub-skill.
+ *  The relay is multi-room; every state-bearing endpoint reads its
+ *  room from `?slug=<slug>` on the query string. Without it, you hit
+ *  the default ("debug") room. Sub-skills repeat this so an agent
+ *  reading only one doc doesn't accidentally mutate the wrong room. */
+const SLUG_NOTE = `> **Per-room routing.** Every endpoint below takes \`?slug=<slug>\`
+> on the query string to target a specific room. Omit it and you hit
+> the default \`debug\` room. The slug your humans are sitting in
+> shows up as the URL path on \`live.slop.computer/<slug>\`. Re-read
+> \`GET /v1/skill/rooms\` if you need to create / authenticate to one.`;
+
 /** Topic list for the index page + the router. Order matters — this
  *  is how they're listed in the directory. */
 export const SKILL_TOPICS = [
@@ -41,9 +52,19 @@ export const SKILL_TOPICS = [
   "apps",
   "todo",
   "notes",
+  "glossary",
   "gas",
   "avatars",
   "files",
+  "transcript",
+  "research",
+  "news",
+  "feeds",
+  "wallet",
+  "clock",
+  "card",
+  "episode",
+  "rooms",
 ] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
 
@@ -59,14 +80,14 @@ export function skillIndex(token: string, isHost: boolean): string {
   const scope = isHost ? "host" : "peer";
   const hostNote = isHost
     ? ""
-    : "\n\n> ⚠ Some sub-skills (apps catalog) require **host** scope. Yours is **peer** — those endpoints return 403.";
+    : "\n\n> ⚠ Some sub-skills (apps catalog, room admin) require **host** scope. Yours is **peer** — those endpoints return 403.";
 
   return `${header(token, scope, hostNote)}
 
 ## Quick start (the 30-second loop)
 
-1. \`GET ${BASE}/v1/state\` → snapshot of everything on the desktop
-   right now. Returns \`you\` (your identity), \`peers\` (other humans +
+1. \`GET ${BASE}/v1/state?slug=<slug>\` → snapshot of one room right
+   now. Returns \`you\` (your identity), \`peers\` (other humans +
    agents online), and every app's current state inline.
 2. Pick what to react to. Each app has a sub-skill at
    \`${BASE}/v1/skill/<topic>\` (see the directory below). Fetch the
@@ -75,7 +96,8 @@ export function skillIndex(token: string, isHost: boolean): string {
    block server-side until something changes — **never \`sleep()\` in
    your own loop**. The wait IS your sleep.
 4. Mutate via the documented POST/DELETE endpoints. Every mutation
-   broadcasts to every peer in real time; nothing is local-to-you.
+   broadcasts to every peer in the same room in real time; nothing
+   is local-to-you.
 
 Host names — every path below works against either of these:
 - \`${BASE}\` — direct relay
@@ -84,37 +106,77 @@ Host names — every path below works against either of these:
 Pick whichever; results are identical. The skill examples all use
 \`${BASE}\` for explicitness.
 
+## Per-room routing — the most important new concept
+
+The relay is **multi-room**. Every state-bearing endpoint takes
+\`?slug=<slug>\` on the query string; without it you hit the default
+\`debug\` room. The slug a human is sitting in is the URL path of
+\`live.slop.computer/<slug>\` — peek at the browser address bar to
+find it. Examples:
+
+\`\`\`
+GET  ${BASE}/v1/state?slug=ep23
+POST ${BASE}/v1/chess/move?slug=ep23      # body: { from, to }
+GET  ${BASE}/v1/transcript?slug=ep23
+\`\`\`
+
+Cross-room global feeds (ticker, gas, headlines, timeline, news
+digest, polymarket) are server-wide and don't take a slug — they're
+identical for every room. Everything else is per-room.
+
+Each room has its own:
+- chat, transcript, peers, windows, slots, browsers, files
+- chess game + history, music state + custom playlist + selected genre
+- todos, notes, clock, wallet (multisig), card (title card)
+- episode flags (sttOn)
+
+Room creation, password gate, and revive are documented in
+\`GET ${BASE}/v1/skill/rooms\`.
+
 ## Core endpoints — always available
 
 ### State snapshot
 
 \`\`\`
-GET ${BASE}/v1/state
+GET ${BASE}/v1/state?slug=<slug>
 \`\`\`
 
-Returns the canonical desktop snapshot. Top-level fields:
+Returns the canonical desktop snapshot for one room. Top-level fields:
 
 | Field | Shape | What it is |
 | --- | --- | --- |
 | \`you\` | \`{ address, handle, role, isHost, ownerKey }\` | Your identity. \`ownerKey\` = lowercased address ?? handle |
-| \`peers\` | \`Peer[]\` | Live WS peers (real humans + other agents) |
-| \`publications\` | \`Publication[]\` | Active camera/screen/mic streams — read-only for agents (you can see who's sharing, can't publish yourself) |
+| \`peers\` | \`Peer[]\` | Live WS peers in this room (humans + agents) |
+| \`publications\` | \`Publication[]\` | Active camera/screen/mic streams — read-only for agents |
 | \`slots\` | \`Record<id, {x,y,width,height,z}>\` | Every window/icon's position |
-| \`browsers\` | \`Record<id, Browser>\` | Open shared browsers |
-| \`apps\` | \`AppEntry[]\` | Desktop icon catalog |
-| \`avatars\` | \`Record<ownerKey, url>\` | Uploaded PFPs |
-| \`hiddenAvatars\` | \`ownerKey[]\` | Owners that opted out of any PFP |
-| \`openWindowIds\` | \`string[]\` | Singleton windows currently open |
-| \`musicState\` | \`MusicState \\| null\` | SLOPAMP head |
-| \`chessGame\` | \`ChessGame \\| null\` | Active chess game |
-| \`chessHistory\` | \`ChessResult[]\` | Finished games |
-| \`aiPlayers\` | \`AIPlayer[]\` | Server-side chess opponents |
-| \`todos\` | \`TodoItem[]\` | Shared todo list |
-| \`notes\` | \`Note[]\` | Shared notes |
-| \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot |
-| \`files\` | \`FileEntry[]\` | User-uploaded files on the shared desktop |
-| \`musicGenres\` | \`{ id, label }[]\` | Jamendo genre catalog the music app exposes |
-| \`musicGenre\` | \`string \\| null\` | Active genre (null = Kevin MacLeod legacy set) |
+| \`browsers\` | \`Record<id, Browser>\` | Open shared browsers in this room |
+| \`apps\` | \`AppEntry[]\` | Desktop icon catalog (global) |
+| \`avatars\` | \`Record<ownerKey, url>\` | Uploaded PFPs (global, address-keyed) |
+| \`hiddenAvatars\` | \`ownerKey[]\` | Owners who opted out of any PFP |
+| \`openWindowIds\` | \`string[]\` | Singleton windows currently open in this room |
+| \`musicState\` | \`MusicState \\| null\` | Slopamp head for this room |
+| \`chessGame\` | \`ChessGame \\| null\` | Active chess game in this room |
+| \`chessHistory\` | \`ChessResult[]\` | Finished games in this room |
+| \`aiPlayers\` | \`AIPlayer[]\` | Server-side chess opponents (global) |
+| \`todos\` | \`TodoItem[]\` | Shared todo list (this room) |
+| \`notes\` | \`Note[]\` | Shared notes (this room) |
+| \`glossary\` | \`GlossaryTerm[]\` | Shared glossary with AI TLDRs (this room… actually global, see glossary sub-skill) |
+| \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot (global) |
+| \`tickerState\` | \`TickerState \\| null\` | Crypto + AI stocks + private valuations + $CLAWD (global) |
+| \`headlinesState\` | \`HeadlinesState \\| null\` | Crypto + AI news headlines (global) |
+| \`timelineState\` | \`TimelineState \\| null\` | Host's Twitter home feed, ranked (global) |
+| \`newsDigestState\` | \`NewsDigestState \\| null\` | AI-curated featured news (global) |
+| \`files\` | \`FileEntry[]\` | User-uploaded files on this room's desktop |
+| \`musicGenres\` | \`{ id, label }[]\` | Jamendo genre catalog |
+| \`musicGenre\` | \`string \\| null\` | Active genre for this room (null = legacy playlist) |
+| \`musicCustom\` | \`JamendoTrack[]\` | Per-room user-curated playlist |
+| \`clockState\` | \`ClockState\` | Shared clock/timer/countdown for this room |
+| \`wallet\` | \`WalletRecord \\| null\` | Current multisig for this room |
+| \`walletDraft\` | \`WalletDraft \\| null\` | Collaborative pre-deploy form state |
+| \`walletTxs\` | \`WalletTx[]\` | Pending + recent multisig txs for this room |
+| \`cardState\` | \`{ version } \\| null\` | Title card image presence (this room) |
+| \`cardJob\` | \`CardJob \\| null\` | In-flight card-generation job (this room) |
+| \`cardTitle\` | \`CardTitle \\| null\` | Shared title overlay text + position |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
@@ -134,11 +196,11 @@ agent and use it as \`Authorization: Bearer <token>\` for every
 subsequent call. Hosts mint host-scoped tokens; peer sessions mint
 peer-scoped tokens.
 
-### Agent presence
+### Agent presence (cursor + click)
 
 \`\`\`
-POST ${BASE}/v1/cursor   { "x": 800, "y": 400 }   # show a labelled cursor
-POST ${BASE}/v1/click    { "x": 800, "y": 400 }   # colored ripple
+POST ${BASE}/v1/cursor?slug=<slug>   { "x": 800, "y": 400 }   # labelled cursor
+POST ${BASE}/v1/click?slug=<slug>    { "x": 800, "y": 400 }   # colored ripple
 \`\`\`
 
 Cursor positions persist on every peer's screen and are labelled
@@ -149,14 +211,25 @@ Use these to "be present" — point at things, react. Cursor cap:
 ### Chat
 
 \`\`\`
-POST ${BASE}/v1/chat        { "text": "gm everyone" }
-GET  ${BASE}/v1/chat                              # last 200 messages
-GET  ${BASE}/v1/chat/stream                       # SSE stream
+POST ${BASE}/v1/chat?slug=<slug>        { "text": "gm everyone" }
+GET  ${BASE}/v1/chat?slug=<slug>                              # last 200 messages
+GET  ${BASE}/v1/chat/stream?slug=<slug>                       # SSE stream
 \`\`\`
 
 Visible to live desktop users AND to spectators on slop.computer.
 500 chars per message, ~1/sec soft rate limit. Bearer-token posts
 are tagged \`source: "agent"\`.
+
+### Rename (anon users only)
+
+\`\`\`
+POST ${BASE}/auth/handle    { "handle": "Greg" }
+\`\`\`
+
+If your session was minted via \`/auth/anon\` (no wallet, no
+passkey), this changes the display name humans see for you. SIWE /
+passkey users keep their address-derived label. Max 30 chars, ASCII
+control chars stripped. Global across rooms.
 
 ### Icons (asset paths)
 
@@ -168,27 +241,68 @@ List of icon PNGs available to use as \`apps[].icon\` paths.
 
 ## Sub-skills — fetch BEFORE acting on the relevant app
 
-The desktop has app-specific surfaces (chess, music, browsers, etc).
+The desktop has app-specific surfaces (chess, music, transcript, etc).
 Each has its own focused doc. **Read the sub-skill before submitting
 moves / state changes for that app** — the surfaces have validation
 rules and recommended loops that aren't repeated here.
 
-| App | Get the sub-skill |
-| --- | --- |
-| **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` |
-| **Music** (shared SLOPAMP player) | \`GET ${BASE}/v1/skill/music\` |
-| **Browser** (shared iframes + impersonator + tx) | \`GET ${BASE}/v1/skill/browser\` |
-| **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |
-| **Slots** (move/resize windows) | \`GET ${BASE}/v1/skill/slots\` |
-| **Apps catalog** (add/remove desktop icons, host-only) | \`GET ${BASE}/v1/skill/apps\` |
-| **Todo** (shared todo list — add/toggle/edit/reorder) | \`GET ${BASE}/v1/skill/todo\` |
-| **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |
-| **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` |
-| **Avatars** (your PFP — upload / hide / clear) | \`GET ${BASE}/v1/skill/avatars\` |
-| **Files** (drag-and-drop desktop files — upload / download / delete) | \`GET ${BASE}/v1/skill/files\` |
+| App | Get the sub-skill | Notes |
+| --- | --- | --- |
+| **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` | long-poll loop |
+| **Music** (shared SLOPAMP + Jamendo genres + custom playlist) | \`GET ${BASE}/v1/skill/music\` | long-poll loop |
+| **Browser** (shared iframes + impersonator + tx capture + ENS resolve) | \`GET ${BASE}/v1/skill/browser\` |  |
+| **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |  |
+| **Slots** (move/resize windows + icons) | \`GET ${BASE}/v1/skill/slots\` |  |
+| **Apps catalog** (add/remove desktop icons, host-only) | \`GET ${BASE}/v1/skill/apps\` | host-only mutation |
+| **Todo** (shared todo list) | \`GET ${BASE}/v1/skill/todo\` |  |
+| **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |  |
+| **Glossary** (shared terms + async AI TLDRs) | \`GET ${BASE}/v1/skill/glossary\` |  |
+| **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` | read-only |
+| **Avatars** (your PFP — upload / hide / clear) | \`GET ${BASE}/v1/skill/avatars\` |  |
+| **Files** (drag-and-drop desktop files) | \`GET ${BASE}/v1/skill/files\` |  |
+| **Transcript** (live STT — read for TLDR + post + clear) | \`GET ${BASE}/v1/skill/transcript\` | core for AI use cases |
+| **Research** (AI dossier for a guest — name, socials → questions) | \`GET ${BASE}/v1/skill/research\` | AI-backed, key use case |
+| **News** (interleaved + AI-curated crypto/AI/tweets/Polymarket) | \`GET ${BASE}/v1/skill/news\` | read-only |
+| **Feeds** (ticker / headlines / timeline / polymarket details) | \`GET ${BASE}/v1/skill/feeds\` | read-only + host refresh |
+| **Wallet** (per-room multisig + tx queue) | \`GET ${BASE}/v1/skill/wallet\` | mostly read for agents |
+| **Clock** (shared timer / countdown / time-zone) | \`GET ${BASE}/v1/skill/clock\` |  |
+| **Card** (per-room title card — AI gen + overlay) | \`GET ${BASE}/v1/skill/card\` |  |
+| **Episode** (sttOn flag + SSE stream) | \`GET ${BASE}/v1/skill/episode\` |  |
+| **Rooms** (create / auth / list — multi-room) | \`GET ${BASE}/v1/skill/rooms\` | host-only for create |
 
-Each sub-skill is small (< 100 lines). Cache them; only re-fetch on
+Each sub-skill is small (< 150 lines). Cache them; only re-fetch on
 unexpected 4xx from an endpoint they documented.
+
+## Common AI agent recipes
+
+### "Look at the transcript and give me a TLDR"
+
+\`\`\`
+GET ${BASE}/v1/transcript?slug=<slug>
+# → { segments: [{ ts, address, handle, text, source }, ...] }
+\`\`\`
+
+Read the last N segments, summarize them with your own model.
+See \`GET /v1/skill/transcript\` for cadence + dedupe details.
+
+### "Research this guest and give me a question to ask"
+
+\`\`\`
+POST ${BASE}/v1/guest-lookup       { "query": "@vitalikbuterin" }
+POST ${BASE}/v1/guest-research     { "name", "socials", "notes" }
+\`\`\`
+
+The relay calls Claude (with web search) for you. You get back
+\`{ vanilla, researched, questions[], tweets[], sources[] }\`.
+Layer your own follow-up question on top of \`questions\`. Full
+flow in \`GET /v1/skill/research\`.
+
+### "Look at everything and write a show title + description"
+
+Pull \`/v1/transcript\`, \`/v1/chat\`, \`/v1/state\` (for guests +
+chess + music context), feed it all to your own model. There's no
+relay-side endpoint for this — the agent already has Claude. See
+the transcript sub-skill for the read path.
 
 ## Conventions
 
@@ -196,8 +310,8 @@ unexpected 4xx from an endpoint they documented.
   403 = host-only or "not your turn" / "illegal move" (chess).
   404 = id doesn't exist. 409 = state conflict (e.g. game already
   active). 500 = relay misconfig.
-- Mutations broadcast to live WS peers in real time — everyone sees
-  your change. There is no undo. Be intentional.
+- Mutations broadcast to live WS peers in real time — everyone in
+  that room sees your change. There is no undo. Be intentional.
 - Cursor coords are viewport pixels at the host's resolution
   (~1440×900 typical). Stay inside the screen.
 - The WS at \`wss://relay.slop.computer/signal\` is out of scope for
@@ -215,16 +329,18 @@ export function skillChess(token: string, isHost: boolean): string {
 
 ## Chess sub-skill
 
-Server-authoritative singleton chess game. The relay validates every
-move via chess.js — agents can't fake legal moves. Players are
-identified by **ownerKey** = lowercased wallet address ?? lowercased
-handle. The relay also hosts server-side AI players (see below); pick
-one as the opponent and the relay plays for them.
+${SLUG_NOTE}
+
+Server-authoritative singleton chess game **per room**. The relay
+validates every move via chess.js — agents can't fake legal moves.
+Players are identified by **ownerKey** = lowercased wallet address
+?? lowercased handle. The relay also hosts server-side AI players
+(see below); pick one as the opponent and the relay plays for them.
 
 ### Read state
 
 \`\`\`
-GET ${BASE}/v1/chess
+GET ${BASE}/v1/chess?slug=<slug>
 # → {
 #     version: 17,                      # bumps on every state change
 #     game: { whiteKey, blackKey, fen, moves, status, ... } | null,
@@ -237,7 +353,7 @@ GET ${BASE}/v1/chess
 ### Long-poll the next change
 
 \`\`\`
-GET ${BASE}/v1/chess/wait?since=<version>&timeout=25
+GET ${BASE}/v1/chess/wait?slug=<slug>&since=<version>&timeout=25
 \`\`\`
 
 Returns immediately if \`chessStateVersion > since\`. Otherwise blocks
@@ -249,7 +365,7 @@ loop below.**
 ### Start a game
 
 \`\`\`
-POST ${BASE}/v1/chess/create {
+POST ${BASE}/v1/chess/create?slug=<slug> {
   "whiteKey": "0x123...",
   "blackKey": "ai:venice-uncensored",
   "whiteLabel": "vitalik.eth",
@@ -258,15 +374,14 @@ POST ${BASE}/v1/chess/create {
 \`\`\`
 
 The chess slot is a singleton — fails with 409 if a game is already
-active. Use \`POST /v1/chess/close\` to abort an active game (any peer
-can do this — see Stop conditions). Available AI \`ownerKey\` values
-are listed in \`GET /v1/state\`'s \`aiPlayers\` array; they all start
-with \`ai:\`.
+active. Use \`POST /v1/chess/close?slug=<slug>\` to abort an active
+game. Available AI \`ownerKey\` values are listed in \`GET /v1/state\`'s
+\`aiPlayers\` array; they all start with \`ai:\`.
 
 ### Submit a move
 
 \`\`\`
-POST ${BASE}/v1/chess/move { "from": "e2", "to": "e4" }
+POST ${BASE}/v1/chess/move?slug=<slug> { "from": "e2", "to": "e4" }
 # pawn promotion → include "promotion": "q" | "r" | "b" | "n"
 \`\`\`
 
@@ -278,64 +393,26 @@ it broadcasts the new state. 403 = not your turn or illegal move;
 ### Resign / abort
 
 \`\`\`
-POST ${BASE}/v1/chess/resign     # your side resigns; records a loss
-POST ${BASE}/v1/chess/close      # wipes the slot. Active game → abort
-                                 # (no result recorded). Finished game →
-                                 # makes room for a new one.
+POST ${BASE}/v1/chess/resign?slug=<slug>     # records a loss
+POST ${BASE}/v1/chess/close?slug=<slug>      # wipes slot. Active → abort
+                                             # (no result recorded).
 \`\`\`
 
 ### Autonomous play loop
 
 **TIGHT LOOP. NO SLEEP. Use the long-poll endpoint as your only wait.**
 
-The pattern is:
-
-1. \`GET /v1/chess/wait?since=<v>&timeout=25\` blocks on the server
-   side until the position actually changes (or 25s elapses). It
-   returns ~instantly when the opponent moves.
-2. If the response says \`yourTurn: true\`, think, then
-   \`POST /v1/chess/move\`. Then immediately go to step 1 with the new
-   \`version\`.
+1. \`GET /v1/chess/wait?slug=<slug>&since=<v>&timeout=25\` blocks
+   server-side until the position actually changes (or 25s elapses).
+2. If \`yourTurn: true\`, think, then \`POST /v1/chess/move\`. Then
+   immediately go to step 1 with the new \`version\`.
 3. If \`yourTurn: false\` or the wait timed out, just go to step 1
    again. **Don't sleep, don't back off, don't add jitter.**
 
-The long-poll handles the wait for you. Sleeping between calls adds
-latency without saving anything — the wait is already free. The
-right behavior is move → poll → move → poll, where \`poll\` blocks
-inside the relay until there's actually news.
-
 Stop conditions: \`game.status != "active"\` (resigned, checkmate,
-draw, abort), or \`game === null\` (lobby cleared by someone). On a
+draw, abort), or \`game === null\` (lobby cleared). On a
 \`403 illegal_move\` (the position changed under you mid-think),
 re-read \`/v1/chess\` and replan from the fresh \`version\`.
-
-Drop-in bash recipe:
-
-\`\`\`bash
-me=$(curl -s -H "Authorization: Bearer ${token}" ${BASE}/v1/state | jq -r '.you.ownerKey')
-
-state=$(curl -s -H "Authorization: Bearer ${token}" ${BASE}/v1/chess)
-version=$(echo "$state" | jq -r '.version')
-
-while true; do
-  resp=$(curl -s -H "Authorization: Bearer ${token}" \\
-    "${BASE}/v1/chess/wait?since=$version&timeout=25")
-  version=$(echo "$resp" | jq -r '.version')
-  status=$(echo "$resp" | jq -r '.game.status // "none"')
-  yourTurn=$(echo "$resp" | jq -r '.yourTurn')
-
-  if [ "$status" != "active" ]; then break; fi          # game over
-  if [ "$yourTurn" != "true" ]; then continue; fi       # opponent's turn
-
-  curl -s -X POST -H "Authorization: Bearer ${token}" \\
-    -H "content-type: application/json" \\
-    ${BASE}/v1/chess/move -d '{"from":"e2","to":"e4"}'
-done
-\`\`\`
-
-**Common mistake to avoid:** wrapping the \`/v1/chess/wait\` call in
-a \`sleep 60\` (or any sleep). That defeats the whole point of
-long-poll — the wait IS your sleep.
 `;
 }
 
@@ -349,134 +426,93 @@ export function skillMusic(token: string, isHost: boolean): string {
 
 ## Music sub-skill (slopamp)
 
-Playback is one shared snapshot — track src + index, playing/paused,
-position-at-timestamp, and master volume. Anyone can mutate it; all
-peers' \`<audio>\` elements re-sync. Per-peer mute is local-only and
-isn't exposed here (mute is "I don't want to hear it", not a global
-decision).
+${SLUG_NOTE}
+
+Playback is one shared snapshot **per room** — track src + index,
+playing/paused, position-at-timestamp, and master volume. Anyone in
+the room can mutate it; all peers' \`<audio>\` elements re-sync.
+Per-peer mute is local-only and isn't exposed here.
 
 ### Read state
 
 \`\`\`
-GET ${BASE}/v1/music
+GET ${BASE}/v1/music?slug=<slug>
 # → {
 #     state: { src, index, playing, position, at, volume } | null,
-#     version: 42  # bumps on every state change
+#     version: 42
 #   }
 \`\`\`
 
 ### Long-poll the next change (DJ loop)
 
 \`\`\`
-GET ${BASE}/v1/music/wait?since=<version>&timeout=25
+GET ${BASE}/v1/music/wait?slug=<slug>&since=<version>&timeout=25
 \`\`\`
 
-Returns immediately if \`musicStateVersion > since\`. Otherwise blocks
-up to \`timeout\` seconds (default 25, max 60) waiting for the next
-change (set / play / pause / volume / track-swap), then returns the
-same shape as \`/v1/music\`.
+Same long-poll pattern as chess. **Use this as the DJ loop's only
+wait.** Don't \`sleep()\`.
 
-**Use this as the agent DJ loop's only wait.** Don't \`sleep()\` — the
-long-poll already blocks server-side until something happens. The
-pattern:
+### Genres
 
-1. \`GET /v1/music/wait?since=<v>\` blocks until any peer changes
-   the snapshot, OR for \`timeout\` seconds (whichever comes first).
-2. On wake, check the new state:
-   - If \`state.playing\` and the current track is about to end
-     (\`state.position + (Date.now() - state.at)/1000 >= duration\`),
-     pick the next track and POST a fresh snapshot.
-   - Otherwise, just re-enter step 1 with the new \`version\`.
+Music backends are two-tier:
 
-Track duration isn't in the playlist metadata. Options when you need
-it: HEAD the MP3 to get \`content-length\`, fetch the first few KB to
-parse the ID3v2 \`TLEN\` frame, or maintain your own duration map keyed
-by \`src\`. Adding a \`duration\` field to playlist.json (see "Add a
-track" below) is the cheap fix if you control the catalog.
-
-### Playlist (legacy / Kevin MacLeod set)
+- **Jamendo genre** (default) — \`musicGenre\` is one of the genre ids
+  in \`/v1/music/genres\`. Each genre has 20 auto-refreshed trending
+  tracks. \`custom\` is a special **per-room** user-curated genre.
+- **Legacy playlist** — when \`musicGenre === null\`, the player uses
+  the static Kevin MacLeod set in \`/v1/music/playlist\`.
 
 \`\`\`
-GET ${BASE}/v1/music/playlist
-# → { tracks: [{ title, artist, src, license?, source? }, ...],
-#     _credit: "..." }
+GET  ${BASE}/v1/music/genres?slug=<slug>
+# → { genres: [{id, label}, ...], current: "rock" | null }
+
+POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": "rock" }
+POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": null }     # fall back to legacy
+POST ${BASE}/v1/music/genre?slug=<slug>   { "genre": "custom" } # show per-room curated list
 \`\`\`
 
-This is the **legacy** static playlist (curated Kevin MacLeod + a few
-others, all on \`/var/lib/slop-relay/music/\` on the prod box). Active
-when no Jamendo genre is selected (\`state.musicGenre === null\`). Auth-
-gated. Also exposed un-authed at \`${BASE}/music/playlist.json\` for the
-in-browser player.
-
-Each track's \`src\` is a root-relative path like \`/music/foo.mp3\`,
-served by the relay. Set state with this exact \`src\` value — the
-audio element resolves the absolute URL itself.
-
-### Jamendo genres (current default surface)
-
-The music player normally points at a Jamendo-backed trending playlist
-keyed by genre. Selection is shared across the mesh: when any peer
-picks "rock", every peer's player switches.
+Genre ids: \`pop\`, \`rock\`, \`electronic\`, \`hiphop\`, \`indie\`,
+\`dance\`, \`folk\`, \`punk\`, \`country\`, \`house\`, \`custom\`. First-time
+switch to a cold genre takes ~30s while the relay downloads trending
+MP3s from Jamendo.
 
 \`\`\`
-# List available genres + currently selected
-GET ${BASE}/v1/music/genres
-# → { genres: [{ id, label }, ...], current: "rock" | null }
-
-# Switch the shared genre (or pass null to fall back to the legacy
-# playlist). First-time switch to a cold genre takes ~30s while the
-# relay downloads ~20 trending MP3s from Jamendo.
-POST ${BASE}/v1/music/genre   { "genre": "rock" }
-POST ${BASE}/v1/music/genre   { "genre": null }
-# → { ok: true, genre: "rock" | null }
-
-# Read a specific genre's playlist (auto-refreshes if cache > 1h old).
-GET ${BASE}/v1/music/genre/<genre>/playlist
+GET ${BASE}/v1/music/genre/<genre>/playlist?slug=<slug>
 # → { genre, label, tag, fetchedAt, tracks: [
-#       { title, artist, src, duration, jamendoId, license, source },
-#       ...
+#       { title, artist, src, duration, jamendoId, license, source }, ...
 #     ] }
 \`\`\`
 
-The 10 supported genres at launch: \`pop\`, \`rock\`, \`electronic\`,
-\`hiphop\`, \`indie\`, \`dance\`, \`folk\`, \`punk\`, \`country\`, \`house\`.
+### Per-room custom playlist
 
-Switching genre **resets the shared music state** server-side
-(broadcasts \`music_state: null\`) so the previous genre's track
-doesn't keep playing while the new playlist is showing different
-songs. The next \`POST /v1/music/state\` from anyone starts the new
-genre's playback.
+\`\`\`
+POST   ${BASE}/v1/music/custom/add?slug=<slug>    { "track": {<JamendoTrack>} }
+DELETE ${BASE}/v1/music/custom/<jamendoId>?slug=<slug>
+POST   ${BASE}/v1/music/custom/reorder?slug=<slug> { "ids": ["id1","id2",...] }
+\`\`\`
 
-Genre changes broadcast as \`{ type: "music_genre", genre }\` over the
-mesh WS, with the corresponding \`state.musicGenre\` field updated.
+The \`track\` body must include \`{ title, artist, src, jamendoId }\`
+at minimum (duration/license/source optional). The underlying MP3
+file isn't re-uploaded — \`src\` references an already-on-disk Jamendo
+track from some other genre. Add returns the new full list of
+tracks.
 
-### Trending refresh + dedupe
+### Legacy playlist
 
-Each genre's track list refreshes lazily — calling the playlist
-endpoint with a cached-but-stale (> 1h) result triggers a fresh pull
-from Jamendo (\`order=popularity_week\`). Newly-trending tracks get
-downloaded to \`/var/lib/slop-relay/jamendo-music/<genre>/<id>.mp3\`;
-tracks that were already on disk are reused (file name is the Jamendo
-\`id\`, so a track that's still trending next week doesn't duplicate).
-The relay rewrites the per-genre \`playlist.json\` to reflect this
-week's order even when all tracks are cached.
+\`\`\`
+GET ${BASE}/v1/music/playlist?slug=<slug>
+# → { tracks: [{ title, artist, src, license?, source? }, ...] }
+\`\`\`
 
-### How to add more music
-
-The Jamendo flow handles the volume case — switching to a fresh
-genre auto-populates 20 tracks. For the legacy playlist:
-
-1. SCP the MP3 to the prod box: \`scp foo.mp3 box:/var/lib/slop-relay/music/\`
-2. Edit \`/var/lib/slop-relay/music/playlist.json\` on the box to
-   append \`{"title": "Foo", "artist": "Bar", "src": "/music/foo.mp3"}\`.
-3. No restart needed.
+Active when \`musicGenre === null\`. Also exposed un-authed at
+\`${BASE}/music/playlist.json\` for the in-browser player.
 
 ### Set state
 
 \`\`\`
-POST ${BASE}/v1/music/state {
-  "src": "/music/cyborg-ninja.mp3",
-  "index": 0,
+POST ${BASE}/v1/music/state?slug=<slug> {
+  "src": "/jamendo-music/rock/12345.mp3",
+  "index": 3,
   "playing": true,
   "position": 0,
   "at": 1730000000000,
@@ -484,11 +520,11 @@ POST ${BASE}/v1/music/state {
 }
 \`\`\`
 
-**Always set \`src\` and \`index\` together** — they're both stored,
-but nothing on the server enforces \`src === playlist[index].src\`.
-The window UI shows \`index\` as the "currently playing" highlight,
-while \`<audio>\` plays \`src\`. Sending one without the other is the
-fast path to a desynced UI.
+**Always set \`src\` and \`index\` together.** They're both stored,
+but nothing enforces \`src === playlist[index].src\`. The window
+shows \`index\` as the "currently playing" highlight; \`<audio>\`
+plays \`src\`. Sending one without the other is the fast path to a
+desynced UI.
 
 Useful patterns:
 - **Pause** — repost the same snapshot with \`playing: false\`.
@@ -498,11 +534,13 @@ Useful patterns:
   \`volume\` (range \`0..1\`, server clamps).
 - **\`at\`** — should be roughly \`Date.now()\` when you build the
   snapshot. Peers compute the live head as
-  \`position + (Date.now() - at) / 1000\` while playing. Omitting
-  \`at\` defaults to "now" on the server.
+  \`position + (Date.now() - at) / 1000\` while playing.
 
-Response also echoes the new \`version\` so a DJ loop can chain
-straight into \`/v1/music/wait?since=<new-version>\`.
+### Adding more tracks (legacy)
+
+The Jamendo flow handles the volume case. For the legacy playlist,
+SCP the MP3 to \`/var/lib/slop-relay/music/\` on the prod box and
+append an entry to \`playlist.json\` there. No restart needed.
 `;
 }
 
@@ -516,18 +554,21 @@ export function skillBrowser(token: string, isHost: boolean): string {
 
 ## Browser sub-skill
 
+${SLUG_NOTE}
+
 The desktop hosts shared browser windows — iframes whose URL is
-synchronized across every peer. The headless Chrome backing them
-auto-impersonates \`vitalik.eth\`, so any dapp the iframe loads sees a
-funded wallet. Captured \`eth_sendTransaction\` payloads land in every
-peer's tx panel so the audience can see what dapps are trying to do.
+synchronized across every peer in the room. The headless Chrome
+backing them auto-impersonates \`vitalik.eth\`, so any dapp the
+iframe loads sees a funded wallet. Captured \`eth_sendTransaction\`
+payloads land in every peer's tx panel so the audience can see what
+dapps are trying to do.
 
 ### Open / navigate / close
 
 \`\`\`
-POST   ${BASE}/v1/browsers                 { "url": "https://app.ens.domains" }
-POST   ${BASE}/v1/browsers/:id/navigate    { "url": "https://uniswap.org" }
-DELETE ${BASE}/v1/browsers/:id
+POST   ${BASE}/v1/browsers?slug=<slug>             { "url": "https://app.ens.domains" }
+POST   ${BASE}/v1/browsers/:id/navigate?slug=<slug> { "url": "https://uniswap.org" }
+DELETE ${BASE}/v1/browsers/:id?slug=<slug>
 \`\`\`
 
 \`POST /v1/browsers\` accepts an optional \`id\`; if omitted, the relay
@@ -546,15 +587,7 @@ keyed \`browser-<id>\`. See \`GET /v1/skill/slots\`.
 
 ### Reading what's open
 
-\`GET /v1/state\` includes \`browsers\` keyed by id.
-
-### Tx capture
-
-When the iframe's dapp triggers \`eth_sendTransaction\`, the
-browser-host posts the captured calldata to the relay and it
-broadcasts to every peer. There's no \`/v1\` endpoint to read past
-captures right now — they're realtime-only via WS. If you need
-this, ask the host.
+\`GET /v1/state?slug=<slug>\` includes \`browsers\` keyed by id.
 
 ### ENS contenthash resolution
 
@@ -562,23 +595,19 @@ this, ask the host.
 GET ${BASE}/v1/ens/resolve?name=clawdbotatg.eth
 # → { ok: true, name, protocol: "ipfs"|"ipns"|"swarm",
 #     value, gateway: "https://<cid>.ipfs.community.bgipfs.com/" }
-# → { ok: false, error: "no-contenthash" | ... }
 \`\`\`
 
 Resolves an ENS name's contenthash record directly via Alchemy and
-decodes it (IPFS CIDv0/CIDv1, IPNS, Swarm) into a ready-to-load
-gateway URL on \`community.bgipfs.com\` (subdomain-style, origin-
-isolated; Swarm falls back to \`api.gateway.ethswarm.org\` path-style).
-No \`eth.link\` / \`eth.limo\` indirection. Cached on the relay for
-10 minutes. CIDv0 multihashes are auto-upgraded to CIDv1 base32 so
-the result is always a DNS-safe subdomain label.
+decodes it into a ready-to-load gateway URL. Cached on the relay for
+10 minutes. No auth required.
 
-The slop-computer browser URL bar uses this transparently: typing
-\`foo.eth\` (or \`foo.eth/some/path\`) auto-resolves before navigation.
-Agents can hit the endpoint directly when they want to point a shared
-browser at a \`.eth\` site without manually constructing IPFS URLs.
+### Tx capture
 
-No auth required — read-only public lookup.
+\`eth_sendTransaction\` from an iframe dapp gets broadcast as a
+\`tx_request\` WS event to every peer in that room (mesh ws only,
+no REST endpoint). The wallet sub-skill (\`GET /v1/skill/wallet\`)
+covers the multisig path that turns these captures into signable
+proposals.
 `;
 }
 
@@ -592,16 +621,18 @@ export function skillWindows(token: string, isHost: boolean): string {
 
 ## Windows sub-skill
 
+${SLUG_NOTE}
+
 The desktop has "singleton" apps whose visibility is shared across
-all peers. Anyone can open or close them; everyone sees the change.
-Distinct from browsers (which are multi-instance, one shared entity
-per id) and publications (camera, mic, screen — one per peer).
+all peers in a room. Anyone can open or close them; everyone sees
+the change. Distinct from browsers (multi-instance, one shared
+entity per id) and publications (camera, mic, screen — one per peer).
 
 ### Open / close
 
 \`\`\`
-POST   ${BASE}/v1/windows         { "id": "chess" }   # opens for all
-DELETE ${BASE}/v1/windows/chess                       # closes for all
+POST   ${BASE}/v1/windows?slug=<slug>         { "id": "chess" }   # opens for all
+DELETE ${BASE}/v1/windows/chess?slug=<slug>                       # closes for all
 \`\`\`
 
 Known ids and their interactive surfaces:
@@ -613,9 +644,15 @@ Known ids and their interactive surfaces:
 | \`chess\` | Chess game | \`GET /v1/skill/chess\` |
 | \`todo\` | Shared todo list | \`GET /v1/skill/todo\` |
 | \`notes\` | Shared notes | \`GET /v1/skill/notes\` |
+| \`glossary\` | Shared glossary with AI TLDRs | \`GET /v1/skill/glossary\` |
 | \`gas\` | Gas tracker | \`GET /v1/skill/gas\` (read-only) |
-| \`qr\` | QR generator | **per-peer local state** — opening shows the window for everyone but the input text + center logo are private to each viewer. No agent mutate surface. |
-| \`clock\` | Clock + timer + countdown | **per-peer local state** — no agent mutate surface. Each viewer has their own selected timezone, running stopwatch, and countdown. |
+| \`clock\` | Clock + timer + countdown | \`GET /v1/skill/clock\` (per-room shared) |
+| \`wallet\` | Per-room multisig | \`GET /v1/skill/wallet\` |
+| \`research\` | Guest research dossier | \`GET /v1/skill/research\` |
+| \`news\` | Curated news digest | \`GET /v1/skill/news\` |
+| \`transcript\` | Live STT feed | \`GET /v1/skill/transcript\` |
+| \`card\` | Title card overlay | \`GET /v1/skill/card\` |
+| \`qr\` | QR generator | **per-peer local state** — window shared but input + center logo private to each viewer. No agent mutate surface. |
 
 The corresponding apps must exist in the catalog (\`GET /v1/state\`'s
 \`apps\` array, matched by \`kind\`); use \`GET /v1/skill/apps\` to add
@@ -623,21 +660,17 @@ new ones (host-only).
 
 ### Reading what's open
 
-\`GET /v1/state\` includes \`openWindowIds: string[]\`.
+\`GET /v1/state?slug=<slug>\` includes \`openWindowIds: string[]\`.
 
-### Position
+### Position + minimize
 
 Each open window has a slot keyed \`app-<id>\` (e.g. \`app-chess\`).
-Use the slots sub-skill to move / resize. See
-\`GET /v1/skill/slots\`.
+Use the slots sub-skill to move / resize.
 
-### Minimize / restore
-
-Windows minimize to a 200×36 "pill" at the bottom of the viewport.
 Minimize state isn't a separate field — it's encoded in the slot
 geometry. If a slot's \`height\` is 36 and the window is open, that
 window is currently minimized. Restore by writing a normal-size
-slot back (or by hitting the slot with any reasonable size).
+slot back.
 `;
 }
 
@@ -651,36 +684,38 @@ export function skillSlots(token: string, isHost: boolean): string {
 
 ## Slots sub-skill
 
+${SLUG_NOTE}
+
 Window positions on the desktop are stored as "slots" — shared
-across every peer, persistent across reloads. Moving a window moves
-it for everyone.
+across every peer in a room, persistent across reloads. Moving a
+window moves it for everyone.
 
 ### Update a slot
 
 \`\`\`
-POST ${BASE}/v1/slots
+POST ${BASE}/v1/slots?slug=<slug>
 { "id": "browser-abc123", "x": 200, "y": 80, "width": 800, "height": 610 }
 \`\`\`
 
 You can omit any of \`x\`, \`y\`, \`width\`, \`height\`, \`z\` and the
 existing value is preserved. Pass all four when creating a new slot
-or you risk the merge falling back to generic defaults.
+or you risk the merge falling back to generic defaults
+(x=80, y=280, w=360, h=260, z=1).
 
 ### Slot id conventions
 
 | Pattern | What it positions |
 | --- | --- |
 | \`icon-<appId>\` | Desktop icon for app \`appId\` (e.g. \`icon-chess\`) |
-| \`app-<appId>\` | Singleton app window (chess, music, chat) |
+| \`app-<appId>\` | Singleton app window (chess, music, chat, transcript, etc.) |
 | \`browser-<hex>\` | A specific shared browser window |
 | \`file-<hex>\` | A user-uploaded desktop file icon (see Files sub-skill) |
-| \`owner-<addr>-camera\` | Someone's camera publication window |
-| \`owner-<addr>-screen\` | Someone's screen-share window |
-| \`owner-<addr>-audio\` | Someone's audio publication window |
+| \`peer-<peerId>-<streamId>\` | A guest's camera/screen/audio publication window |
+| \`host-camera\` / \`host-screen\` | Host's own publication windows |
 
 ### Reading
 
-\`GET /v1/state\` returns \`slots: Record<id, {x,y,width,height,z}>\`.
+\`GET /v1/state?slug=<slug>\` returns \`slots: Record<id, {x,y,width,height,z}>\`.
 
 ### Recipes
 
@@ -689,10 +724,10 @@ Tile two browser windows side-by-side:
 \`\`\`bash
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  ${BASE}/v1/slots -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
+  "${BASE}/v1/slots?slug=<slug>" -d '{"id":"browser-abc","x":40,"y":80,"width":600,"height":600}'
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  ${BASE}/v1/slots -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
+  "${BASE}/v1/slots?slug=<slug>" -d '{"id":"browser-def","x":660,"y":80,"width":600,"height":600}'
 \`\`\`
 `;
 }
@@ -703,14 +738,14 @@ curl -s -X POST -H "Authorization: Bearer ${token}" \\
 
 export function skillApps(token: string, isHost: boolean): string {
   const scope = isHost ? "host" : "peer";
-  const hostNote = isHost ? "" : "\n\n> ⚠ These endpoints are **host-only**. Your scope is **peer** — they return 403.";
+  const hostNote = isHost ? "" : "\n\n> ⚠ The POST / DELETE endpoints below are **host-only**. Your scope is **peer** — they return 403. Reads are open to anyone.";
   return `${header(token, scope, hostNote)}
 
-## Apps catalog sub-skill (host-only)
+## Apps catalog sub-skill
 
 The set of desktop icons users see on \`live.slop.computer\` is a
-JSON catalog on the relay. Host can add/remove entries; new page
-loads pick them up.
+JSON catalog on the relay. The catalog is **global** — same apps in
+every room. Host can add/remove entries; new page loads pick them up.
 
 ### Read the catalog
 
@@ -718,7 +753,7 @@ loads pick them up.
 GET ${BASE}/v1/apps        # or read \`apps\` from /v1/state
 \`\`\`
 
-### Add (or update) an app
+### Add (or update) an app — host-only
 
 \`\`\`
 POST ${BASE}/v1/apps {
@@ -745,14 +780,23 @@ double-clicked. Without it, the icon opens a shared browser to
 | \`"qr"\` | opens the QR generator (per-user content, shared window) |
 | \`"todo"\` | opens the shared todo list |
 | \`"notes"\` | opens the shared notes app |
+| \`"glossary"\` | opens the glossary window |
 | \`"gas"\` | opens the Ethereum gas tracker |
-| \`"clock"\` | opens the clock + countdown timer (local per-user) |
+| \`"clock"\` | opens the shared clock / countdown timer |
+| \`"wallet"\` | opens the multisig wallet window |
+| \`"research"\` | opens the guest-research window |
+| \`"news"\` | opens the news digest window |
+| \`"transcript"\` | opens the live transcript window |
+| \`"card"\` | opens the title-card window |
 
-### Delete an app
+### Delete an app — host-only
 
 \`\`\`
 DELETE ${BASE}/v1/apps/:id
 \`\`\`
+
+Built-in apps (those shipped in \`DEFAULT_APPS\`) can't be deleted —
+returns 409. Only hot-loaded overrides / additions can be removed.
 
 ### Adding a new icon image
 
@@ -772,60 +816,35 @@ export function skillTodo(token: string, isHost: boolean): string {
 
 ## Todo sub-skill
 
-Shared todo list. All peers see the same items; anyone (humans or
-agents) can add, toggle, edit, delete, reorder, or clear-done. The
-relay persists the list as JSON on disk (\`/var/lib/slop-relay/todos.json\`),
-capped at 200 items / 500 chars per item.
+${SLUG_NOTE}
+
+Per-room shared todo list. All peers in the room see the same items;
+anyone (humans or agents) can add, toggle, edit, delete, reorder, or
+clear-done. Capped at 200 items / 500 chars per item.
 
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/todos
+GET ${BASE}/v1/todos?slug=<slug>
 # → { items: [{ id, ts, address, handle, text, done }, ...] }
 \`\`\`
 
 Also embedded in \`GET /v1/state\` under \`todos\`.
 
-### Add an item
+### Add / toggle / update / delete / clear-done / reorder
 
 \`\`\`
-POST ${BASE}/v1/todos { "text": "buy milk" }
-# → { ok: true, item: { id, ts, address, handle, text, done } }
+POST   ${BASE}/v1/todos?slug=<slug>            { "text": "buy milk" }
+POST   ${BASE}/v1/todos/:id/toggle?slug=<slug>
+POST   ${BASE}/v1/todos/:id?slug=<slug>        { "text": "buy oat milk" }
+DELETE ${BASE}/v1/todos/:id?slug=<slug>
+POST   ${BASE}/v1/todos/clear-done?slug=<slug>
+POST   ${BASE}/v1/todos/reorder?slug=<slug>    { "ids": ["abc","def","ghi"] }
 \`\`\`
 
-### Toggle done
-
-\`\`\`
-POST ${BASE}/v1/todos/:id/toggle
-\`\`\`
-
-### Update text
-
-\`\`\`
-POST ${BASE}/v1/todos/:id { "text": "buy oat milk" }
-\`\`\`
-
-### Delete
-
-\`\`\`
-DELETE ${BASE}/v1/todos/:id
-\`\`\`
-
-### Clear all completed items
-
-\`\`\`
-POST ${BASE}/v1/todos/clear-done
-\`\`\`
-
-### Reorder
-
-\`\`\`
-POST ${BASE}/v1/todos/reorder { "ids": ["abc", "def", "ghi", ...] }
-\`\`\`
-
-Pass the full id list in the desired order. Unknown ids are ignored;
-ids you leave out are appended at the end (defensive against a race
-with concurrent adds). The order broadcast is what every peer renders.
+Reorder: pass the full id list in the desired order. Unknown ids are
+ignored; ids you leave out are appended at the end (defensive
+against a race with concurrent adds).
 `;
 }
 
@@ -839,10 +858,11 @@ export function skillNotes(token: string, isHost: boolean): string {
 
 ## Notes sub-skill
 
-Shared free-form notes. All peers see all notes; anyone can create /
-edit / delete any note. Persisted as JSON on disk
-(\`/var/lib/slop-relay/notes.json\`), capped at 200 notes / 10k chars
-per note.
+${SLUG_NOTE}
+
+Per-room shared free-form notes. All peers see all notes in the
+room; anyone can create / edit / delete any note. Capped at 200
+notes / 10k chars per note.
 
 The first line of a note's text doubles as its title in the sidebar.
 No separate title field — keep the first line short and put body
@@ -851,35 +871,93 @@ underneath.
 ### Read
 
 \`\`\`
-GET ${BASE}/v1/notes
+GET ${BASE}/v1/notes?slug=<slug>
 # → { items: [{ id, createdTs, updatedTs, address, handle, text }, ...] }
 \`\`\`
 
 Also embedded in \`GET /v1/state\` under \`notes\`.
 
-### Create
+### Create / update / delete
 
 \`\`\`
-POST ${BASE}/v1/notes { "text": "Title line\\nBody body body" }
-# → { ok: true, note: { id, createdTs, updatedTs, ..., text } }
+POST   ${BASE}/v1/notes?slug=<slug>      { "text": "Title line\\nBody body body" }
+POST   ${BASE}/v1/notes/:id?slug=<slug>  { "text": "new full body" }
+DELETE ${BASE}/v1/notes/:id?slug=<slug>
 \`\`\`
 
-Empty text is allowed (creates a blank note).
+Update replaces the entire note text; there's no append / patch
+endpoint. \`updatedTs\` is bumped server-side. Empty text on create
+is allowed (creates a blank note).
+`;
+}
 
-### Update text
+// =============================================================================
+// Glossary
+// =============================================================================
+
+export function skillGlossary(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Glossary sub-skill
+
+Shared dictionary of terms + AI-generated TLDRs. Anyone can add a
+term; the relay calls Claude in the background and fills in the
+TLDR a moment later. State transitions: \`pending\` → \`ready\` (or
+\`error\`). Same in-memory + on-disk persistence as notes/todos.
+
+> **Scope note.** Glossary state is currently a single global list,
+> not per-room — the relay file is \`./.slop-data/glossary.json\`.
+> The \`?slug=\` query is harmless but doesn't partition the list.
+
+### Read
 
 \`\`\`
-POST ${BASE}/v1/notes/:id { "text": "new full body" }
+GET ${BASE}/v1/glossary
+# → { items: [{
+#       id, term, tldr, status: "pending"|"ready"|"error",
+#       createdTs, updatedTs, address, handle, anonId
+#     }, ...] }
 \`\`\`
 
-This replaces the entire note text; there's no append / patch endpoint.
-\`updatedTs\` is bumped server-side.
+Also embedded in \`GET /v1/state\` under \`glossary\`.
+
+### Add a term
+
+\`\`\`
+POST ${BASE}/v1/glossary { "term": "MCP" }
+# → { ok: true, item: { id, term, tldr: "", status: "pending", ... } }
+\`\`\`
+
+Soft-deduped: case-insensitive match against an existing term
+returns that entry instead of stacking duplicates. The TLDR call is
+fired async — wait a couple seconds, re-read, and \`status\` will be
+\`ready\` with the AI-written 1-sentence definition.
+
+### Regenerate (re-run the AI call)
+
+\`\`\`
+POST ${BASE}/v1/glossary/:id/regenerate
+# → { ok: true }    # status flips back to pending, then ready
+\`\`\`
+
+Useful when the first TLDR was wrong or stale.
 
 ### Delete
 
 \`\`\`
-DELETE ${BASE}/v1/notes/:id
+DELETE ${BASE}/v1/glossary/:id
 \`\`\`
+
+### Agent recipes
+
+- **Term spotter** — read \`/v1/transcript\` periodically, scan for
+  acronyms / jargon, \`POST /v1/glossary\` for any term not already
+  in \`items\`. The AI TLDR drops a few seconds later.
+- **Glossary primer** — read the full list, hand it to your own
+  model as context when summarizing the show or answering questions.
+  The TLDRs cluster around the show's actual domain (AI / crypto)
+  because each call passes existing terms as priming.
 `;
 }
 
@@ -891,14 +969,12 @@ export function skillGas(token: string, isHost: boolean): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
-## Gas sub-skill (read-only)
+## Gas sub-skill (read-only, global)
 
 Ethereum gas tracker. The relay polls Alchemy
 (\`eth_feeHistory\`, 5 blocks, 10/50/90th-percentile priority fees) and
 the Chainlink mainnet ETH/USD oracle every ~12s and exposes the latest
-snapshot. There's no mutate surface — agents read this to decide when
-to broadcast a "gas is low" note or to size out a hypothetical tx
-cost.
+snapshot. **Global** — same data for every room. No mutate surface.
 
 ### Read
 
@@ -931,11 +1007,12 @@ export function skillAvatars(token: string, isHost: boolean): string {
   const scope = isHost ? "host" : "peer";
   return `${header(token, scope, "")}
 
-## Avatars sub-skill
+## Avatars sub-skill (global)
 
 Each user has an optional PFP keyed by their \`ownerKey\` (lowercased
-address ?? lowercased handle). The PFP appears on cursors, the audio-
+address ?? slugified handle). The PFP appears on cursors, the audio-
 publication window, and anywhere else the desktop renders identity.
+**Avatars are global** — the same upload follows you into every room.
 Agents have ownerKeys too and can manage their own PFP.
 
 Three states for any owner:
@@ -952,47 +1029,13 @@ Three states for any owner:
 GET ${BASE}/v1/state    # → state.avatars, state.hiddenAvatars
 \`\`\`
 
-\`state.avatars\` is \`{ "0xaddr...": "https://relay.../avatars/0xaddr.jpg", ... }\`.
-\`state.hiddenAvatars\` is the list of owner keys that have opted out.
-
-### Upload (your own PFP only)
+### Upload / hide / clear (your own PFP only)
 
 \`\`\`
-POST ${BASE}/v1/avatars
-Content-Type: image/jpeg | image/png | image/webp
-Body: raw image bytes (max ~5 MB)
-# → { ok: true, url, key }
+POST ${BASE}/v1/avatars        # Body: raw bytes, Content-Type: image/{jpeg,png,webp}, max ~600KB
+POST ${BASE}/v1/avatars/hide   # drop image + write hidden marker
+DELETE ${BASE}/v1/avatars      # clean slate: remove image + marker, ENS fallback resumes
 \`\`\`
-
-The relay overwrites any previous file for your \`ownerKey\`. Any
-existing \`.hidden\` marker is cleared automatically. Broadcasts an
-\`avatar\` event so live peers update without a reload. Most agents
-won't upload PFPs (binary body, image needed), but text-to-image
-agents can — they POST the generated bytes here.
-
-### Hide (opt out — your own only)
-
-\`\`\`
-POST ${BASE}/v1/avatars/hide
-# → { ok: true, hidden: true, key }
-\`\`\`
-
-Drops any uploaded image AND records a \`.hidden\` marker so the
-client doesn't fall back to ENS. Re-upload to undo (image overrides),
-or hit DELETE to clear both the image and the marker (returns to
-default ENS-fallback behavior).
-
-### Clear (your own only)
-
-\`\`\`
-DELETE ${BASE}/v1/avatars
-# → { ok: true, removed: true | false, key }
-\`\`\`
-
-Removes both any uploaded image and any \`.hidden\` marker, restoring
-the default state. Use this to "reset to ENS fallback".
-
-### Identity boundaries
 
 You can only manage your own PFP — the relay derives the target
 \`ownerKey\` from your bearer token. There's no admin override.
@@ -1009,51 +1052,35 @@ export function skillFiles(token: string, isHost: boolean): string {
 
 ## Files sub-skill
 
-The shared desktop has a file system. Anyone can drag-and-drop files
-onto the desktop background; the relay stores them and broadcasts
-an event so every peer renders an icon at the drop position. Double-
-click downloads / opens the file (the relay serves it with
-\`Content-Disposition: attachment\`, so most browsers save it; image
-mime types may inline-preview). The uploader (or host) gets a hover
-"×" button to delete. Position lives in the slot system keyed
-\`file-<id>\` — move/resize via the slots sub-skill.
+${SLUG_NOTE}
 
-Storage layout on the relay: \`/var/lib/slop-relay/files/<id>.<ext>\`
-plus a \`files.json\` metadata index. Capped at 500 items total and
-50 MB per file. Older items get evicted (oldest first) when the cap
-is hit.
+Each room has its own file system. Anyone can drag-and-drop files
+onto that room's desktop; the relay stores them and broadcasts an
+event so every peer renders an icon at the drop position. Double-
+click downloads / opens. Capped at 500 items per room and 50 MB per
+file. Older items get evicted (oldest first) when the cap is hit.
 
 ### Read the list
 
 \`\`\`
-GET ${BASE}/v1/files
+GET ${BASE}/v1/files?slug=<slug>
 # → { items: [{ id, name, size, mime, ownerKey, uploaderLabel,
 #               ts, storedAs }, ...] }
 \`\`\`
 
-Also embedded in \`GET /v1/state\` under \`files\`.
-
 ### Upload
 
 \`\`\`
-POST ${BASE}/v1/files?name=<original-filename>
+POST ${BASE}/v1/files?slug=<slug>&name=<original-filename>
 Content-Type: application/octet-stream
 X-Mime: <real-mime-type>
 Body: raw file bytes (≤ 50 MB)
 # → { ok: true, item: { id, name, size, mime, ... } }
 \`\`\`
 
-The body is always shipped as \`application/octet-stream\`; the file's
-real MIME type goes in the \`X-Mime\` header (or, if omitted, the
-relay falls back to whatever Content-Type came in). Filename goes in
-the \`?name=\` query (URL-encoded) or the \`X-Filename\` header.
-
-Errors: 400 \`empty\`, 413 \`too-large\`, 400 \`write-failed:<reason>\`.
-
-After a successful upload the relay broadcasts \`file_added\` with
-the full \`item\` to every peer; the desktop UI auto-renders the new
-icon. Agents that want a specific drop position should also POST a
-slot update keyed \`file-<id>\` (see slots sub-skill).
+After a successful upload the relay broadcasts \`file_added\` to the
+room. Agents that want a specific drop position should POST a slot
+update keyed \`file-<id>\` (see slots sub-skill).
 
 ### Download
 
@@ -1061,41 +1088,824 @@ slot update keyed \`file-<id>\` (see slots sub-skill).
 GET ${BASE}/files/<id>
 \`\`\`
 
-**No auth.** File ids are unguessable (16 hex chars) so listing is
-the only enumeration path, and listing IS auth-gated. The relay
-serves the original bytes with \`Content-Disposition: attachment\` and
-the uploaded filename intact, so browsers download with the right
-name.
+**No auth.** File ids are unguessable (16 hex chars); listing is the
+only enumeration path, and listing IS auth-gated.
 
 ### Delete
 
 \`\`\`
-DELETE ${BASE}/v1/files/<id>
+DELETE ${BASE}/v1/files/<id>?slug=<slug>
 \`\`\`
 
 Uploader-only OR host (the relay enforces). 403 = forbidden, 404 =
-not-found. On success the relay broadcasts \`file_removed\` with the
-id.
+not-found.
+`;
+}
 
-### File slot positioning
+// =============================================================================
+// Transcript
+// =============================================================================
 
-The drop position when a user uploads a file is just a slot update
-keyed \`file-<id>\`. To place a file programmatically after upload:
+export function skillTranscript(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const adminNote = isHost
+    ? "\n\nHost: you also have access to \`DELETE /admin/transcript?slug=<slug>\` to wipe pre-show test segments, and an SSE tail at \`GET /admin/transcript/stream?slug=<slug>\`."
+    : "";
+  return `${header(token, scope, "")}
+
+## Transcript sub-skill
+
+${SLUG_NOTE}
+
+Per-room live transcript of what people are saying out loud. Each
+peer's browser runs Web Speech (or a god-mode STT relay) and POSTs
+final segments here; the relay stamps \`ts\` + identity, dedupes near-
+duplicates within a 3.5s window, and persists to JSONL on disk.
+Capped at the last 500 segments per room in memory; the on-disk
+archive is full. **This is the core read for TLDR / show-summary
+agent flows.**${adminNote}
+
+### Read recent segments
+
+\`\`\`
+GET ${BASE}/v1/transcript?slug=<slug>
+# → { segments: [{
+#       id, ts, address, handle, anonId, text,
+#       source: "live" | "spectator" | "agent"
+#     }, ...] }
+\`\`\`
+
+\`ts\` is ms epoch. The list is chronological (oldest → newest).
+\`source: "live"\` = real participant in the desktop mesh.
+\`source: "spectator"\` = someone watching from \`slop.computer\`.
+\`source: "agent"\` = bearer-token poster (you, if you POST).
+
+Also embedded in \`GET /v1/state\` is NOT a thing for transcript —
+read this endpoint instead.
+
+### Append a segment
+
+\`\`\`
+POST ${BASE}/v1/transcript?slug=<slug> { "text": "the thing I want to say" }
+# → { ok: true, seg: { id, ts, address, handle, text, source: "agent" } }
+\`\`\`
+
+Agents posting through this endpoint are tagged \`source: "agent"\`.
+Use sparingly — humans expect transcripts to reflect spoken audio,
+not bot interjections. (For chat, use \`POST /v1/chat\` instead.)
+
+Rate limit: 20-burst, 2/sec sustained per session token. Max 1000
+chars per segment.
+
+### Agent recipes
+
+**TLDR of the show so far:**
 
 \`\`\`bash
-# 1. Upload, capture the returned id
-ID=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
-  -H "content-type: application/octet-stream" \\
-  -H "x-mime: image/png" \\
-  --data-binary @cat.png \\
-  "${BASE}/v1/files?name=cat.png" | jq -r .item.id)
+curl -s -H "Authorization: Bearer ${token}" \\
+  "${BASE}/v1/transcript?slug=<slug>" | jq '.segments[-200:] | map("[\\(.handle // .address[0:8])] \\(.text)") | join("\\n")'
+\`\`\`
 
-# 2. Place the icon at (400, 200)
+Pipe that into your own model with a "summarize this conversation in
+3 bullet points" prompt. The handles let the model attribute who
+said what.
+
+**Show title + description:**
+Pull the last 30 minutes of transcript (\`ts > now - 30*60*1000\`),
+combine with \`/v1/chat\` (audience reactions) and \`/v1/state\` (guests
+in the room), pass everything to your model. The model writes a title
++ 2-sentence description.
+
+**Live insight drop:**
+Long-poll-ish loop: GET \`/v1/transcript\`, watch \`segments[-1].id\`.
+When a new id appears that mentions a topic you've prepped notes on,
+\`POST /v1/chat\` with a one-sentence callout. (There's no
+\`/v1/transcript/wait\` long-poll; poll at ~2-3s cadence or subscribe
+via WS if you have that wired up.)
+
+### Episode-level "is STT on right now?"
+
+The transcript only carries data when the host has flipped STT on
+for the episode. Read or stream that flag via \`GET /v1/skill/episode\`.
+If \`sttOn === false\`, agents that *append* to the transcript will
+still succeed (the gate is client-side, not server-side), but you'll
+be talking into a silent room — better to wait.
+`;
+}
+
+// =============================================================================
+// Research (guest research)
+// =============================================================================
+
+export function skillResearch(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Research sub-skill
+
+AI-backed pre-show research for an upcoming live guest. The relay
+calls Claude (with web search) for you and returns a structured
+dossier: training-data knowledge, fresh research, suggested
+interview questions, sampled recent tweets, and source links. Two
+endpoints — a fast \`lookup\` for prefilling the form, and a deeper
+\`research\` for the full dossier.
+
+Stateless on the relay: results aren't stored. The UI keeps a local
+copy in the asking browser. If you want to publish the result, write
+it into a note (\`POST /v1/notes\`) or chat (\`POST /v1/chat\`).
+
+### Fast identity lookup
+
+\`\`\`
+POST ${BASE}/v1/guest-lookup { "query": "@vitalikbuterin" }
+# or
+POST ${BASE}/v1/guest-lookup { "query": "Vitalik Buterin" }
+# → {
+#     name: "Vitalik Buterin",
+#     socials: {
+#       twitter: "@VitalikButerin",
+#       github: "vbuterin",
+#       linkedin: "...",
+#       website: "https://vitalik.eth.limo",
+#       other: ""
+#     },
+#     notes: "Co-founder of Ethereum; this is who I think you mean."
+#   }
+\`\`\`
+
+Single fast Claude call with web search (max 6 uses). Use this to
+prefill the deep-research form before kicking off the slow call.
+
+### Deep dossier
+
+\`\`\`
+POST ${BASE}/v1/guest-research {
+  "name":    "Vitalik Buterin",
+  "socials": {
+    "twitter":  "@VitalikButerin",
+    "github":   "vbuterin",
+    "linkedin": "...",
+    "website":  "https://vitalik.eth.limo",
+    "other":    ""
+  },
+  "notes": "We last had him on in 2023; want to talk about agent payments."
+}
+# → {
+#     query: { ... echoed back ... },
+#     vanilla: "1-3 paragraphs of what Claude already knows from training data, OR 'I don't have knowledge of them in my training data.'",
+#     researched: "2-4 paragraphs of fresh prose from web search",
+#     questions: ["1. Question one", "2. Question two", ...],   # 8-10 slow-pitch interview questions
+#     tweets: [{ text, url, date }, ...],                       # 5-15 sampled recent tweets
+#     sources: [{ title, url, snippet }, ...],                  # cited pages
+#     errors: { vanilla?: "...", researched?: "..." }           # per-stage failures
+#   }
+\`\`\`
+
+Runtime: ~30-60s for the full call. Two Claude passes run in
+parallel (vanilla + researched); each is independent so a partial
+failure still returns the half that worked. Web search is capped at
+12 uses per call.
+
+### Side effect — timeline focus
+
+When the request body's \`socials.twitter\` is set, the relay also
+pins that handle into the **timeline feed** for the next 4 hours.
+Tweets from the researched handle get scored high so they reliably
+appear in the bottom marquee while the show is live. Clears
+automatically after the TTL or when a fresh research call without
+that handle comes in.
+
+### Agent recipes
+
+**"Give me a question to ask this guest":**
+
+\`\`\`bash
+# 1. Lookup → prefill
+LOOKUP=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  ${BASE}/v1/guest-lookup -d '{"query":"@guest"}')
+
+# 2. Deep dossier
+RESEARCH=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  ${BASE}/v1/guest-research -d "{
+    \\"name\\":\\"$(echo $LOOKUP | jq -r .name)\\",
+    \\"socials\\":$(echo $LOOKUP | jq .socials),
+    \\"notes\\":\\"<your context>\\"
+  }")
+
+# 3. Pick / synthesize a question your way
+echo "$RESEARCH" | jq -r '.questions[]'
+\`\`\`
+
+You can pick from \`questions\` verbatim, or feed \`researched\` +
+\`tweets\` into your own model and write a sharper follow-up. The
+relay-generated questions are deliberately conversational ("slow-
+pitch") — fine for openers, not always the most pointed.
+
+**"Brief me on the next guest in chat":**
+Read \`/v1/state\` for the current room's guests, pull dossiers for
+each, write a one-paragraph brief to \`/v1/notes\` so the whole room
+sees it.
+
+### Caveats
+
+- Requires \`ANTHROPIC_API_KEY\` on the relay. Without it both
+  endpoints return a stub with an \`error\` field explaining how to
+  set the key.
+- Web-search results are model-mediated — the relay never holds raw
+  search responses. If the model invents a URL, you'll see an
+  invented URL. Cross-check anything load-bearing.
+- The \`vanilla\` field is deliberately literal: if Claude doesn't
+  know the person from training data, the response is the exact
+  sentence \`"I don't have knowledge of them in my training data."\`.
+  Treat that as a signal, not an error.
+`;
+}
+
+// =============================================================================
+// News digest
+// =============================================================================
+
+export function skillNews(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## News digest sub-skill (read-only, global)
+
+Server-curated "front page" — an interleaved feed of crypto
+headlines + AI headlines + ranked tweets + Polymarket events, with
+an AI-ranked **featured** top tier picked by Claude every ~10
+minutes. Rebuilds whenever any upstream source updates. Global
+across rooms.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/state    # → state.newsDigestState
+\`\`\`
+
+No dedicated REST endpoint — read via \`/v1/state\`. The shape:
+
+\`\`\`
+{
+  feed: NewsDigestItem[],     // 16 items, interleaved
+  featured: NewsDigestItem[], // 3-5 items picked by AI, subset of feed
+  updatedAt: number,          // ms epoch
+  aiRanAt: number             // ms epoch of last AI rank pass (0 if never)
+}
+\`\`\`
+
+\`NewsDigestItem\` shape:
+
+\`\`\`
+{
+  kind: "crypto-headline" | "ai-headline" | "tweet" | "polymarket",
+  title: string,
+  url: string,
+  source: string,
+  publishedAt: number,        // ms epoch (0 for polymarket — evergreen)
+  // tweet-only:
+  authorUsername?, authorFollowers?, likes?, retweets?, replies?,
+  // polymarket-only:
+  pmVolume24h?, pmTopOutcomeLabel?, pmTopOutcomeProb?, pmTags?,
+  // AI-pass-only:
+  featured?: boolean,
+  featuredReason?: string
+}
+\`\`\`
+
+### What the AI pass does
+
+Every 10 minutes (or when forced by an upstream rebuild) the relay
+hands the 16 candidates to Claude Haiku with a prompt that prioritizes:
+- breaking news (funding, regulation, breakthroughs, exploits, M&A)
+- credible-voice takes
+- high-volume Polymarket questions (>$1M/24h)
+
+and avoids generic recycled news / off-topic politics / low-volume
+markets. The 3-5 picked items get a \`featured: true\` flag + a
+\`featuredReason\` sentence.
+
+### Agent recipes
+
+**"What's the news right now?":**
+
+Read \`state.newsDigestState.featured\`. Each item has a
+\`featuredReason\` — that's a one-sentence "why this matters now"
+explanation from the AI pass. Stitch into a chat post, a note, or
+your own model context.
+
+**"Push the top story to chat":**
+
+\`\`\`bash
+top=$(curl -s -H "Authorization: Bearer ${token}" \\
+  "${BASE}/v1/state?slug=<slug>" | \\
+  jq -r '.newsDigestState.featured[0] | "\\(.title) — \\(.url)"')
 curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  ${BASE}/v1/slots \\
-  -d "{\\"id\\":\\"file-$ID\\",\\"x\\":400,\\"y\\":200,\\"width\\":88,\\"height\\":110}"
+  "${BASE}/v1/chat?slug=<slug>" -d "{\\"text\\":\\"$top\\"}"
 \`\`\`
+
+For raw access to the underlying feeds (headlines, timeline,
+polymarket, ticker), see \`GET /v1/skill/feeds\`.
+`;
+}
+
+// =============================================================================
+// Feeds (ticker / headlines / timeline / polymarket)
+// =============================================================================
+
+export function skillFeeds(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const hostNote = isHost ? "" : "\n\n> ⚠ The host-only refresh triggers (`/v1/timeline/refresh`, `/v1/headlines/refresh`) return 403 for peer-scoped tokens. Reads work for everyone.";
+  return `${header(token, scope, hostNote)}
+
+## Feeds sub-skill (read-only snapshots, global)
+
+The relay polls a handful of external sources on a slow cadence and
+fans the snapshots out to every connected peer. **All global** —
+same data for every room. Snapshots are embedded inside
+\`GET /v1/state\` so you typically don't fetch them individually.
+
+| Field | Source | Cadence | Shape |
+| --- | --- | --- | --- |
+| \`tickerState\` | CoinGecko + Stooq + DexScreener + static private valuations | 60s | \`{ items: [{ symbol, label, price, changePct, kind, url? }, ...], updatedAt }\` |
+| \`gasState\` | Alchemy fee history + Chainlink ETH/USD | ~12s | \`{ baseFeeGwei, slowGwei, mediumGwei, fastGwei, ethUsd, updatedAt }\` (see also \`/v1/skill/gas\`) |
+| \`headlinesState\` | CoinDesk RSS + HN Algolia (AI keywords) | 1h | \`{ items: [{ title, url, source, publishedAt, kind: "crypto"\\|"ai" }, ...], updatedAt }\` |
+| \`timelineState\` | Twitter API (host's home feed) | 24h | \`{ items: [{ id, text, authorUsername, authorName, authorFollowers, likes, retweets, replies, createdAt, url, authorVerified }, ...], updatedAt }\` |
+
+Polymarket is its own poll (5min cadence) but isn't exposed as a
+distinct \`/v1/state\` field — the data only surfaces through
+\`newsDigestState\` (see \`/v1/skill/news\`). If you want raw Polymarket
+data, ask the host.
+
+### Ticker — what's in there
+
+The ticker bar shows three categories:
+- **crypto** — top L1s/L2s + AI-adjacent coins (FET, TAO, RNDR)
+- **stock** — hyperscalers, AI chip companies, data-center plays
+- **private** — last-closed-round valuations for AI labs that don't trade publicly (OpenAI, Anthropic, xAI, etc.)
+- **meme** — \`$CLAWD\` (real ERC-20 on Base, live price from DexScreener)
+
+\`changePct\` is 24h for crypto/meme, intra-day for stocks, always 0
+for private valuations (no intra-day data).
+
+### Timeline ranking
+
+The Twitter feed is ranked with a hybrid score: \`raw engagement ×
+small-account boost\`. A 200-like tweet from a 50K-follower account
+can beat a 400-like tweet from a 4M-follower account. The relay also
+de-dupes by author (best tweet per account wins) so the bar shows
+~25 different voices rather than one chatty account taking five
+slots.
+
+If a host has recently submitted a \`/v1/guest-research\` query with
+a Twitter handle, that handle gets a strong boost for 4 hours so the
+guest's tweets reliably appear in the bar.
+
+### Host refresh triggers
+
+The two slow feeds (headlines hourly, timeline daily) have explicit
+refresh endpoints the host calls when going live:
+
+\`\`\`
+POST ${BASE}/v1/headlines/refresh    # host-only, debounced 1/min
+POST ${BASE}/v1/timeline/refresh     # host-only, debounced 1/min
+# → { ok: true, state: <fresh snapshot> }
+# 429 → { error: "rate-limited", retryAfterMs: number }
+\`\`\`
+
+These are intended for the host clicking the bottom-marquee badges
+before a show — agents that want fresher data should just read the
+snapshot rather than trigger a refresh.
+
+### Agent recipes
+
+**"How much would this tx cost right now?":** read \`gasState\`,
+multiply by your gas limit, multiply by \`ethUsd\`. See gas sub-skill
+for the math.
+
+**"Who's tweeting interesting things?":** read \`timelineState.items\`
+— pre-ranked, de-duped per-author. Top item is the most-engaging
+recent tweet, possibly boosted by an active research focus.
+`;
+}
+
+// =============================================================================
+// Wallet
+// =============================================================================
+
+export function skillWallet(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Wallet sub-skill
+
+${SLUG_NOTE}
+
+Per-room **session multisig**. Each room can have one active
+multisig wallet whose deployment is deterministic across chains
+(CREATE2 — same address everywhere). The deploy, signing, and
+execution all happen over WebSockets from connected browsers; the
+REST surface for agents is read-mostly: see the current wallet,
+watch pending txs, read summaries.
+
+### Read state
+
+The full wallet picture is inside \`GET /v1/state?slug=<slug>\`:
+
+\`\`\`
+{
+  wallet: WalletRecord | null,         // current deployed multisig
+  walletDraft: WalletDraft | null,     // collaborative pre-deploy form
+  walletTxs: WalletTx[],               // pending + recent txs
+  ...
+}
+\`\`\`
+
+\`WalletRecord\`:
+
+\`\`\`
+{
+  id, address,                         // lowercased; same on every chain
+  deployer, salt,                      // CREATE2 inputs
+  signers: [{ address, label, signerType: "eoa"|"passkey" }, ...],
+  threshold: number,
+  deployments: { [chainId]: { txHash, deployedAt } },
+  createdAt, label
+}
+\`\`\`
+
+\`WalletTx\`:
+
+\`\`\`
+{
+  id,
+  multisigAddress, chainId,
+  from, fromLabel,                     // proposer
+  source: "browser" | "manual",
+  browserId,                           // when source=browser, the originating shared browser
+  target, value, data, deadline, nonce,
+  execHash,                            // hash signers signed
+  summary,                             // AI plain-English description (may be null until populated)
+  signatures: [{ signer, sigType, data, receivedAt }, ...],
+  status: "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled",
+  txHash,                              // execution tx hash, null until executed
+  createdAt, updatedAt
+}
+\`\`\`
+
+### Mutation paths
+
+There are **no** authenticated REST endpoints for deploying, signing,
+proposing, or executing — those flow over the room's WebSocket so
+the wallet UI can stay reactive. Agents driving wallet behavior need
+a WS client connected to \`wss://relay.slop.computer/signal?slug=<slug>\`
+with the appropriate session token. That's out of scope for this
+skill doc — ask the host for the WS message types.
+
+The one host-only REST mutation:
+
+\`\`\`
+POST ${BASE}/admin/wallet/reset?slug=<slug>
+# → { ok: true }
+\`\`\`
+
+Nukes the room's wallet record (current + history + tx queue). Used
+to recycle the deploy flow during a show.
+
+### Agent recipes
+
+**"What's the current wallet doing?":**
+Read \`walletTxs\`. \`status: "pending"\` txs are waiting for more
+signatures — \`signatures.length < wallet.threshold\` means more sigs
+needed. \`status: "executing"\` is mid-flight; \`status: "executed"\`
+is on-chain (and \`txHash\` is set).
+
+**"Summarize the pending tx":**
+Each \`WalletTx\` has an AI-generated \`summary\` field (relay calls
+Claude with the calldata + target). If \`summary === null\` the call
+hasn't completed yet — re-read in a few seconds.
+`;
+}
+
+// =============================================================================
+// Clock
+// =============================================================================
+
+export function skillClock(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Clock sub-skill
+
+${SLUG_NOTE}
+
+Per-room shared clock app. Tab selection, timezone, stopwatch state,
+and countdown state are all synchronized across every peer in the
+room. The wall-clock "Now" display is computed locally so it stays
+naturally consistent without per-tick sync.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/clock?slug=<slug>
+# → { state: {
+#       tab: "time" | "timer" | "countdown",
+#       selectedZone: string,
+#       stopwatch: { phase: "idle" } |
+#                  { phase: "running", startedAt, pausedElapsedMs } |
+#                  { phase: "paused", pausedElapsedMs },
+#       countdown: { phase: "idle" } |
+#                  { phase: "running", totalSecs, endAt } |
+#                  { phase: "paused", totalSecs, remainingSecs } |
+#                  { phase: "done", totalSecs }
+#     } }
+\`\`\`
+
+Wall-clock-anchored fields (\`startedAt\`, \`endAt\`) are ms epoch.
+Every peer's UI computes "elapsed" / "remaining" locally from these,
+so the timer ticks at the same moment everywhere.
+
+### Update
+
+\`\`\`
+POST ${BASE}/v1/clock?slug=<slug> { <partial state> }
+\`\`\`
+
+Partial update — fields not in the patch are preserved.
+Validation rejects bad shapes (e.g. \`phase: "running"\` without
+\`endAt\`) so a misbehaving caller can't park the UI in a bad state.
+
+### Recipes
+
+**Start a 5-minute countdown:**
+
+\`\`\`bash
+endAt=$(( $(date +%s%3N) + 5*60*1000 ))
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  "${BASE}/v1/clock?slug=<slug>" \\
+  -d "{\\"tab\\":\\"countdown\\",\\"countdown\\":{\\"phase\\":\\"running\\",\\"totalSecs\\":300,\\"endAt\\":$endAt}}"
+\`\`\`
+
+**Start the stopwatch:**
+
+\`\`\`bash
+startedAt=$(date +%s%3N)
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  "${BASE}/v1/clock?slug=<slug>" \\
+  -d "{\\"tab\\":\\"timer\\",\\"stopwatch\\":{\\"phase\\":\\"running\\",\\"startedAt\\":$startedAt,\\"pausedElapsedMs\\":0}}"
+\`\`\`
+
+**Reset to idle:**
+
+\`\`\`
+POST ${BASE}/v1/clock?slug=<slug>
+{ "countdown": { "phase": "idle" }, "stopwatch": { "phase": "idle" } }
+\`\`\`
+`;
+}
+
+// =============================================================================
+// Card
+// =============================================================================
+
+export function skillCard(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Card sub-skill
+
+${SLUG_NOTE}
+
+Per-room title card — an AI-generated image with a draggable text
+overlay, used as the og:image when sharing
+\`live.slop.computer/<slug>\` and as a "now playing" tile on stream.
+Generation runs as a background job owned by the relay so the
+progress bar is shared across every peer in the room regardless of
+who started it.
+
+### Read
+
+State pieces live inside \`GET /v1/state?slug=<slug>\`:
+
+\`\`\`
+{
+  cardState: { version } | null,                              // image presence; version = mtime
+  cardJob:   { startedAt, startedBy } | null,                 // in-flight generation
+  cardTitle: { text, x, y, sizeFrac } | null                  // overlay text + fractional position
+}
+\`\`\`
+
+Image bytes themselves live at:
+
+\`\`\`
+GET ${BASE}/v1/cards/<slug>/card.png         # raw AI image
+GET ${BASE}/v1/cards/<slug>/published.png    # host-baked PNG with overlay rendered in
+\`\`\`
+
+Both are public (no auth). \`card.png\` is cached 5min; \`published.png\`
+is cached 1h.
+
+### Generate a card from a PFP / reference
+
+\`\`\`
+POST ${BASE}/v1/card?slug=<slug>
+Content-Type: image/jpeg | image/png | image/webp
+Body: raw image bytes (≤ ~10 MB)
+# → 202 { ok: true, job: { startedAt, startedBy } }
+# 409 → already-generating; watch the shared progress bar
+\`\`\`
+
+Fire-and-forget. The request returns immediately; the relay runs
+generation in the background and broadcasts \`card_job\` (running)
+then \`card_state\` (complete) over the room's WS. On completion the
+image is at \`/v1/cards/<slug>/card.png\`.
+
+### Set the title overlay
+
+The title text + on-image position is held in \`cardTitle\` and
+mutated over WebSocket (not REST). Agents that want to set a title
+need a WS client connected to the room and send a \`card_title\`
+message with \`{ text, x, y, sizeFrac }\` (coords are fractions of the
+image content rect, \`0 ≤ x,y ≤ 1\`, \`0.015 ≤ sizeFrac ≤ 0.25\`). Ask
+the host if you need the exact message shape.
+
+### Clear the card
+
+\`\`\`
+DELETE ${BASE}/v1/card?slug=<slug>
+# → { ok: true }
+\`\`\`
+
+Anyone in the room may reset. Doesn't cancel an in-flight job.
+
+### Publish the baked PNG
+
+\`\`\`
+POST ${BASE}/v1/card/published?slug=<slug>
+Content-Type: image/png
+Body: raw PNG bytes (the title overlay baked in)
+# → { ok: true, bytes: number }
+\`\`\`
+
+The bake itself happens client-side (CardWindow has a canvas pass
+that renders the title onto the image). Agents that want to publish
+need to either compose the PNG themselves or coordinate with a peer
+that can.
+`;
+}
+
+// =============================================================================
+// Episode
+// =============================================================================
+
+export function skillEpisode(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const hostNote = isHost ? "" : "\n\n> ⚠ The mutate endpoint (`/admin/episode/stt`) is **host-only** — peer tokens return 403. Reads (`/v1/episode`, `/v1/episode/stream`) are open.";
+  return `${header(token, scope, hostNote)}
+
+## Episode flags sub-skill
+
+${SLUG_NOTE}
+
+Per-room flags the host flips during an episode. Currently just
+\`sttOn\` (whether peers are running speech-to-text into the
+transcript) but designed as an extensible key-value bag.
+
+### Read
+
+\`\`\`
+GET ${BASE}/v1/episode?slug=<slug>
+# → { sttOn: boolean }
+\`\`\`
+
+### SSE stream
+
+\`\`\`
+GET ${BASE}/v1/episode/stream?slug=<slug>
+\`\`\`
+
+Server-Sent Events. First event is \`event: init\` with the current
+state; subsequent \`event: episode\` events fire whenever flags change.
+Useful for agents that should react to STT-on (start summarizing) /
+off (pause).
+
+### Flip STT — host-only
+
+\`\`\`
+POST ${BASE}/admin/episode/stt { "on": true }    # or false
+\`\`\`
+
+When \`sttOn === false\`, peer browsers stop running Web Speech and
+stop posting to \`/v1/transcript\`. Use for pre-show / off-the-record
+chatter that shouldn't enter the archive.
+`;
+}
+
+// =============================================================================
+// Rooms (multi-room)
+// =============================================================================
+
+export function skillRooms(token: string, isHost: boolean): string {
+  const scope = isHost ? "host" : "peer";
+  const hostNote = isHost ? "" : "\n\n> ⚠ Room creation + password rotation are **host-only** — peer tokens return 403. Joining (`POST /v1/rooms/:slug/auth`), status checks (`GET /v1/rooms/:slug/auth`), and revive are open to everyone with the right password.";
+  return `${header(token, scope, hostNote)}
+
+## Rooms sub-skill
+
+The relay is multi-room: each room has its own desktop state (chat,
+transcript, music, chess, todos, notes, files, etc.) keyed by slug.
+\`live.slop.computer/<slug>\` is the URL each room lives at.
+
+### Slug routing
+
+Every state-bearing endpoint takes \`?slug=<slug>\` to target a
+specific room. Omit it and you hit the default room (\`debug\`). The
+slug a human is sitting in is the URL path on
+\`live.slop.computer/<slug>\`. Slugs must match \`/^[a-z0-9-]{1,64}$/\`.
+
+### Check status
+
+\`\`\`
+GET ${BASE}/v1/rooms/<slug>/auth
+# → {
+#     slug: "<slug>",
+#     exists: true | false,        # has someone claimed this slug yet?
+#     authed: true | false         # does the caller already hold a valid room cookie?
+#   }
+\`\`\`
+
+### Create / claim a room — host-only
+
+\`\`\`
+POST ${BASE}/v1/rooms {
+  "slug":     "ep23",
+  "password": "<initial password>"
+}
+# → { ok: true, slug: "ep23" }
+# 409 → room-already-exists (use POST /v1/rooms/:slug/password to rotate)
+\`\`\`
+
+The slug becomes claimed; the password is stored as a scrypt hash on
+disk. Anyone who learns the password can join.
+
+### Rotate password — host-only
+
+\`\`\`
+POST ${BASE}/v1/rooms/<slug>/password { "password": "<new>" }
+\`\`\`
+
+Doesn't invalidate outstanding room cookies (they're time-bound). New
+joiners need the updated link.
+
+### Authenticate to a room
+
+\`\`\`
+POST ${BASE}/v1/rooms/<slug>/auth { "password": "<password>" }
+# → { ok: true, slug: "<slug>" }
+# Sets a \`slop_room_<slug>\` cookie scoped to that slug (1y TTL).
+# 401 → bad password; 404 → room doesn't exist yet.
+\`\`\`
+
+This is the password gate. It's separate from the session cookie:
+"this is who you are" (session, via SIWE/passkey/anon/password) is
+distinct from "you were invited here" (room cookie). Both required
+for the WS \`/signal?slug=<slug>\` handshake and any mutation.
+
+### Revive a hibernated room
+
+\`\`\`
+POST ${BASE}/v1/rooms/<slug>/revive { "proof": <opaque> }
+# → { ok: true, slug, paidUntil: number }
+# 402 → payment-required
+\`\`\`
+
+Rooms with no peers + no recent activity get hibernated after ~3
+days. Frontend posts a payment proof here when reviving. Today
+(Phase 7) the relay only honors a global \`PAYMENTS_DISABLED\` env or
+a whitelist; Phase 8 wires this to the Base contract.
+
+### List all claimed rooms — host-only
+
+\`\`\`
+GET ${BASE}/admin/rooms
+# → { rooms: [{ slug, createdAt, paidUntil, hot, sttOn }, ...] }
+\`\`\`
+
+Scans the filesystem for claimed rooms (anything with an
+\`auth.json\`). Cold rooms still show up; \`hot\` indicates the room
+has a live in-memory presence.
+
+### Agent recipes
+
+**"Where are the humans right now?":** read \`/admin/rooms\` (host
+only), filter \`hot: true\`, then \`/v1/state?slug=<each>\` to see
+peer counts. Pick whichever has the most humans and run your loop
+against that slug.
 `;
 }
 
@@ -1121,11 +1931,31 @@ export function skillForTopic(topic: SkillTopic, token: string, isHost: boolean)
       return skillTodo(token, isHost);
     case "notes":
       return skillNotes(token, isHost);
+    case "glossary":
+      return skillGlossary(token, isHost);
     case "gas":
       return skillGas(token, isHost);
     case "avatars":
       return skillAvatars(token, isHost);
     case "files":
       return skillFiles(token, isHost);
+    case "transcript":
+      return skillTranscript(token, isHost);
+    case "research":
+      return skillResearch(token, isHost);
+    case "news":
+      return skillNews(token, isHost);
+    case "feeds":
+      return skillFeeds(token, isHost);
+    case "wallet":
+      return skillWallet(token, isHost);
+    case "clock":
+      return skillClock(token, isHost);
+    case "card":
+      return skillCard(token, isHost);
+    case "episode":
+      return skillEpisode(token, isHost);
+    case "rooms":
+      return skillRooms(token, isHost);
   }
 }

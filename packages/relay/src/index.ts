@@ -626,6 +626,7 @@ app.get("/v1/state", async (req, reply) => {
     cardState: readCardSnapshot(roomFromReq(req).id),
     cardJob: readCardJob(roomFromReq(req).id),
     cardTitle: readCardTitle(roomFromReq(req).id),
+    researchState: roomFromReq(req).research.current().state,
   };
 });
 
@@ -2247,10 +2248,15 @@ app.delete<{ Params: { id: string } }>("/v1/glossary/:id", async (req, reply) =>
 });
 
 // --- Guest research --------------------------------------------------------
-// AI dossier for an upcoming interview / live guest. Any authenticated
-// peer can call it — the host typically pulls it up on stream so the
-// whole room sees the questions and tweets. Stateless: the result is
-// not stored on the relay; the UI is local-only in each viewer.
+// AI dossier for an upcoming interview / live guest. The state machine
+// (lookup-pending → form → research-pending → done) lives on
+// room.research; every transition broadcasts a `research_state` message
+// so every peer sees the same loading bar and the same final dossier.
+// All three POST routes return 202 + the new snapshot — clients learn
+// about results through the broadcast, not the HTTP response. Mirrors
+// the long-running card-generation flow at /v1/card.
+
+type GuestLookupBody = { query?: unknown };
 
 type GuestResearchBody = {
   name?: unknown;
@@ -2274,6 +2280,75 @@ function readSocials(raw: unknown): ResearchQuery["socials"] {
   };
 }
 
+// "alice.eth" if we have it, else 0xabcd…1234, else null. Stamped on
+// the job so spectators could read "Alice is researching @vitalik" if
+// we ever want to render that.
+function startedByLabel(a: ReturnType<typeof v1AuthFromReq>): string | null {
+  if (!a) return null;
+  return (a.session.handle || a.session.address || null) || null;
+}
+
+app.post<{ Body: GuestLookupBody }>("/v1/guest-lookup", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) return reply.code(400).send({ error: "missing-query" });
+
+  const room = roomFromReq(req);
+  // Refuse overlapping jobs — same idea as the card endpoint. The
+  // existing job's broadcast is enough for the second caller; they
+  // already see the shared loading bar.
+  const current = room.research.current().state;
+  if (current.job) return reply.code(409).send({ error: "already-in-flight", state: current });
+
+  const job = { kind: "lookup" as const, startedAt: Date.now(), startedBy: startedByLabel(a) };
+  // Transition into lookup-pending. Reset prior result/form so peers
+  // don't see stale dossier underneath the loading bar.
+  const next = room.research.setPatch({
+    phase: "lookup-pending",
+    lookupQuery: query,
+    name: "",
+    socials: {},
+    notes: "",
+    result: null,
+    error: null,
+    job,
+  });
+
+  // Fire and forget. The HTTP response returns immediately; result
+  // delivery happens through the `research_state` broadcast.
+  void (async () => {
+    try {
+      const result = await lookupGuest(query);
+      if (result.error) {
+        room.research.setPatch({
+          phase: "idle",
+          job: null,
+          error: result.error,
+        });
+        return;
+      }
+      room.research.setPatch({
+        phase: "form",
+        name: result.name || query,
+        socials: result.socials,
+        notes: result.notes ?? "",
+        job: null,
+        error: null,
+      });
+    } catch (err) {
+      room.research.setPatch({
+        phase: "idle",
+        job: null,
+        error: `lookup failed: ${String(err).slice(0, 300)}`,
+      });
+    }
+  })();
+
+  reply.header("cache-control", "no-store");
+  return reply.code(202).send({ ok: true, state: next });
+});
+
 app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
@@ -2281,30 +2356,63 @@ app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) =
   if (!name) return reply.code(400).send({ error: "missing-name" });
   const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : undefined;
   const socials = readSocials(req.body?.socials);
+
+  const room = roomFromReq(req);
+  const current = room.research.current().state;
+  if (current.job) return reply.code(409).send({ error: "already-in-flight", state: current });
+
   // If the host included a Twitter handle in the research query,
   // tell the Timeline module to over-index on that account's recent
   // tweets for the next 4h. Done before the (slow) Anthropic call so
   // the focus is set even if the AI dossier fails.
   if (socials.twitter) setTimelineResearchFocus(socials.twitter);
-  const result = await researchGuest({ name, socials, notes });
+
+  const job = { kind: "research" as const, startedAt: Date.now(), startedBy: startedByLabel(a) };
+  const next = room.research.setPatch({
+    phase: "research-pending",
+    name,
+    socials,
+    notes: notes ?? "",
+    result: null,
+    error: null,
+    job,
+  });
+
+  void (async () => {
+    try {
+      const result = await researchGuest({ name, socials, notes });
+      room.research.setPatch({
+        phase: "done",
+        result,
+        job: null,
+        error: null,
+      });
+    } catch (err) {
+      room.research.setPatch({
+        phase: "form",
+        job: null,
+        error: `research failed: ${String(err).slice(0, 300)}`,
+      });
+    }
+  })();
+
   reply.header("cache-control", "no-store");
-  return result;
+  return reply.code(202).send({ ok: true, state: next });
 });
 
-// Quick first-pass lookup: takes "@handle" or "Some Name" and returns a
-// best-guess identity card the UI uses to prefill the full form. Cheap
-// single Claude call so the host can iterate fast before kicking off
-// the deeper /v1/guest-research dossier.
-type GuestLookupBody = { query?: unknown };
-
-app.post<{ Body: GuestLookupBody }>("/v1/guest-lookup", async (req, reply) => {
+// Clear the shared research state back to the lookup screen. Anyone in
+// the room can hit this — same "anyone resets" model as /v1/card.
+// Refuses while a job is in flight so a "Start over" click can't
+// orphan a running AI call (the result would land on a stale snapshot
+// and confuse everyone).
+app.delete("/v1/research", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
-  if (!query) return reply.code(400).send({ error: "missing-query" });
-  const result = await lookupGuest(query);
-  reply.header("cache-control", "no-store");
-  return result;
+  const room = roomFromReq(req);
+  const current = room.research.current().state;
+  if (current.job) return reply.code(409).send({ error: "in-flight", state: current });
+  const next = room.research.reset();
+  return { ok: true, state: next };
 });
 
 // --- Jamendo genre playlists -----------------------------------------------
@@ -3572,6 +3680,7 @@ app.register(async function signalRoutes(fastify) {
       cardState: readCardSnapshot(room.id),
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
+      researchState: room.research.current().state,
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 

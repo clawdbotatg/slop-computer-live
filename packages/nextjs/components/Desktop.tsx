@@ -2232,7 +2232,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={420}
               minHeight={420}
             >
-              <ResearchWindow />
+              <ResearchWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

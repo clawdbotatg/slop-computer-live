@@ -489,6 +489,63 @@ export type MusicState = {
   volume: number;
 };
 
+// --- Guest research ---------------------------------------------------------
+// Multiplayer dossier prep. The phase machine lives on the relay
+// (research-state.ts); we only render whatever the latest broadcast
+// said. Form-edit typing stays local in ResearchWindow — only the
+// submit + reset transitions broadcast.
+
+export type ResearchSocials = {
+  twitter?: string;
+  github?: string;
+  linkedin?: string;
+  website?: string;
+  other?: string;
+};
+
+export type ResearchTweet = { text: string; url?: string; date?: string };
+export type ResearchSource = { title: string; url: string; snippet?: string };
+
+export type ResearchResult = {
+  query: { name: string; socials: ResearchSocials; notes?: string };
+  vanilla: string;
+  researched: string;
+  questions: string[];
+  tweets: ResearchTweet[];
+  sources: ResearchSource[];
+  errors: { vanilla?: string; researched?: string };
+};
+
+export type ResearchJob = {
+  kind: "lookup" | "research";
+  startedAt: number;
+  startedBy: string | null;
+};
+
+export type ResearchPhase = "idle" | "lookup-pending" | "form" | "research-pending" | "done";
+
+export type ResearchState = {
+  phase: ResearchPhase;
+  lookupQuery: string;
+  name: string;
+  socials: ResearchSocials;
+  notes: string;
+  result: ResearchResult | null;
+  job: ResearchJob | null;
+  error: string | null;
+};
+
+const DEFAULT_RESEARCH_STATE: ResearchState = {
+  phase: "idle",
+  lookupQuery: "",
+  name: "",
+  socials: {},
+  notes: "",
+  result: null,
+  job: null,
+  error: null,
+};
+
 // Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
 export type ChessGameStatus =
   | "active"
@@ -687,6 +744,22 @@ export type PeerMeshState = {
   /** Clear the current card and bring the template back for the
    *  whole room. */
   resetCard: () => void;
+  /** Shared guest-research dossier state — phase + form fields +
+   *  in-flight job + result. Every broadcast replaces this wholesale
+   *  (last-writer-wins). See research-state.ts on the relay. */
+  researchState: ResearchState;
+  /** Kick off a "who is this?" lookup. Broadcasts lookup-pending +
+   *  loading bar to every peer; result populates the form fields when
+   *  it lands. */
+  researchLookup: (query: string) => void;
+  /** Kick off the deep dossier with the host's edited form values.
+   *  Broadcasts research-pending + loading bar; result lands on
+   *  every peer in `researchState.result` when complete. */
+  researchStart: (args: { name: string; socials: ResearchSocials; notes?: string }) => void;
+  /** Reset the shared research state back to the empty lookup screen.
+   *  Refused server-side while a job is in flight (avoids orphaning a
+   *  running AI call). */
+  researchReset: () => void;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -818,6 +891,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardState, setCardState] = useState<CardState | null>(null);
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
+  const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1358,6 +1432,39 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("resetCard failed", err));
   }, [slug]);
 
+  // Research mutators — all three POST to the relay, which broadcasts
+  // `research_state` back to every peer (including us). No optimistic
+  // local update; the WS echo is authoritative so we don't have to
+  // hand-roll the phase transitions on the client.
+  const researchLookup = useCallback(
+    (query: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/guest-lookup`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query }),
+      }).catch(err => console.warn("researchLookup failed", err));
+    },
+    [slug],
+  );
+  const researchStart = useCallback(
+    (args: { name: string; socials: ResearchSocials; notes?: string }) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/guest-research`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args),
+      }).catch(err => console.warn("researchStart failed", err));
+    },
+    [slug],
+  );
+  const researchReset = useCallback(() => {
+    fetch(withSlug(`${RELAY_HTTP_URL}/v1/research`, slug), {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("researchReset failed", err));
+  }, [slug]);
+
   // Broadcast a new title overlay state. Updates local optimistically
   // so the dragging peer sees no lag; server fans the change out to
   // everyone else (excluding sender) and persists last-write-wins.
@@ -1705,6 +1812,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.cardTitle === null || (msg.cardTitle && typeof msg.cardTitle === "object")) {
             setCardTitleLocal((msg.cardTitle ?? null) as CardTitle | null);
           }
+          if (msg.researchState && typeof msg.researchState === "object") {
+            setResearchStateLocal(msg.researchState as ResearchState);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1878,6 +1988,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "music_state" && msg.state && typeof msg.state === "object") {
           setMusicStateLocal(msg.state as MusicState);
+          return;
+        }
+
+        if (msg.type === "research_state" && msg.state && typeof msg.state === "object") {
+          setResearchStateLocal(msg.state as ResearchState);
           return;
         }
 
@@ -2254,6 +2369,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     cardTitle,
     setCardTitle,
     resetCard,
+    researchState,
+    researchLookup,
+    researchStart,
+    researchReset,
     broadcastTxRequest,
     incomingForwards,
     forwardTxToPeer,

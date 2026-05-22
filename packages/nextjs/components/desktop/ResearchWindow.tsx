@@ -2,260 +2,139 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
+import type { PeerMeshState, ResearchResult, ResearchSocials } from "~~/hooks/usePeerMesh";
 
-// Indeterminate bars on these calls "fluttered" — they reset every cycle
-// which felt twitchy. Instead we drive the bar with a fixed assumed
-// duration. Calls usually finish before 95% and the bar disappears; if a
-// call runs longer the bar just holds at 95% rather than overflowing.
+// Multiplayer guest-research dossier. Every transition lives on the
+// relay (research-state.ts) and broadcasts to every peer:
+//   1. someone hits "Look up"     → everyone sees the shared loading bar
+//   2. lookup returns             → everyone sees the prefilled form
+//   3. someone hits "Research"    → everyone sees the shared loading bar
+//   4. dossier returns            → everyone reads the same answers
+// Form-editing is local-only by design — the host can polish the
+// prefilled fields without broadcasting keystrokes. Only the submit
+// click commits + broadcasts. Last writer wins if two peers submit
+// simultaneously (relay refuses overlapping jobs with 409).
+
 const LOOKUP_ASSUMED_MS = 15_000;
 const RESEARCH_ASSUMED_MS = 100_000;
-const PROGRESS_TICK_MS = 100;
+const PROGRESS_TICK_MS = 200;
 const PROGRESS_CAP = 95;
 
-function useTimedProgress(active: boolean, durationMs: number): number {
+// Drive the shared loading bar off the relay's `startedAt`, not a
+// local "I just clicked the button" stopwatch — that way every peer's
+// bar (the submitter and the late-joiner who just unlocked the window)
+// shows the same progress at the same time.
+function useSharedProgress(startedAt: number | null, durationMs: number): number {
   const [progress, setProgress] = useState(0);
   useEffect(() => {
-    if (!active) {
+    if (startedAt == null) {
       setProgress(0);
       return;
     }
-    const startedAt = Date.now();
-    setProgress(0);
-    const id = setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const pct = Math.min(PROGRESS_CAP, (elapsed / durationMs) * 100);
-      setProgress(pct);
-    }, PROGRESS_TICK_MS);
+    const tick = () => {
+      const elapsed = Math.max(0, Date.now() - startedAt);
+      setProgress(Math.min(PROGRESS_CAP, (elapsed / durationMs) * 100));
+    };
+    tick();
+    const id = setInterval(tick, PROGRESS_TICK_MS);
     return () => clearInterval(id);
-  }, [active, durationMs]);
+  }, [startedAt, durationMs]);
   return progress;
 }
-
-// Guest research dossier. Any authenticated peer can use it. Local
-// state — no mesh sync, so each viewer's form/output is independent.
-// In practice the host opens it on stream so the room can read along.
-//
-// Two-phase flow:
-//   1. "lookup" — single freeform "twitter/x or name" box. POSTs to
-//      /v1/guest-lookup, which does ONE Claude+web_search call to
-//      resolve the input into a best-guess identity card.
-//   2. "form" — the full editable form, prefilled from the lookup
-//      result. Hitting Research kicks off /v1/guest-research, which
-//      runs vanilla + web-researched Claude calls in parallel.
-
-const RELAY_HTTP_URL = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-
-type Socials = {
-  twitter: string;
-  github: string;
-  linkedin: string;
-  website: string;
-  other: string;
-};
-
-type TweetSnippet = {
-  text: string;
-  url?: string;
-  date?: string;
-};
-
-type ResearchSource = {
-  title: string;
-  url: string;
-  snippet?: string;
-};
-
-type ResearchResult = {
-  query: { name: string; socials: Partial<Socials>; notes?: string };
-  vanilla: string;
-  researched: string;
-  questions: string[];
-  tweets: TweetSnippet[];
-  sources: ResearchSource[];
-  errors: { vanilla?: string; researched?: string };
-};
-
-type LookupResult = {
-  name: string;
-  socials: Partial<Socials>;
-  notes: string;
-  error?: string;
-};
-
-type Phase = "lookup" | "form";
 
 const PANEL_BG = "#0a061a";
 const BORDER = "1px solid rgba(255,62,201,0.25)";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 
-const EMPTY_SOCIALS: Socials = { twitter: "", github: "", linkedin: "", website: "", other: "" };
+const EMPTY_SOCIALS: ResearchSocials = {};
 
-// Module-scope store so a completed research dossier (and the form that
-// produced it) survives the window being closed and reopened in the same
-// page session. SharedAppWindow unmounts the body on close, which would
-// otherwise blow away an expensive ~30s research result. We rehydrate
-// from here on mount and write through on every change. Loading/error
-// flags are intentionally NOT persisted — an in-flight fetch ends when
-// the body unmounts, so reopening should not show a stuck "loading".
-const researchStore: {
-  phase: Phase;
-  lookupQuery: string;
-  name: string;
-  socials: Socials;
-  notes: string;
-  result: ResearchResult | null;
-} = {
-  phase: "lookup",
-  lookupQuery: "",
-  name: "",
-  socials: EMPTY_SOCIALS,
-  notes: "",
-  result: null,
-};
+export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
+  const rs = mesh.researchState;
+  const lookupRunning = rs.job?.kind === "lookup";
+  const researchRunning = rs.job?.kind === "research";
 
-export const ResearchWindow = () => {
-  const [phase, setPhase] = useState<Phase>(researchStore.phase);
+  // ---- Phase 1: lookup screen ---------------------------------------------
+  // Local typing state for the freeform "name or @handle" input. Kept
+  // local so spectators don't see keystrokes — only the submit
+  // broadcasts. Pre-seeded from the shared state on mount so a
+  // late-joiner sees what the room is currently asking about.
+  const [lookupQuery, setLookupQuery] = useState(rs.lookupQuery);
+  useEffect(() => {
+    // If the shared query changes while we're NOT typing (e.g. someone
+    // else hit Look up), reflect it. We don't try to handle "we're
+    // mid-edit, ignore foreign update" — the input is small and the
+    // shared phase tells us when our edits are no longer relevant.
+    if (!lookupRunning) return;
+    setLookupQuery(rs.lookupQuery);
+  }, [rs.lookupQuery, lookupRunning]);
 
-  // Phase 1 state
-  const [lookupQuery, setLookupQuery] = useState(researchStore.lookupQuery);
-  const [looking, setLooking] = useState(false);
-  const [lookupError, setLookupError] = useState<string | null>(null);
-
-  // Phase 2 state (form + research output)
-  const [name, setName] = useState(researchStore.name);
-  const [socials, setSocials] = useState<Socials>(researchStore.socials);
-  const [notes, setNotes] = useState(researchStore.notes);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ResearchResult | null>(researchStore.result);
+  // ---- Phase 2: form screen -----------------------------------------------
+  // Local-edit copies of the form fields. Seeded from the shared state
+  // whenever the shared form values change (e.g. a fresh lookup result
+  // lands). Edits stay local until the host clicks Research.
+  const [name, setName] = useState(rs.name);
+  const [socials, setSocials] = useState<ResearchSocials>(rs.socials);
+  const [notes, setNotes] = useState(rs.notes);
 
   useEffect(() => {
-    researchStore.phase = phase;
-  }, [phase]);
-  useEffect(() => {
-    researchStore.lookupQuery = lookupQuery;
-  }, [lookupQuery]);
-  useEffect(() => {
-    researchStore.name = name;
-  }, [name]);
-  useEffect(() => {
-    researchStore.socials = socials;
-  }, [socials]);
-  useEffect(() => {
-    researchStore.notes = notes;
-  }, [notes]);
-  useEffect(() => {
-    researchStore.result = result;
-  }, [result]);
+    if (rs.phase === "form" || rs.phase === "research-pending" || rs.phase === "done") {
+      setName(rs.name);
+      setSocials(rs.socials);
+      setNotes(rs.notes);
+    }
+  }, [rs.phase, rs.name, rs.socials, rs.notes]);
 
-  const setSocialField = (k: keyof Socials, v: string) => setSocials(s => ({ ...s, [k]: v }));
+  const setSocialField = (k: keyof ResearchSocials, v: string) => setSocials(s => ({ ...s, [k]: v }));
 
+  // ---- Submit handlers ----------------------------------------------------
   const runLookup = useCallback(
-    async (e: React.FormEvent) => {
+    (e: React.FormEvent) => {
       e.preventDefault();
       const q = lookupQuery.trim();
       if (!q) return;
-      setLooking(true);
-      setLookupError(null);
-      try {
-        const res = await fetch(`${RELAY_HTTP_URL}/v1/guest-lookup`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ query: q }),
-        });
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          if (res.status === 401) setLookupError("You're not signed in. Reload and join again.");
-          else setLookupError(`Relay error ${res.status}: ${body.error ?? "unknown"}`);
-          return;
-        }
-        const data = (await res.json()) as LookupResult;
-        if (data.error) {
-          setLookupError(data.error);
-          return;
-        }
-        // Fall back to the raw query as the name if the model came up
-        // empty — the host can edit it before hitting Research.
-        setName(data.name || q);
-        setSocials({
-          twitter: data.socials.twitter ?? "",
-          github: data.socials.github ?? "",
-          linkedin: data.socials.linkedin ?? "",
-          website: data.socials.website ?? "",
-          other: data.socials.other ?? "",
-        });
-        setNotes(data.notes ?? "");
-        setPhase("form");
-      } catch (err) {
-        setLookupError(`Network error: ${String(err).slice(0, 200)}`);
-      } finally {
-        setLooking(false);
-      }
+      mesh.researchLookup(q);
     },
-    [lookupQuery],
+    [lookupQuery, mesh],
   );
 
   const submit = useCallback(
-    async (e: React.FormEvent) => {
+    (e: React.FormEvent) => {
       e.preventDefault();
       const trimmedName = name.trim();
       if (!trimmedName) return;
-      setLoading(true);
-      setError(null);
-      setResult(null);
-      try {
-        const res = await fetch(`${RELAY_HTTP_URL}/v1/guest-research`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: trimmedName,
-            socials,
-            notes: notes.trim() || undefined,
-          }),
-        });
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          if (res.status === 401) {
-            setError("You're not signed in. Reload and join again.");
-          } else {
-            setError(`Relay error ${res.status}: ${body.error ?? "unknown"}`);
-          }
-          return;
-        }
-        const data = (await res.json()) as ResearchResult;
-        setResult(data);
-      } catch (err) {
-        setError(`Network error: ${String(err).slice(0, 200)}`);
-      } finally {
-        setLoading(false);
-      }
+      mesh.researchStart({
+        name: trimmedName,
+        socials,
+        notes: notes.trim() || undefined,
+      });
     },
-    [name, socials, notes],
+    [name, socials, notes, mesh],
   );
 
-  const startOver = () => {
-    setPhase("lookup");
+  const startOver = useCallback(() => {
     setLookupQuery("");
-    setLookupError(null);
     setName("");
     setSocials(EMPTY_SOCIALS);
     setNotes("");
-    setResult(null);
-    setError(null);
-  };
+    mesh.researchReset();
+  }, [mesh]);
 
-  const researchProgress = useTimedProgress(loading, RESEARCH_ASSUMED_MS);
+  const researchProgress = useSharedProgress(researchRunning ? rs.job!.startedAt : null, RESEARCH_ASSUMED_MS);
 
-  if (phase === "lookup") {
+  // ---- Render gating ------------------------------------------------------
+  // Lookup screen renders for idle + lookup-pending. Form/result screen
+  // renders for everything else. `done` keeps showing the form so the
+  // host can tweak + re-research if needed.
+  if (rs.phase === "idle" || rs.phase === "lookup-pending") {
     return (
       <LookupPhase
         query={lookupQuery}
         setQuery={setLookupQuery}
         onSubmit={runLookup}
-        loading={looking}
-        error={lookupError}
+        loading={lookupRunning}
+        startedAt={lookupRunning ? rs.job!.startedAt : null}
+        startedBy={lookupRunning ? rs.job!.startedBy : null}
+        error={rs.error}
       />
     );
   }
@@ -272,7 +151,6 @@ export const ResearchWindow = () => {
         overflow: "hidden",
       }}
     >
-      {/* Form */}
       <form
         onSubmit={submit}
         style={{
@@ -288,31 +166,31 @@ export const ResearchWindow = () => {
         <LabeledInput label="Name" value={name} onChange={setName} placeholder="Vitalik Buterin" autoFocus full />
         <LabeledInput
           label="Twitter / X"
-          value={socials.twitter}
+          value={socials.twitter ?? ""}
           onChange={v => setSocialField("twitter", v)}
           placeholder="@vitalikbuterin"
         />
         <LabeledInput
           label="GitHub"
-          value={socials.github}
+          value={socials.github ?? ""}
           onChange={v => setSocialField("github", v)}
           placeholder="vbuterin"
         />
         <LabeledInput
           label="LinkedIn"
-          value={socials.linkedin}
+          value={socials.linkedin ?? ""}
           onChange={v => setSocialField("linkedin", v)}
           placeholder="profile url or handle"
         />
         <LabeledInput
           label="Website"
-          value={socials.website}
+          value={socials.website ?? ""}
           onChange={v => setSocialField("website", v)}
           placeholder="https://vitalik.ca"
         />
         <LabeledInput
           label="Other"
-          value={socials.other}
+          value={socials.other ?? ""}
           onChange={v => setSocialField("other", v)}
           placeholder="warpcast, farcaster, anything"
           full
@@ -328,6 +206,7 @@ export const ResearchWindow = () => {
           <button
             type="button"
             onClick={startOver}
+            disabled={researchRunning}
             style={{
               padding: "6px 12px",
               fontSize: 10,
@@ -338,34 +217,35 @@ export const ResearchWindow = () => {
               color: "var(--slop-text-muted)",
               border: "1px solid rgba(255,62,201,0.25)",
               borderRadius: 4,
-              cursor: "pointer",
+              cursor: researchRunning ? "not-allowed" : "pointer",
+              opacity: researchRunning ? 0.5 : 1,
             }}
+            title={researchRunning ? "wait for the in-flight job to finish" : "clear and start over"}
           >
             Start over
           </button>
           <button
             type="submit"
-            disabled={!name.trim() || loading}
+            disabled={!name.trim() || researchRunning}
             style={{
               padding: "6px 14px",
               fontSize: 10,
               fontFamily: "var(--slop-font-display)",
               letterSpacing: "0.1em",
               textTransform: "uppercase",
-              background: !name.trim() || loading ? "rgba(255,62,201,0.25)" : ACCENT,
+              background: !name.trim() || researchRunning ? "rgba(255,62,201,0.25)" : ACCENT,
               color: "#06030d",
               border: "none",
               borderRadius: 4,
-              cursor: !name.trim() || loading ? "not-allowed" : "pointer",
+              cursor: !name.trim() || researchRunning ? "not-allowed" : "pointer",
               fontWeight: 700,
             }}
           >
-            {loading ? "Researching…" : "Research"}
+            {researchRunning ? "Researching…" : "Research"}
           </button>
         </div>
       </form>
 
-      {/* Output */}
       <div
         style={{
           flex: 1,
@@ -377,7 +257,7 @@ export const ResearchWindow = () => {
           gap: 12,
         }}
       >
-        {error ? (
+        {rs.error ? (
           <div
             style={{
               padding: 10,
@@ -388,17 +268,17 @@ export const ResearchWindow = () => {
               color: "#ff9a9a",
             }}
           >
-            {error}
+            {rs.error}
           </div>
         ) : null}
 
-        {!result && !error && !loading ? (
+        {!rs.result && !researchRunning ? (
           <div style={{ padding: 24, textAlign: "center", color: "var(--slop-text-muted)", fontSize: 12 }}>
             Fill in the guest&apos;s name and any socials, then hit Research. Takes ~10–30 seconds.
           </div>
         ) : null}
 
-        {loading ? (
+        {researchRunning ? (
           <div
             style={{
               padding: 24,
@@ -412,11 +292,14 @@ export const ResearchWindow = () => {
             }}
           >
             <LoadingBar cells={20} progress={researchProgress} caption="researching" />
-            <div>vanilla knowledge + web research running in parallel — usually a minute or two</div>
+            <div>
+              vanilla knowledge + web research running in parallel — usually a minute or two
+              {rs.job?.startedBy ? <> · started by {rs.job.startedBy}</> : null}
+            </div>
           </div>
         ) : null}
 
-        {result ? <ResultView result={result} /> : null}
+        {rs.result ? <ResultView result={rs.result} /> : null}
       </div>
     </div>
   );
@@ -469,11 +352,13 @@ type LookupPhaseProps = {
   setQuery: (v: string) => void;
   onSubmit: (e: React.FormEvent) => void;
   loading: boolean;
+  startedAt: number | null;
+  startedBy: string | null;
   error: string | null;
 };
 
-const LookupPhase = ({ query, setQuery, onSubmit, loading, error }: LookupPhaseProps) => {
-  const progress = useTimedProgress(loading, LOOKUP_ASSUMED_MS);
+const LookupPhase = ({ query, setQuery, onSubmit, loading, startedAt, startedBy, error }: LookupPhaseProps) => {
+  const progress = useSharedProgress(startedAt, LOOKUP_ASSUMED_MS);
   return (
     <div
       style={{
@@ -556,8 +441,11 @@ const LookupPhase = ({ query, setQuery, onSubmit, loading, error }: LookupPhaseP
           {loading ? "Looking up…" : "Look up"}
         </button>
         {loading ? (
-          <div style={{ display: "flex", justifyContent: "center", marginTop: 4 }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, marginTop: 4 }}>
             <LoadingBar cells={16} progress={progress} caption="looking up" />
+            {startedBy ? (
+              <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>started by {startedBy}</div>
+            ) : null}
           </div>
         ) : null}
         {error ? (
@@ -575,7 +463,8 @@ const LookupPhase = ({ query, setQuery, onSubmit, loading, error }: LookupPhaseP
           </div>
         ) : null}
         <div style={{ fontSize: 11, color: "var(--slop-text-muted)", textAlign: "center", marginTop: 4 }}>
-          Resolves to a name, socials, and a one-line identity sketch. You can edit everything before going deeper.
+          Resolves to a name, socials, and a one-line identity sketch. Anyone in the room can edit the form before going
+          deeper.
         </div>
       </form>
     </div>
@@ -586,7 +475,6 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
   const handle = result.query.socials.twitter?.replace(/^@/, "");
   return (
     <>
-      {/* Header: name + socials */}
       <section>
         <div
           style={{ fontSize: 18, fontWeight: 700, color: "var(--slop-text)", fontFamily: "var(--slop-font-display)" }}
