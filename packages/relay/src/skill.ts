@@ -176,7 +176,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`aiPlayers\` | \`AIPlayer[]\` | Server-side chess opponents (global) |
 | \`todos\` | \`TodoItem[]\` | Shared todo list (this room) |
 | \`notes\` | \`Note[]\` | Shared notes (this room) |
-| \`glossary\` | \`GlossaryTerm[]\` | Shared glossary with AI TLDRs (this room… actually global, see glossary sub-skill) |
+| \`glossary\` | \`GlossaryTerm[]\` | Shared glossary with AI TLDRs (global — one list across all rooms) |
 | \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot (global) |
 | \`tickerState\` | \`TickerState \\| null\` | Crypto + AI stocks + private valuations + $CLAWD (global) |
 | \`headlinesState\` | \`HeadlinesState \\| null\` | Crypto + AI news headlines (global) |
@@ -331,7 +331,7 @@ the transcript sub-skill for the read path.
   that room sees your change. There is no undo. Be intentional.
 - Cursor coords are viewport pixels at the host's resolution
   (~1440×900 typical). Stay inside the screen.
-- The WS at \`wss://relay.slop.computer/signal\` is out of scope for
+- The WS at \`wss://live.slop.computer/signal\` is out of scope for
   this skill — sub-skills use REST + long-poll / SSE instead.
 `;
 }
@@ -1628,7 +1628,7 @@ The full wallet picture is inside \`GET /v1/state?slug=${slugStr(slug)}\`:
 There are **no** authenticated REST endpoints for deploying, signing,
 proposing, or executing — those flow over the room's WebSocket so
 the wallet UI can stay reactive. Agents driving wallet behavior need
-a WS client connected to \`wss://relay.slop.computer/signal?slug=${slugStr(slug)}\`
+a WS client connected to \`wss://live.slop.computer/signal?slug=${slugStr(slug)}\`
 with the appropriate session token. That's out of scope for this
 skill doc — ask the host for the WS message types.
 
