@@ -21,6 +21,8 @@ import { FileIndex } from "./files.js";
 import { JAMENDO_DIR, JamendoRoomState } from "./jamendo.js";
 import { MusicState } from "./music-state.js";
 import { NoteList } from "./notes.js";
+import { PreviewMedia } from "./preview-media.js";
+import { QrState } from "./qr-state.js";
 import { ResearchState } from "./research-state.js";
 import { RoomAuth } from "./room-auth.js";
 import { RoomMeta } from "./room-meta.js";
@@ -180,6 +182,8 @@ export class Room {
   readonly desktop: DesktopState;
   readonly music = new MusicState();
   readonly research = new ResearchState();
+  readonly qr = new QrState();
+  readonly previewMedia = new PreviewMedia();
   readonly chess: ChessState;
   readonly aiMover: AIMover;
   readonly wallet: WalletState;
@@ -235,6 +239,10 @@ export class Room {
     this.jamendo.subscribe(event => this.broadcast({ type: "music_genre", genre: event.genre }));
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
+    this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
+    this.previewMedia.subscribe(event =>
+      this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
+    );
     this.files.subscribe(event => {
       if (event.type === "added") this.broadcast({ type: "file_added", item: event.item });
       else if (event.type === "removed") this.broadcast({ type: "file_removed", id: event.id });

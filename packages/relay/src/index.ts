@@ -2425,6 +2425,49 @@ app.delete("/v1/research", async (req, reply) => {
   return { ok: true, state: next };
 });
 
+// --- QR code window --------------------------------------------------------
+// Multiplayer QR text + center logo. Anyone in the room can write the
+// text or replace the logo. The relay broadcasts `qr_state` so every
+// peer's QrCodeWindow renders the same code. Not persisted (resets on
+// relay restart; the client re-seeds the text from the room URL on
+// next mount).
+
+// Bound on the logo data URL we accept. 256×256 PNG with the alpha
+// channel preserved tops out at ~340 KB, give some headroom for
+// data-URL base64 overhead. Reject anything bigger so a malicious
+// client can't pump a giant blob through the WS broadcast.
+const QR_LOGO_MAX_LEN = 600_000;
+
+type QrPatchBody = { text?: unknown; logoDataUrl?: unknown; clearLogo?: unknown };
+
+app.post<{ Body: QrPatchBody }>("/v1/qr", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const body = (req.body ?? {}) as QrPatchBody;
+  const patch: { text?: string; logoDataUrl?: string | null } = {};
+  if (typeof body.text === "string") {
+    // Cap the text length — a QR with H-level error correction tops
+    // out around 1000 chars of input before the modules get too small
+    // to scan; anything past that is a misuse, not a feature.
+    patch.text = body.text.slice(0, 2000);
+  }
+  if (body.clearLogo === true) {
+    patch.logoDataUrl = null;
+  } else if (typeof body.logoDataUrl === "string") {
+    if (!body.logoDataUrl.startsWith("data:image/")) {
+      return reply.code(400).send({ error: "bad-logo", note: "logoDataUrl must be a data: URL" });
+    }
+    if (body.logoDataUrl.length > QR_LOGO_MAX_LEN) {
+      return reply.code(413).send({ error: "logo-too-large" });
+    }
+    patch.logoDataUrl = body.logoDataUrl;
+  }
+  const next = room.qr.setPatch(patch);
+  reply.header("cache-control", "no-store");
+  return { ok: true, state: next };
+});
+
 // --- Jamendo genre playlists -----------------------------------------------
 // Shared genre selection that drives the music player. The current
 // genre is broadcast over the mesh; selecting a genre also triggers an
