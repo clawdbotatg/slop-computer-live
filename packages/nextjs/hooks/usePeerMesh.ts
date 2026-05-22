@@ -546,6 +546,27 @@ const DEFAULT_RESEARCH_STATE: ResearchState = {
   error: null,
 };
 
+// --- QR code window ---------------------------------------------------------
+// Shared text + center logo for the room's QR generator. logoDataUrl
+// is a data:image/png base64 URL (caller downscales to 256×256 before
+// sending). null clears the logo.
+export type QrState = {
+  text: string;
+  logoDataUrl: string | null;
+};
+
+const DEFAULT_QR_STATE: QrState = { text: "", logoDataUrl: null };
+
+// --- File-preview media playhead -------------------------------------------
+// Per-file audio/video playhead snapshots shared across the room.
+// Indexed by fileId so multiple previews can play independently. Live
+// position = position + (now - at)/1000 while playing.
+export type PreviewMediaSnapshot = {
+  position: number;
+  playing: boolean;
+  at: number;
+};
+
 // Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
 export type ChessGameStatus =
   | "active"
@@ -760,6 +781,21 @@ export type PeerMeshState = {
    *  Refused server-side while a job is in flight (avoids orphaning a
    *  running AI call). */
   researchReset: () => void;
+  /** Shared QR-window state (text + center logo). Every peer's QR
+   *  renders this. Last-writer-wins. */
+  qrState: QrState;
+  /** Partial-patch setter — pass `{ text }`, `{ logoDataUrl }`, or
+   *  `{ clearLogo: true }`. Server fans the update back to everyone. */
+  setQrPatch: (patch: { text?: string; logoDataUrl?: string; clearLogo?: boolean }) => void;
+  /** Per-fileId audio/video playhead snapshots for file previews.
+   *  Keyed by FileEntry.id. Absent keys mean nobody's started
+   *  playback on that file yet — preview window treats that as
+   *  paused-at-zero. */
+  previewMedia: Record<string, PreviewMediaSnapshot>;
+  /** Broadcast a play/pause/seek for a specific file. The server's
+   *  per-room map is keyed by fileId so multiple previews are
+   *  independent. */
+  setPreviewMedia: (fileId: string, state: PreviewMediaSnapshot) => void;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -892,6 +928,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
+  const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
+  const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1465,6 +1503,33 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("researchReset failed", err));
   }, [slug]);
 
+  // QR text + logo broadcast. Low frequency (host types occasionally,
+  // logo replaced rarely) — REST POST is fine; the relay broadcasts
+  // `qr_state` back to every peer including us.
+  const setQrPatch = useCallback(
+    (patch: { text?: string; logoDataUrl?: string; clearLogo?: boolean }) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/qr`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      }).catch(err => console.warn("setQrPatch failed", err));
+    },
+    [slug],
+  );
+
+  // File-preview media playhead. High frequency during a scrub, so
+  // route through WS (like music_state) rather than REST. Optimistic
+  // local update so the dragger sees no lag; the WS echo is harmless
+  // when it matches.
+  const setPreviewMedia = useCallback(
+    (fileId: string, state: PreviewMediaSnapshot) => {
+      setPreviewMediaLocal(prev => ({ ...prev, [fileId]: state }));
+      send({ type: "preview_media", fileId, ...state });
+    },
+    [send],
+  );
+
   // Broadcast a new title overlay state. Updates local optimistically
   // so the dragging peer sees no lag; server fans the change out to
   // everyone else (excluding sender) and persists last-write-wins.
@@ -1815,6 +1880,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.researchState && typeof msg.researchState === "object") {
             setResearchStateLocal(msg.researchState as ResearchState);
           }
+          if (msg.qrState && typeof msg.qrState === "object") {
+            setQrStateLocal(msg.qrState as QrState);
+          }
+          if (Array.isArray(msg.previewMedia)) {
+            const map: Record<string, PreviewMediaSnapshot> = {};
+            for (const entry of msg.previewMedia as Array<{ fileId: unknown; state: unknown }>) {
+              if (typeof entry.fileId === "string" && entry.state && typeof entry.state === "object") {
+                map[entry.fileId] = entry.state as PreviewMediaSnapshot;
+              }
+            }
+            setPreviewMediaLocal(map);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -1993,6 +2070,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "research_state" && msg.state && typeof msg.state === "object") {
           setResearchStateLocal(msg.state as ResearchState);
+          return;
+        }
+
+        if (msg.type === "qr_state" && msg.state && typeof msg.state === "object") {
+          setQrStateLocal(msg.state as QrState);
+          return;
+        }
+
+        if (
+          msg.type === "preview_media" &&
+          typeof msg.fileId === "string" &&
+          msg.state &&
+          typeof msg.state === "object"
+        ) {
+          const fileId = msg.fileId as string;
+          const state = msg.state as PreviewMediaSnapshot;
+          setPreviewMediaLocal(prev => ({ ...prev, [fileId]: state }));
           return;
         }
 
@@ -2373,6 +2467,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     researchLookup,
     researchStart,
     researchReset,
+    qrState,
+    setQrPatch,
+    previewMedia,
+    setPreviewMedia,
     broadcastTxRequest,
     incomingForwards,
     forwardTxToPeer,

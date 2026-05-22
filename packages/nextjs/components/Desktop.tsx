@@ -2162,7 +2162,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={280}
               minHeight={360}
             >
-              <QrCodeWindow />
+              <QrCodeWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
@@ -2325,7 +2325,7 @@ function DesktopInner({ slug }: { slug: string }) {
             minWidth={320}
             minHeight={240}
           >
-            <FilePreviewWindow file={file} />
+            <FilePreviewWindow file={file} mesh={mesh} />
           </SharedAppWindow>
         ))}
       </div>

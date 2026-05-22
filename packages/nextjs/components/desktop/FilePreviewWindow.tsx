@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { FileEntry } from "~~/hooks/usePeerMesh";
+import { useEffect, useRef, useState } from "react";
+import type { FileEntry, PeerMeshState, PreviewMediaSnapshot } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 
@@ -10,15 +10,164 @@ import { withSlug } from "~~/lib/slug";
 // for binary types we can't natively render. Used for double-click on
 // any DesktopFile.
 //
-// State is per-peer, not mesh-synced (each viewer can have their own
-// preview window open). Lives in page.tsx's local state, not the slot
-// system — position is just whatever we choose at open time.
+// The preview *window* (open/close/position/size) is multiplayer via
+// the slot + window-id system in Desktop.tsx — opening `preview-<id>`
+// broadcasts to the whole room. The *content state* is mostly per-peer
+// (each viewer scrolls text or paginates PDF independently), with one
+// exception: audio + video playback is synced via mesh.previewMedia[id]
+// so when the host scrubs a clip every peer's element follows. The
+// SyncedMedia subcomponent below owns that bidirectional bridge.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const MAX_INLINE_TEXT_BYTES = 1_000_000; // 1 MB cap for text fetch
 
 export type FilePreviewWindowProps = {
   file: FileEntry;
+  mesh: PeerMeshState;
+};
+
+// Drift tolerance: only force a seek when the local element has
+// strayed more than this from the shared playhead. Loose enough that
+// natural buffering / network burps don't cause visible re-seeks.
+const SYNC_TOLERANCE_SEC = 1.5;
+// Cap forward extrapolation in case a stale snapshot says "playing"
+// from hours ago — don't try to seek to position-1h.
+const MAX_FORWARD_EXTRAPOLATION_SEC = 600;
+
+function livePosition(s: PreviewMediaSnapshot | undefined | null): number {
+  if (!s) return 0;
+  if (!s.playing) return s.position;
+  const elapsed = Math.max(0, (Date.now() - s.at) / 1000);
+  if (elapsed > MAX_FORWARD_EXTRAPOLATION_SEC) return s.position;
+  return s.position + elapsed;
+}
+
+// Render an <audio> or <video> element whose playhead is bound to
+// mesh.previewMedia[fileId]. Foreign updates are pushed into the
+// element (seek + play/pause); local user gestures (clicking play,
+// dragging the scrubber, hitting end) broadcast a new snapshot.
+//
+// The "applyingServer" ref blocks the echo: when we programmatically
+// seek/play/pause to apply a foreign snapshot, the element fires the
+// same events as if the user did it. We set the flag for one tick
+// before mutating so the event handlers know to skip.
+const SyncedMedia = ({
+  fileId,
+  src,
+  kind,
+  mesh,
+}: {
+  fileId: string;
+  src: string;
+  kind: "audio" | "video";
+  mesh: PeerMeshState;
+}) => {
+  const elRef = useRef<HTMLMediaElement | null>(null);
+  const applyingServerRef = useRef(false);
+  const shared = mesh.previewMedia[fileId] ?? null;
+
+  // Push shared state → local element.
+  useEffect(() => {
+    const el = elRef.current;
+    if (!el) return;
+    const target = livePosition(shared);
+    applyingServerRef.current = true;
+    try {
+      if (Number.isFinite(target) && Math.abs(el.currentTime - target) > SYNC_TOLERANCE_SEC) {
+        try {
+          el.currentTime = target;
+        } catch {
+          /* readyState too low — the 'loadeddata' listener below will retry */
+        }
+      }
+      const shouldPlay = !!shared?.playing;
+      if (shouldPlay && el.paused) {
+        el.play().catch(() => {
+          /* Autoplay can be blocked when the foreign snapshot tells us
+             to play before the user has gestured. They'll start playback
+             themselves with a click — the broadcast happens then. */
+        });
+      } else if (!shouldPlay && !el.paused) {
+        el.pause();
+      }
+    } finally {
+      // queueMicrotask so any synthetic events fired by the play()/
+      // pause()/currentTime= calls above land while the flag is true.
+      queueMicrotask(() => {
+        applyingServerRef.current = false;
+      });
+    }
+  }, [shared]);
+
+  // Once metadata is ready, retry the sync — the initial seek above
+  // may have been rejected for readyState reasons.
+  useEffect(() => {
+    const el = elRef.current;
+    if (!el) return;
+    const onLoaded = () => {
+      const target = livePosition(shared);
+      if (Number.isFinite(target) && Math.abs(el.currentTime - target) > SYNC_TOLERANCE_SEC) {
+        applyingServerRef.current = true;
+        try {
+          el.currentTime = target;
+        } catch {
+          /* still not seekable */
+        }
+        queueMicrotask(() => {
+          applyingServerRef.current = false;
+        });
+      }
+    };
+    el.addEventListener("loadeddata", onLoaded);
+    return () => el.removeEventListener("loadeddata", onLoaded);
+  }, [shared]);
+
+  // Local user gestures → broadcast.
+  useEffect(() => {
+    const el = elRef.current;
+    if (!el) return;
+    const broadcast = () => {
+      if (applyingServerRef.current) return;
+      mesh.setPreviewMedia(fileId, {
+        position: el.currentTime,
+        playing: !el.paused && !el.ended,
+        at: Date.now(),
+      });
+    };
+    el.addEventListener("play", broadcast);
+    el.addEventListener("pause", broadcast);
+    el.addEventListener("seeked", broadcast);
+    el.addEventListener("ended", broadcast);
+    return () => {
+      el.removeEventListener("play", broadcast);
+      el.removeEventListener("pause", broadcast);
+      el.removeEventListener("seeked", broadcast);
+      el.removeEventListener("ended", broadcast);
+    };
+  }, [fileId, mesh]);
+
+  if (kind === "video") {
+    return (
+      <video
+        ref={el => {
+          elRef.current = el;
+        }}
+        src={src}
+        controls
+        style={{ maxWidth: "100%", maxHeight: "100%", display: "block", margin: "auto" }}
+      />
+    );
+  }
+  return (
+    <audio
+      ref={el => {
+        elRef.current = el;
+      }}
+      src={src}
+      controls
+      style={{ width: "100%", maxWidth: 360 }}
+    />
+  );
 };
 
 type PreviewKind = "image" | "video" | "audio" | "pdf" | "text" | "html" | "none";
@@ -157,7 +306,7 @@ const TextPreview = ({ url, name }: { url: string; name: string }) => {
   );
 };
 
-export const FilePreviewWindow = ({ file }: FilePreviewWindowProps) => {
+export const FilePreviewWindow = ({ file, mesh }: FilePreviewWindowProps) => {
   const slug = useRoomSlug();
   const downloadUrl = withSlug(`${RELAY_HTTP}/files/${file.id}`, slug);
   const kind = previewKindFor(file);
@@ -254,11 +403,7 @@ export const FilePreviewWindow = ({ file }: FilePreviewWindowProps) => {
             }}
           />
         ) : kind === "video" ? (
-          <video
-            src={downloadUrl}
-            controls
-            style={{ maxWidth: "100%", maxHeight: "100%", display: "block", margin: "auto" }}
-          />
+          <SyncedMedia fileId={file.id} src={downloadUrl} kind="video" mesh={mesh} />
         ) : kind === "audio" ? (
           <div
             style={{
@@ -271,7 +416,7 @@ export const FilePreviewWindow = ({ file }: FilePreviewWindowProps) => {
             }}
           >
             <div>🎵</div>
-            <audio src={downloadUrl} controls style={{ width: "100%", maxWidth: 360 }} />
+            <SyncedMedia fileId={file.id} src={downloadUrl} kind="audio" mesh={mesh} />
           </div>
         ) : kind === "pdf" ? (
           <iframe

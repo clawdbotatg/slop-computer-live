@@ -2,17 +2,27 @@
 
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 
-// Per-user QR generator. State is local: the window shell (open/close, drag,
-// position) flows through SharedAppWindow like every other app, but the text
-// input and optional center logo are private to each peer.
+// Multiplayer QR generator. The text input + center logo live on
+// mesh.qrState — anyone in the room can edit, and every peer's QR
+// re-renders in sync. Text edits are debounced before broadcast so
+// keystrokes feel live to the typer but don't spam the relay; logo
+// uploads broadcast once on each successful drop / file pick.
 //
-// On first open the input defaults to the room's public URL (slop.computer/<slug>,
-// not live.slop.computer/<slug>) so the QR is immediately scannable — point a
-// phone at the screen and you're back on the same desktop.
+// On first open the input defaults to the room's public URL
+// (slop.computer/<slug>, not live.slop.computer/<slug>) so the QR is
+// immediately scannable — point a phone at the screen and you're
+// back on the same desktop. The seed only fires when the shared
+// state is still empty, so a re-open never overwrites someone else's
+// custom text.
 
 const LOGO_MAX_DIM = 256;
 const LOGO_JPEG_QUALITY = 0.9;
+// Debounce window for text broadcasts — long enough that a normal
+// burst of typing collapses to one POST, short enough that the
+// other peers feel the change live within a beat.
+const TEXT_BROADCAST_DEBOUNCE_MS = 250;
 
 async function downscaleImage(file: File): Promise<string> {
   const url = URL.createObjectURL(file);
@@ -42,32 +52,81 @@ async function downscaleImage(file: File): Promise<string> {
   }
 }
 
-export const QrCodeWindow = () => {
-  const [text, setText] = useState("");
-  const [logo, setLogo] = useState<string | null>(null);
+export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
+  const sharedText = mesh.qrState.text;
+  const sharedLogo = mesh.qrState.logoDataUrl;
+
+  // Local draft of the input value. We type into this, then a
+  // debounced effect mirrors changes into the shared state. While
+  // the user is mid-burst, sharedText may still hold the old value;
+  // we render `text` so the typer sees their own keystrokes live.
+  // When the shared state changes from outside (another peer typed),
+  // we adopt it as long as we're not currently mid-edit.
+  const [text, setText] = useState(sharedText);
   const [hover, setHover] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const broadcastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastBroadcastRef = useRef(sharedText);
+  // Whether the local input has focus. While focused we ignore
+  // foreign updates so the typer's caret position doesn't get
+  // yanked around mid-burst.
+  const editingRef = useRef(false);
 
-  // Default to the room's canonical public URL on first mount. We strip the
-  // `live.` subdomain so a scanned QR lands on slop.computer/<slug>, which
-  // redirects into the live desktop but is the shorter, shareable form.
-  // Effect (not initial state) because `window` isn't available during SSR.
+  // Seed the room URL the first time we encounter an empty shared
+  // text. Done in an effect (not initial state) because `window`
+  // isn't available during SSR. Multiple peers may race to seed —
+  // they all compute the same URL, so last-writer-wins is harmless.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (sharedText !== "" || typeof window === "undefined") return;
     const { hostname, pathname, search, hash, protocol } = window.location;
     const publicHost = hostname.replace(/^live\./, "");
-    setText(`${protocol}//${publicHost}${pathname}${search}${hash}`);
+    const seed = `${protocol}//${publicHost}${pathname}${search}${hash}`;
+    setText(seed);
+    lastBroadcastRef.current = seed;
+    mesh.setQrPatch({ text: seed });
+    // Run-once on the first empty-shared snapshot. We don't want to
+    // re-seed if the host clears the text intentionally later.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Adopt foreign shared-text updates when we're not actively typing.
+  useEffect(() => {
+    if (editingRef.current) return;
+    if (sharedText === text) return;
+    setText(sharedText);
+    lastBroadcastRef.current = sharedText;
+  }, [sharedText, text]);
+
+  // Debounced broadcast of the local draft. Fires when the user
+  // pauses typing for TEXT_BROADCAST_DEBOUNCE_MS. Re-armed on every
+  // keystroke. Skip if the value matches what we last shipped.
+  useEffect(() => {
+    if (text === lastBroadcastRef.current) return;
+    if (broadcastTimerRef.current != null) clearTimeout(broadcastTimerRef.current);
+    broadcastTimerRef.current = setTimeout(() => {
+      broadcastTimerRef.current = null;
+      lastBroadcastRef.current = text;
+      mesh.setQrPatch({ text });
+    }, TEXT_BROADCAST_DEBOUNCE_MS);
+    return () => {
+      if (broadcastTimerRef.current != null) {
+        clearTimeout(broadcastTimerRef.current);
+        broadcastTimerRef.current = null;
+      }
+    };
+  }, [text, mesh]);
 
   const handleFile = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image/")) return;
     try {
       const dataUrl = await downscaleImage(file);
-      setLogo(dataUrl);
+      mesh.setQrPatch({ logoDataUrl: dataUrl });
     } catch (err) {
       console.warn("QR logo decode failed", err);
     }
   };
+
+  const clearLogo = () => mesh.setQrPatch({ clearLogo: true });
 
   // stopPropagation on every drag event that handles a Files payload —
   // otherwise the event bubbles up to the desktop's drop-to-upload
@@ -108,9 +167,9 @@ export const QrCodeWindow = () => {
 
   // Higher error correction lets us punch a logo hole through the middle
   // without breaking scannability. H = ~30% recovery.
-  const imageSettings = logo
+  const imageSettings = sharedLogo
     ? {
-        src: logo,
+        src: sharedLogo,
         height: 64,
         width: 64,
         excavate: true,
@@ -161,6 +220,12 @@ export const QrCodeWindow = () => {
         type="text"
         value={text}
         onChange={e => setText(e.target.value)}
+        onFocus={() => {
+          editingRef.current = true;
+        }}
+        onBlur={() => {
+          editingRef.current = false;
+        }}
         placeholder="type anything…"
         spellCheck={false}
         style={{
@@ -192,12 +257,12 @@ export const QrCodeWindow = () => {
             cursor: "pointer",
           }}
         >
-          {logo ? "Replace logo" : "Add logo"}
+          {sharedLogo ? "Replace logo" : "Add logo"}
         </button>
-        {logo ? (
+        {sharedLogo ? (
           <button
             type="button"
-            onClick={() => setLogo(null)}
+            onClick={clearLogo}
             style={{
               padding: "6px 10px",
               fontSize: 11,

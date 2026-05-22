@@ -627,6 +627,8 @@ app.get("/v1/state", async (req, reply) => {
     cardJob: readCardJob(roomFromReq(req).id),
     cardTitle: readCardTitle(roomFromReq(req).id),
     researchState: roomFromReq(req).research.current().state,
+    qrState: roomFromReq(req).qr.current().state,
+    previewMedia: roomFromReq(req).previewMedia.all(),
   };
 });
 
@@ -3745,6 +3747,8 @@ app.register(async function signalRoutes(fastify) {
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
       researchState: room.research.current().state,
+      qrState: room.qr.current().state,
+      previewMedia: room.previewMedia.all(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -4017,6 +4021,28 @@ app.register(async function signalRoutes(fastify) {
           if (room.windows.close(msg.id)) {
             room.broadcast({ type: "window_closed", id: msg.id });
           }
+          return;
+        }
+        case "preview_media": {
+          // Broadcast a play/pause/seek event for a specific file's
+          // preview window. Same drift-tolerance contract as music_state:
+          // peers extrapolate from `at` locally. fileId namespaces the
+          // map so several files can play independently in parallel.
+          if (
+            typeof msg.fileId !== "string" ||
+            typeof msg.position !== "number" ||
+            typeof msg.at !== "number"
+          ) {
+            return send(socket, { type: "error", error: "bad_preview_media" });
+          }
+          const next = room.previewMedia.set(msg.fileId, {
+            position: msg.position,
+            playing: !!msg.playing,
+            at: msg.at,
+          });
+          // setPreviewMedia notifies inside; broadcast is wired up via
+          // the Room subscriber. Nothing else to do here.
+          void next;
           return;
         }
         case "music_state": {
