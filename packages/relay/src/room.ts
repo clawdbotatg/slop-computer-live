@@ -25,6 +25,7 @@ import { PreviewMedia } from "./preview-media.js";
 import { QrState } from "./qr-state.js";
 import { ResearchState } from "./research-state.js";
 import { RoomAuth } from "./room-auth.js";
+import { WalletChatState } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
 import { TodoList } from "./todos.js";
 import { Transcript } from "./transcript.js";
@@ -86,6 +87,7 @@ function roomPaths(id: string): {
   chess: SubsystemPath;
   wallet: SubsystemPath;
   research: { path: string };
+  walletChat: { path: string };
   auth: { path: string };
   meta: { path: string };
 } {
@@ -155,6 +157,11 @@ function roomPaths(id: string): {
       // DEFAULT_SLUG room has nothing to inherit. Cold start = empty.
       path: `${dir}/research.json`,
     },
+    walletChat: {
+      // No legacy path — the AI wallet chat was per-iframe localStorage
+      // before this port, never relay-persisted. Cold start = empty.
+      path: `${dir}/wallet-chat.json`,
+    },
     auth: {
       path: `${dir}/auth.json`,
     },
@@ -193,6 +200,7 @@ export class Room {
   readonly chess: ChessState;
   readonly aiMover: AIMover;
   readonly wallet: WalletState;
+  readonly walletChat: WalletChatState;
   readonly auth: RoomAuth;
 
   constructor(id: string) {
@@ -231,6 +239,7 @@ export class Room {
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
+    this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
     this.auth = new RoomAuth(paths.auth.path);
 
@@ -246,6 +255,7 @@ export class Room {
     this.jamendo.subscribe(event => this.broadcast({ type: "music_genre", genre: event.genre }));
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
+    this.walletChat.subscribe(state => this.broadcast({ type: "wallet_chat", state }));
     this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),

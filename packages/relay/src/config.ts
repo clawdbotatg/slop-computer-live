@@ -68,4 +68,15 @@ export const config = {
   twitterAccessToken: env("TWITTER_ACCESS_TOKEN", ""),
   twitterAccessTokenSecret: env("TWITTER_ACCESS_TOKEN_SECRET", ""),
   openAiApiKey: env("OPENAI_API_KEY", ""),
+  // --- AI wallet (ported from slop-computer-ai-wallet) -------------------
+  // The conversational wallet's LLM runs through Bankr's OpenAI-compatible
+  // gateway (llm.bankr.bot). `aiWalletLlmKey` is the bearer token for it.
+  // Zerion powers portfolio + activity; LI.FI powers swap/bridge routing.
+  // Missing keys degrade gracefully — the wallet chat surfaces a clear
+  // "not configured" message rather than crashing.
+  aiWalletLlmKey: env("SLOP_COMPUTER_AI_WALLET", ""),
+  aiWalletLlmBaseUrl: env("AI_WALLET_LLM_BASE_URL", "https://llm.bankr.bot/v1"),
+  aiWalletLlmModel: env("AI_WALLET_LLM_MODEL", "claude-opus-4.7"),
+  zerionApiKey: env("ZERION_API_KEY", ""),
+  lifiApiKey: env("LIFI_API_KEY", ""),
 };

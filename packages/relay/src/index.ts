@@ -102,6 +102,17 @@ import { type ClockState } from "./clock.js";
 import type { WalletRecord, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
+import {
+  fetchActivity,
+  fetchAddressModal,
+  fetchAssetModal,
+  fetchNetworkModal,
+  fetchPortfolio,
+  fetchPrices,
+  fetchTransactionModal,
+  simulateCalldata,
+} from "./wallet-data.js";
+import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
 
 // Room used by HTTP routes that aren't slug-scoped (admin-global things
 // that operate on the default room only). Kept as a thin alias so the
@@ -662,6 +673,7 @@ app.get("/v1/state", async (req, reply) => {
     researchState: roomFromReq(req).research.current().state,
     qrState: roomFromReq(req).qr.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
+    walletChat: roomFromReq(req).walletChat.current().state,
   };
 });
 
@@ -2512,6 +2524,186 @@ app.post<{ Body: QrPatchBody }>("/v1/qr", { bodyLimit: QR_ROUTE_BODY_LIMIT }, as
   return { ok: true, state: next };
 });
 
+// --- AI wallet chat --------------------------------------------------------
+// Per-room conversational wallet. Anyone can POST a message; the relay
+// appends it, broadcasts (processing: true), runs the agentic intent
+// engine fire-and-forget, then appends the AI's answer + broadcasts.
+// One conversation, one turn at a time — a second send while a turn is
+// in flight gets a 409. Read-only wallet data (portfolio/activity/etc.)
+// is served by the /v1/wallet/* GET routes below.
+
+type WalletChatBody = { message?: unknown; address?: unknown; chainId?: unknown };
+
+app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+  if (!message) return reply.code(400).send({ error: "missing-message" });
+  const address = typeof req.body?.address === "string" ? req.body.address.trim().toLowerCase() : "";
+  if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+  const chainId = typeof req.body?.chainId === "number" ? req.body.chainId : 1;
+
+  const room = roomFromReq(req);
+  if (room.walletChat.isProcessing()) {
+    return reply.code(409).send({ error: "already-processing", state: room.walletChat.current().state });
+  }
+
+  // Append the user turn — flips processing:true and broadcasts.
+  const sender = (a.session.handle || a.session.address || null) || null;
+  const userMsg = room.walletChat.appendUser(message, sender);
+
+  // Fire-and-forget: fetch fresh wallet context, run the intent engine,
+  // append the AI's answer. Result delivery is via the `wallet_chat`
+  // broadcast, not this HTTP response.
+  void (async () => {
+    try {
+      const [portfolio, activity] = await Promise.all([
+        fetchPortfolio(address).catch(() => null),
+        fetchActivity(address).catch(() => null),
+      ]);
+      const intentInput: WalletIntentInput = {
+        message,
+        address,
+        chainId,
+        portfolio: (portfolio?.assets ?? []).map(x => ({
+          tokenSymbol: x.tokenSymbol,
+          balance: x.balance,
+          balanceUsd: x.balanceUsd,
+          blockchain: x.blockchain,
+          contractAddress: x.contractAddress,
+        })),
+        defiPositions: (portfolio?.defiPositions ?? []).map(x => ({
+          tokenName: x.tokenName,
+          tokenSymbol: x.tokenSymbol,
+          positionType: x.positionType,
+          protocol: x.protocol,
+          balance: x.balance,
+          balanceUsd: x.balanceUsd,
+          blockchain: x.blockchain,
+          contractAddress: x.contractAddress,
+        })),
+        recentActivity: (activity?.items ?? []).slice(0, 20).map(x => ({
+          type: x.type,
+          chain: x.chain,
+          minedAt: x.minedAt,
+          out: x.out ? { symbol: x.out.symbol, amount: x.out.amount } : null,
+          in: x.in ? { symbol: x.in.symbol, amount: x.in.amount } : null,
+          valueUsd: x.valueUsd,
+        })),
+        recentMessages: room.walletChat.recentForIntent(userMsg.id),
+      };
+      const result = await runWalletIntent(intentInput);
+      room.walletChat.appendAssistant(result);
+    } catch (err) {
+      room.walletChat.appendAssistant({
+        type: "chat",
+        message: "Sorry — the wallet AI hit an unexpected error. Try again.",
+        error: String(err).slice(0, 300),
+      });
+    }
+  })();
+
+  reply.header("cache-control", "no-store");
+  return reply.code(202).send({ ok: true, state: room.walletChat.current().state, userMessageId: userMsg.id });
+});
+
+// Reset the conversation. Any peer — same permissive model as the
+// research "Start over". Refused while a turn is processing so a reset
+// can't orphan an in-flight intent call onto a cleared conversation.
+app.delete("/v1/wallet-chat", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  if (room.walletChat.isProcessing()) {
+    return reply.code(409).send({ error: "processing", state: room.walletChat.current().state });
+  }
+  const next = room.walletChat.reset();
+  return { ok: true, state: next };
+});
+
+// --- AI wallet read-only data ----------------------------------------------
+// Stateless GET proxies the ported chat UI consumes for portfolio,
+// activity, token/network/address/tx detail panels. The relay holds the
+// Zerion/Alchemy keys; the browser never sees them.
+
+app.get<{ Querystring: { address?: string } }>("/v1/wallet/portfolio", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const address = (req.query.address ?? "").trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+  reply.header("cache-control", "no-store");
+  return fetchPortfolio(address);
+});
+
+app.get<{ Querystring: { address?: string; page?: string } }>("/v1/wallet/activity", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const address = (req.query.address ?? "").trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+  const page = Math.max(1, parseInt(req.query.page ?? "1", 10) || 1);
+  reply.header("cache-control", "no-store");
+  return fetchActivity(address, page);
+});
+
+app.get("/v1/wallet/prices", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { prices: await fetchPrices() };
+});
+
+type WalletSimulateBody = { calldata?: unknown; address?: unknown; chainId?: unknown };
+app.post<{ Body: WalletSimulateBody }>("/v1/wallet/simulate", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const body = (req.body ?? {}) as WalletSimulateBody;
+  const calldata = body.calldata as { to: string; data?: string; value?: string } | undefined;
+  const address = typeof body.address === "string" ? body.address : "";
+  if (!calldata?.to || !address) return reply.code(400).send({ error: "calldata.to and address required" });
+  reply.header("cache-control", "no-store");
+  return simulateCalldata({
+    calldata,
+    address,
+    chainId: typeof body.chainId === "number" ? body.chainId : 1,
+  });
+});
+
+app.get<{ Querystring: { symbol?: string } }>("/v1/wallet/asset", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const symbol = (req.query.symbol ?? "").trim();
+  if (!symbol) return reply.code(400).send({ error: "missing-symbol" });
+  reply.header("cache-control", "no-store");
+  return fetchAssetModal(symbol);
+});
+
+app.get<{ Querystring: { chain?: string } }>("/v1/wallet/network", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const chain = (req.query.chain ?? "").trim();
+  if (!chain) return reply.code(400).send({ error: "missing-chain" });
+  reply.header("cache-control", "no-store");
+  return fetchNetworkModal(chain);
+});
+
+app.get<{ Querystring: { address?: string } }>("/v1/wallet/address", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const address = (req.query.address ?? "").trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+  reply.header("cache-control", "no-store");
+  return fetchAddressModal(address);
+});
+
+app.get<{ Querystring: { hash?: string; chain?: string } }>("/v1/wallet/transaction", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const hash = (req.query.hash ?? "").trim();
+  if (!hash) return reply.code(400).send({ error: "missing-hash" });
+  reply.header("cache-control", "no-store");
+  return fetchTransactionModal(hash, (req.query.chain ?? "ethereum").trim());
+});
+
 // --- Jamendo genre playlists -----------------------------------------------
 // Shared genre selection that drives the music player. The current
 // genre is broadcast over the mesh; selecting a genre also triggers an
@@ -3791,6 +3983,7 @@ app.register(async function signalRoutes(fastify) {
       researchState: room.research.current().state,
       qrState: room.qr.current().state,
       previewMedia: room.previewMedia.all(),
+      walletChat: room.walletChat.current().state,
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
