@@ -202,7 +202,7 @@ app's long-poll or SSE endpoint documented in its sub-skill.
 ### Agent token (bootstrap)
 
 \`\`\`
-GET ${BASE}/v1/agent-token
+GET ${BASE}/v1/agent-token?slug=${slugStr(slug)}
 # → { token, expiresAt, scope: "host" | "peer",
 #     identity: { address, handle, role } }
 \`\`\`
@@ -211,7 +211,10 @@ Mints a new bearer token tied to the calling session (cookie or
 existing bearer). 7-day expiry. Hand the returned \`token\` to your
 agent and use it as \`Authorization: Bearer <token>\` for every
 subsequent call. Hosts mint host-scoped tokens; peer sessions mint
-peer-scoped tokens.
+peer-scoped tokens. The token is **locked to one room** — pass the
+\`?slug=\` of the room you're in, and the token only works for that
+room. A no-slug re-mint keeps whatever room the calling token was
+already scoped to.
 
 ### Agent presence (cursor + click)
 

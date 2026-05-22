@@ -422,7 +422,14 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
     setStatus("copying");
     try {
       const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-      const tokenRes = await fetch(`${RELAY_HTTP}/v1/agent-token`, { credentials: "include", cache: "no-store" });
+      // Mint the token scoped to the current room — the relay locks the
+      // agent token to whatever slug is passed here, so it must carry the
+      // room or the agent ends up scoped to the debug sandbox instead.
+      const tokenSlugParam = slug ? `?slug=${encodeURIComponent(slug)}` : "";
+      const tokenRes = await fetch(`${RELAY_HTTP}/v1/agent-token${tokenSlugParam}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       if (!tokenRes.ok) throw new Error(`token HTTP ${tokenRes.status}`);
       const { token } = (await tokenRes.json()) as { token: string };
       // Copy a single URL (with the token as auth + embed) rather than the

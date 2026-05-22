@@ -121,6 +121,15 @@ const roomFromReq = (req: { query?: unknown }) => {
   return getOrCreateRoom(DEFAULT_SLUG);
 };
 
+// Validated `?slug` or DEFAULT_SLUG. Used to room-scope agent tokens at
+// mint time (createAgentSession) so a minted bearer token can't later be
+// pointed at a different room.
+const slugFromReq = (req: { query?: unknown }): string => {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const raw = typeof q.slug === "string" ? q.slug : "";
+  return raw && isValidSlug(raw) ? raw : DEFAULT_SLUG;
+};
+
 // Global feeds (ticker, gas, headlines, news-digest, timeline,
 // polymarket, glossary) poll external sources once and fan the snapshot
 // out to every hot room. Iterates the room registry on every push;
@@ -539,7 +548,23 @@ function v1AuthFromReq(req: {
   if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
     const tok = authHeader.slice(7).trim();
     const s = getSession(tok);
-    if (s) return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "bearer" };
+    if (s) {
+      // Per-room gate for bearer (agent) tokens. Agents carry no
+      // cookies, so the room they're allowed into is baked into the
+      // token at mint time (createAgentSession.roomSlug). A token
+      // minted for room A must not reach room B's slug-scoped
+      // endpoints — that was the cross-room hole. Only enforced when
+      // the request actually names a slug; non-slug-scoped routes
+      // (eg /v1/agent-token, /v1/icons) stay reachable. Tokens that
+      // predate room-scoping have no roomSlug and fall back to the
+      // debug sandbox — ie they fail closed on every real room.
+      const q = (req.query ?? {}) as { slug?: unknown };
+      const rawSlug = typeof q.slug === "string" ? q.slug : "";
+      if (rawSlug && isValidSlug(rawSlug) && rawSlug !== (s.roomSlug ?? DEFAULT_SLUG)) {
+        return null;
+      }
+      return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "bearer" };
+    }
   }
   const cookieTok = req.cookies[SESSION_COOKIE];
   const s = getSession(cookieTok);
@@ -550,9 +575,9 @@ function v1AuthFromReq(req: {
   // cookie check because no one was ever issued one. Without this skip,
   // SIWE/passkey users on debug 401 on every /v1 endpoint (the session
   // cookie alone isn't enough, and the legacy slop_invite cookie is no
-  // longer minted post per-room migration). Bearer tokens above skip
-  // this because the agent was vetted at mint time. Endpoints without
-  // a ?slug= (eg /v1/agent-token) aren't slug-scoped.
+  // longer minted post per-room migration). Bearer tokens are gated
+  // above by their baked-in roomSlug instead (no cookie to check).
+  // Endpoints without a ?slug= (eg /v1/agent-token) aren't slug-scoped.
   const q = (req.query ?? {}) as { slug?: unknown };
   const rawSlug = typeof q.slug === "string" ? q.slug : "";
   if (rawSlug && isValidSlug(rawSlug)) {
@@ -569,7 +594,15 @@ const ICONS_DIR = process.env.ICONS_DIR ?? _resolve(process.cwd(), "../nextjs/pu
 app.get("/v1/agent-token", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const agent = createAgentSession(a.session);
+  // Scope the token to the room the caller minted it from. v1AuthFromReq
+  // above already proved they hold that room's password cookie (or a
+  // bearer scoped to it), so this can't escalate beyond what they have.
+  // An explicit ?slug wins; otherwise an agent re-minting inherits its
+  // own room scope (a no-slug re-mint must not silently downgrade to
+  // the debug sandbox).
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const explicitSlug = typeof q.slug === "string" && isValidSlug(q.slug) ? q.slug : null;
+  const agent = createAgentSession(a.session, explicitSlug ?? a.session.roomSlug ?? DEFAULT_SLUG);
   return {
     token: agent.token,
     expiresAt: agent.expiresAt,
@@ -1270,7 +1303,10 @@ function resolveSkillAuth(req: import("fastify").FastifyRequest, queryToken: str
   }
   if (!auth) auth = v1AuthFromReq(req);
   if (!auth) return null;
-  const token = queryToken && auth.session.token === queryToken ? queryToken : createAgentSession(auth.session).token;
+  const token =
+    queryToken && auth.session.token === queryToken
+      ? queryToken
+      : createAgentSession(auth.session, slugFromReq(req)).token;
   return { auth, token };
 }
 

@@ -22,6 +22,13 @@ export type Session = {
   // is rejected if it tries to publish, chat, or write any shared
   // state. Role stays "guest" so admin-only checks still gate it.
   spectator?: boolean;
+  // Room this token is scoped to. Set only on agent tokens (see
+  // createAgentSession). Bearer callers carry no cookies, so the room
+  // an agent may touch is baked in at mint time and enforced by
+  // v1AuthFromReq — without this a token minted for one room could be
+  // pointed at any other. Undefined on cookie sessions: those are
+  // room-scoped by the slop_room_<slug> cookie instead.
+  roomSlug?: string;
 };
 
 // Persist sessions to disk so a relay restart (every deploy) doesn't
@@ -119,8 +126,16 @@ const AGENT_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  * Used by the BYO-AI flow: a participant signs in normally, asks the relay
  * for an agent token, then hands it to a local LLM along with a skill file.
  * Agent tokens are accepted via Authorization: Bearer on /v1/* routes.
+ *
+ * `roomSlug` locks the token to one room. A bearer caller carries no
+ * cookies, so this is the *only* room-access proof it has — v1AuthFromReq
+ * rejects the token on any other slug. The mint is gated by v1AuthFromReq,
+ * which already verified the caller holds that room's password cookie.
  */
-export function createAgentSession(base: Pick<Session, "role" | "address" | "handle" | "anonId">): Session {
+export function createAgentSession(
+  base: Pick<Session, "role" | "address" | "handle" | "anonId">,
+  roomSlug: string,
+): Session {
   pruneSessions();
   const token = randomBytes(32).toString("hex");
   const expiresAt = Date.now() + AGENT_TOKEN_TTL_MS;
@@ -131,6 +146,7 @@ export function createAgentSession(base: Pick<Session, "role" | "address" | "han
     address: base.address,
     handle: base.handle,
     anonId: base.anonId ?? null,
+    roomSlug,
   };
   sessions.set(token, session);
   persistToDisk();
