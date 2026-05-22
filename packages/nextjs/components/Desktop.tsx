@@ -1330,11 +1330,15 @@ function DesktopInner({ slug }: { slug: string }) {
       // Un-minimize: if the slot is at the dock height, inflate to
       // sane defaults so the user actually sees a usable window. Each
       // SharedAppWindow has its own minWidth/minHeight that clamps
-      // further.
+      // further. The y is computed against THIS viewer's viewport — the
+      // docked slot y was set on whoever's screen minimized it and is
+      // meaningless (often off-screen) for a viewer of a different
+      // screen height.
       if (cur && cur.height <= 40) {
-        patch.height = 400;
+        const h = 400;
+        patch.height = h;
         patch.width = Math.max(cur.width, 360);
-        patch.y = Math.max(60, cur.y - 360);
+        patch.y = Math.max(60, window.innerHeight - h - 80);
       }
       meshUpdateSlot(patch);
     },

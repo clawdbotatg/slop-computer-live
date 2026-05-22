@@ -14,18 +14,19 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
+import { WalletAssetsPanel } from "~~/components/desktop/wallet/WalletAssetsPanel";
+import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
-import { computeExecHash, defaultDeadline, saltFromLabel, sortSignatures } from "~~/utils/multisig";
+import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
 
-// Embedded AI wallet — was its own desktop app; now folded into this
-// window as the Assets/Activity tabs. The iframe loads in "embedded"
-// mode (?embedded=1&multisig=...&chain=...&signer=...&view=...) so the
-// hosted app targets our multisig and renders the requested view.
-// Override the URL for local dev with NEXT_PUBLIC_AI_WALLET_URL.
-const AI_WALLET_URL = process.env.NEXT_PUBLIC_AI_WALLET_URL || "https://wallet.slop.computer";
+// The AI wallet (assets + chat) used to be an <iframe> of
+// wallet.slop.computer. It's now native: the conversational engine runs
+// on the relay (wallet-chat / wallet-intent) and the chat is shared
+// across the whole room via mesh.walletChat. The Chat tab is the
+// conversation; the Assets tab is the read-only portfolio/activity view.
 
 export type WalletWindowProps = {
   mesh: PeerMeshState;
@@ -53,19 +54,19 @@ const chainMeta = (chainId: number) =>
     explorer: "https://etherscan.io",
   };
 
-type WalletTab = "deploy" | "assets" | "transactions";
+type WalletTab = "deploy" | "chat" | "assets" | "transactions";
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   const wallet = mesh.wallet;
-  const [tab, setTab] = useState<WalletTab>(wallet ? "assets" : "deploy");
+  const [tab, setTab] = useState<WalletTab>(wallet ? "chat" : "deploy");
 
-  // Auto-switch to Assets the first time a wallet shows up (initial
-  // deploy). Don't yank the user back if they archive — they explicitly
-  // hit "new episode" and want the deploy tab.
+  // Auto-switch to Chat the first time a wallet shows up (initial
+  // deploy) — the conversation is the headline. Don't yank the user
+  // back if they archive — they explicitly hit "new episode".
   useEffect(() => {
     if (wallet && tab === "deploy") {
       const justDeployed = Date.now() - wallet.createdAt < 8_000;
-      if (justDeployed) setTab("assets");
+      if (justDeployed) setTab("chat");
     }
     if (!wallet && tab !== "deploy") setTab("deploy");
   }, [wallet, tab]);
@@ -101,23 +102,35 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       <div style={{ flex: 1, overflow: "auto", display: tab === "deploy" ? "block" : "none" }}>
         <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
       </div>
-      {/* Iframe — mounted once when wallet exists, visible only on the
-       *  Assets tab. Stays alive when the user flips to Transactions so
-       *  wallet state inside the iframe doesn't reset on every flip. */}
+      {/* Chat tab — the multiplayer AI-wallet conversation. Always
+       *  mounted when a wallet exists so the message list keeps its
+       *  scroll position across tab flips; hidden when not active. */}
       {wallet ? (
         <div
           style={{
-            flex: tab === "assets" ? 1 : undefined,
-            display: tab === "assets" ? "flex" : "none",
+            flex: tab === "chat" ? 1 : undefined,
+            display: tab === "chat" ? "flex" : "none",
             flexDirection: "column",
             minHeight: 0,
           }}
         >
-          <AIWalletIframe wallet={wallet} myAddress={myAddress} mesh={mesh} />
+          <WalletChatPanel mesh={mesh} wallet={wallet} />
+        </div>
+      ) : null}
+      {/* Assets tab — read-only portfolio + activity for the multisig. */}
+      {wallet ? (
+        <div
+          style={{
+            flex: tab === "assets" ? 1 : undefined,
+            display: tab === "assets" ? "block" : "none",
+            overflow: "auto",
+          }}
+        >
+          <WalletAssetsPanel wallet={wallet} />
         </div>
       ) : null}
       {/* Transactions tab body — dedicated to the multisig queue (txs
-       *  proposed from the AI wallet, SharedBrowser dapps, or future
+       *  proposed from the wallet chat, SharedBrowser dapps, or future
        *  in-app send forms all land here for signing + execute). */}
       {wallet ? (
         <div
@@ -169,6 +182,7 @@ const TabBar = ({
   });
   const tabs: { id: WalletTab; label: string }[] = [
     { id: "deploy", label: "Deploy" },
+    { id: "chat", label: "Chat" },
     { id: "assets", label: "Assets" },
     { id: "transactions", label: "Transactions" },
   ];
@@ -1018,215 +1032,8 @@ const ChainRow = ({
 };
 
 // ============================================================================
-// AI wallet iframe — assets / activity / send / swap UI lives in here.
-// Mounted once when the wallet exists; we pass the desired view via the
-// initial URL and via postMessage on tab change so the iframe doesn't
-// remount when the user flips between Assets and Activity.
-// ============================================================================
-
-type AIWalletIframeProps = {
-  wallet: WalletRecord;
-  myAddress: string | null;
-  mesh: PeerMeshState;
-};
-
-type SlopProposeTxMessage = {
-  type: "slop:propose_tx";
-  chainId: number;
-  target: string;
-  value: string;
-  data: string;
-  summary?: string;
-};
-
-const isProposeTxMessage = (v: unknown): v is SlopProposeTxMessage => {
-  if (!v || typeof v !== "object") return false;
-  const m = v as Record<string, unknown>;
-  return (
-    m.type === "slop:propose_tx" &&
-    typeof m.chainId === "number" &&
-    typeof m.target === "string" &&
-    typeof m.value === "string" &&
-    typeof m.data === "string"
-  );
-};
-
-type SlopCursorMessage = { type: "slop:cursor"; x: number; y: number };
-const isCursorMessage = (v: unknown): v is SlopCursorMessage => {
-  if (!v || typeof v !== "object") return false;
-  const m = v as Record<string, unknown>;
-  return m.type === "slop:cursor" && typeof m.x === "number" && typeof m.y === "number";
-};
-
-const AIWalletIframe = ({ wallet, myAddress, mesh }: AIWalletIframeProps) => {
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  // Pick the most-recently-deployed chain as the "primary" — the iframe
-  // initial URL uses this as its display chain; the agent can still
-  // target a different deployed chain via postMessage.
-  const primaryChainId = useMemo<number | null>(() => {
-    const ids = Object.keys(wallet.deployments)
-      .map(k => Number(k))
-      .filter(n => Number.isFinite(n))
-      .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt);
-    return ids[0] ?? null;
-  }, [wallet.deployments]);
-  const publicClient = usePublicClient({ chainId: primaryChainId ?? undefined });
-
-  // Initial URL — only set once. The hosted AI wallet decides which
-  // section to render based on its own internal navigation; we no
-  // longer try to remote-control its view from the parent because the
-  // Transactions tab is now our own panel (the multisig queue).
-  const initialSrcRef = useRef<string | null>(null);
-  const initialSrc = useMemo(() => {
-    if (initialSrcRef.current) return initialSrcRef.current;
-    if (primaryChainId === null) return null;
-    const params = new URLSearchParams({
-      embedded: "1",
-      multisig: wallet.address,
-      chain: String(primaryChainId),
-    });
-    if (myAddress) params.set("signer", myAddress);
-    const url = `${AI_WALLET_URL}/?${params.toString()}`;
-    initialSrcRef.current = url;
-    return url;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primaryChainId]);
-
-  // Inbound postMessages from the iframe. Logs everything from the
-  // iframe at log-level so it's easy to spot in DevTools whether the
-  // hosted AI wallet is talking to us at all when Send is hit. Without
-  // a propose_tx postMessage from the iframe, the multisig queue can't
-  // populate — this is the single most common reason "tx didn't show
-  // up": the hosted wallet just doesn't emit the message yet.
-  useEffect(() => {
-    const handler = async (e: MessageEvent) => {
-      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
-
-      // Cursor bridge — translates iframe-local coords to parent-viewport
-      // coords so useLocalCursor's capture-phase listener keeps the slop
-      // cursor tracking over the iframe. High volume; don't log.
-      if (isCursorMessage(e.data)) {
-        const rect = iframeRef.current.getBoundingClientRect();
-        const clientX = rect.left + e.data.x;
-        const clientY = rect.top + e.data.y;
-        window.dispatchEvent(new MouseEvent("mousemove", { clientX, clientY, bubbles: false }));
-        return;
-      }
-
-      // Drop cursor:leave too — pure noise in the console.
-      const dataType = e.data && typeof e.data === "object" ? (e.data as { type?: unknown }).type : undefined;
-      if (dataType === "slop:cursor:leave") return;
-
-      // Anything else gets a one-line log naming the type, so it's
-      // easy to spot `slop:propose_tx` (the message we care about)
-      // in DevTools. Stringify so the snapshot isn't mutated under us.
-      const typeStr = typeof dataType === "string" ? dataType : "(no type)";
-      try {
-        console.log(`[wallet] iframe → ${typeStr}`, JSON.parse(JSON.stringify(e.data)));
-      } catch {
-        console.log(`[wallet] iframe → ${typeStr} (unserializable)`, e.data);
-      }
-
-      // If a propose_tx-shaped message arrives but doesn't validate,
-      // say why instead of silently dropping. Most common cause: the
-      // sender included `chainId: null` (no chain target).
-      if (dataType === "slop:propose_tx" && !isProposeTxMessage(e.data)) {
-        console.warn("[wallet] slop:propose_tx failed validation — required fields", {
-          chainId: "number",
-          target: "string (0x…)",
-          value: "string (decimal wei)",
-          data: "string (0x-prefixed hex)",
-          received: e.data,
-        });
-        return;
-      }
-      if (!isProposeTxMessage(e.data)) return;
-      const msg = e.data;
-      if (!(msg.chainId in wallet.deployments)) {
-        console.warn("[wallet] propose_tx rejected — chainId not deployed on this multisig", {
-          received: msg.chainId,
-          deployed: Object.keys(wallet.deployments),
-        });
-        return;
-      }
-      if (!publicClient) {
-        console.warn("[wallet] propose_tx rejected — no public client for chain", msg.chainId);
-        return;
-      }
-      try {
-        const nonce = (await publicClient.readContract({
-          address: wallet.address as AddressType,
-          abi: MultisigAbi,
-          functionName: "nonce",
-        })) as bigint;
-        const deadline = defaultDeadline();
-        const target = msg.target as AddressType;
-        const valueWei = BigInt(msg.value || "0");
-        const data = (msg.data || "0x") as Hex;
-        const execHash = computeExecHash({
-          chainId: msg.chainId,
-          multisig: wallet.address as AddressType,
-          nonce,
-          deadline,
-          target,
-          value: valueWei,
-          data,
-        });
-        console.log("[wallet] queueing multisig tx from iframe", {
-          chainId: msg.chainId,
-          target,
-          value: valueWei.toString(),
-          nonce: nonce.toString(),
-        });
-        mesh.walletProposeTx({
-          chainId: msg.chainId,
-          target,
-          value: valueWei.toString(),
-          data,
-          deadline: deadline.toString(),
-          nonce: nonce.toString(),
-          execHash,
-          source: "manual",
-          browserId: null,
-        });
-      } catch (err) {
-        console.warn("[wallet] failed to queue propose_tx", err);
-      }
-    };
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [wallet, publicClient, mesh]);
-
-  if (!initialSrc) {
-    return (
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-        <span style={{ color: "var(--slop-text-muted)", fontSize: 12 }}>preparing wallet view…</span>
-      </div>
-    );
-  }
-
-  return (
-    <iframe
-      ref={iframeRef}
-      src={initialSrc}
-      title="Slop wallet"
-      // data-grab="false" short-circuits useLocalCursor's closest() walk so
-      // the cursor doesn't inherit the parent WalletWindow's "grab" — the
-      // iframe content is interactive UI, not a draggable surface.
-      data-grab="false"
-      // Sandbox: scripts + same-origin so wagmi/RainbowKit (if it loads
-      // standalone-mode internals) can run; popups for WalletConnect;
-      // forms for in-iframe submissions; allow-modals for the AI wallet's
-      // confirmation dialog. No allow-top-navigation.
-      sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"
-      style={{ flex: 1, width: "100%", border: 0, background: "#06030d", minHeight: 0 }}
-    />
-  );
-};
-
-// ============================================================================
-// Activity tx queue — per-chain pending + recent multisig txs. Rendered
-// below the iframe in the Activity tab.
+// Activity tx queue — per-chain pending + recent multisig txs. The
+// Transactions tab; txs proposed from the wallet chat land here.
 // ============================================================================
 
 type ActivityProps = {

@@ -56,7 +56,17 @@ export const Window = ({
   containerInset,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  // Track THIS viewer's viewport height. The docked "pill" pins to the
+  // bottom of the local screen, so its y must be derived from this and
+  // never from the shared slot — see `dockedY` below.
+  const [viewportH, setViewportH] = useState(0);
+  useEffect(() => {
+    setMounted(true);
+    const sync = () => setViewportH(window.innerHeight);
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, []);
 
   const [mode, setMode] = useState<WindowMode>("normal");
   const [savedRect, setSavedRect] = useState<Rect | null>(null);
@@ -67,6 +77,13 @@ export const Window = ({
     bottom: containerInset?.bottom ?? 0,
     left: containerInset?.left ?? 0,
   };
+
+  // Vertical position of the docked "pill" — flush to the bottom of
+  // THIS viewer's screen. Computed locally on every render (and on
+  // resize) so a peer with a different screen height sees it on their
+  // own bottom edge, not at the initiator's absolute coordinate. The
+  // synced slot y is deliberately ignored while docked.
+  const dockedY = Math.max(insets.top, viewportH - insets.bottom - TITLEBAR_HEIGHT);
 
   const restore = () => {
     if (savedRect) {
@@ -79,10 +96,12 @@ export const Window = ({
     // or after a reload where the slot height is TITLEBAR but the
     // component's React state is fresh. Fall back to a reasonable
     // restore: re-inflate at current x to min dimensions, positioned
-    // somewhere visible above the dock.
+    // just above the LOCAL dock edge (not the synced slot y, which may
+    // be off-screen for a viewer whose screen height differs from the
+    // peer that minimized).
     const fallbackW = Math.max(minWidth, 320);
     const fallbackH = Math.max(minHeight, 240);
-    const fallbackY = Math.max(insets.top, y - fallbackH - 8);
+    const fallbackY = Math.max(insets.top, dockedY - fallbackH - 8);
     onMove?.({ x, y: fallbackY });
     onResize?.({ x, y: fallbackY, width: fallbackW, height: fallbackH });
     setMode("normal");
@@ -123,9 +142,12 @@ export const Window = ({
     }
     const dockW = 200;
     const dockH = TITLEBAR_HEIGHT;
-    const dockY = window.innerHeight - insets.bottom - TITLEBAR_HEIGHT;
-    onMove?.({ x: dockX, y: dockY });
-    onResize?.({ x: dockX, y: dockY, width: dockW, height: dockH });
+    // The slot only carries height=36 as the cross-peer "is minimized"
+    // marker. The y written here is never read back for rendering — each
+    // viewer recomputes `dockedY` against its own viewport — so storing
+    // the local dockedY is just a sensible placeholder.
+    onMove?.({ x: dockX, y: dockedY });
+    onResize?.({ x: dockX, y: dockedY, width: dockW, height: dockH });
     setMode("dock");
   };
 
@@ -188,7 +210,11 @@ export const Window = ({
 
   return (
     <Rnd
-      position={{ x, y }}
+      // While docked, render against the locally-computed bottom edge
+      // instead of the synced slot y (which was set on whoever's screen
+      // initiated the minimize). Dragging is disabled when docked, so
+      // this never fights a user gesture.
+      position={{ x, y: isDocked ? dockedY : y }}
       size={{ width, height }}
       bounds="parent"
       minWidth={minWidth}

@@ -571,6 +571,49 @@ export type PreviewMediaSnapshot = {
   scrollFrac?: number;
 };
 
+// --- AI wallet chat ---------------------------------------------------------
+// Per-room conversational wallet. The whole room shares one conversation;
+// any peer can send a message, the relay runs the agentic intent engine,
+// and the answer (incl. transaction cards) broadcasts to everyone.
+// Mirrors packages/relay/src/wallet-chat.ts.
+export type WalletChatTransaction = {
+  to: string;
+  data: string;
+  value: string;
+  chainId: number;
+  description?: string;
+  simulation?: { verified: boolean; changes: { direction: string; symbol: string; amount: string }[] };
+};
+export type WalletChatStep = {
+  to: string;
+  data: string;
+  value: string;
+  chainId: number;
+  description: string;
+  label: string;
+};
+export type WalletChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  ts: number;
+  /** Display label of the peer who sent a user message; null for the AI. */
+  sender: string | null;
+  /** Assistant-only: a built transaction the UI renders as a card. */
+  transaction?: WalletChatTransaction | null;
+  /** Assistant-only: a multi-step transaction (ENS register, approve+swap). */
+  multistep?: { steps: WalletChatStep[]; delay: number; priceEth?: string; priceWei?: string } | null;
+  /** Assistant-only: set when the intent call itself errored. */
+  error?: string | null;
+};
+export type WalletChat = {
+  messages: WalletChatMessage[];
+  /** True while an intent turn is in flight — drives the room-wide spinner. */
+  processing: boolean;
+};
+
+const DEFAULT_WALLET_CHAT: WalletChat = { messages: [], processing: false };
+
 // Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
 export type ChessGameStatus =
   | "active"
@@ -807,6 +850,17 @@ export type PeerMeshState = {
    *  per-room map is keyed by fileId so multiple previews are
    *  independent. */
   setPreviewMedia: (fileId: string, state: PreviewMediaSnapshot) => void;
+  /** Shared AI-wallet conversation — messages + in-flight flag.
+   *  Replaces the old per-iframe wallet chat. */
+  walletChat: WalletChat;
+  /** Send a message to the room's wallet AI. `address` is the multisig
+   *  operating wallet; `chainId` its primary deployed chain. The relay
+   *  appends the turn, runs the intent engine, and broadcasts the
+   *  result — no optimistic local update. */
+  walletChatSend: (message: string, address: string, chainId: number) => void;
+  /** Clear the wallet conversation for the whole room. Refused
+   *  server-side while a turn is processing. */
+  walletChatReset: () => void;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -941,6 +995,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
+  const [walletChat, setWalletChatLocal] = useState<WalletChat>(DEFAULT_WALLET_CHAT);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
@@ -1559,6 +1614,27 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  // Wallet AI chat. POST to the relay, which appends the turn, runs the
+  // intent engine, and broadcasts `wallet_chat` back to every peer —
+  // no optimistic local update; the WS echo is authoritative.
+  const walletChatSend = useCallback(
+    (message: string, address: string, chainId: number) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message, address, chainId }),
+      }).catch(err => console.warn("walletChatSend failed", err));
+    },
+    [slug],
+  );
+  const walletChatReset = useCallback(() => {
+    fetch(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat`, slug), {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("walletChatReset failed", err));
+  }, [slug]);
+
   // Broadcast a new title overlay state. Updates local optimistically
   // so the dragging peer sees no lag; server fans the change out to
   // everyone else (excluding sender) and persists last-write-wins.
@@ -1912,6 +1988,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.qrState && typeof msg.qrState === "object") {
             setQrStateLocal(msg.qrState as QrState);
           }
+          if (msg.walletChat && typeof msg.walletChat === "object") {
+            setWalletChatLocal(msg.walletChat as WalletChat);
+          }
           if (Array.isArray(msg.previewMedia)) {
             const map: Record<string, PreviewMediaSnapshot> = {};
             for (const entry of msg.previewMedia as Array<{ fileId: unknown; state: unknown }>) {
@@ -2104,6 +2183,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "qr_state" && msg.state && typeof msg.state === "object") {
           setQrStateLocal(msg.state as QrState);
+          return;
+        }
+
+        if (msg.type === "wallet_chat" && msg.state && typeof msg.state === "object") {
+          setWalletChatLocal(msg.state as WalletChat);
           return;
         }
 
@@ -2500,6 +2584,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setQrPatch,
     previewMedia,
     setPreviewMedia,
+    walletChat,
+    walletChatSend,
+    walletChatReset,
     broadcastTxRequest,
     incomingForwards,
     forwardTxToPeer,
