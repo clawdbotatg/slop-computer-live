@@ -114,6 +114,39 @@ import {
 } from "./wallet-data.js";
 import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
 
+// Shared cookie options for the slop_session cookie. The session cookie
+// gates both live.slop.computer (host/guest desktop) and slop.computer
+// (audience chat POSTs) — so it MUST be readable + writable across both
+// subdomains. Two things matter:
+//
+//   1) domain = ".slop.computer" makes it a parent-domain cookie. Without
+//      this it's host-only on live.slop.computer; Brave + Safari ITP then
+//      treat the cross-origin Set-Cookie from slop.computer/<slug> SIWE
+//      as third-party and silently drop it, so chat POSTs come in with no
+//      cookie and 401 ("session expired") — even though /auth/me on the
+//      same browser might still find the cookie via different heuristics.
+//
+//   2) sameSite=none + secure is the bulletproof cross-origin setting.
+//      Lax should technically work since slop.computer and
+//      live.slop.computer share eTLD+1, but Brave's shields treat them as
+//      separate sites by default. None+Secure works in all browsers we
+//      care about and the cookie is httpOnly so there's no script-access
+//      blast radius.
+//
+// In dev (NODE_ENV !== "production") we keep lax + insecure + no domain
+// so localhost development still works.
+const sessionCookieOpts = (extra?: { maxAge?: number }) => {
+  const prod = process.env.NODE_ENV === "production";
+  return {
+    path: "/",
+    httpOnly: true,
+    sameSite: (prod ? "none" : "lax") as "none" | "lax",
+    secure: prod,
+    ...(prod ? { domain: ".slop.computer" } : {}),
+    ...(extra?.maxAge !== undefined ? { maxAge: extra.maxAge } : {}),
+  };
+};
+
 // Room used by HTTP routes that aren't slug-scoped (admin-global things
 // that operate on the default room only). Kept as a thin alias so the
 // intent is grep-able — "this endpoint really does only act on debug".
@@ -3175,13 +3208,7 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
     address: check.address,
     handle,
   });
-  reply.setCookie(SESSION_COOKIE, session.token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: config.sessionTTLSeconds,
-  });
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: session.role, address: session.address, isAdmin: check.isAdmin };
 });
 
@@ -3246,13 +3273,7 @@ app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
 
   const handle = result.address ? await reverseLookupEns(result.address) : null;
   const session = createSession({ role: "guest", address: result.address, handle });
-  reply.setCookie(SESSION_COOKIE, session.token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: config.sessionTTLSeconds,
-  });
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: "guest", address: result.address, isAdmin: false };
 });
 
@@ -3279,13 +3300,7 @@ app.post("/auth/anon", async (req, reply) => {
   // never collide with another anon's initial AnonXXXX.
   const anonId = `anon-${randomBytes(8).toString("hex")}`;
   const session = createSession({ role: "guest", address: null, handle, anonId });
-  reply.setCookie(SESSION_COOKIE, session.token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: config.sessionTTLSeconds,
-  });
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: "guest", handle };
 });
 
@@ -3336,13 +3351,7 @@ app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
   }
   if (!handle) return reply.code(400).send({ error: "Handle required" });
   const session = createSession({ role: "guest", address: null, handle });
-  reply.setCookie(SESSION_COOKIE, session.token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: config.sessionTTLSeconds,
-  });
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: "guest", handle };
 });
 
@@ -3379,20 +3388,14 @@ app.post<{ Body: GodModeBody }>("/auth/godmode", async (req, reply) => {
     handle: null,
     spectator: true,
   });
-  reply.setCookie(SESSION_COOKIE, session.token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: config.sessionTTLSeconds,
-  });
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: "guest", spectator: true };
 });
 
 app.post("/auth/logout", async (req, reply) => {
   const token = req.cookies[SESSION_COOKIE];
   if (token) deleteSession(token);
-  reply.clearCookie(SESSION_COOKIE, { path: "/" });
+  reply.clearCookie(SESSION_COOKIE, sessionCookieOpts());
   return { ok: true };
 });
 
