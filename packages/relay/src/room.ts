@@ -85,6 +85,7 @@ function roomPaths(id: string): {
   desktop: { slotsFile: string; legacySlotsFile: string | null; legacyHostKey: string | null };
   chess: SubsystemPath;
   wallet: SubsystemPath;
+  research: { path: string };
   auth: { path: string };
   meta: { path: string };
 } {
@@ -149,6 +150,11 @@ function roomPaths(id: string): {
       path: `${dir}/wallet.json`,
       legacy: legacy ? (process.env.WALLET_FILE ?? "./.slop-data/wallet.json") : null,
     },
+    research: {
+      // No legacy path — guest-research never persisted before, so the
+      // DEFAULT_SLUG room has nothing to inherit. Cold start = empty.
+      path: `${dir}/research.json`,
+    },
     auth: {
       path: `${dir}/auth.json`,
     },
@@ -181,7 +187,7 @@ export class Room {
   readonly browsers: BrowserRegistry;
   readonly desktop: DesktopState;
   readonly music = new MusicState();
-  readonly research = new ResearchState();
+  readonly research: ResearchState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
   readonly chess: ChessState;
@@ -225,6 +231,7 @@ export class Room {
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
+    this.research = new ResearchState(paths.research.path);
     this.auth = new RoomAuth(paths.auth.path);
 
     // Wire subsystem mutation events into this room's broadcast.

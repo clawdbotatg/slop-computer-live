@@ -428,7 +428,11 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
       // Copy a single URL (with the token as auth + embed) rather than the
       // full markdown body. Way nicer for "follow this skill: <url>" agent
       // prompts than pasting a multi-KB markdown file.
-      const url = `${RELAY_HTTP}/v1/skill?token=${encodeURIComponent(token)}`;
+      // Bake in the current room's slug so every example in the served
+      // skill is pre-filled with the room the host is actually in —
+      // no `<slug>` placeholders for the agent to substitute.
+      const slugParam = slug ? `&slug=${encodeURIComponent(slug)}` : "";
+      const url = `${RELAY_HTTP}/v1/skill?token=${encodeURIComponent(token)}${slugParam}`;
       await navigator.clipboard.writeText(url);
       setStatus("copied");
       setTimeout(() => {

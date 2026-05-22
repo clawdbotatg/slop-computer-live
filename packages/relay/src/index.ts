@@ -4030,10 +4030,12 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "preview_media": {
-          // Broadcast a play/pause/seek event for a specific file's
-          // preview window. Same drift-tolerance contract as music_state:
-          // peers extrapolate from `at` locally. fileId namespaces the
-          // map so several files can play independently in parallel.
+          // Broadcast a preview-window state change for a specific
+          // file: a play/pause/seek for audio/video, OR a scroll
+          // position for a text preview (`scrollFrac`, 0..1). Same
+          // drift-tolerance contract as music_state for the media
+          // case — peers extrapolate from `at` locally. fileId
+          // namespaces the map so several files stay independent.
           if (
             typeof msg.fileId !== "string" ||
             typeof msg.position !== "number" ||
@@ -4045,6 +4047,10 @@ app.register(async function signalRoutes(fastify) {
             position: msg.position,
             playing: !!msg.playing,
             at: msg.at,
+            scrollFrac:
+              typeof msg.scrollFrac === "number"
+                ? Math.max(0, Math.min(1, msg.scrollFrac))
+                : undefined,
           });
           // setPreviewMedia notifies inside; broadcast is wired up via
           // the Room subscriber. Nothing else to do here.

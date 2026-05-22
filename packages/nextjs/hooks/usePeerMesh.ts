@@ -557,14 +557,18 @@ export type QrState = {
 
 const DEFAULT_QR_STATE: QrState = { text: "", logoDataUrl: null };
 
-// --- File-preview media playhead -------------------------------------------
-// Per-file audio/video playhead snapshots shared across the room.
-// Indexed by fileId so multiple previews can play independently. Live
-// position = position + (now - at)/1000 while playing.
+// --- File-preview shared state ---------------------------------------------
+// Per-file preview UI state shared across the room, indexed by fileId.
+// Carries two independent kinds (a file is only ever one):
+//   • audio/video — `position` + `playing`; live pos = position +
+//     (now - at)/1000 while playing.
+//   • text — `scrollFrac` (0..1 scroll position); `position`/`playing`
+//     unused (sent as 0/false).
 export type PreviewMediaSnapshot = {
   position: number;
   playing: boolean;
   at: number;
+  scrollFrac?: number;
 };
 
 // Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
