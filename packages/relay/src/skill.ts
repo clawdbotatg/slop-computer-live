@@ -1481,7 +1481,7 @@ same data for every room. Snapshots are embedded inside
 | \`tickerState\` | CoinGecko + Stooq + DexScreener + static private valuations | 60s | \`{ items: [{ symbol, label, price, changePct, kind, url? }, ...], updatedAt }\` |
 | \`gasState\` | Alchemy fee history + Chainlink ETH/USD | ~12s | \`{ baseFeeGwei, slowGwei, mediumGwei, fastGwei, ethUsd, updatedAt }\` (see also \`/v1/skill/gas\`) |
 | \`headlinesState\` | CoinDesk RSS + HN Algolia (AI keywords) | 1h | \`{ items: [{ title, url, source, publishedAt, kind: "crypto"\\|"ai" }, ...], updatedAt }\` |
-| \`timelineState\` | Twitter API (host's home feed) | 24h | \`{ items: [{ id, text, authorUsername, authorName, authorFollowers, likes, retweets, replies, createdAt, url, authorVerified }, ...], updatedAt }\` |
+| \`timelineState\` | Twitter API (host's home feed) | manual only (host clicks TIMELINE badge before going live) | \`{ items: [{ id, text, authorUsername, authorName, authorFollowers, likes, retweets, replies, createdAt, url, authorVerified }, ...], updatedAt }\` |
 
 Polymarket is its own poll (5min cadence) but isn't exposed as a
 distinct \`/v1/state\` field — the data only surfaces through
