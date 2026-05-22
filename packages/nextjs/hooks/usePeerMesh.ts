@@ -2439,6 +2439,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         teardownConnections();
         setPeers([]);
         setPublications([]);
+        // Drop every remote cursor on WS drop. Without this, any peer who
+        // left the room while we were disconnected becomes a permanent
+        // ghost: their last cursor position stays in `mesh.cursors`, the
+        // post-reconnect `hello` rebuilds `mesh.peers` without them, the
+        // `mesh.peers.find(...)` lookup in Desktop.tsx misses, identity
+        // falls through to null, and the renderer falls back to the raw
+        // 6-hex peerId label. Surviving peers re-broadcast on mousemove
+        // (~60Hz) so the visible roster recovers within a frame.
+        setCursors({});
         if (cancelled) return;
         reconnectTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
       };
