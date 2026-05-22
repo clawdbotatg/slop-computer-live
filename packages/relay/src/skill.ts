@@ -177,6 +177,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`cardState\` | \`{ version } \\| null\` | Title card image presence (this room) |
 | \`cardJob\` | \`CardJob \\| null\` | In-flight card-generation job (this room) |
 | \`cardTitle\` | \`CardTitle \\| null\` | Shared title overlay text + position |
+| \`researchState\` | \`ResearchSnapshot\` | Per-room shared guest-research dossier + phase machine (see \`/v1/skill/research\`) |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
@@ -1203,43 +1204,69 @@ export function skillResearch(token: string, isHost: boolean): string {
 
 ## Research sub-skill
 
-AI-backed pre-show research for an upcoming live guest. The relay
-calls Claude (with web search) for you and returns a structured
-dossier: training-data knowledge, fresh research, suggested
-interview questions, sampled recent tweets, and source links. Two
-endpoints — a fast \`lookup\` for prefilling the form, and a deeper
-\`research\` for the full dossier.
+${SLUG_NOTE}
 
-Stateless on the relay: results aren't stored. The UI keeps a local
-copy in the asking browser. If you want to publish the result, write
-it into a note (\`POST /v1/notes\`) or chat (\`POST /v1/chat\`).
+AI-backed pre-show research for an upcoming live guest, **shared
+across every peer in the room**. The relay calls Claude (with web
+search) for you and the dossier appears on everyone's screen at once.
+Three endpoints — a fast \`lookup\` for prefilling the form, a deep
+\`research\` for the full dossier, and a \`reset\` to clear it.
+
+### State machine (read this first)
+
+The whole flow is a per-room snapshot at \`state.researchState\` in
+\`GET /v1/state?slug=<slug>\`:
+
+\`\`\`
+{
+  phase: "idle" | "lookup-pending" | "form" | "research-pending" | "done",
+  lookupQuery: string,                // last "@handle / Some Name" submitted
+  name: string,                       // populated after lookup; editable
+  socials: { twitter?, github?, linkedin?, website?, other? },
+  notes: string,                      // free-form host notes
+  result: ResearchResult | null,      // dossier — populated when phase === "done"
+  job: { kind: "lookup"|"research", startedAt, startedBy } | null,
+  error: string | null                // last user-facing error, or null
+}
+\`\`\`
+
+\`ResearchResult\` shape (when \`phase === "done"\`):
+
+\`\`\`
+{
+  query: { name, socials, notes },                         // echoed back
+  vanilla: string,                                          // 1-3 paragraphs from training data, OR
+                                                            //   "I don't have knowledge of them in my training data."
+  researched: string,                                       // 2-4 paragraphs of fresh prose
+  questions: string[],                                      // 8-10 slow-pitch interview questions
+  tweets: [{ text, url?, date? }, ...],                    // 5-15 sampled recent tweets
+  sources: [{ title, url, snippet? }, ...],                // cited pages
+  errors: { vanilla?: string, researched?: string }        // per-stage failures
+}
+\`\`\`
+
+All transitions go through the relay. The three endpoints return
+**202 + the new snapshot**; the actual AI result lands on every peer
+via a \`research_state\` WS broadcast. **HTTP-only agents should poll
+\`/v1/state\`** until \`job === null\`, then check \`phase\`.
 
 ### Fast identity lookup
 
 \`\`\`
-POST ${BASE}/v1/guest-lookup { "query": "@vitalikbuterin" }
-# or
-POST ${BASE}/v1/guest-lookup { "query": "Vitalik Buterin" }
-# → {
-#     name: "Vitalik Buterin",
-#     socials: {
-#       twitter: "@VitalikButerin",
-#       github: "vbuterin",
-#       linkedin: "...",
-#       website: "https://vitalik.eth.limo",
-#       other: ""
-#     },
-#     notes: "Co-founder of Ethereum; this is who I think you mean."
-#   }
+POST ${BASE}/v1/guest-lookup?slug=<slug> { "query": "@vitalikbuterin" }
+# → 202 { ok: true, state: { phase: "lookup-pending", job: {...}, ... } }
+# 409 → already-in-flight; watch state, don't retry
 \`\`\`
 
-Single fast Claude call with web search (max 6 uses). Use this to
-prefill the deep-research form before kicking off the slow call.
+Single fast Claude call with web search (max 6 uses). On success the
+relay transitions \`phase → "form"\` and populates \`name\` + \`socials\`
+with the model's best guess. On error: \`phase → "idle"\` and \`error\`
+is set. Poll \`/v1/state?slug=<slug>\` to observe.
 
 ### Deep dossier
 
 \`\`\`
-POST ${BASE}/v1/guest-research {
+POST ${BASE}/v1/guest-research?slug=<slug> {
   "name":    "Vitalik Buterin",
   "socials": {
     "twitter":  "@VitalikButerin",
@@ -1250,28 +1277,32 @@ POST ${BASE}/v1/guest-research {
   },
   "notes": "We last had him on in 2023; want to talk about agent payments."
 }
-# → {
-#     query: { ... echoed back ... },
-#     vanilla: "1-3 paragraphs of what Claude already knows from training data, OR 'I don't have knowledge of them in my training data.'",
-#     researched: "2-4 paragraphs of fresh prose from web search",
-#     questions: ["1. Question one", "2. Question two", ...],   # 8-10 slow-pitch interview questions
-#     tweets: [{ text, url, date }, ...],                       # 5-15 sampled recent tweets
-#     sources: [{ title, url, snippet }, ...],                  # cited pages
-#     errors: { vanilla?: "...", researched?: "..." }           # per-stage failures
-#   }
+# → 202 { ok: true, state: { phase: "research-pending", job: {...}, ... } }
+# 409 → already-in-flight
 \`\`\`
 
-Runtime: ~30-60s for the full call. Two Claude passes run in
-parallel (vanilla + researched); each is independent so a partial
-failure still returns the half that worked. Web search is capped at
-12 uses per call.
+Runtime: ~30-60s. Two Claude passes run in parallel (vanilla +
+researched); each is independent so a partial failure still returns
+the half that worked. Web search is capped at 12 uses per call. On
+success: \`phase → "done"\` with \`result\` populated. On error:
+\`phase → "form"\` with \`error\` set so the host can retry.
+
+### Reset to lookup screen
+
+\`\`\`
+DELETE ${BASE}/v1/research?slug=<slug>
+# → { ok: true, state: { phase: "idle", ... fresh blank ... } }
+# 409 → in-flight; refused so we don't orphan a running AI call
+\`\`\`
+
+Anyone in the room can reset (same permissive model as \`/v1/card\`).
 
 ### Side effect — timeline focus
 
-When the request body's \`socials.twitter\` is set, the relay also
-pins that handle into the **timeline feed** for the next 4 hours.
-Tweets from the researched handle get scored high so they reliably
-appear in the bottom marquee while the show is live. Clears
+When the \`/v1/guest-research\` body's \`socials.twitter\` is set, the
+relay also pins that handle into the **timeline feed** for the next
+4 hours. Tweets from the researched handle get scored high so they
+reliably appear in the bottom marquee while the show is live. Clears
 automatically after the TTL or when a fresh research call without
 that handle comes in.
 
@@ -1280,39 +1311,56 @@ that handle comes in.
 **"Give me a question to ask this guest":**
 
 \`\`\`bash
-# 1. Lookup → prefill
-LOOKUP=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
-  -H "content-type: application/json" \\
-  ${BASE}/v1/guest-lookup -d '{"query":"@guest"}')
+SLUG=<slug>
 
-# 2. Deep dossier
-RESEARCH=$(curl -s -X POST -H "Authorization: Bearer ${token}" \\
+# 1. Kick off lookup (returns 202 immediately)
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
   -H "content-type: application/json" \\
-  ${BASE}/v1/guest-research -d "{
-    \\"name\\":\\"$(echo $LOOKUP | jq -r .name)\\",
-    \\"socials\\":$(echo $LOOKUP | jq .socials),
-    \\"notes\\":\\"<your context>\\"
-  }")
+  "${BASE}/v1/guest-lookup?slug=$SLUG" -d '{"query":"@guest"}'
 
-# 3. Pick / synthesize a question your way
-echo "$RESEARCH" | jq -r '.questions[]'
+# 2. Poll state until phase ∈ { form, idle }
+while :; do
+  s=$(curl -s -H "Authorization: Bearer ${token}" "${BASE}/v1/state?slug=$SLUG" | jq -c .researchState)
+  [ "$(echo "$s" | jq -r .job)" = "null" ] && break
+  sleep 2
+done
+
+# 3. Kick off deep research using the prefilled form
+name=$(echo "$s" | jq -r .name)
+socials=$(echo "$s" | jq -c .socials)
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  "${BASE}/v1/guest-research?slug=$SLUG" \\
+  -d "{\\"name\\":\\"$name\\",\\"socials\\":$socials,\\"notes\\":\\"<your context>\\"}"
+
+# 4. Poll until phase == "done"
+while :; do
+  r=$(curl -s -H "Authorization: Bearer ${token}" "${BASE}/v1/state?slug=$SLUG" | jq -c .researchState)
+  phase=$(echo "$r" | jq -r .phase)
+  [ "$phase" = "done" ] && break
+  [ "$phase" = "form" ] && { echo "research failed: $(echo "$r" | jq -r .error)"; exit 1; }
+  sleep 3
+done
+
+# 5. Pick / synthesize a question your way
+echo "$r" | jq -r '.result.questions[]'
 \`\`\`
 
-You can pick from \`questions\` verbatim, or feed \`researched\` +
-\`tweets\` into your own model and write a sharper follow-up. The
-relay-generated questions are deliberately conversational ("slow-
-pitch") — fine for openers, not always the most pointed.
+You can pick from \`result.questions\` verbatim, or feed
+\`result.researched\` + \`result.tweets\` into your own model and write
+a sharper follow-up. The relay-generated questions are deliberately
+conversational ("slow-pitch") — fine for openers, not always the
+most pointed.
 
 **"Brief me on the next guest in chat":**
-Read \`/v1/state\` for the current room's guests, pull dossiers for
-each, write a one-paragraph brief to \`/v1/notes\` so the whole room
-sees it.
+Run the recipe above, then \`POST /v1/chat?slug=<slug>\` with a
+one-paragraph summary of \`result.researched\`.
 
 ### Caveats
 
-- Requires \`ANTHROPIC_API_KEY\` on the relay. Without it both
-  endpoints return a stub with an \`error\` field explaining how to
-  set the key.
+- Requires \`ANTHROPIC_API_KEY\` on the relay. Without it the snapshot
+  ends up in \`phase: "idle"\` (lookup) or \`phase: "form"\` (research)
+  with an \`error\` field explaining how to set the key.
 - Web-search results are model-mediated — the relay never holds raw
   search responses. If the model invents a URL, you'll see an
   invented URL. Cross-check anything load-bearing.
