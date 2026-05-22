@@ -582,11 +582,14 @@ app.get("/apps", async (_req, reply) => {
 
 type V1Auth = { session: import("./sessions.js").Session; isHost: boolean; via: "bearer" | "cookie" };
 
-function v1AuthFromReq(req: {
-  cookies: Record<string, string | undefined>;
-  headers: Record<string, string | string[] | undefined>;
-  query?: unknown;
-}): V1Auth | null {
+function v1AuthFromReq(
+  req: {
+    cookies: Record<string, string | undefined>;
+    headers: Record<string, string | string[] | undefined>;
+    query?: unknown;
+  },
+  opts?: { skipRoomGate?: boolean },
+): V1Auth | null {
   // Bearer first, cookie fallback.
   const authHeader = req.headers.authorization;
   if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
@@ -614,19 +617,20 @@ function v1AuthFromReq(req: {
   const s = getSession(cookieTok);
   if (!s) return null;
   // Per-room gate: if the caller passed ?slug=<x>, they must also hold a
-  // valid slop_room_<x> cookie. Mirrors the /signal WS gate exactly —
-  // rooms with no password (debug, plus any unclaimed slug) skip the
-  // cookie check because no one was ever issued one. Without this skip,
-  // SIWE/passkey users on debug 401 on every /v1 endpoint (the session
-  // cookie alone isn't enough, and the legacy slop_invite cookie is no
-  // longer minted post per-room migration). Bearer tokens are gated
-  // above by their baked-in roomSlug instead (no cookie to check).
-  // Endpoints without a ?slug= (eg /v1/agent-token) aren't slug-scoped.
-  const q = (req.query ?? {}) as { slug?: unknown };
-  const rawSlug = typeof q.slug === "string" ? q.slug : "";
-  if (rawSlug && isValidSlug(rawSlug)) {
-    const room = getOrCreateRoom(rawSlug);
-    if (room.auth.hasPassword() && !hasValidRoomCookie(req, rawSlug)) return null;
+  // valid slop_room_<x> cookie. Mirrors the /signal WS gate — proves the
+  // caller paid the room's password to join the mesh. Rooms with no
+  // password skip the check because no one was ever issued one. Endpoints
+  // that want to admit slop.computer spectators (who SIWE'd in but never
+  // paid the room password to enter live.slop.computer) pass
+  // `skipRoomGate: true` — chat being the canonical example, since the
+  // audience is meant to comment on the show without joining the mesh.
+  if (!opts?.skipRoomGate) {
+    const q = (req.query ?? {}) as { slug?: unknown };
+    const rawSlug = typeof q.slug === "string" ? q.slug : "";
+    if (rawSlug && isValidSlug(rawSlug)) {
+      const room = getOrCreateRoom(rawSlug);
+      if (room.auth.hasPassword() && !hasValidRoomCookie(req, rawSlug)) return null;
+    }
   }
   return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "cookie" };
 }
@@ -1024,7 +1028,10 @@ peerNames.subscribe((address, name) => {
 type ChatBody = { text?: unknown };
 
 app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
-  const a = v1AuthFromReq(req);
+  // Chat is audience-facing — spectators on slop.computer/<slug> SIWE in
+  // and post here without ever paying the room password to live.slop.computer.
+  // Skip the room-cookie gate so the audience can actually chat.
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const raw = typeof req.body?.text === "string" ? req.body.text : "";
   if (!raw.trim()) return reply.code(400).send({ error: "empty" });
