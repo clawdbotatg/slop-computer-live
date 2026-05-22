@@ -1586,7 +1586,7 @@ function DesktopInner({ slug }: { slug: string }) {
           cursor: "none",
         }}
       >
-        {/* Livestream frame guide — god-mode capture is 1568×888 from
+        {/* Livestream frame guide — OBS capture is 1920×1080 from
             the top-left of the window. Faint dashed rectangle so the
             operator can drag their window's bottom-right corner until
             it sits flush with the line. Behind everything, never
@@ -1597,8 +1597,8 @@ function DesktopInner({ slug }: { slug: string }) {
             position: "fixed",
             top: 0,
             left: 0,
-            width: 1568,
-            height: 888,
+            width: 1920,
+            height: 1080,
             border: "1px dashed rgba(255, 255, 255, 0.18)",
             boxSizing: "border-box",
             pointerEvents: "none",
