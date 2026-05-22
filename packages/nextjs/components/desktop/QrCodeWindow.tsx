@@ -64,6 +64,12 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // we adopt it as long as we're not currently mid-edit.
   const [text, setText] = useState(sharedText);
   const [hover, setHover] = useState(false);
+  // Visible error banner for a failed logo upload. Cleared on the
+  // next successful upload, on clear, or on reset. We track this
+  // because the underlying fetch can fail (413 oversized payload,
+  // network burp) and the user used to see nothing — the QR just
+  // didn't update.
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const broadcastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBroadcastRef = useRef(sharedText);
@@ -72,18 +78,27 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // yanked around mid-burst.
   const editingRef = useRef(false);
 
+  // The fallback URL used by both the first-open seed and the Reset
+  // button. Stripping `live.` lands a scanned QR on slop.computer/<slug>,
+  // the shorter shareable form that redirects into the live desktop.
+  const computeRoomUrl = (): string | null => {
+    if (typeof window === "undefined") return null;
+    const { hostname, pathname, search, hash, protocol } = window.location;
+    const publicHost = hostname.replace(/^live\./, "");
+    return `${protocol}//${publicHost}${pathname}${search}${hash}`;
+  };
+
   // Seed the room URL the first time we encounter an empty shared
   // text. Done in an effect (not initial state) because `window`
   // isn't available during SSR. Multiple peers may race to seed —
   // they all compute the same URL, so last-writer-wins is harmless.
   useEffect(() => {
-    if (sharedText !== "" || typeof window === "undefined") return;
-    const { hostname, pathname, search, hash, protocol } = window.location;
-    const publicHost = hostname.replace(/^live\./, "");
-    const seed = `${protocol}//${publicHost}${pathname}${search}${hash}`;
+    if (sharedText !== "") return;
+    const seed = computeRoomUrl();
+    if (!seed) return;
     setText(seed);
     lastBroadcastRef.current = seed;
-    mesh.setQrPatch({ text: seed });
+    void mesh.setQrPatch({ text: seed });
     // Run-once on the first empty-shared snapshot. We don't want to
     // re-seed if the host clears the text intentionally later.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,7 +121,7 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     broadcastTimerRef.current = setTimeout(() => {
       broadcastTimerRef.current = null;
       lastBroadcastRef.current = text;
-      mesh.setQrPatch({ text });
+      void mesh.setQrPatch({ text });
     }, TEXT_BROADCAST_DEBOUNCE_MS);
     return () => {
       if (broadcastTimerRef.current != null) {
@@ -117,16 +132,38 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   }, [text, mesh]);
 
   const handleFile = async (file: File | null | undefined) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    try {
-      const dataUrl = await downscaleImage(file);
-      mesh.setQrPatch({ logoDataUrl: dataUrl });
-    } catch (err) {
-      console.warn("QR logo decode failed", err);
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setUploadError("drop an image file");
+      return;
     }
+    setUploadError(null);
+    let dataUrl: string;
+    try {
+      dataUrl = await downscaleImage(file);
+    } catch (err) {
+      setUploadError(`couldn't decode image: ${(err as Error).message}`);
+      return;
+    }
+    const result = await mesh.setQrPatch({ logoDataUrl: dataUrl });
+    if (!result.ok) setUploadError(result.error);
   };
 
-  const clearLogo = () => mesh.setQrPatch({ clearLogo: true });
+  const clearLogo = () => {
+    setUploadError(null);
+    void mesh.setQrPatch({ clearLogo: true });
+  };
+
+  // Reset the whole QR back to a fresh room-URL state — clears the
+  // logo and rewrites the text to the canonical public URL. Anyone
+  // in the room can hit this; everyone's QR snaps back together.
+  const resetAll = () => {
+    setUploadError(null);
+    const seed = computeRoomUrl() ?? "";
+    setText(seed);
+    lastBroadcastRef.current = seed;
+    void mesh.setQrPatch({ text: seed, clearLogo: true });
+  };
 
   // stopPropagation on every drag event that handles a Files payload —
   // otherwise the event bubbles up to the desktop's drop-to-upload
@@ -240,7 +277,22 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         }}
       />
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11 }}>
+      {uploadError ? (
+        <div
+          style={{
+            padding: "6px 10px",
+            border: "1px solid rgba(255,62,62,0.4)",
+            background: "rgba(255,62,62,0.08)",
+            borderRadius: 4,
+            fontSize: 11,
+            color: "#ff9a9a",
+          }}
+        >
+          {uploadError}
+        </div>
+      ) : null}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, flexWrap: "wrap" }}>
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -276,9 +328,28 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
               cursor: "pointer",
             }}
           >
-            Clear
+            Clear logo
           </button>
         ) : null}
+        <button
+          type="button"
+          onClick={resetAll}
+          title="reset text to the room URL and clear the logo"
+          style={{
+            padding: "6px 10px",
+            fontSize: 11,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            background: "transparent",
+            color: "var(--slop-magenta, #ff3ec9)",
+            border: "1px solid rgba(255,62,201,0.45)",
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          Reset
+        </button>
         <span style={{ color: "var(--slop-text-muted)", fontStyle: "italic", marginLeft: "auto" }}>
           drop image to center
         </span>

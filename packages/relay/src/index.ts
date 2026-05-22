@@ -2442,7 +2442,13 @@ const QR_LOGO_MAX_LEN = 600_000;
 
 type QrPatchBody = { text?: unknown; logoDataUrl?: unknown; clearLogo?: unknown };
 
-app.post<{ Body: QrPatchBody }>("/v1/qr", async (req, reply) => {
+// The global Fastify bodyLimit is 16 KB which is fine for most JSON
+// routes but blows up a logo upload — even a small 256×256 PNG base64
+// data URL runs ~30–150 KB. Carve out 1 MB for this route (still well
+// inside QR_LOGO_MAX_LEN once you account for JSON wrapping overhead).
+const QR_ROUTE_BODY_LIMIT = 1 * 1024 * 1024;
+
+app.post<{ Body: QrPatchBody }>("/v1/qr", { bodyLimit: QR_ROUTE_BODY_LIMIT }, async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const room = roomFromReq(req);

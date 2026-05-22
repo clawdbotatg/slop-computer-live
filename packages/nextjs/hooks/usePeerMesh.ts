@@ -785,8 +785,15 @@ export type PeerMeshState = {
    *  renders this. Last-writer-wins. */
   qrState: QrState;
   /** Partial-patch setter — pass `{ text }`, `{ logoDataUrl }`, or
-   *  `{ clearLogo: true }`. Server fans the update back to everyone. */
-  setQrPatch: (patch: { text?: string; logoDataUrl?: string; clearLogo?: boolean }) => void;
+   *  `{ clearLogo: true }`. Server fans the update back to everyone.
+   *  Resolves with `ok: false` on a 4xx / network error so the caller
+   *  can surface upload failures (a previous version swallowed 413s
+   *  for oversized logos, making drag-to-upload look silently broken). */
+  setQrPatch: (patch: {
+    text?: string;
+    logoDataUrl?: string;
+    clearLogo?: boolean;
+  }) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Per-fileId audio/video playhead snapshots for file previews.
    *  Keyed by FileEntry.id. Absent keys mean nobody's started
    *  playback on that file yet — preview window treats that as
@@ -1505,15 +1512,33 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
   // QR text + logo broadcast. Low frequency (host types occasionally,
   // logo replaced rarely) — REST POST is fine; the relay broadcasts
-  // `qr_state` back to every peer including us.
+  // `qr_state` back to every peer including us. Returns a result so
+  // the caller can show an upload error in the UI — a previous
+  // version swallowed failures with a console.warn, which made a
+  // 413 (logo > body limit) look like the drag had simply done
+  // nothing.
   const setQrPatch = useCallback(
-    (patch: { text?: string; logoDataUrl?: string; clearLogo?: boolean }) => {
-      fetch(withSlug(`${RELAY_HTTP_URL}/v1/qr`, slug), {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(patch),
-      }).catch(err => console.warn("setQrPatch failed", err));
+    async (patch: {
+      text?: string;
+      logoDataUrl?: string;
+      clearLogo?: boolean;
+    }): Promise<{ ok: true } | { ok: false; error: string }> => {
+      try {
+        const res = await fetch(withSlug(`${RELAY_HTTP_URL}/v1/qr`, slug), {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) {
+          if (res.status === 413) return { ok: false, error: "logo too large to share" };
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          return { ok: false, error: body.error ?? `relay error ${res.status}` };
+        }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: `network error: ${String(err).slice(0, 200)}` };
+      }
     },
     [slug],
   );
