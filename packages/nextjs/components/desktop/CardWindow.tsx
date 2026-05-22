@@ -338,127 +338,137 @@ export const CardWindow = ({ mesh }: Props) => {
   // the PNG. Backdrop-filter blur isn't reproducible on canvas but the
   // translucent fills still composite over the card image so the visual
   // result is close.
+  //
+  // Shared by both `download` (file save dialog) and `save` (POST to
+  // relay as the unfurl image).
+  const bakeBlob = async (): Promise<Blob | null> => {
+    if (!resultUrl) return null;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    const loaded = new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error("could not load result for bake"));
+    });
+    img.src = resultUrl;
+    await loaded;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas-2d unavailable");
+    ctx.drawImage(img, 0, 0);
+
+    // Wait for any pending Silkscreen / next-font loads before we
+    // measure-and-bake — first download after open used to render a
+    // tiny default-font speck because the font wasn't ready yet.
+    await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+
+    const titleWindowEl = titleRef.current;
+    const titleBarEl = titleWindowEl?.firstElementChild as HTMLElement | null;
+    const bodyEl = titleBodyRef.current;
+    const rootEl = rootRef.current;
+    const imgRect = getImageRect();
+    const rawText = ((bodyEl?.innerText ?? titleText) || "").replace(/\n/g, " ").trim();
+
+    if (titleWindowEl && titleBarEl && bodyEl && rootEl && imgRect && rawText) {
+      // Translate viewport-relative DOM rects into canvas (natural
+      // image-pixel) coordinates. getImageRect is root-relative; rects
+      // from getBoundingClientRect are viewport-relative — so anchor
+      // off the root's viewport position.
+      const rootViewport = rootEl.getBoundingClientRect();
+      const imgVx = rootViewport.left + imgRect.left;
+      const imgVy = rootViewport.top + imgRect.top;
+      const scale = img.naturalWidth / imgRect.width;
+
+      const wRect = titleWindowEl.getBoundingClientRect();
+      const tbRect = titleBarEl.getBoundingClientRect();
+      const bdRect = bodyEl.getBoundingClientRect();
+
+      const wStyle = getComputedStyle(titleWindowEl);
+      const tbStyle = getComputedStyle(titleBarEl);
+      const bdStyle = getComputedStyle(bodyEl);
+
+      const toCanvas = (r: DOMRect) => ({
+        x: (r.left - imgVx) * scale,
+        y: (r.top - imgVy) * scale,
+        w: r.width * scale,
+        h: r.height * scale,
+      });
+      const W = toCanvas(wRect);
+      const TB = toCanvas(tbRect);
+      const BD = toCanvas(bdRect);
+
+      // Window outer drop shadow (matches inline boxShadow):
+      // "0 4px 14px rgba(0,0,0,0.45), 0 0 8px rgba(255,62,201,0.25)"
+      ctx.save();
+      ctx.fillStyle = wStyle.backgroundColor || "rgba(10,4,30,0.32)";
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = 14 * scale;
+      ctx.shadowOffsetY = 4 * scale;
+      ctx.fillRect(W.x, W.y, W.w, W.h);
+      ctx.restore();
+      // Magenta outer glow pass.
+      ctx.save();
+      ctx.shadowColor = "rgba(255,62,201,0.25)";
+      ctx.shadowBlur = 8 * scale;
+      ctx.strokeStyle = "rgba(255,62,201,0.001)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(W.x, W.y, W.w, W.h);
+      ctx.restore();
+
+      // Title bar fill + bottom border.
+      ctx.fillStyle = tbStyle.backgroundColor || "var(--slop-titlebar-active)";
+      ctx.fillRect(TB.x, TB.y, TB.w, TB.h);
+      ctx.fillStyle = "rgba(255,62,201,0.6)";
+      ctx.fillRect(TB.x, TB.y + TB.h - Math.max(1, scale), TB.w, Math.max(1, scale));
+
+      // Title bar text — uppercase "TITLE" (CSS text-transform happens
+      // visually; canvas needs the rendered glyphs).
+      const tbFontPx = parseFloat(tbStyle.fontSize) * scale;
+      ctx.font = `${tbFontPx}px ${tbStyle.fontFamily}`;
+      ctx.fillStyle = tbStyle.color;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+        `${(parseFloat(tbStyle.letterSpacing) || 0) * scale}px`;
+      ctx.fillText("TITLE", TB.x + TB.w / 2, TB.y + TB.h / 2);
+
+      // Body fill (translucent black).
+      ctx.fillStyle = bdStyle.backgroundColor || "rgba(0,0,0,0.28)";
+      ctx.fillRect(BD.x, BD.y, BD.w, BD.h);
+
+      // Body text — cyan title, drop shadow for legibility.
+      const bdFontPx = parseFloat(bdStyle.fontSize) * scale;
+      ctx.save();
+      ctx.font = `${bdFontPx}px ${bdStyle.fontFamily}`;
+      ctx.fillStyle = bdStyle.color;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+        `${(parseFloat(bdStyle.letterSpacing) || 0) * scale}px`;
+      ctx.shadowColor = "rgba(0,0,0,0.7)";
+      ctx.shadowBlur = bdFontPx * 0.18;
+      ctx.shadowOffsetY = bdFontPx * 0.08;
+      ctx.fillText(rawText.toUpperCase(), BD.x + BD.w / 2, BD.y + BD.h / 2);
+      ctx.restore();
+
+      // Window outer border last so it sits on top of all fills.
+      ctx.strokeStyle = wStyle.borderColor || "#ff3ec9";
+      ctx.lineWidth = Math.max(1, scale);
+      ctx.strokeRect(W.x, W.y, W.w, W.h);
+    }
+
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(b => res(b), "image/png"));
+    if (!blob) throw new Error("canvas encode failed");
+    return blob;
+  };
+
   const download = async () => {
     if (!resultUrl) return;
     try {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      const loaded = new Promise<void>((res, rej) => {
-        img.onload = () => res();
-        img.onerror = () => rej(new Error("could not load result for bake"));
-      });
-      img.src = resultUrl;
-      await loaded;
-
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("canvas-2d unavailable");
-      ctx.drawImage(img, 0, 0);
-
-      // Wait for any pending Silkscreen / next-font loads before we
-      // measure-and-bake — first download after open used to render a
-      // tiny default-font speck because the font wasn't ready yet.
-      await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
-
-      const titleWindowEl = titleRef.current;
-      const titleBarEl = titleWindowEl?.firstElementChild as HTMLElement | null;
-      const bodyEl = titleBodyRef.current;
-      const rootEl = rootRef.current;
-      const imgRect = getImageRect();
-      const rawText = ((bodyEl?.innerText ?? titleText) || "").replace(/\n/g, " ").trim();
-
-      if (titleWindowEl && titleBarEl && bodyEl && rootEl && imgRect && rawText) {
-        // Translate viewport-relative DOM rects into canvas (natural
-        // image-pixel) coordinates. getImageRect is root-relative; rects
-        // from getBoundingClientRect are viewport-relative — so anchor
-        // off the root's viewport position.
-        const rootViewport = rootEl.getBoundingClientRect();
-        const imgVx = rootViewport.left + imgRect.left;
-        const imgVy = rootViewport.top + imgRect.top;
-        const scale = img.naturalWidth / imgRect.width;
-
-        const wRect = titleWindowEl.getBoundingClientRect();
-        const tbRect = titleBarEl.getBoundingClientRect();
-        const bdRect = bodyEl.getBoundingClientRect();
-
-        const wStyle = getComputedStyle(titleWindowEl);
-        const tbStyle = getComputedStyle(titleBarEl);
-        const bdStyle = getComputedStyle(bodyEl);
-
-        const toCanvas = (r: DOMRect) => ({
-          x: (r.left - imgVx) * scale,
-          y: (r.top - imgVy) * scale,
-          w: r.width * scale,
-          h: r.height * scale,
-        });
-        const W = toCanvas(wRect);
-        const TB = toCanvas(tbRect);
-        const BD = toCanvas(bdRect);
-
-        // Window outer drop shadow (matches inline boxShadow):
-        // "0 4px 14px rgba(0,0,0,0.45), 0 0 8px rgba(255,62,201,0.25)"
-        ctx.save();
-        ctx.fillStyle = wStyle.backgroundColor || "rgba(10,4,30,0.32)";
-        ctx.shadowColor = "rgba(0,0,0,0.45)";
-        ctx.shadowBlur = 14 * scale;
-        ctx.shadowOffsetY = 4 * scale;
-        ctx.fillRect(W.x, W.y, W.w, W.h);
-        ctx.restore();
-        // Magenta outer glow pass.
-        ctx.save();
-        ctx.shadowColor = "rgba(255,62,201,0.25)";
-        ctx.shadowBlur = 8 * scale;
-        ctx.strokeStyle = "rgba(255,62,201,0.001)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(W.x, W.y, W.w, W.h);
-        ctx.restore();
-
-        // Title bar fill + bottom border.
-        ctx.fillStyle = tbStyle.backgroundColor || "var(--slop-titlebar-active)";
-        ctx.fillRect(TB.x, TB.y, TB.w, TB.h);
-        ctx.fillStyle = "rgba(255,62,201,0.6)";
-        ctx.fillRect(TB.x, TB.y + TB.h - Math.max(1, scale), TB.w, Math.max(1, scale));
-
-        // Title bar text — uppercase "TITLE" (CSS text-transform happens
-        // visually; canvas needs the rendered glyphs).
-        const tbFontPx = parseFloat(tbStyle.fontSize) * scale;
-        ctx.font = `${tbFontPx}px ${tbStyle.fontFamily}`;
-        ctx.fillStyle = tbStyle.color;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
-          `${(parseFloat(tbStyle.letterSpacing) || 0) * scale}px`;
-        ctx.fillText("TITLE", TB.x + TB.w / 2, TB.y + TB.h / 2);
-
-        // Body fill (translucent black).
-        ctx.fillStyle = bdStyle.backgroundColor || "rgba(0,0,0,0.28)";
-        ctx.fillRect(BD.x, BD.y, BD.w, BD.h);
-
-        // Body text — cyan title, drop shadow for legibility.
-        const bdFontPx = parseFloat(bdStyle.fontSize) * scale;
-        ctx.save();
-        ctx.font = `${bdFontPx}px ${bdStyle.fontFamily}`;
-        ctx.fillStyle = bdStyle.color;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
-          `${(parseFloat(bdStyle.letterSpacing) || 0) * scale}px`;
-        ctx.shadowColor = "rgba(0,0,0,0.7)";
-        ctx.shadowBlur = bdFontPx * 0.18;
-        ctx.shadowOffsetY = bdFontPx * 0.08;
-        ctx.fillText(rawText.toUpperCase(), BD.x + BD.w / 2, BD.y + BD.h / 2);
-        ctx.restore();
-
-        // Window outer border last so it sits on top of all fills.
-        ctx.strokeStyle = wStyle.borderColor || "#ff3ec9";
-        ctx.lineWidth = Math.max(1, scale);
-        ctx.strokeRect(W.x, W.y, W.w, W.h);
-      }
-
-      const blob = await new Promise<Blob | null>(res => canvas.toBlob(b => res(b), "image/png"));
-      if (!blob) throw new Error("canvas encode failed");
+      const blob = await bakeBlob();
+      if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -470,6 +480,42 @@ export const CardWindow = ({ mesh }: Props) => {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       setError((e as Error).message || "download failed");
+    }
+  };
+
+  // Publish the baked card (with title overlay) to the relay as the
+  // room's unfurl image — `generateMetadata()` in app/[slug]/page.tsx
+  // points og:image at this file. Anyone in the room can re-publish;
+  // mirrors the permissive reset pattern. The relay rate is itself a
+  // small file write, so we don't bother with a "publishing" spinner —
+  // the icon flashes saved on success.
+  const [saved, setSaved] = useState(false);
+  const save = async () => {
+    if (!resultUrl) return;
+    setError(null);
+    try {
+      const blob = await bakeBlob();
+      if (!blob) return;
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card/published`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "image/png" },
+        body: blob,
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j?.error) detail = String(j.error);
+        } catch {
+          /* not json */
+        }
+        throw new Error(detail);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      setError((e as Error).message || "save failed");
     }
   };
 
@@ -672,6 +718,15 @@ export const CardWindow = ({ mesh }: Props) => {
         >
           <button
             type="button"
+            onClick={() => void save()}
+            aria-label="save as unfurl"
+            title={saved ? "saved!" : "save as unfurl"}
+            style={overlayBtnStyle(saved)}
+          >
+            <SaveIcon />
+          </button>
+          <button
+            type="button"
             onClick={reset}
             aria-label="reset card"
             title="reset card"
@@ -727,6 +782,25 @@ const ResetIcon = () => (
         counter-clockwise to a downward arrowhead on the left. */}
     <path d="M13 8 A 5 5 0 1 1 8 3" />
     <polyline points="8 1 8 3 10 3" />
+  </svg>
+);
+
+// Floppy disk — classic save icon. Outer rectangle = disk body,
+// top notch = label area, small inner rectangle = metal shutter.
+const SaveIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <rect x="2" y="2" width="12" height="12" rx="1" />
+    <polyline points="4 2 4 7 11 7 11 2" />
+    <rect x="5" y="9.5" width="6" height="3.5" />
   </svg>
 );
 

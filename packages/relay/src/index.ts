@@ -1486,6 +1486,13 @@ function cardFilePath(slug: string): string {
   return `./.slop-data/rooms/${slug}/card.png`;
 }
 
+// Host-baked unfurl PNG. The bare card.png is the raw AI image; this is
+// what the host explicitly saved via the disk button in CardWindow,
+// title overlay baked in. Used as the og:image for live.slop.computer/<slug>.
+function cardPublishedFilePath(slug: string): string {
+  return `./.slop-data/rooms/${slug}/card-published.png`;
+}
+
 function readCardSnapshot(slug: string): { version: number } | null {
   try {
     const st = _statSync(cardFilePath(slug));
@@ -1638,26 +1645,63 @@ app.delete("/v1/card", async (req, reply) => {
   return { ok: true };
 });
 
+// Publish the room's title card as a baked PNG (title overlay drawn
+// into the image). Anyone in the room can publish — mirrors the same
+// permissive model as reset. The body is the raw PNG bytes produced
+// client-side by CardWindow's canvas bake. This file is what gets
+// served as the og:image for live.slop.computer/<slug>.
+app.post(
+  "/v1/card/published",
+  { bodyLimit: CARD_PFP_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply.code(400).send({ error: "empty-body", note: "POST raw PNG bytes with content-type: image/png" });
+    }
+    if (body.length > CARD_PFP_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
+    const ct = String(req.headers["content-type"] ?? "");
+    if (!ct.startsWith("image/png")) return reply.code(415).send({ error: "png-only" });
+    const room = roomFromReq(req);
+    const slug = room.id;
+    try {
+      await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+      await _writeFile(cardPublishedFilePath(slug), body);
+    } catch (err) {
+      req.log.error({ err }, "card publish failed");
+      return reply.code(500).send({ error: "write-failed" });
+    }
+    return { ok: true, bytes: body.length };
+  },
+);
+
 // Serve the per-room card PNG. Slug validated against the same regex
-// the relay uses everywhere; filename is locked to `card.png` so this
-// can never be turned into an arbitrary-file-read primitive. Lives
+// the relay uses everywhere; filename is locked to a small allowlist so
+// this can never be turned into an arbitrary-file-read primitive. Lives
 // under /v1/ so prod Caddy proxies it without a config change.
+//
+// `card.png` = raw AI-generated card (5min cache, written by the
+// generation job). `published.png` = host-baked unfurl PNG with title
+// overlay rendered in (1h cache since hosts publish deliberately and
+// re-publishes are rare).
 app.get<{ Params: { slug: string; filename: string } }>(
   "/v1/cards/:slug/:filename",
   async (req, reply) => {
     const { slug, filename } = req.params;
-    if (!isValidSlug(slug) || filename !== "card.png") {
+    if (!isValidSlug(slug) || (filename !== "card.png" && filename !== "published.png")) {
       return reply.code(400).send({ error: "bad-name" });
     }
+    const path = filename === "published.png" ? cardPublishedFilePath(slug) : cardFilePath(slug);
     let buf: Buffer;
     try {
       const fs = await import("node:fs/promises");
-      buf = await fs.readFile(cardFilePath(slug));
+      buf = await fs.readFile(path);
     } catch {
       return reply.code(404).send({ error: "not-found" });
     }
     reply.header("content-type", "image/png");
-    reply.header("cache-control", "public, max-age=300");
+    reply.header("cache-control", filename === "published.png" ? "public, max-age=3600" : "public, max-age=300");
     return reply.send(buf);
   },
 );
