@@ -82,6 +82,7 @@ export const SKILL_TOPICS = [
   "card",
   "episode",
   "rooms",
+  "build",
 ] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
 
@@ -289,6 +290,7 @@ rules and recommended loops that aren't repeated here.
 | **Card** (per-room title card — AI gen + overlay) | \`GET ${BASE}/v1/skill/card\` |  |
 | **Episode** (sttOn flag + SSE stream) | \`GET ${BASE}/v1/skill/episode\` |  |
 | **Rooms** (create / auth / list — multi-room) | \`GET ${BASE}/v1/skill/rooms\` | host-only for create |
+| **Build** (add a new app — iframe, kind, web3 dapp) | \`GET ${BASE}/v1/skill/build\` | for app authors |
 
 Each sub-skill is small (< 150 lines). Cache them; only re-fetch on
 unexpected 4xx from an endpoint they documented.
@@ -1980,6 +1982,221 @@ against that slug.
 }
 
 // =============================================================================
+// Build (how to make your own app)
+// =============================================================================
+
+export function skillBuild(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  const S = slugStr(slug);
+  return `${header(token, scope, "")}
+
+## Build sub-skill — make your own slop-computer app
+
+The slop-computer desktop has four layers you can plug a new app
+into, ordered from "no code, no deploy, takes 5 seconds" to "ship a
+real shared multiplayer surface." Pick the lowest layer that does
+what you need.
+
+### L0 — iframe app via REST (no code, no deploy)
+
+Easiest path. Host scope POSTs a URL into the apps catalog and the
+icon shows up on every peer's desktop immediately. Double-clicking
+it opens a shared browser pointed at your URL.
+
+\`\`\`
+POST ${BASE}/v1/apps {
+  "id":    "my-dapp",                       # kebab-case, 1-40 chars
+  "label": "My DApp",                       # what appears under the icon
+  "icon":  "/icons/browser.png",            # pick from GET /v1/icons (or generate one, see below)
+  "url":   "https://my-dapp.vercel.app"
+}
+\`\`\`
+
+That's it. No \`kind\` field → defaults to iframe in a shared browser.
+Survives relay restarts (persisted to \`hot-apps.json\` on disk) but
+not a full \`.slop-data\` wipe. \`DELETE /v1/apps/:id\` to remove.
+
+Host-only — POST returns 403 for peer scope. Full catalog mechanics
+in \`GET /v1/skill/apps\`.
+
+### L1 — built-in iframe app (code, but no new behavior)
+
+Same as L0 but committed to the repo so it ships with every deploy
+and survives any disk reset. Two steps:
+
+1. **Generate an icon** (the only step you can't skip — every app
+   needs a PNG in the chunky Mac OS 9 / cyberdelic style for the
+   desktop to look right):
+
+   \`\`\`bash
+   # from repo root
+   yarn icon:add my-dapp "A retro 3D piggy bank with neon lightning bolts."
+   \`\`\`
+
+   Calls OpenAI's \`gpt-image-1\` image-edit with
+   \`packages/icon-gen/style-ref.png\` as the style reference so every
+   icon shares the same palette. Output lands in TWO places:
+   - \`packages/icon-gen/out/icons/my-dapp.png\` (local cache, gitignored)
+   - \`packages/nextjs/public/icons/my-dapp.png\` (committed, served at \`/icons/my-dapp.png\`)
+
+   Also appends \`{ name, prompt }\` to \`packages/icon-gen/icons.json\`
+   so \`yarn icon:gen\` (batch regenerate) stays in sync.
+
+   Setup once: \`packages/icon-gen/.env\` needs \`OPENAI_API_KEY=...\`.
+
+2. **Register the app** in \`packages/relay/src/index.ts\` →
+   \`DEFAULT_APPS\` array:
+
+   \`\`\`ts
+   {
+     id: "my-dapp",
+     label: "My DApp",
+     icon: "/icons/my-dapp.png",
+     url: "https://my-dapp.vercel.app",   // no \`kind\` → browser iframe
+   },
+   \`\`\`
+
+3. **Deploy.** From repo root: \`./ops/deploy.sh\`. Builds Next.js +
+   relay locally, rsyncs incrementally to prod, atomic swap +
+   restart. HTTPS downtime is ~2-3s (just Node port-bind); the
+   livestream continues; SharedBrowser tabs are preserved unless
+   browser-host source actually changed. End-to-end ~47s on a warm
+   cache.
+
+### L2 — new shared "kind" (real per-room multiplayer state)
+
+When an iframe isn't enough — you want a window the room shares
+state in, like chess, music, todo, notes, glossary, clock, wallet,
+research, card, transcript, news. These are first-class multiplayer
+surfaces.
+
+Anatomy:
+- **State class** in \`packages/relay/src/<name>-state.ts\` (model
+  after \`research-state.ts\` or \`clock.ts\`). Snapshot type, optional
+  disk persistence, \`subscribe()\` callback for broadcasts.
+- **Wire into Room** (\`packages/relay/src/room.ts\`): add
+  \`readonly mine = new MyState(...)\`, then in the constructor:
+  \`this.mine.subscribe(state => this.broadcast({ type: "my_state", state }))\`.
+- **REST endpoints** in \`packages/relay/src/index.ts\` —
+  \`GET/POST /v1/my\` reading and writing \`roomFromReq(req).mine\`.
+- **Add to /v1/state** snapshot (same file, the big \`/v1/state\`
+  handler), so the WS \`hello\` and the REST snapshot ship the field
+  to new joiners.
+- **Add a kind** to \`DEFAULT_APPS\` with \`kind: "my"\` and to the
+  windows sub-skill table.
+- **Window component** in
+  \`packages/nextjs/components/desktop/MyWindow.tsx\`, mounted in
+  \`Desktop.tsx\`, subscribing via \`usePeerMesh\` (see
+  \`packages/nextjs/hooks/usePeerMesh.ts\` — add a state slot + setter
+  + a \`my_state\` case in the WS message handler).
+
+Match existing patterns — research and clock are the cleanest
+examples of "state snapshot + broadcast + REST + window."
+
+### L3 — web3 dapp the slop-computer can browse
+
+Build your dapp anywhere (Vercel, your own host, IPFS via ENS
+contenthash — \`GET /v1/ens/resolve\` decodes those) and add it via
+L0 or L1. The desktop's shared browser is **not** a vanilla iframe:
+it's a headless Chrome (\`packages/browser-host\`) with an EIP-1193
+provider injected so the dapp sees \`vitalik.eth\` (by default) as the
+connected wallet, with realistic balance + nonce on mainnet / Base /
+OP / Arbitrum.
+
+What this means for your dapp:
+- \`window.ethereum.request({method: "eth_accounts"})\` returns the
+  impersonated address. Your dapp's "connect wallet" flow works
+  without a real wallet present.
+- \`eth_sendTransaction\` doesn't actually sign — instead the
+  browser-host captures the payload and POSTs it to the relay at
+  \`/internal/browser-tx\` (authed by a shared secret). The relay
+  broadcasts \`tx_request\` to every peer in the room.
+- Peers see the captured tx in their wallet panel and can:
+  • propose it through the room's session multisig (sign-of-N flow),
+  • forward it to their own real wallet to actually sign + send.
+- The impersonated address is **per-tab**: defaults to vitalik.eth
+  but the room can swap it to a peer's wallet, the room's deployed
+  multisig, or a custom address via a \`set_impersonator\` WS
+  message. So "do whatever vitalik would" and "do whatever
+  ALICE-the-guest would" are both one click away in the same dapp.
+
+Building a great slop-computer dapp = building a normal dapp, plus:
+- Don't assume the connected account has a private key. Treat every
+  tx as advisory; the room collectively decides whether to broadcast.
+- Use viem / wagmi as you would anywhere. EIP-6963 announces the
+  impersonator provider as \`rdns: "computer.slop.impersonator"\` if
+  you want to detect it.
+
+## The \`kind\` field — what each existing kind gives you
+
+Read the apps sub-skill (\`GET /v1/skill/apps\`) for the full table.
+Briefly:
+
+- omitted / \`"browser"\` — your URL in a shared iframe (impersonator
+  on). The L0 + L1 + L3 paths above all land here.
+- \`"chat" / "music" / "chess" / "todo" / "notes" / "glossary" / "gas"
+  / "clock" / "wallet" / "research" / "news" / "transcript" / "card"\`
+  — each spawns a built-in singleton window with its own per-room
+  shared state. To make your own equivalent, take the L2 path.
+- \`"audio" / "video" / "screen"\` — peer publication (camera / mic /
+  screen share). Per-peer ephemeral; closed when the peer disconnects.
+- \`"qr"\` — per-peer-controlled, room-shared window (text + center
+  logo broadcast across the mesh).
+
+## Multiplayer levels — pick what your app needs
+
+| Level | Examples | Lives where | What "shared" means |
+| --- | --- | --- | --- |
+| **Per-peer ephemeral** | camera / mic / screen | mesh peer record | exists while the peer is connected; vanishes on disconnect |
+| **Per-room shared** | chat, music, chess, todos, notes, clock, wallet, research, card, transcript, qr, file-preview playhead | \`Room.<feature>\` on the relay | last-writer-wins broadcast to every peer in the room |
+| **Global** | gas, ticker, headlines, timeline, news digest, apps catalog, avatars, glossary | module-level on the relay | one snapshot for every room, polled or written centrally |
+
+When designing L2: most apps want **per-room shared**. Only reach
+for **global** if the data genuinely has no per-room dimension (gas
+prices, AI-stock prices, the apps catalog itself). Glossary is
+global today but that's load-bearing for a reason — a definition
+should travel with you across rooms.
+
+## Deploy notes — your livestream survives this
+
+\`./ops/deploy.sh\` is designed to keep a running show alive:
+- Builds locally (prod box only has 7.6G RAM; \`next build\` OOMs it).
+- Rsyncs \`.next\` to \`.next.staging\` using \`--link-dest\` so
+  unchanged files are free hardlinks.
+- Atomic swap + Node restart. HTTPS downtime measured by the script
+  on every deploy — typically ~2-3s of \`curl\` retries.
+- browser-host is **only** restarted if the rsync actually moved
+  bytes in its dist, so adding an L0/L1 app or even an L2 surface
+  doesn't tear down active SharedBrowser tabs.
+- Pre-flight refuses to deploy a dirty tree, a non-\`main\` branch,
+  or a local out of sync with origin. Commit and push first.
+
+So: the cost of pushing a new app live mid-show is ~3 seconds of
+HTTP unavailability, no WS reconnect storm, no broadcast
+disruption. The audience hears you keep talking; the desktop just
+gains an icon.
+
+## Quick recipe — drop an iframe app right now
+
+\`\`\`bash
+# requires host scope on this token
+curl -s -X POST -H "Authorization: Bearer ${token}" \\
+  -H "content-type: application/json" \\
+  "${BASE}/v1/apps" \\
+  -d '{"id":"my-dapp","label":"My DApp","icon":"/icons/browser.png","url":"https://my-dapp.vercel.app"}'
+
+# verify it landed in the catalog
+curl -s -H "Authorization: Bearer ${token}" \\
+  "${BASE}/v1/state?slug=${S}" | jq '.apps[] | select(.id == "my-dapp")'
+
+# delete when you're done
+curl -s -X DELETE -H "Authorization: Bearer ${token}" \\
+  "${BASE}/v1/apps/my-dapp"
+\`\`\`
+`;
+}
+
+// =============================================================================
 // Router
 // =============================================================================
 
@@ -2032,5 +2249,7 @@ export function skillForTopic(
       return skillEpisode(token, isHost, slug);
     case "rooms":
       return skillRooms(token, isHost, slug);
+    case "build":
+      return skillBuild(token, isHost, slug);
   }
 }

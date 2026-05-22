@@ -28,6 +28,42 @@ const MENUBAR_HEIGHT = 38;
 const TOP_GAP = 10;
 const MAX_NAME_LEN = 30;
 
+// Lazy shared AudioContext for the join/leave chimes. Building it on
+// first play (inside a user-gesture-adjacent event) keeps us out of
+// autoplay-policy jail; reusing one ctx avoids the per-event GC churn
+// of `new AudioContext()` per blip.
+let chimeCtx: AudioContext | null = null;
+const getChimeCtx = (): AudioContext | null => {
+  if (typeof window === "undefined") return null;
+  type Ctor = new () => AudioContext;
+  const C = window.AudioContext ?? (window as unknown as { webkitAudioContext?: Ctor }).webkitAudioContext;
+  if (!C) return null;
+  if (!chimeCtx) chimeCtx = new C();
+  if (chimeCtx.state === "suspended") void chimeCtx.resume().catch(() => undefined);
+  return chimeCtx;
+};
+
+// Short two-tone chirp. `up=true` rises (join), `up=false` falls
+// (leave). Sine wave, gain envelope tuned so back-to-back chimes
+// don't click.
+const playChime = (up: boolean) => {
+  const ctx = getChimeCtx();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  const [f0, f1] = up ? [660, 990] : [550, 330];
+  osc.frequency.setValueAtTime(f0, now);
+  osc.frequency.exponentialRampToValueAtTime(f1, now + 0.09);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.12, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.16);
+};
+
 export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -53,6 +89,24 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
       inputRef.current.select();
     }
   }, [editing]);
+
+  // Blip on join, blop on leave. First render seeds the set silently —
+  // otherwise rejoining a room with N guests would fire N chimes at
+  // once. `myId` is excluded so your own appearance/disappearance
+  // doesn't pop on your own machine.
+  const prevIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const current = new Set(peers.filter(p => p.id !== myId).map(p => p.id));
+    const prev = prevIdsRef.current;
+    prevIdsRef.current = current;
+    if (!prev) return;
+    let joins = 0;
+    let leaves = 0;
+    for (const id of current) if (!prev.has(id)) joins++;
+    for (const id of prev) if (!current.has(id)) leaves++;
+    if (joins > 0) playChime(true);
+    if (leaves > 0) playChime(false);
+  }, [peers, myId]);
 
   const startEdit = () => {
     if (!canEdit) return;
