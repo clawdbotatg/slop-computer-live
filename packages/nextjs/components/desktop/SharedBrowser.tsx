@@ -31,6 +31,17 @@ const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const BROWSER_HOST_URL = process.env.NEXT_PUBLIC_BROWSER_HOST_URL ?? "ws://localhost:8090";
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
+// Compact override for the URL-bar nav cluster (back / forward / reload /
+// zoom). The default `.slop-button` is 16px font / 5×16 padding, which
+// dominates the chrome; this shrinks them to ~24px square without
+// touching the global stylesheet.
+const navBtnStyle: React.CSSProperties = {
+  fontSize: 12,
+  padding: "2px 6px",
+  minWidth: 24,
+  lineHeight: 1,
+};
+
 // Detect ENS names in the URL bar. We accept:
 //   "clawdbotatg.eth"
 //   "clawdbotatg.eth/some/path"
@@ -196,6 +207,20 @@ export const SharedBrowser = ({
   // so all peers' URL bars update, but we must NOT echo it back as a
   // "navigate" — that'd re-fetch the same URL and waste a round trip.
   const incomingUrlRef = useRef<string | null>(null);
+  // Client-side magnification of the streamed frame. Pure CSS transform —
+  // the server keeps rendering at 1280×800, we just scale what's painted
+  // here. Coord mapping in computeImageRect uses this so clicks still
+  // land on the right pixel after the user has zoomed in.
+  const [zoom, setZoom] = useState(1);
+  const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+  const zoomIn = () => {
+    const next = ZOOM_STEPS.find(z => z > zoom);
+    if (next !== undefined) setZoom(next);
+  };
+  const zoomOut = () => {
+    const next = [...ZOOM_STEPS].reverse().find(z => z < zoom);
+    if (next !== undefined) setZoom(next);
+  };
   // ChainId the headless tab is currently on. Sourced from `hello` /
   // `chain_changed` (host is authoritative); user-driven picks from the
   // selector flow back via `set_chain`. The injected provider reports
@@ -709,10 +734,15 @@ export const SharedBrowser = ({
       imgW = rect.width;
       imgH = imgW / targetAspect;
     }
+    // Client-side zoom scales the rendered image around its center
+    // (transformOrigin: center center on the <img>). Bounds expand
+    // proportionally — coord mapping below uses the scaled size.
+    imgW *= zoom;
+    imgH *= zoom;
     const offsetX = rect.left + (rect.width - imgW) / 2;
     const offsetY = rect.top + (rect.height - imgH) / 2;
     return { offsetX, offsetY, imgW, imgH };
-  }, []);
+  }, [zoom]);
 
   const toServerCoords = useCallback(
     (e: { clientX: number; clientY: number }): { x: number; y: number } | null => {
@@ -888,17 +918,53 @@ export const SharedBrowser = ({
             padding: 6,
             background: "var(--slop-panel)",
             borderBottom: "1px solid rgba(255,62,201,0.2)",
+            alignItems: "center",
           }}
         >
-          <Button onClick={goBack} aria-label="Back" disabled={!canControl || !canGoBack}>
+          <Button onClick={goBack} aria-label="Back" disabled={!canControl || !canGoBack} style={navBtnStyle}>
             ←
           </Button>
-          <Button onClick={goForward} aria-label="Forward" disabled={!canControl || !canGoForward}>
+          <Button onClick={goForward} aria-label="Forward" disabled={!canControl || !canGoForward} style={navBtnStyle}>
             →
           </Button>
-          <Button onClick={reload} aria-label="Reload">
+          <Button onClick={reload} aria-label="Reload" style={navBtnStyle}>
             ↻
           </Button>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: 2 }}>
+            <Button
+              onClick={zoomOut}
+              aria-label="Zoom out"
+              disabled={zoom <= ZOOM_STEPS[0]}
+              style={navBtnStyle}
+              title="Zoom out"
+            >
+              −
+            </Button>
+            <span
+              style={{
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 10,
+                color: "var(--slop-text-muted)",
+                minWidth: 34,
+                textAlign: "center",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              onClick={() => setZoom(1)}
+              title="Reset zoom"
+            >
+              {Math.round(zoom * 100)}%
+            </span>
+            <Button
+              onClick={zoomIn}
+              aria-label="Zoom in"
+              disabled={zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+              style={navBtnStyle}
+              title="Zoom in"
+            >
+              +
+            </Button>
+          </div>
           <TextField
             value={draft}
             onChange={e => setDraft(e.target.value)}
@@ -1107,6 +1173,9 @@ export const SharedBrowser = ({
           // handlers and clicks land at the wrong moment.
           touchAction: "none",
           userSelect: "none",
+          // Clip the zoomed image so it doesn't bleed into surrounding
+          // chrome at zoom > 1.
+          overflow: "hidden",
         }}
       >
         {frameSrc ? (
@@ -1125,6 +1194,8 @@ export const SharedBrowser = ({
               objectFit: "contain",
               userSelect: "none",
               pointerEvents: "none",
+              transform: zoom === 1 ? undefined : `scale(${zoom})`,
+              transformOrigin: "center center",
             }}
           />
         ) : (
