@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
@@ -73,6 +74,10 @@ const livePosition = (state: MusicState | null): number => {
 export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const slug = useRoomSlug();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playlistRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync for the playlist — peers follow whoever
+  // scrolls through tracks.
+  const onPlaylistScroll = useSyncedScroll(mesh, "music-playlist", playlistRef);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [duration, setDuration] = useState(0);
   const [balance, setBalance] = useState(0);
@@ -1001,7 +1006,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             ? `${mesh.musicGenre.toUpperCase()} — TRENDING THIS WEEK — ${tracks.length} ITEM${tracks.length === 1 ? "" : "S"}`
             : `PLAYLIST EDITOR — ${tracks.length} ITEM${tracks.length === 1 ? "" : "S"}`}
         </div>
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        <div ref={playlistRef} onScroll={onPlaylistScroll} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {tracks.length === 0 ? (
             // Three empty-states:
             //   1. Active genre + no tracks yet → indeterminate

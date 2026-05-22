@@ -19,6 +19,7 @@ import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
 
@@ -78,6 +79,14 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
   // so dismissing one and a new one arriving still triggers.
   const pendingCount = useMemo(() => mesh.walletTxs.filter(t => t.status === "pending").length, [mesh.walletTxs]);
   const lastPendingCountRef = useRef(pendingCount);
+  // Multiplayer scroll sync for each tab. Per-tab keys so flipping
+  // tabs doesn't fight a different surface's scroll position.
+  const deployRef = useRef<HTMLDivElement>(null);
+  const assetsRef = useRef<HTMLDivElement>(null);
+  const txsRef = useRef<HTMLDivElement>(null);
+  const onDeployScroll = useSyncedScroll(mesh, "wallet:deploy", deployRef);
+  const onAssetsScroll = useSyncedScroll(mesh, "wallet:assets", assetsRef);
+  const onTxsScroll = useSyncedScroll(mesh, "wallet:transactions", txsRef);
   useEffect(() => {
     if (pendingCount > lastPendingCountRef.current && wallet && tab !== "deploy") {
       setTab("transactions");
@@ -99,7 +108,11 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     >
       <TabBar tab={tab} setTab={setTab} walletReady={!!wallet} pendingCount={pendingCount} />
       {/* Deploy tab body. */}
-      <div style={{ flex: 1, overflow: "auto", display: tab === "deploy" ? "block" : "none" }}>
+      <div
+        ref={deployRef}
+        onScroll={onDeployScroll}
+        style={{ flex: 1, overflow: "auto", display: tab === "deploy" ? "block" : "none" }}
+      >
         <DeployTab mesh={mesh} myAddress={myAddress} myHandle={myHandle} />
       </div>
       {/* Chat tab — the multiplayer AI-wallet conversation. Always
@@ -120,6 +133,8 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       {/* Assets tab — read-only portfolio + activity for the multisig. */}
       {wallet ? (
         <div
+          ref={assetsRef}
+          onScroll={onAssetsScroll}
           style={{
             flex: tab === "assets" ? 1 : undefined,
             display: tab === "assets" ? "block" : "none",
@@ -134,6 +149,8 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
        *  in-app send forms all land here for signing + execute). */}
       {wallet ? (
         <div
+          ref={txsRef}
+          onScroll={onTxsScroll}
           style={{
             flex: tab === "transactions" ? 1 : undefined,
             display: tab === "transactions" ? "block" : "none",

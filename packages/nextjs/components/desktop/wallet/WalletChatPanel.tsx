@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { WalletTxCard } from "./WalletTxCard";
 import { LoadingBar } from "~~/components/ui";
 import type { PeerMeshState, WalletChatMessage, WalletRecord } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Multiplayer AI-wallet chat. The whole room shares one conversation —
 // mesh.walletChat. Any peer types a message, the relay runs the agentic
@@ -89,6 +90,10 @@ export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet:
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, processing]);
 
+  // Multiplayer scroll sync — peers can scroll back through the
+  // wallet AI conversation together.
+  const onScroll = useSyncedScroll(mesh, "wallet:chat", listRef);
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const text = draft.trim();
@@ -144,6 +149,7 @@ export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet:
       {/* Message list */}
       <div
         ref={listRef}
+        onScroll={onScroll}
         style={{
           flex: 1,
           minHeight: 0,

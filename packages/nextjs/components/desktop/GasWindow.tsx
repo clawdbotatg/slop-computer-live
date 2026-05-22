@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GasState, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Ethereum gas tracker window. Reads `mesh.gasState` (polled and
 // broadcast by the relay every ~12s) and renders:
@@ -73,6 +74,9 @@ const TIER_COLORS: Record<"slow" | "medium" | "fast", string> = {
 
 export const GasWindow = ({ mesh }: GasWindowProps) => {
   const state = mesh.gasState;
+  const opsRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync for the ops-cost table.
+  const onScroll = useSyncedScroll(mesh, "gas", opsRef);
   // Tick once per second so the "x seconds ago" label stays live even
   // when no new gas snapshot has arrived. Wall-clock only — doesn't
   // trigger a fetch.
@@ -167,7 +171,7 @@ export const GasWindow = ({ mesh }: GasWindowProps) => {
       </div>
 
       {/* Ops table */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+      <div ref={opsRef} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <table
           style={{
             width: "100%",

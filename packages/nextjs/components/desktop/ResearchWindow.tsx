@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { PeerMeshState, ResearchResult, ResearchSocials } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Multiplayer guest-research dossier. Every transition lives on the
 // relay (research-state.ts) and broadcasts to every peer:
@@ -52,6 +53,9 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const rs = mesh.researchState;
   const lookupRunning = rs.job?.kind === "lookup";
   const researchRunning = rs.job?.kind === "research";
+  const resultsRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync for the dossier results pane.
+  const onScroll = useSyncedScroll(mesh, "research", resultsRef);
 
   // ---- Phase 1: lookup screen ---------------------------------------------
   // Local typing state for the freeform "name or @handle" input. Kept
@@ -247,6 +251,8 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       </form>
 
       <div
+        ref={resultsRef}
+        onScroll={onScroll}
         style={{
           flex: 1,
           minHeight: 0,

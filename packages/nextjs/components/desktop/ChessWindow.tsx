@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import type { ChessGame, ChessResult, Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Multiplayer chess. Singleton across the mesh — there's only one game
 // at a time, and the relay owns the truth. This component is just a
@@ -70,6 +71,13 @@ const Lobby = ({
   );
   const [whiteKey, setWhiteKey] = useState<string>("");
   const [blackKey, setBlackKey] = useState<string>("");
+  const lobbyRef = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync: the chess lobby AND the recent-results
+  // history both follow the room's last scroller. Two keys because
+  // the panes are independent containers within the same window.
+  const onLobbyScroll = useSyncedScroll(mesh, "chess:lobby", lobbyRef);
+  const onHistoryScroll = useSyncedScroll(mesh, "chess:history", historyRef);
 
   // Default selections: me as white, anyone else as black if available.
   useEffect(() => {
@@ -94,7 +102,11 @@ const Lobby = ({
   };
 
   return (
-    <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
+    <div
+      ref={lobbyRef}
+      onScroll={onLobbyScroll}
+      style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}
+    >
       <h2
         style={{
           margin: 0,
@@ -148,6 +160,8 @@ const Lobby = ({
           </p>
         ) : (
           <div
+            ref={historyRef}
+            onScroll={onHistoryScroll}
             style={{
               marginTop: 8,
               display: "flex",

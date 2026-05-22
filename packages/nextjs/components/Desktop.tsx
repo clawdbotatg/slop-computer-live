@@ -2136,6 +2136,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 myAddress={session.address}
                 myHandle={session.handle}
                 customNames={mesh.customNames}
+                mesh={mesh}
               />
             </SharedAppWindow>
             <SharedAppWindow
@@ -2256,7 +2257,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={320}
               minHeight={280}
             >
-              <TranscriptWindow relayHttpUrl={RELAY_HTTP} customNames={mesh.customNames} />
+              <TranscriptWindow relayHttpUrl={RELAY_HTTP} customNames={mesh.customNames} mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

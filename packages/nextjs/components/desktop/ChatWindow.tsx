@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, SlopAddress } from "~~/components/ui";
-import type { ChatMessage } from "~~/hooks/usePeerMesh";
+import type { ChatMessage, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
 
 export type ChatWindowProps = {
@@ -11,11 +12,12 @@ export type ChatWindowProps = {
   myAddress: string | null;
   myHandle: string | null;
   customNames: Record<string, string>;
+  mesh: PeerMeshState;
 };
 
 // The chat panel body. The parent <Window> already supplies the title bar,
 // drag/resize, and shell — this just paints the scrollback + composer.
-export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customNames }: ChatWindowProps) => {
+export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customNames, mesh }: ChatWindowProps) => {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -29,10 +31,15 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
     if (wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
+  // Multiplayer scroll sync: peers follow whoever scrolled most
+  // recently. Composes with the stick-to-bottom check above so both
+  // behaviors coexist on every scroll event.
+  const syncedOnScroll = useSyncedScroll(mesh, "chat", listRef);
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
     wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    syncedOnScroll();
   };
 
   const submit = () => {

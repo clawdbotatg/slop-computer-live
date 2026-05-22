@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import type { GlossaryTerm, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Shared glossary — type a term, hit Add, and the relay's AI fills in a
 // one-sentence TLDR a moment later. All terms are visible to every peer.
@@ -18,6 +19,10 @@ export const GlossaryWindow = ({ mesh }: GlossaryWindowProps) => {
   const { glossary, glossaryAdd, glossaryRegenerate, glossaryDelete } = mesh;
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync — the glossary list follows whoever
+  // scrolled most recently in the room.
+  const onScroll = useSyncedScroll(mesh, "glossary", listRef);
 
   // Newest-first, but stable: createdTs is server-stamped at add-time and
   // never updates, unlike updatedTs which bumps when the AI TLDR lands.
@@ -95,7 +100,7 @@ export const GlossaryWindow = ({ mesh }: GlossaryWindowProps) => {
       </form>
 
       {/* List */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+      <div ref={listRef} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {sorted.length === 0 ? (
           <div
             style={{

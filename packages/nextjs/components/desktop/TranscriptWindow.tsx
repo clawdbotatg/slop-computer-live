@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
+import type { PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
@@ -25,9 +27,10 @@ const POLL_MS = 1500;
 export type TranscriptWindowProps = {
   relayHttpUrl: string;
   customNames: Record<string, string>;
+  mesh: PeerMeshState;
 };
 
-export const TranscriptWindow = ({ relayHttpUrl, customNames }: TranscriptWindowProps) => {
+export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh }: TranscriptWindowProps) => {
   const slug = useRoomSlug();
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -44,10 +47,15 @@ export const TranscriptWindow = ({ relayHttpUrl, customNames }: TranscriptWindow
     if (wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [segments.length]);
 
+  // Multiplayer scroll sync: when one peer scrolls back through the
+  // transcript, the room follows. Composes with the stick-to-bottom
+  // logic above — both onScroll branches run on every scroll event.
+  const syncedOnScroll = useSyncedScroll(mesh, "transcript", listRef);
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
     wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    syncedOnScroll();
   };
 
   useEffect(() => {

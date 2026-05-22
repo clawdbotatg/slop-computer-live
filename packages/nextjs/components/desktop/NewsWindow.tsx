@@ -1,6 +1,8 @@
 "use client";
 
+import { useRef } from "react";
 import type { NewsDigestItem, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { shouldInterceptClick } from "~~/utils/openInSlopBrowser";
 
 // "News" app — the curated front page. Two sections:
@@ -360,6 +362,9 @@ export const NewsWindow = ({ mesh, onOpenUrl }: NewsWindowProps) => {
   const digest = mesh.newsDigestState;
   const featured = digest?.featured ?? [];
   const feed = digest?.feed ?? [];
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync — collaborative news browsing.
+  const onScroll = useSyncedScroll(mesh, "news", scrollRef);
 
   return (
     <div
@@ -372,6 +377,8 @@ export const NewsWindow = ({ mesh, onOpenUrl }: NewsWindowProps) => {
       }}
     >
       <div
+        ref={scrollRef}
+        onScroll={onScroll}
         style={{
           flex: 1,
           overflowY: "auto",

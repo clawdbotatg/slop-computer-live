@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
 import type { PeerMeshState, TodoItem } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Shared todo list. Anyone signed in can add, toggle, edit or delete any
 // item — the relay is the source of truth and broadcasts the full list
@@ -25,6 +26,9 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
   const [editDraft, setEditDraft] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Multiplayer scroll sync for the todo list.
+  const onScroll = useSyncedScroll(mesh, "todo", listRef);
 
   const serverItems = mesh.todos;
   // While dragging, render from localOrder. Once the drop completes and
@@ -81,7 +85,7 @@ export const TodoWindow = ({ mesh }: TodoWindowProps) => {
         fontFamily: "var(--slop-font-body)",
       }}
     >
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 8 }}>
+      <div ref={listRef} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 8 }}>
         {items.length === 0 ? (
           <div
             style={{

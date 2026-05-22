@@ -673,6 +673,7 @@ app.get("/v1/state", async (req, reply) => {
     researchState: roomFromReq(req).research.current().state,
     qrState: roomFromReq(req).qr.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
+    scrollSync: roomFromReq(req).scrollSync.all(),
     walletChat: roomFromReq(req).walletChat.current().state,
   };
 });
@@ -3982,6 +3983,7 @@ app.register(async function signalRoutes(fastify) {
       researchState: room.research.current().state,
       qrState: room.qr.current().state,
       previewMedia: room.previewMedia.all(),
+      scrollSync: room.scrollSync.all(),
       walletChat: room.walletChat.current().state,
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
@@ -4283,6 +4285,27 @@ app.register(async function signalRoutes(fastify) {
           // setPreviewMedia notifies inside; broadcast is wired up via
           // the Room subscriber. Nothing else to do here.
           void next;
+          return;
+        }
+        case "scroll_sync": {
+          // Broadcast a scroll position change for an arbitrary surface
+          // (transcript, chat, notes editor, research, wallet tabs,
+          // etc.) so other peers' UIs can follow along. `key`
+          // namespaces the map so distinct surfaces don't fight. `frac`
+          // is the scrollTop / (scrollHeight - clientHeight) ratio,
+          // clamped 0..1. Same fire-and-forget shape as preview_media.
+          if (typeof msg.key !== "string" || typeof msg.frac !== "number" || typeof msg.at !== "number") {
+            return send(socket, { type: "error", error: "bad_scroll_sync" });
+          }
+          // Cap key length so a misbehaving client can't blow up the
+          // map. Surface ids are short by convention.
+          if (msg.key.length === 0 || msg.key.length > 128) {
+            return send(socket, { type: "error", error: "bad_scroll_sync_key" });
+          }
+          room.scrollSync.set(msg.key, {
+            frac: Math.max(0, Math.min(1, msg.frac)),
+            at: msg.at,
+          });
           return;
         }
         case "music_state": {

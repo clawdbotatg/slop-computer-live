@@ -571,6 +571,19 @@ export type PreviewMediaSnapshot = {
   scrollFrac?: number;
 };
 
+// --- Scroll-sync shared state ---------------------------------------------
+// Per-surface scroll position keyed by an arbitrary surface id
+// (transcript, chat, notes-editor, research, wallet:chat, etc.). One
+// generic channel so every scrollable dialog in the desktop can
+// follow-the-leader without each subsystem needing its own message
+// type. See `useSyncedScroll` for the consumer side.
+export type ScrollSnapshot = {
+  /** scrollTop / (scrollHeight - clientHeight), clamped 0..1 */
+  frac: number;
+  /** Date.now() when the scroller emitted; used for tie-break / debug */
+  at: number;
+};
+
 // --- AI wallet chat ---------------------------------------------------------
 // Per-room conversational wallet. The whole room shares one conversation;
 // any peer can send a message, the relay runs the agentic intent engine,
@@ -850,6 +863,14 @@ export type PeerMeshState = {
    *  per-room map is keyed by fileId so multiple previews are
    *  independent. */
   setPreviewMedia: (fileId: string, state: PreviewMediaSnapshot) => void;
+  /** Per-surface shared scroll positions. Keyed by an arbitrary
+   *  surface id (e.g. "transcript", "wallet:chat", "notes-editor:abc").
+   *  Absent keys mean nobody has scrolled that surface yet. */
+  scrollSync: Record<string, ScrollSnapshot>;
+  /** Broadcast a scroll position for a surface. Throttle at the call
+   *  site (scroll fires a lot); the hook `useSyncedScroll` handles
+   *  this automatically. */
+  setScrollSync: (key: string, state: ScrollSnapshot) => void;
   /** Shared AI-wallet conversation — messages + in-flight flag.
    *  Replaces the old per-iframe wallet chat. */
   walletChat: WalletChat;
@@ -995,6 +1016,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
+  const [scrollSync, setScrollSyncLocal] = useState<Record<string, ScrollSnapshot>>({});
   const [walletChat, setWalletChatLocal] = useState<WalletChat>(DEFAULT_WALLET_CHAT);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
@@ -1614,6 +1636,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  // Per-surface scroll position broadcast. Optimistic local update so
+  // the scroller sees no lag; the WS echo is harmless when it matches.
+  // The relay clamps `frac` to 0..1 server-side as a defensive net.
+  const setScrollSync = useCallback(
+    (key: string, state: ScrollSnapshot) => {
+      setScrollSyncLocal(prev => ({ ...prev, [key]: state }));
+      send({ type: "scroll_sync", key, frac: state.frac, at: state.at });
+    },
+    [send],
+  );
+
   // Wallet AI chat. POST to the relay, which appends the turn, runs the
   // intent engine, and broadcasts `wallet_chat` back to every peer —
   // no optimistic local update; the WS echo is authoritative.
@@ -2000,6 +2033,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             }
             setPreviewMediaLocal(map);
           }
+          if (Array.isArray(msg.scrollSync)) {
+            const map: Record<string, ScrollSnapshot> = {};
+            for (const entry of msg.scrollSync as Array<{ key: unknown; state: unknown }>) {
+              if (typeof entry.key === "string" && entry.state && typeof entry.state === "object") {
+                map[entry.key] = entry.state as ScrollSnapshot;
+              }
+            }
+            setScrollSyncLocal(map);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -2200,6 +2242,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const fileId = msg.fileId as string;
           const state = msg.state as PreviewMediaSnapshot;
           setPreviewMediaLocal(prev => ({ ...prev, [fileId]: state }));
+          return;
+        }
+
+        if (msg.type === "scroll_sync" && typeof msg.key === "string" && msg.state && typeof msg.state === "object") {
+          const key = msg.key as string;
+          const state = msg.state as ScrollSnapshot;
+          setScrollSyncLocal(prev => ({ ...prev, [key]: state }));
           return;
         }
 
@@ -2593,6 +2642,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setQrPatch,
     previewMedia,
     setPreviewMedia,
+    scrollSync,
+    setScrollSync,
     walletChat,
     walletChatSend,
     walletChatReset,

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import type { Note, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
 // Shared notes — sidebar of notes on the left, editor pane on the right.
 // All notes are visible to everyone, and anyone can edit any note. The
@@ -42,6 +43,16 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
   // hasn't arrived yet. Instead, set a flag + the set of ids we know
   // about now, then on the next notes change look for any new id.
   const pendingNewRef = useRef<Set<string> | null>(null);
+  const sidebarRef = useRef<HTMLUListElement>(null);
+  // Multiplayer scroll sync. Sidebar uses a fixed key. The editor
+  // scrolls per-note — key it by the selected note id so peers only
+  // follow each other when they're looking at the same note.
+  const onSidebarScroll = useSyncedScroll(mesh, "notes-sidebar", sidebarRef);
+  const onEditorScroll = useSyncedScroll(
+    mesh,
+    selectedId ? `notes-editor:${selectedId}` : "notes-editor:none",
+    textareaRef,
+  );
 
   // Default selection: the most-recently-updated note.
   const sorted = useMemo(() => [...notes].sort((a, b) => b.updatedTs - a.updatedTs), [notes]);
@@ -160,6 +171,8 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
           + New
         </button>
         <ul
+          ref={sidebarRef}
+          onScroll={onSidebarScroll}
           style={{
             flex: 1,
             margin: 0,
@@ -256,6 +269,7 @@ export const NotesWindow = ({ mesh }: NotesWindowProps) => {
               ref={textareaRef}
               value={draft}
               onChange={e => onDraftChange(e.target.value)}
+              onScroll={onEditorScroll}
               placeholder="start typing… (first line becomes the title)"
               style={{
                 flex: 1,
