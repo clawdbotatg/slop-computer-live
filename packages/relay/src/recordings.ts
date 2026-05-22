@@ -255,10 +255,6 @@ export async function finalizeRecording(opts: {
    *  recordings.ts decoupled from per-room subsystem APIs. */
   chatArchive: { content: string; messageCount: number } | null;
   transcriptArchive: { content: string; segmentCount: number } | null;
-  /** Called once the manifest is safely pinned, before resolve. Lets the
-   *  caller wipe the per-room transcript JSONL so the next episode starts
-   *  fresh. Chat is intentionally NOT cleared. */
-  clearTranscript: () => void;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -370,18 +366,14 @@ export async function finalizeRecording(opts: {
         if (aiMeta) manifestJson.meta = aiMeta;
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
 
-        // Manifest pin succeeded → the transcript archive is safely captured
-        // on IPFS. Wipe the on-box JSONL so the next episode starts fresh
-        // instead of accumulating segments across shows. Chat is left alone
-        // — its per-episode-vs-community-wide semantics are a separate call.
-        if (transcriptPin) {
-          try {
-            opts.clearTranscript();
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.error("[finalize] transcript clear failed", err);
-          }
-        }
+        // We KEEP the transcript JSONL on disk after pinning. Previously this
+        // was auto-cleared "so the next episode starts fresh" — but rooms are
+        // already per-slug (different episode = different room = different
+        // JSONL file), so cross-episode contamination was never a real risk,
+        // and the auto-clear silently broke re-finalize: every subsequent run
+        // read an empty transcript file and shipped a manifest with no
+        // transcript + no AI meta. The host can still manually wipe pre-show
+        // test segments via DELETE /admin/transcript.
 
         const result: FinalizeResult = {
           cid,

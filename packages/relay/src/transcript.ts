@@ -169,10 +169,12 @@ export class Transcript {
     return [...this.buffer];
   }
 
-  // Wipe the on-disk JSONL + in-memory ring. Called automatically at the
-  // end of a successful finalize (the just-pinned manifest captured the
-  // archive; next episode starts fresh) and exposed as DELETE /admin/transcript
-  // so the host can wipe pre-show test segments.
+  // Wipe the on-disk JSONL + in-memory ring. Only triggered manually now —
+  // exposed as DELETE /admin/transcript so the host can wipe pre-show test
+  // segments. The transcript is intentionally NEVER auto-cleared after a
+  // successful finalize: re-finalize needs to read this file, and the
+  // auto-clear it used to do silently produced bare manifests on the
+  // second run.
   clear(): { clearedCount: number } {
     this.load();
     const clearedCount = this.buffer.length;

@@ -3617,7 +3617,6 @@ app.post("/admin/finalize", async (req, reply) => {
         ipfsApiUrl: config.ipfsApiUrl,
         chatArchive: room.chat.readArchive(),
         transcriptArchive: room.transcript.readArchive(),
-        clearTranscript: () => room.transcript.clear(),
         onEvent: writeEvent,
       });
     } catch (err) {
