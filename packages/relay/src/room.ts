@@ -362,10 +362,15 @@ export class Room {
     this.touch();
     // Spectators are god-mode streaming sessions, not actual participants —
     // they're filtered out of the visible guest list elsewhere and shouldn't
-    // appear in the manifest either. Anon peers (no address) are skipped by
-    // the Participants module itself; we don't need to gate on that here.
+    // appear in the manifest either. Anon peers are recorded by anonId so the
+    // custom name they set lights up on the post-show participant list.
     if (!peer.spectator && (peer.role === "host" || peer.role === "guest")) {
-      this.participants.record({ address: peer.address, handle: peer.handle, role: peer.role });
+      this.participants.record({
+        address: peer.address,
+        anonId: peer.anonId,
+        handle: peer.handle,
+        role: peer.role,
+      });
     }
   }
 

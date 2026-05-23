@@ -3912,13 +3912,26 @@ app.post("/admin/finalize", async (req, reply) => {
       } catch {
         /* no card saved yet — manifest just ships without it */
       }
+      // Resolve anon participants' chosen display names from `peerNames`
+      // before handing the roster to finalize. The recorded `handle` is the
+      // initial AnonXXXX assigned at session creation; what the user actually
+      // wants to see on the post-show page is whatever they set via
+      // /auth/handle (peerNames keyed by anonId). SIWE/passkey peers pass
+      // through unchanged — their display chain lives on the frontend.
+      const participants = room.participants.list().map(p => {
+        if (p.anonId) {
+          const chosen = peerNames.get(p.anonId);
+          return { ...p, handle: chosen ?? p.handle };
+        }
+        return p;
+      });
       await finalizeRecording({
         recordingsDir: config.recordingsDir,
         pathName: "live",
         ipfsApiUrl: config.ipfsApiUrl,
         chatArchive: room.chat.readArchive(),
         transcriptArchive: room.transcript.readArchive(),
-        participants: room.participants.list(),
+        participants,
         cardArchive,
         onEvent: writeEvent,
       });

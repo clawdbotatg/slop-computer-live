@@ -10,12 +10,14 @@ import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 // keystrokes feel live to the typer but don't spam the relay; logo
 // uploads broadcast once on each successful drop / file pick.
 //
-// On first open the input defaults to the room's public URL
-// (slop.computer/<slug>, not live.slop.computer/<slug>) so the QR is
-// immediately scannable — point a phone at the screen and you're
-// back on the same desktop. The seed only fires when the shared
-// state is still empty, so a re-open never overwrites someone else's
-// custom text.
+// On first open the input defaults to the *currently live* episode's
+// public URL (slop.computer/<live-slug>), fetched from /api/live-slug —
+// which reads the on-chain SlopComputer.liveEpisode() view. If nothing
+// is live we drop to a bare slop.computer; if the route fails we fall
+// back to stripping `live.` off the current host, so the QR is at least
+// still scannable to the current room. The seed only fires when the
+// shared state is still empty, so a re-open never overwrites someone
+// else's custom text.
 
 const LOGO_MAX_DIM = 256;
 const LOGO_JPEG_QUALITY = 0.9;
@@ -78,27 +80,67 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // yanked around mid-burst.
   const editingRef = useRef(false);
 
-  // The fallback URL used by both the first-open seed and the Reset
-  // button. Stripping `live.` lands a scanned QR on slop.computer/<slug>,
+  // Synchronous fallback: the current room's public URL. Stripping
+  // `live.` off the host lands a scanned QR on slop.computer/<slug>,
   // the shorter shareable form that redirects into the live desktop.
-  const computeRoomUrl = (): string | null => {
+  // Used only when /api/live-slug is unreachable.
+  const computeCurrentRoomUrl = (): string | null => {
     if (typeof window === "undefined") return null;
-    const { hostname, pathname, search, hash, protocol } = window.location;
-    const publicHost = hostname.replace(/^live\./, "");
+    const { host, pathname, search, hash, protocol } = window.location;
+    const publicHost = host.replace(/^live\./, "");
     return `${protocol}//${publicHost}${pathname}${search}${hash}`;
   };
 
-  // Seed the room URL the first time we encounter an empty shared
-  // text. Done in an effect (not initial state) because `window`
-  // isn't available during SSR. Multiple peers may race to seed —
-  // they all compute the same URL, so last-writer-wins is harmless.
+  // Async seed: ask the server which episode is live on slop.computer
+  // right now, then build slop.computer/<slug>. If nothing is live, fall
+  // back to the bare host. If the fetch fails entirely, fall back to
+  // the current room URL.
+  const computeLiveUrl = async (): Promise<string | null> => {
+    if (typeof window === "undefined") return null;
+    const { protocol, host } = window.location;
+    const publicHost = host.replace(/^live\./, "");
+    const base = `${protocol}//${publicHost}`;
+    try {
+      const res = await fetch("/api/live-slug", { cache: "no-store" });
+      if (res.ok) {
+        const data = (await res.json()) as { slug?: string | null };
+        return data.slug ? `${base}/${data.slug}` : base;
+      }
+    } catch {
+      // network/fetch failure — drop to the current-room fallback below
+    }
+    return computeCurrentRoomUrl();
+  };
+
+  // Mirror of `sharedText` for use inside async callbacks: lets the
+  // seed effect re-check, after its fetch resolves, whether a peer has
+  // already typed something — so we don't clobber their value.
+  const latestSharedTextRef = useRef(sharedText);
+  useEffect(() => {
+    latestSharedTextRef.current = sharedText;
+  }, [sharedText]);
+
+  // Seed the QR URL the first time we encounter an empty shared text.
+  // Done in an effect (not initial state) because `window` isn't
+  // available during SSR, and because the live-slug lookup is async.
+  // Multiple peers may race to seed — they all compute the same URL
+  // (it's a global on-chain value), so last-writer-wins is harmless.
   useEffect(() => {
     if (sharedText !== "") return;
-    const seed = computeRoomUrl();
-    if (!seed) return;
-    setText(seed);
-    lastBroadcastRef.current = seed;
-    void mesh.setQrPatch({ text: seed });
+    let cancelled = false;
+    void (async () => {
+      const seed = await computeLiveUrl();
+      if (cancelled || !seed) return;
+      // A peer may have typed something while we were fetching; bail
+      // rather than overwrite their custom text.
+      if (latestSharedTextRef.current !== "") return;
+      setText(seed);
+      lastBroadcastRef.current = seed;
+      void mesh.setQrPatch({ text: seed });
+    })();
+    return () => {
+      cancelled = true;
+    };
     // Run-once on the first empty-shared snapshot. We don't want to
     // re-seed if the host clears the text intentionally later.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,15 +196,18 @@ export const QrCodeWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     void mesh.setQrPatch({ clearLogo: true });
   };
 
-  // Reset the whole QR back to a fresh room-URL state — clears the
-  // logo and rewrites the text to the canonical public URL. Anyone
-  // in the room can hit this; everyone's QR snaps back together.
+  // Reset the whole QR back to a fresh canonical-URL state — clears
+  // the logo and rewrites the text to whatever is currently live on
+  // slop.computer (or the bare host). Anyone in the room can hit this;
+  // everyone's QR snaps back together.
   const resetAll = () => {
     setUploadError(null);
-    const seed = computeRoomUrl() ?? "";
-    setText(seed);
-    lastBroadcastRef.current = seed;
-    void mesh.setQrPatch({ text: seed, clearLogo: true });
+    void (async () => {
+      const seed = (await computeLiveUrl()) ?? "";
+      setText(seed);
+      lastBroadcastRef.current = seed;
+      void mesh.setQrPatch({ text: seed, clearLogo: true });
+    })();
   };
 
   // stopPropagation on every drag event that handles a Files payload —

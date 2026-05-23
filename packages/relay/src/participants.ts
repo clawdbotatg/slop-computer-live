@@ -1,32 +1,41 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-// Long-running, dedup-by-address record of everyone who joined this room's
-// desktop mesh during the episode (i.e. everyone `Room.addPeer` was called
-// for). Persists to JSONL alongside chat/transcript and is snapshotted into
+// Long-running, dedup record of everyone who joined this room's desktop mesh
+// during the episode (i.e. everyone `Room.addPeer` was called for). Persists
+// to JSONL alongside chat/transcript and is snapshotted into
 // `manifest.participants` at finalize.
 //
 // "Participants" not "guests" because the host shows up here too — the role
 // field distinguishes. Spectators (SIWE'd chat-only viewers) don't reach
-// addPeer, so they're not included; anon desktop peers (no address) are also
-// skipped — the manifest only carries identified participants.
+// addPeer, so they're not included. Anon peers (no address) ARE included,
+// keyed by their stable session `anonId`; the manifest renders them by the
+// custom name they chose via /auth/handle (falling back to their initial
+// AnonXXXX handle).
 //
-// First-seen wins: if the same wallet joins, leaves, and rejoins (or comes
-// back as a different role), only the first observation lands in the list.
+// First-seen wins: if the same wallet/anonId joins, leaves, and rejoins (or
+// comes back as a different role), only the first observation lands in the
+// list.
 
 export type ParticipantEntry = {
-  /** Lowercased 0x... — the dedup key. Never null in the persisted list. */
-  address: string;
+  /** Lowercased 0x... for SIWE/passkey peers; null for anon peers. */
+  address: string | null;
+  /** Stable per-session anon id for anon peers; null for SIWE/passkey peers.
+   *  Exactly one of {address, anonId} is non-null. */
+  anonId: string | null;
   handle: string | null;
   role: "host" | "guest";
-  /** ms epoch when this address was first recorded. */
+  /** ms epoch when this peer was first recorded. */
   firstSeenAt: number;
 };
 
 type Subscriber = (entry: ParticipantEntry) => void;
 
 export class Participants {
-  private byAddress = new Map<string, ParticipantEntry>();
+  // Keyed by lowercased address for SIWE/passkey peers, or by anonId for anon
+  // peers. The two keyspaces don't collide (addresses start with `0x`, anonIds
+  // start with `anon-`), so a single map is safe.
+  private byKey = new Map<string, ParticipantEntry>();
   private loaded = false;
   private subscribers = new Set<Subscriber>();
 
@@ -41,9 +50,18 @@ export class Participants {
         const s = line.trim();
         if (!s) continue;
         try {
-          const entry = JSON.parse(s) as ParticipantEntry;
-          if (entry.address && !this.byAddress.has(entry.address)) {
-            this.byAddress.set(entry.address, entry);
+          const parsed = JSON.parse(s) as Partial<ParticipantEntry>;
+          // Backfill anonId on legacy JSONL lines that pre-date the field.
+          const entry: ParticipantEntry = {
+            address: parsed.address ?? null,
+            anonId: parsed.anonId ?? null,
+            handle: parsed.handle ?? null,
+            role: parsed.role === "host" ? "host" : "guest",
+            firstSeenAt: typeof parsed.firstSeenAt === "number" ? parsed.firstSeenAt : Date.now(),
+          };
+          const key = entry.address ?? entry.anonId;
+          if (key && !this.byKey.has(key)) {
+            this.byKey.set(key, entry);
           }
         } catch {
           /* skip corrupt line */
@@ -64,20 +82,29 @@ export class Participants {
     }
   }
 
-  /** Record a peer's first join. No-op for anon peers (no address) and for
-   *  already-recorded addresses. Returns the newly-recorded entry or null. */
-  record(peer: { address: string | null; handle: string | null; role: "host" | "guest" }): ParticipantEntry | null {
+  /** Record a peer's first join. Skips peers with neither an address nor an
+   *  anonId (shouldn't happen in practice) and dedupes by whichever key the
+   *  peer carries. Returns the newly-recorded entry or null. */
+  record(peer: {
+    address: string | null;
+    anonId: string | null;
+    handle: string | null;
+    role: "host" | "guest";
+  }): ParticipantEntry | null {
     this.load();
-    const address = peer.address?.toLowerCase();
-    if (!address) return null;
-    if (this.byAddress.has(address)) return null;
+    const address = peer.address?.toLowerCase() ?? null;
+    const anonId = peer.anonId ?? null;
+    const key = address ?? anonId;
+    if (!key) return null;
+    if (this.byKey.has(key)) return null;
     const entry: ParticipantEntry = {
       address,
+      anonId,
       handle: peer.handle,
       role: peer.role,
       firstSeenAt: Date.now(),
     };
-    this.byAddress.set(address, entry);
+    this.byKey.set(key, entry);
     this.persist(entry);
     for (const sub of this.subscribers) {
       try {
@@ -92,7 +119,7 @@ export class Participants {
   /** All recorded participants in insertion order. */
   list(): ParticipantEntry[] {
     this.load();
-    return [...this.byAddress.values()];
+    return [...this.byKey.values()];
   }
 
   subscribe(sub: Subscriber): () => void {
@@ -104,8 +131,8 @@ export class Participants {
    *  auto-cleared on finalize (re-finalize must produce the same list). */
   clear(): { clearedCount: number } {
     this.load();
-    const clearedCount = this.byAddress.size;
-    this.byAddress.clear();
+    const clearedCount = this.byKey.size;
+    this.byKey.clear();
     try {
       mkdirSync(dirname(this.filePath), { recursive: true });
       writeFileSync(this.filePath, "", "utf8");

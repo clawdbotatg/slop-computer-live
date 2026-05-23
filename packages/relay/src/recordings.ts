@@ -258,9 +258,18 @@ export async function finalizeRecording(opts: {
   transcriptArchive: { content: string; segmentCount: number } | null;
   /** Long-running participant roster captured every time a peer joined the
    *  room. Inlined into the manifest under `participants` — no separate IPFS
-   *  pin (the list is tiny relative to chat/transcript/video). Pass `null`
-   *  to omit. */
-  participants: { address: string; handle: string | null; role: "host" | "guest" }[] | null;
+   *  pin (the list is tiny relative to chat/transcript/video). SIWE/passkey
+   *  peers carry `address`; anon peers carry `anonId` plus the display name
+   *  they chose (already resolved by the caller against `peerNames`). Pass
+   *  `null` to omit. */
+  participants:
+    | {
+        address: string | null;
+        anonId: string | null;
+        handle: string | null;
+        role: "host" | "guest";
+      }[]
+    | null;
   /** The host-baked unfurl card PNG (the one CardWindow's disk-save button
    *  produced). Pinned to IPFS during finalize and referenced under
    *  `manifest.card.cid` so the per-episode preview image is content-addressed,
@@ -384,7 +393,12 @@ export async function finalizeRecording(opts: {
           chat?: { cid: string; messageCount: number };
           transcript?: { cid: string; segmentCount: number };
           card?: { cid: string; format: string; sizeBytes: number };
-          participants?: { address: string; role: "host" | "guest"; handle: string | null }[];
+          participants?: {
+            address: string | null;
+            anonId: string | null;
+            role: "host" | "guest";
+            handle: string | null;
+          }[];
           meta?: EpisodeMeta;
         } = {
           version: 1,
@@ -399,9 +413,12 @@ export async function finalizeRecording(opts: {
         if (cardPin) manifestJson.card = cardPin;
         if (opts.participants && opts.participants.length > 0) {
           // Strip extras the frontend doesn't read (firstSeenAt etc.) so the
-          // manifest stays minimal. Frontend schema: { address, role?, ens? }.
+          // manifest stays minimal. Anon entries carry `anonId` instead of an
+          // address; their `handle` is already resolved to the chosen display
+          // name by the caller.
           manifestJson.participants = opts.participants.map(p => ({
             address: p.address,
+            anonId: p.anonId,
             role: p.role,
             handle: p.handle,
           }));
