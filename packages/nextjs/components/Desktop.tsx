@@ -13,6 +13,7 @@ import { AudioVisualizer, audioMutedKey } from "~~/components/desktop/AudioVisua
 import { CardWindow } from "~~/components/desktop/CardWindow";
 import { ChatWindow } from "~~/components/desktop/ChatWindow";
 import { ChessWindow } from "~~/components/desktop/ChessWindow";
+import { ChyronBar } from "~~/components/desktop/ChyronBar";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
 import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
@@ -21,7 +22,6 @@ import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
 import { HeadlinesBar } from "~~/components/desktop/HeadlinesBar";
 import { IncomingTxModal } from "~~/components/desktop/IncomingTxModal";
-import { MarqueeHeadline } from "~~/components/desktop/MarqueeHeadline";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NewsWindow } from "~~/components/desktop/NewsWindow";
@@ -2338,17 +2338,19 @@ function DesktopInner({ slug }: { slug: string }) {
             visible on the sign-in screen. */}
         {session.authenticated ? <SlopBackdrop /> : null}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
-        {/* Live STT caption — chyron-style subtitle of the most recent
-            transcript segment. Sits above MarqueeHeadline when a
-            headline is set, otherwise above the TimelineBar. Driven
+        {/* Live STT caption — broadcast-style subtitle of the most
+            recent transcript segment. Sits above the ChyronBar when
+            a chyron is set, otherwise above the TimelineBar. Driven
             entirely by the god-mode tab's STT pipeline; auto-fades
             after a few seconds of silence. */}
         <SubtitleCaption mesh={mesh} />
-        {/* Static "headline" banner — host-written one-liner that sits
-            on top of the timeline bar. Collapses to zero height when
-            empty so the rest of the bar stack stays put. Host-only
-            edit; everyone else just reads it. */}
-        <MarqueeHeadline mesh={mesh} />
+        {/* Chyron — broadcast-TV term for the static lower-third
+            banner. Host-written one-liner that sits on top of the
+            timeline bar; collapses to zero height when empty so the
+            rest of the bar stack stays put. Host-only edit; everyone
+            else just reads it. Distinct from HeadlinesBar (scrolling
+            crypto/AI news marquee). */}
+        <ChyronBar mesh={mesh} />
         {/* Timeline bar — top of the three-bar stack. Host's Twitter
             home feed (ranked by engagement on the relay). Scrolls
             fastest so the visual hierarchy reads "fastest at top,

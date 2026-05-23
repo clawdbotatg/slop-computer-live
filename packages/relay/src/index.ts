@@ -738,7 +738,7 @@ app.get("/v1/state", async (req, reply) => {
     scrollSync: roomFromReq(req).scrollSync.all(),
     uiState: roomFromReq(req).uiState.all(),
     walletChat: roomFromReq(req).walletChat.current().state,
-    headlineState: roomFromReq(req).headline.getState(),
+    chyronState: roomFromReq(req).chyron.getState(),
   };
 });
 
@@ -965,17 +965,18 @@ app.post("/v1/headlines/refresh", async (req, reply) => {
   return { ok: true, state: result.state };
 });
 
-// --- On-screen headline: host-only set/clear --------------------------------
-// One-line static banner pinned above the Twitter timeline bar. Host
-// edits inline (Desktop sends `{ text }`); empty / whitespace-only
-// clears it and the banner collapses to zero height on every peer.
-// Future: an AI agent could call the same endpoint with a transcript-
-// derived headline.
-app.post<{ Body: { text?: unknown } }>("/v1/headline", async (req, reply) => {
+// --- Chyron: host-only set/clear --------------------------------------------
+// Broadcast-TV term — the one-line static banner pinned above the
+// Twitter timeline bar. Distinct from HeadlinesBar's scrolling news
+// feed. Host edits inline (Desktop sends `{ text }`); empty /
+// whitespace-only clears it and the banner collapses to zero height
+// on every peer. Future: an AI agent could call the same endpoint
+// with a transcript-derived line.
+app.post<{ Body: { text?: unknown } }>("/v1/chyron", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!a.isHost) return reply.code(403).send({ error: "host-only" });
-  const state = roomFromReq(req).headline.setText(req.body?.text);
+  const state = roomFromReq(req).chyron.setText(req.body?.text);
   return { ok: true, state };
 });
 
@@ -4291,7 +4292,7 @@ app.register(async function signalRoutes(fastify) {
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
-      headlineState: room.headline.getState(),
+      chyronState: room.chyron.getState(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 

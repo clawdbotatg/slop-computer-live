@@ -18,7 +18,7 @@ import { config } from "./config.js";
 import { DesktopState } from "./desktop.js";
 import { EpisodeFlags } from "./episode.js";
 import { FileIndex } from "./files.js";
-import { Headline } from "./headline.js";
+import { Chyron } from "./chyron.js";
 import { JAMENDO_DIR, JamendoRoomState } from "./jamendo.js";
 import { MusicState } from "./music-state.js";
 import { NoteList } from "./notes.js";
@@ -95,7 +95,7 @@ function roomPaths(id: string): {
   walletChat: { path: string };
   auth: { path: string };
   meta: { path: string };
-  headline: { path: string };
+  chyron: { path: string };
 } {
   const dir = `./.slop-data/rooms/${id}`;
   const legacy = id === DEFAULT_SLUG;
@@ -177,10 +177,10 @@ function roomPaths(id: string): {
     meta: {
       path: `${dir}/meta.json`,
     },
-    headline: {
-      // No legacy path — the on-screen headline shipped post-room-refactor,
+    chyron: {
+      // No legacy path — the on-screen chyron shipped post-room-refactor,
       // there's nothing global to inherit. Cold start = empty string.
-      path: `${dir}/headline.json`,
+      path: `${dir}/chyron.json`,
     },
   };
 }
@@ -219,7 +219,7 @@ export class Room {
   readonly wallet: WalletState;
   readonly walletChat: WalletChatState;
   readonly auth: RoomAuth;
-  readonly headline: Headline;
+  readonly chyron: Chyron;
 
   constructor(id: string) {
     if (!isValidSlug(id)) {
@@ -261,7 +261,7 @@ export class Room {
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
     this.auth = new RoomAuth(paths.auth.path);
-    this.headline = new Headline(paths.headline.path);
+    this.chyron = new Chyron(paths.chyron.path);
 
     // Wire subsystem mutation events into this room's broadcast.
     // Windows has no subscriber — its callers broadcast inline because
@@ -276,7 +276,7 @@ export class Room {
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
     this.walletChat.subscribe(state => this.broadcast({ type: "wallet_chat", state }));
-    this.headline.subscribe(state => this.broadcast({ type: "headline", state }));
+    this.chyron.subscribe(state => this.broadcast({ type: "chyron", state }));
     // Live transcript fan-out to mesh peers. Previously the desktop's
     // TranscriptWindow polled /v1/transcript every 1.5s — fine for the
     // archive view but too slow to drive on-screen subtitle captions.

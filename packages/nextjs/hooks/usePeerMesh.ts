@@ -380,10 +380,11 @@ export type TimelineState = {
   updatedAt: number;
 };
 
-/** On-screen headline — a single short string the host writes by hand
- *  during a live show, broadcast to every peer. Empty `text` collapses
- *  the bar to zero height. Mirrors `packages/relay/src/headline.ts`. */
-export type HeadlineState = {
+/** On-screen chyron — broadcast-TV term for the one-line static banner
+ *  the host writes by hand during a live show. Distinct from the
+ *  scrolling crypto/AI HeadlinesBar. Empty `text` collapses the bar to
+ *  zero height. Mirrors `packages/relay/src/chyron.ts`. */
+export type ChyronState = {
   text: string;
   updatedAt: number;
 };
@@ -823,11 +824,11 @@ export type PeerMeshState = {
   headlinesState: HeadlinesState | null;
   /** Latest Twitter timeline snapshot. `null` until first poll. */
   timelineState: TimelineState | null;
-  /** Host-written on-screen headline. Empty `text` = no banner shown.
+  /** Host-written on-screen chyron. Empty `text` = no banner shown.
    *  `null` until the first ws snapshot arrives. */
-  headlineState: HeadlineState | null;
-  /** Host-only: write the on-screen headline. Empty / whitespace clears it. */
-  setHeadline: (text: string) => void;
+  chyronState: ChyronState | null;
+  /** Host-only: write the on-screen chyron. Empty / whitespace clears it. */
+  setChyron: (text: string) => void;
   /** Most recent STT segment, pushed by the room's WS broadcast when
    *  Whisper appends a new line. `null` until the first segment arrives
    *  in this session. Used by the on-screen subtitle caption. We don't
@@ -1055,7 +1056,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [tickerState, setTickerState] = useState<TickerState | null>(null);
   const [headlinesState, setHeadlinesState] = useState<HeadlinesState | null>(null);
   const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
-  const [headlineState, setHeadlineState] = useState<HeadlineState | null>(null);
+  const [chyronState, setChyronState] = useState<ChyronState | null>(null);
   const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -1602,20 +1603,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [slug],
   );
 
-  // Host-only: write the on-screen headline. Empty / whitespace clears
+  // Host-only: write the on-screen chyron. Empty / whitespace clears
   // it (the banner collapses to zero height on every peer). No optimistic
-  // local update — the relay echoes `headline` on the WS so every peer
+  // local update — the relay echoes `chyron` on the WS so every peer
   // including the host flips at once. Server returns 403 for non-hosts;
   // the UI only exposes the edit affordance to the host so the POST
   // should be the only failure surface in practice.
-  const setHeadline = useCallback(
+  const setChyron = useCallback(
     (text: string) => {
-      fetch(withSlug(`${RELAY_HTTP_URL}/v1/headline`, slug), {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/chyron`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
-      }).catch(err => console.warn("setHeadline failed", err));
+      }).catch(err => console.warn("setChyron failed", err));
     },
     [slug],
   );
@@ -2055,8 +2056,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.timelineState && typeof msg.timelineState === "object") {
             setTimelineState(msg.timelineState as TimelineState);
           }
-          if (msg.headlineState && typeof msg.headlineState === "object") {
-            setHeadlineState(msg.headlineState as HeadlineState);
+          if (msg.chyronState && typeof msg.chyronState === "object") {
+            setChyronState(msg.chyronState as ChyronState);
           }
           if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
             setNewsDigestState(msg.newsDigestState as NewsDigestState);
@@ -2472,8 +2473,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
-        if (msg.type === "headline" && msg.state && typeof msg.state === "object") {
-          setHeadlineState(msg.state as HeadlineState);
+        if (msg.type === "chyron" && msg.state && typeof msg.state === "object") {
+          setChyronState(msg.state as ChyronState);
           return;
         }
 
@@ -2743,8 +2744,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     tickerState,
     headlinesState,
     timelineState,
-    headlineState,
-    setHeadline,
+    chyronState,
+    setChyron,
     latestTranscriptSeg,
     newsDigestState,
     files,

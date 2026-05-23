@@ -9,9 +9,9 @@ import type { PeerMeshState, TranscriptSegment } from "~~/hooks/usePeerMesh";
 // segment hits the room WS as `transcript_seg`, lands in
 // `mesh.latestTranscriptSeg`, and shows up here within ~50ms.
 //
-// Position is dynamic: sits directly above the headline bar when one
+// Position is dynamic: sits directly above the chyron bar when one
 // is set, otherwise directly above the Twitter timeline bar. That
-// keeps the subtitle from overlapping the headline when both are on
+// keeps the subtitle from overlapping the chyron when both are on
 // screen.
 //
 // Dwell: each segment shows immediately on arrival, holds for
@@ -27,8 +27,8 @@ import type { PeerMeshState, TranscriptSegment } from "~~/hooks/usePeerMesh";
 // stack.
 const TIMELINE_BOTTOM = 52; // TimelineBar bottom (above headlines + ticker)
 const TIMELINE_HEIGHT = 24;
-const HEADLINE_BAR_BOTTOM = 76; // MarqueeHeadline bottom
-const HEADLINE_BAR_HEIGHT = 44;
+const CHYRON_BAR_BOTTOM = 76; // ChyronBar bottom
+const CHYRON_BAR_HEIGHT = 44;
 
 // Visual budget: caption stays opaque for HOLD_MS after a new segment,
 // then fades over FADE_MS. 4s of hold matches a comfortable broadcast
@@ -43,7 +43,7 @@ export type SubtitleCaptionProps = {
 
 export const SubtitleCaption = ({ mesh }: SubtitleCaptionProps) => {
   const seg = mesh.latestTranscriptSeg;
-  const headlineVisible = !!mesh.headlineState?.text;
+  const chyronVisible = !!mesh.chyronState?.text;
 
   // Local "now" tick — drives the fade purely from segment age. A 200ms
   // interval is cheap and gives a smooth opacity ramp without hooking
@@ -66,9 +66,7 @@ export const SubtitleCaption = ({ mesh }: SubtitleCaptionProps) => {
 
   // Stack the caption on whichever bar is currently the top of the
   // bottom-of-screen surface. 8px breathing room.
-  const bottom = headlineVisible
-    ? HEADLINE_BAR_BOTTOM + HEADLINE_BAR_HEIGHT + 8
-    : TIMELINE_BOTTOM + TIMELINE_HEIGHT + 8;
+  const bottom = chyronVisible ? CHYRON_BAR_BOTTOM + CHYRON_BAR_HEIGHT + 8 : TIMELINE_BOTTOM + TIMELINE_HEIGHT + 8;
 
   return (
     <div

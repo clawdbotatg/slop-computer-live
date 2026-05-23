@@ -3,20 +3,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 
-// Static on-screen "headline" — single line of text the host writes
-// during a live show (or that an AI agent could write from the
-// transcript). Pinned above the Twitter timeline bar; collapses to
-// zero height on every peer when empty so it doesn't take up space
-// until a headline is actually set.
+// On-screen "chyron" — broadcast-TV term for the lower-third static
+// banner pinned above the Twitter timeline bar. A single line of text
+// the host writes during a live show (or that an AI agent could
+// derive from the transcript). Distinct from HeadlinesBar, which is
+// the scrolling crypto/AI news marquee. Collapses to zero height on
+// every peer when empty so it doesn't take up space until set.
 //
 // Edit UX (host only):
-//   - empty + host: a small "+ HEADLINE" pill in the bottom-left
+//   - empty + host: a small "+ CHYRON" pill in the bottom-left
 //     corner is the only visible affordance. Click to open the
 //     editor inline.
 //   - filled + host: click the banner text to edit it.
 //   - filled + non-host (and empty + non-host): read-only / nothing.
 //
-// State is relay-broadcast via mesh.headlineState — no optimistic
+// State is relay-broadcast via mesh.chyronState — no optimistic
 // update; the WS echo is the source of truth.
 
 const BAR_HEIGHT = 44;
@@ -27,12 +28,12 @@ const FONT_SIZE = 26;
 // directly on top.
 const STACK_BOTTOM = 76;
 
-export type MarqueeHeadlineProps = {
+export type ChyronBarProps = {
   mesh: PeerMeshState;
 };
 
-export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
-  const text = mesh.headlineState?.text ?? "";
+export const ChyronBar = ({ mesh }: ChyronBarProps) => {
+  const text = mesh.chyronState?.text ?? "";
   const isHost = useMemo(
     () => (mesh.peers as Peer[]).some(p => p.id === mesh.myId && p.role === "host"),
     [mesh.peers, mesh.myId],
@@ -62,7 +63,7 @@ export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
   };
 
   const commit = () => {
-    mesh.setHeadline(draft);
+    mesh.setChyron(draft);
     setEditing(false);
   };
 
@@ -71,16 +72,16 @@ export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
     setDraft("");
   };
 
-  // Empty + host: just the small "+ HEADLINE" affordance, no full bar.
-  // Visual footprint stays near-zero so an unused headline doesn't eat
+  // Empty + host: just the small "+ CHYRON" affordance, no full bar.
+  // Visual footprint stays near-zero so an unused chyron doesn't eat
   // broadcast pixels.
   if (!text && !editing) {
     return (
       <button
         type="button"
         onClick={openEditor}
-        aria-label="Add headline"
-        title="Add headline"
+        aria-label="Add chyron"
+        title="Add chyron"
         style={{
           position: "fixed",
           left: 8,
@@ -101,7 +102,7 @@ export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
           pointerEvents: "auto",
         }}
       >
-        + headline
+        + chyron
       </button>
     );
   }
@@ -145,7 +146,7 @@ export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
               cancel();
             }
           }}
-          placeholder="headline…"
+          placeholder="chyron…"
           style={{
             width: "min(90vw, 1400px)",
             background: "transparent",
@@ -195,4 +196,4 @@ export const MarqueeHeadline = ({ mesh }: MarqueeHeadlineProps) => {
   );
 };
 
-export default MarqueeHeadline;
+export default ChyronBar;
