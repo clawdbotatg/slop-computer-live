@@ -1474,12 +1474,15 @@ const AVATAR_EXTS = ["jpg", "jpeg", "png", "webp"] as const;
 
 type AvatarOwnerKey = string;
 
+// Must agree with the ownerKey the rest of the codebase computes for the
+// same session (hello payload line ~703, publish handler ~4555, files
+// ~3221, chess ~2091) — otherwise a handle user's uploaded avatar lands
+// on disk under one key and the client looks it up under another.
+// SIWE: address.toLowerCase(); handle: handle.toLowerCase(). No prefix,
+// no slug — `myOwnerKey` on the client doesn't apply one either.
 function ownerKeyFromSession(s: { address: string | null; handle: string | null }): AvatarOwnerKey | null {
   if (s.address) return s.address.toLowerCase();
-  if (s.handle) {
-    const slug = s.handle.toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 32);
-    return slug ? `h_${slug}` : null;
-  }
+  if (s.handle) return s.handle.toLowerCase() || null;
   return null;
 }
 
@@ -1487,7 +1490,50 @@ function avatarPublicUrl(filename: string, version: number): string {
   return `${AVATAR_PUBLIC_BASE}/${filename}?v=${version}`;
 }
 
-import { statSync as _statSync, readdirSync as _readdirSyncRaw, unlinkSync as _unlinkSync } from "node:fs";
+import {
+  statSync as _statSync,
+  readdirSync as _readdirSyncRaw,
+  unlinkSync as _unlinkSync,
+  renameSync as _renameSync,
+  existsSync as _existsSync,
+  mkdirSync as _mkdirSync,
+} from "node:fs";
+
+// One-shot migration: until 2026-05-23 the avatar code prefixed handle
+// keys with `h_` while the rest of the codebase used the raw lowercased
+// handle. Rename any pre-fix `h_<x>.<ext>` (and `.hidden`) on startup so
+// existing uploads survive. Idempotent: skips when the target already
+// exists. See the comment on `ownerKeyFromSession` for the cause.
+function migrateAvatarKeys(): void {
+  let files: string[];
+  try {
+    files = _readdirSyncRaw(AVATARS_DIR);
+  } catch {
+    return;
+  }
+  for (const f of files) {
+    if (!f.startsWith("h_")) continue;
+    const dst = f.slice(2);
+    if (!dst) continue;
+    const dstPath = `${AVATARS_DIR}/${dst}`;
+    if (_existsSync(dstPath)) {
+      try { _unlinkSync(`${AVATARS_DIR}/${f}`); } catch { /* ignore */ }
+      continue;
+    }
+    try {
+      _renameSync(`${AVATARS_DIR}/${f}`, dstPath);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+try {
+  _mkdirSync(AVATARS_DIR, { recursive: true });
+} catch {
+  /* ignore */
+}
+migrateAvatarKeys();
 
 function listAvatarsSync(): Record<AvatarOwnerKey, string> {
   const out: Record<string, string> = {};
