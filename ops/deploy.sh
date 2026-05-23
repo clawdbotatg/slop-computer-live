@@ -138,6 +138,26 @@ echo "→ Syncing source + installing prod deps (live still serving)…"
 # --ff-only refuses to rewrite history; --immutable verifies lockfile.
 ssh "$PROD_HOST" "cd $PROD_PATH && git fetch origin --quiet && git pull --ff-only origin main && yarn install --immutable"
 
+# Sync Caddyfile if the repo copy has drifted from /etc/caddy/. The repo
+# copy is the source of truth; without this step a new Caddyfile path
+# (eg a new static route) lands on disk but Caddy keeps serving the
+# previous config, which silently 404s the route. Validate before
+# reloading so we don't push a broken config that crashes Caddy.
+echo "→ Checking Caddyfile…"
+caddy_changed=$(ssh "$PROD_HOST" "diff -q /etc/caddy/Caddyfile $PROD_PATH/deploy/Caddyfile >/dev/null 2>&1 && echo same || echo differs")
+if [ "$caddy_changed" = "differs" ]; then
+  echo "  Caddyfile changed — installing + reloading"
+  ssh "$PROD_HOST" "
+    set -e
+    sudo cp $PROD_PATH/deploy/Caddyfile /etc/caddy/Caddyfile
+    sudo caddy validate --config /etc/caddy/Caddyfile
+    sudo systemctl reload caddy
+  "
+  echo "  ✓ Caddy reloaded"
+else
+  echo "  ✓ Caddyfile unchanged"
+fi
+
 # --- Atomic swap + restart (downtime window) ---------------------------------
 # This is the ONLY phase where slop-live is down. mv operations on the same
 # filesystem are atomic. Cleanup of .next.old runs in the background so it
