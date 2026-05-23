@@ -913,13 +913,22 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, [meshOpenWindowForArrange, meshUpdateSlotForArrange, meshSetClockStateForArrange]);
 
+  // Refs into the close/minimize callbacks defined far below this point
+  // in the file. We need the menu items here to invoke them, but the
+  // actual callbacks depend on closeWindow (the publication closer)
+  // which isn't defined yet at this line — directly referencing them
+  // would TDZ. The ref pattern decouples reference from definition: the
+  // menu items call .current() on click, and a downstream useEffect
+  // points .current at the live callback.
+  const closeTopWindowRef = useRef<() => void>(() => {});
+  const minimizeTopWindowRef = useRef<() => void>(() => {});
+
   const viewMenu = useMemo<Menu>(
     () => ({
       label: "View",
       items: [
-        { label: "✓ Show Cursors", disabled: true },
-        { label: "✓ Show Bands", disabled: true },
-        { label: "  Show Grid", disabled: true },
+        { label: "Minimize Window", shortcut: "⇧⌘M", onClick: () => minimizeTopWindowRef.current() },
+        { label: "Close Window", shortcut: "⇧⌘W", onClick: () => closeTopWindowRef.current() },
         { divider: true, label: "" },
         { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
         { label: "Arrange for Screen Share", onClick: arrangeForScreenShare },
@@ -978,6 +987,32 @@ function DesktopInner({ slug }: { slug: string }) {
     window.addEventListener("resize", clamp);
     return () => window.removeEventListener("resize", clamp);
   }, [meshUpdateSlot, meshBootstrapped]);
+
+  // Spectator (god-mode / OBS capture) broadcasts its own window inner
+  // size to the room so every other client can render a dashed rectangle
+  // showing exactly where the live frame ends. Debounced so dragging a
+  // window edge doesn't spam ~60 WS messages a second. Non-spectators
+  // skip entirely; the relay would drop their message anyway.
+  const meshSetGodViewport = mesh.setGodViewport;
+  const meshConnectedForGodViewport = mesh.connected;
+  useEffect(() => {
+    if (!isGodMode) return;
+    if (!meshConnectedForGodViewport) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const send = () => {
+      meshSetGodViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    const scheduled = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(send, 80);
+    };
+    send();
+    window.addEventListener("resize", scheduled);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("resize", scheduled);
+    };
+  }, [isGodMode, meshConnectedForGodViewport, meshSetGodViewport]);
 
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
@@ -1546,25 +1581,80 @@ function DesktopInner({ slug }: { slug: string }) {
     meshUpdateSlotForVis,
   ]);
 
-  // Global window keyboard shortcuts. Operate on the TOP window — the
-  // visible window with the highest z. Three bindings:
-  //
-  //   Ctrl/Cmd+Shift+W → close   (Mac/Linux "close tab" muscle memory)
-  //   Ctrl/Cmd+Shift+Q → close   (alias — Mac "quit app" muscle memory)
-  //   Ctrl/Cmd+Shift+M → minimize (collapse to docked titlebar pill)
-  //
-  // "Visible window" = whatever's currently rendered: a publication
-  // (camera/audio/screen), a SharedAppWindow, or a SharedBrowser. We
-  // mirror the visibility set the z-bump effect above derives so the
-  // top here matches what the user sees layered on top.
-  //
-  // Minimize from the keyboard sets the slot height to TITLEBAR_HEIGHT
-  // (36). Each peer's local <Window> already treats height<=36 as
-  // "docked", so the multiplayer state flows through the slot system
-  // — no separate "minimized" flag needed. The local savedRect path
-  // inside Window doesn't get to capture the pre-minimize geometry
-  // (we're outside the component), so restoring takes the same
-  // fallback path that runs after a reload — known + acceptable.
+  // Find the slot id of the currently-topmost visible window — what
+  // a "close top window" / "minimize top window" action should target.
+  // Iterating mesh.publications + openWindowIds + browsers covers every
+  // window type that has a titlebar; icons, files, and bars are fixed
+  // chrome and not part of the close/minimize surface. Returns null
+  // when nothing is open.
+  const topVisibleSlotId = useCallback((): string | null => {
+    const visibleSlotIds: string[] = [];
+    for (const pub of mesh.publications) visibleSlotIds.push(slotIdFor(pub));
+    for (const id of mesh.openWindowIds) visibleSlotIds.push(`app-${id}`);
+    for (const browser of Object.values(mesh.browsers)) visibleSlotIds.push(`browser-${browser.id}`);
+    if (visibleSlotIds.length === 0) return null;
+
+    let topId: string | null = null;
+    let topZ = -Infinity;
+    for (const sid of visibleSlotIds) {
+      const z = mesh.slots[sid]?.z ?? 0;
+      if (z > topZ) {
+        topZ = z;
+        topId = sid;
+      }
+    }
+    return topId;
+  }, [mesh.publications, mesh.openWindowIds, mesh.browsers, mesh.slots]);
+
+  // Close whatever window is currently on top, routing by slot-id
+  // prefix to the matching close action. Driven by both the keyboard
+  // shortcut and the View → Close Window menu item.
+  const closeTopWindow = useCallback(() => {
+    const topId = topVisibleSlotId();
+    if (!topId) return;
+    if (topId.startsWith("app-")) {
+      mesh.closeWindow(topId.slice("app-".length));
+      return;
+    }
+    if (topId.startsWith("browser-")) {
+      mesh.closeBrowser(topId.slice("browser-".length));
+      return;
+    }
+    if (topId.startsWith("owner-")) {
+      const pub = mesh.publications.find(p => slotIdFor(p) === topId);
+      if (pub) closeWindow(pub);
+    }
+  }, [topVisibleSlotId, mesh.closeWindow, mesh.closeBrowser, mesh.publications, closeWindow]);
+
+  // Collapse the top window to the docked titlebar pill by setting its
+  // slot to width 200, height 36. Each peer's local <Window> already
+  // treats height<=36 as "docked" and recomputes y against its own
+  // viewport (see dockedY in Window.tsx), so the dock state flows
+  // through the existing slot broadcast — no separate "minimized"
+  // flag. The local savedRect path inside Window.tsx doesn't get to
+  // capture pre-minimize geometry (we're outside the component), so
+  // restoring takes the same fallback path that runs after a reload
+  // — known + acceptable.
+  const minimizeTopWindow = useCallback(() => {
+    const topId = topVisibleSlotId();
+    if (!topId) return;
+    const slot = mesh.slots[topId];
+    if (!slot) return;
+    mesh.updateSlot({ id: topId, x: slot.x, y: slot.y, width: 200, height: 36 });
+  }, [topVisibleSlotId, mesh.slots, mesh.updateSlot]);
+
+  // Publish the live callbacks into the refs the View menu reads. The
+  // refs are declared near the top of the component (alongside the
+  // viewMenu definition); see the comment there for why we route
+  // through refs instead of referencing the callbacks directly.
+  useEffect(() => {
+    closeTopWindowRef.current = closeTopWindow;
+    minimizeTopWindowRef.current = minimizeTopWindow;
+  }, [closeTopWindow, minimizeTopWindow]);
+
+  // Global window keyboard shortcuts. Both Ctrl-* and Cmd-* variants
+  // (W and Q alias as close; M minimizes). Skipped while focus is in
+  // an input so the user can still type Shift-letters in a textarea.
   useEffect(() => {
     const isEditable = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -1580,67 +1670,14 @@ function DesktopInner({ slug }: { slug: string }) {
       const isMinimize = key === "m";
       if (!isClose && !isMinimize) return;
       if (isEditable(e.target)) return;
-
-      // Same visibility derivation as the z-bump effect above. Iterating
-      // mesh.publications + openWindowIds + browsers covers every
-      // window type that has a titlebar; everything else (icons, files,
-      // bars) is fixed chrome and not part of the close/minimize
-      // surface.
-      const visibleSlotIds: string[] = [];
-      for (const pub of mesh.publications) visibleSlotIds.push(slotIdFor(pub));
-      for (const id of mesh.openWindowIds) visibleSlotIds.push(`app-${id}`);
-      for (const browser of Object.values(mesh.browsers)) visibleSlotIds.push(`browser-${browser.id}`);
-      if (visibleSlotIds.length === 0) return;
-
-      let topId: string | null = null;
-      let topZ = -Infinity;
-      for (const sid of visibleSlotIds) {
-        const z = mesh.slots[sid]?.z ?? 0;
-        if (z > topZ) {
-          topZ = z;
-          topId = sid;
-        }
-      }
-      if (!topId) return;
       e.preventDefault();
-
-      if (isMinimize) {
-        const slot = mesh.slots[topId];
-        if (!slot) return;
-        // Match the in-Window dock pill: width 200, height 36, keep x.
-        // y gets recomputed locally by each peer's <Window> against
-        // their own viewport — see dockedY in Window.tsx.
-        mesh.updateSlot({ id: topId, x: slot.x, y: slot.y, width: 200, height: 36 });
-        return;
-      }
-
-      // Close. Route by slot-id prefix to the matching close action.
-      if (topId.startsWith("app-")) {
-        mesh.closeWindow(topId.slice("app-".length));
-        return;
-      }
-      if (topId.startsWith("browser-")) {
-        mesh.closeBrowser(topId.slice("browser-".length));
-        return;
-      }
-      if (topId.startsWith("owner-")) {
-        const pub = mesh.publications.find(p => slotIdFor(p) === topId);
-        if (pub) closeWindow(pub);
-      }
+      if (isMinimize) minimizeTopWindow();
+      else closeTopWindow();
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [
-    mesh.publications,
-    mesh.openWindowIds,
-    mesh.browsers,
-    mesh.slots,
-    mesh.closeWindow,
-    mesh.closeBrowser,
-    mesh.updateSlot,
-    closeWindow,
-  ]);
+  }, [closeTopWindow, minimizeTopWindow]);
 
   // File previews — opened on double-click of a desktop file. SHARED
   // across the mesh exactly like every other singleton window: the
@@ -1817,20 +1854,22 @@ function DesktopInner({ slug }: { slug: string }) {
           cursor: "none",
         }}
       >
-        {/* Livestream frame guide — OBS capture is 1920×1080 from
-            the top-left of the window. Faint dashed rectangle so the
-            operator can drag their window's bottom-right corner until
-            it sits flush with the line. Behind everything, never
-            clickable. */}
+        {/* Livestream frame guide — dashed rectangle showing the inner
+            size of the god-mode (OBS capture) window, broadcast by that
+            spectator on resize so every peer sees the same bounds. Falls
+            back to the 1920×1080 OBS target when no spectator is online.
+            Anchored to top-left because that's where the capture origin
+            sits. Behind everything, never clickable. */}
         <div
           aria-hidden
           style={{
             position: "fixed",
             top: 0,
             left: 0,
-            width: 1920,
-            height: 1080,
-            border: "1px dashed rgba(255, 255, 255, 0.18)",
+            width: mesh.godViewport?.width ?? 1920,
+            height: mesh.godViewport?.height ?? 1080,
+            border: "2px dashed var(--slop-magenta, #ff3ec9)",
+            boxShadow: "0 0 0 1px rgba(0, 0, 0, 0.35) inset",
             boxSizing: "border-box",
             pointerEvents: "none",
             zIndex: 0,

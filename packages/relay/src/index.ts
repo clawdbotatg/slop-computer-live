@@ -4306,6 +4306,7 @@ app.register(async function signalRoutes(fastify) {
       uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
       chyronState: room.chyron.getState(),
+      godViewport: room.getGodViewport(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -4323,7 +4324,13 @@ app.register(async function signalRoutes(fastify) {
       // a hand-crafted WS frame can't smuggle presence into the room.
       if (isSpectator) {
         const t = msg?.type;
-        const allowed = t === "hello" || t === "ping" || t === "offer" || t === "answer" || t === "ice";
+        const allowed =
+          t === "hello" ||
+          t === "ping" ||
+          t === "offer" ||
+          t === "answer" ||
+          t === "ice" ||
+          t === "god_viewport";
         if (!allowed) return;
       }
       switch (msg?.type) {
@@ -4350,6 +4357,23 @@ app.register(async function signalRoutes(fastify) {
         case "cursor": {
           if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
           room.broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
+          return;
+        }
+        case "god_viewport": {
+          // Only the god-mode/spectator session announces a viewport —
+          // it's the OBS-capture window everyone aligns to. Regular
+          // peers can't muddle the shared dashed rectangle.
+          if (!isSpectator) return;
+          if (msg.viewport === null) {
+            room.setGodViewport(null);
+            return;
+          }
+          if (!msg.viewport || typeof msg.viewport !== "object") return;
+          const w = Number((msg.viewport as { width?: unknown }).width);
+          const h = Number((msg.viewport as { height?: unknown }).height);
+          if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+          if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
+          room.setGodViewport({ width: Math.round(w), height: Math.round(h) });
           return;
         }
         case "click": {

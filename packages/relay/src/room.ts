@@ -196,6 +196,13 @@ export class Room {
 
   private peers = new Map<string, Peer>();
 
+  /** Ephemeral: the inner size of the active god-mode streaming session's
+   *  browser window. Spectators broadcast `god_viewport` on resize and we
+   *  fan it out so every client can draw a dashed rectangle showing where
+   *  the live-capture frame ends. Last-write-wins if multiple spectators
+   *  are connected; cleared when the last spectator leaves. */
+  private godViewport: { width: number; height: number } | null = null;
+
   readonly todos: TodoList;
   readonly notes: NoteList;
   readonly windows: WindowSet;
@@ -326,7 +333,33 @@ export class Room {
   }
 
   removePeer(id: string): void {
+    const wasSpectator = this.peers.get(id)?.spectator === true;
     this.peers.delete(id);
+    // No spectators left → drop the god-mode viewport hint and tell
+    // everyone, so the dashed rectangle disappears for surviving peers.
+    if (wasSpectator && this.godViewport !== null) {
+      const stillHasSpectator = [...this.peers.values()].some(p => p.spectator);
+      if (!stillHasSpectator) {
+        this.godViewport = null;
+        this.broadcast({ type: "god_viewport", viewport: null });
+      }
+    }
+  }
+
+  getGodViewport(): { width: number; height: number } | null {
+    return this.godViewport;
+  }
+
+  setGodViewport(v: { width: number; height: number } | null): void {
+    const prev = this.godViewport;
+    if (
+      (prev === null && v === null) ||
+      (prev !== null && v !== null && prev.width === v.width && prev.height === v.height)
+    ) {
+      return;
+    }
+    this.godViewport = v;
+    this.broadcast({ type: "god_viewport", viewport: v });
   }
 
   getPeer(id: string): Peer | undefined {

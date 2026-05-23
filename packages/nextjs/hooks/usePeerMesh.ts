@@ -829,6 +829,16 @@ export type PeerMeshState = {
   chyronState: ChyronState | null;
   /** Host-only: write the on-screen chyron. Empty / whitespace clears it. */
   setChyron: (text: string) => void;
+  /** Inner viewport size of the active god-mode (OBS capture) window,
+   *  broadcast by that spectator on resize. Every client draws a dashed
+   *  rectangle at these dimensions so participants can see the framing
+   *  the broadcast actually captures. `null` when no spectator is
+   *  connected; consumers fall back to the 1920×1080 OBS target. */
+  godViewport: { width: number; height: number } | null;
+  /** Spectator-only: broadcast this client's `window.innerWidth/Height`
+   *  (or `null` to clear). No-op for non-spectators — the relay drops
+   *  the message either way. */
+  setGodViewport: (v: { width: number; height: number } | null) => void;
   /** Most recent STT segment, pushed by the room's WS broadcast when
    *  Whisper appends a new line. `null` until the first segment arrives
    *  in this session. Used by the on-screen subtitle caption. We don't
@@ -1057,6 +1067,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [headlinesState, setHeadlinesState] = useState<HeadlinesState | null>(null);
   const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
   const [chyronState, setChyronState] = useState<ChyronState | null>(null);
+  const [godViewport, setGodViewportState] = useState<{ width: number; height: number } | null>(null);
   const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -1621,6 +1632,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [slug],
   );
 
+  // Spectator (god-mode) broadcast of inner window size. Relay drops
+  // it for non-spectators, so this is safe to call from anywhere — the
+  // Desktop only hooks it up inside the spectator-gated effect. Use the
+  // local state optimistically so the spectator's own dashed line tracks
+  // their resize without a round-trip.
+  const setGodViewport = useCallback(
+    (v: { width: number; height: number } | null) => {
+      setGodViewportState(v);
+      send({ type: "god_viewport", viewport: v });
+    },
+    [send],
+  );
+
   // Clear the shared title card — anyone in the room may reset, which
   // hides the generated PNG and brings the template back. Relay
   // broadcasts `card_state: null` so every peer flips at once.
@@ -2059,6 +2083,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.chyronState && typeof msg.chyronState === "object") {
             setChyronState(msg.chyronState as ChyronState);
           }
+          if (msg.godViewport === null || (msg.godViewport && typeof msg.godViewport === "object")) {
+            const gv = msg.godViewport as { width?: unknown; height?: unknown } | null;
+            if (gv === null) {
+              setGodViewportState(null);
+            } else if (typeof gv.width === "number" && typeof gv.height === "number") {
+              setGodViewportState({ width: gv.width, height: gv.height });
+            }
+          }
           if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
             setNewsDigestState(msg.newsDigestState as NewsDigestState);
           }
@@ -2478,6 +2510,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "god_viewport") {
+          const gv = msg.viewport as { width?: unknown; height?: unknown } | null | undefined;
+          if (gv === null) {
+            setGodViewportState(null);
+            return;
+          }
+          if (gv && typeof gv.width === "number" && typeof gv.height === "number") {
+            setGodViewportState({ width: gv.width, height: gv.height });
+          }
+          return;
+        }
+
         if (msg.type === "transcript_seg" && msg.seg && typeof msg.seg === "object") {
           // Only the latest segment — the subtitle UI cross-fades on
           // each update and doesn't need history. The full transcript
@@ -2746,6 +2790,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     timelineState,
     chyronState,
     setChyron,
+    godViewport,
+    setGodViewport,
     latestTranscriptSeg,
     newsDigestState,
     files,
