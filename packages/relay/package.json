@@ -13,6 +13,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.1",
     "@fastify/cors": "^11.0.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.0.0",
     "@noble/curves": "^1.9.0",
     "@noble/hashes": "^1.5.0",

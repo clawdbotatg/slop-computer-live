@@ -117,9 +117,17 @@ export function skillIndex(token: string, isHost: boolean, slug: string | null =
 3. Use the sub-skill's long-poll or SSE wait (chess, music, chat) to
    block server-side until something changes — **never \`sleep()\` in
    your own loop**. The wait IS your sleep.
-4. Mutate via the documented POST/DELETE endpoints. Every mutation
-   broadcasts to every peer in the same room in real time; nothing
-   is local-to-you.
+4. Mutate via the documented POST/DELETE endpoints. **Persistent
+   state** (chat, todos, music selection, windows-open, chess moves)
+   broadcasts to every peer in the room and renders for late joiners.
+   **Ephemeral output** (music *playback*, cursor positions, click
+   ripples) only exists inside a live peer browser — with
+   \`state.peers.length === 0\` your POSTs to
+   \`/v1/music/state\`, \`/v1/cursor\`, \`/v1/click\` all return
+   \`ok:true\` and produce **nothing audible / visible**. The relay
+   has no speakers and no screen; neither do you. Before claiming a
+   real-time effect succeeded, check \`peers.length > 0\` and (for
+   windowed surfaces) the relevant \`openWindowIds\`.
 
 All endpoints are served from \`${BASE}\` (Caddy proxies \`/v1/*\`,
 \`/music/*\`, \`/files/*\`, \`/avatars/*\`, \`/signal\`, \`/auth/*\`,
@@ -228,6 +236,13 @@ Cursor positions persist on every peer's screen and are labelled
 with your identity. Click ripples render in your blockie's palette.
 Use these to "be present" — point at things, react. Cursor cap:
 < 30 msgs/sec.
+
+> ⚠ **Ephemeral, same trap as music playback.** Cursor and click
+> only render inside browsers currently in the room. With
+> \`state.peers.length === 0\` these POSTs return \`ok:true\` but
+> nobody sees a thing — you are waving at an empty room. Always
+> check \`peers.length\` before claiming you're "pointing at"
+> something for the user.
 
 ### Chat
 
@@ -449,6 +464,29 @@ export function skillMusic(token: string, isHost: boolean, slug: string | null =
 ## Music sub-skill (slopamp)
 
 ${slugNote(slug)}
+
+> ⚠ **Setting music state ≠ producing sound.** The relay just stores
+> a snapshot; only **a peer browser with the slopamp window mounted**
+> actually plays audio. The agent has no speakers and neither does
+> the relay. Before any \`/v1/music/state\` POST, verify all three —
+> none of which \`/v1/music/state\` checks for you:
+>
+> 1. \`"music" ∈ state.openWindowIds\`. If not, open it first:
+>    \`POST ${BASE}/v1/windows?slug=${slugStr(slug)} { "id": "music" }\`.
+>    No window mounted = no \`<audio>\` element = no sound, ever.
+> 2. \`state.peers.length > 0\`. With zero peers there is literally
+>    no browser in the room to play the file. \`/v1/music/state\`
+>    will still return \`ok:true\` — it's silently writing to a
+>    snapshot no one is reading.
+> 3. The peer has clicked once in the slopamp tab (Chrome's
+>    autoplay gate). Not checkable server-side; if state shows
+>    \`playing: true\` and it's still silent for a connected user,
+>    ask them to click in the tab and re-fire with a fresh \`at\`.
+>
+> Always report back what you **wrote** ("set the room to track X,
+> 1 peer connected, window open"), never what you can't verify
+> ("now playing"). The user knows the difference and will be
+> furious if you lie.
 
 Playback is one shared snapshot **per room** — track src + index,
 playing/paused, position-at-timestamp, and master volume. Anyone in

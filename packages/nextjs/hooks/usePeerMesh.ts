@@ -584,6 +584,17 @@ export type ScrollSnapshot = {
   at: number;
 };
 
+// --- UI-state shared selections -------------------------------------------
+// Per-key discrete UI state: which tab is active, which item is selected,
+// which chain is picked, etc. Sibling to ScrollSync but for sparse
+// last-writer-wins values (no detach grace — when a peer flips a tab
+// every peer should flip immediately, that's the whole point). Value is
+// arbitrary JSON; the consumer hook re-types via generics.
+export type UIStateSnapshot = {
+  value: unknown;
+  at: number;
+};
+
 // --- AI wallet chat ---------------------------------------------------------
 // Per-room conversational wallet. The whole room shares one conversation;
 // any peer can send a message, the relay runs the agentic intent engine,
@@ -871,6 +882,14 @@ export type PeerMeshState = {
    *  site (scroll fires a lot); the hook `useSyncedScroll` handles
    *  this automatically. */
   setScrollSync: (key: string, state: ScrollSnapshot) => void;
+  /** Per-key discrete shared selections (active tab, selected item id,
+   *  picked chain, …). Sibling to scrollSync but for sparse
+   *  last-writer-wins values. Use the `useSyncedUIState(key, fallback)`
+   *  hook to read+write; this map is the raw backing store. */
+  uiState: Record<string, unknown>;
+  /** Broadcast a discrete UI state value. `value` must be
+   *  JSON-serializable; the relay caps it at 4KB serialized. */
+  setUIState: (key: string, value: unknown) => void;
   /** Shared AI-wallet conversation — messages + in-flight flag.
    *  Replaces the old per-iframe wallet chat. */
   walletChat: WalletChat;
@@ -1017,6 +1036,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
   const [scrollSync, setScrollSyncLocal] = useState<Record<string, ScrollSnapshot>>({});
+  const [uiState, setUIStateLocal] = useState<Record<string, unknown>>({});
   const [walletChat, setWalletChatLocal] = useState<WalletChat>(DEFAULT_WALLET_CHAT);
   const [openWindowIds, setOpenWindowIds] = useState<Set<string>>(new Set());
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
@@ -1647,6 +1667,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  // Per-key discrete UI selection broadcast. Optimistic local update so
+  // the clicker sees no lag; the WS echo overwrites with the
+  // server-canonical value, harmless when it matches.
+  const setUIState = useCallback(
+    (key: string, value: unknown) => {
+      setUIStateLocal(prev => ({ ...prev, [key]: value }));
+      send({ type: "ui_state", key, value, at: Date.now() });
+    },
+    [send],
+  );
+
   // Wallet AI chat. POST to the relay, which appends the turn, runs the
   // intent engine, and broadcasts `wallet_chat` back to every peer —
   // no optimistic local update; the WS echo is authoritative.
@@ -2042,6 +2073,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             }
             setScrollSyncLocal(map);
           }
+          if (Array.isArray(msg.uiState)) {
+            const map: Record<string, unknown> = {};
+            for (const entry of msg.uiState as Array<{ key: unknown; state: unknown }>) {
+              if (
+                typeof entry.key === "string" &&
+                entry.state &&
+                typeof entry.state === "object" &&
+                "value" in entry.state
+              ) {
+                map[entry.key] = (entry.state as UIStateSnapshot).value;
+              }
+            }
+            setUIStateLocal(map);
+          }
           // Flip last so consumers can `if (bootstrapped) render` without
           // worrying about whether slots/browsers have been applied yet.
           setBootstrapped(true);
@@ -2242,6 +2287,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const fileId = msg.fileId as string;
           const state = msg.state as PreviewMediaSnapshot;
           setPreviewMediaLocal(prev => ({ ...prev, [fileId]: state }));
+          return;
+        }
+
+        if (
+          msg.type === "ui_state" &&
+          typeof msg.key === "string" &&
+          msg.state &&
+          typeof msg.state === "object" &&
+          "value" in msg.state
+        ) {
+          const key = msg.key as string;
+          const value = (msg.state as UIStateSnapshot).value;
+          setUIStateLocal(prev => ({ ...prev, [key]: value }));
           return;
         }
 
@@ -2644,6 +2702,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setPreviewMedia,
     scrollSync,
     setScrollSync,
+    uiState,
+    setUIState,
     walletChat,
     walletChatSend,
     walletChatReset,

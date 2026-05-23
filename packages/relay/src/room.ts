@@ -24,6 +24,7 @@ import { NoteList } from "./notes.js";
 import { Participants } from "./participants.js";
 import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
+import { UIState } from "./ui-state.js";
 import { QrState } from "./qr-state.js";
 import { ResearchState } from "./research-state.js";
 import { RoomAuth } from "./room-auth.js";
@@ -205,6 +206,7 @@ export class Room {
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
   readonly scrollSync = new ScrollSync();
+  readonly uiState = new UIState();
   readonly chess: ChessState;
   readonly aiMover: AIMover;
   readonly wallet: WalletState;
@@ -271,6 +273,9 @@ export class Room {
     );
     this.scrollSync.subscribe(event =>
       this.broadcast({ type: "scroll_sync", key: event.key, state: event.state }),
+    );
+    this.uiState.subscribe(event =>
+      this.broadcast({ type: "ui_state", key: event.key, state: event.state }),
     );
     this.files.subscribe(event => {
       if (event.type === "added") this.broadcast({ type: "file_added", item: event.item });

@@ -60,6 +60,54 @@ function parseSlug(raw: string | undefined): string {
   return SLUG_RE.test(raw) ? raw : DEFAULT_SLUG;
 }
 
+// Reject any URL that would let an attacker turn this headless browser
+// into a local-disk reader or internal-network scanner. Allowed: plain
+// http(s) to public hosts, plus the literal "about:blank" empty tab.
+// Everything else — file://, data:, javascript:, chrome://, gopher:,
+// etc. — and every loopback/link-local/RFC1918/CGNAT/multicast IP
+// literal gets denied.
+//
+// Hostname matching is literal-only: an attacker can still DNS-rebind
+// `evil.com` to 127.0.0.1 mid-session and bypass this. The prod box
+// should also iptables-block outbound traffic to RFC1918 from the
+// browser-host process. Treat this function as defense in depth, not
+// the sole gate.
+export function isSafeBrowsableUrl(raw: string): boolean {
+  if (!raw) return false;
+  if (raw === "about:blank") return true;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return false;
+  if (host === "localhost" || host === "ip6-localhost" || host === "ip6-loopback") return false;
+  if (host.endsWith(".localhost") || host.endsWith(".internal") || host.endsWith(".local") || host.endsWith(".lan")) return false;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 0 || a === 10 || a === 127) return false;
+    if (a === 169 && b === 254) return false; // link-local incl. 169.254.169.254 cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT 100.64/10
+    if (a >= 224) return false; // multicast + reserved
+    return true;
+  }
+  if (host.includes(":")) {
+    if (host === "::1" || host === "::") return false;
+    if (/^fe[89ab]/.test(host)) return false;          // fe80::/10 link-local
+    if (/^f[cd][0-9a-f]{2}:/.test(host)) return false; // fc00::/7 unique-local
+    if (host.startsWith("::ffff:")) return false;      // IPv4-mapped — refuse wholesale
+    return true;
+  }
+  return true;
+}
+
 const MAX_TABS_PER_ROOM = 5;
 const MAX_TABS_TOTAL = 30;
 
@@ -388,6 +436,10 @@ async function createTab(
       app.log.info({ slug, id, popupUrl: url }, "popup intercepted — redirecting main tab");
       await popup.close().catch(() => undefined);
       if (url && url !== "about:blank") {
+        if (!isSafeBrowsableUrl(url)) {
+          app.log.warn({ slug, id, popupUrl: url }, "popup blocked — unsafe url");
+          return;
+        }
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(err => {
           app.log.warn({ slug, id, err: err.message, url }, "popup goto failed");
         });
@@ -431,6 +483,16 @@ async function createTab(
           });
         }
       })();
+      return;
+    }
+    // Backstop for everything goto can't catch — subresource fetches,
+    // HTTP→HTTP redirects to private IPs, in-page beacons, iframes.
+    // Same allowlist as the goto sites. The __slop_rpc proxy above is
+    // already handled (req.respond + return); anything else gets the
+    // safety check before req.continue.
+    if (!isSafeBrowsableUrl(reqUrl)) {
+      app.log.warn({ slug, id, reqUrl }, "blocked unsafe subresource");
+      void req.abort("blockedbyclient").catch(() => undefined);
       return;
     }
     void req.continue();
@@ -561,6 +623,7 @@ async function createTab(
   rb.tabs.set(id, tab);
 
   try {
+    if (!isSafeBrowsableUrl(url)) throw new Error(`unsafe url: ${url.slice(0, 80)}`);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
   } catch (err) {
     app.log.warn({ err, url }, "initial navigation failed");
@@ -888,7 +951,25 @@ app.register(async function (fastify) {
     async (socket, req) => {
       const id = req.params.id;
       const slug = parseSlug(req.query.slug);
+      // Origin gate. /stream/:id has no cookie or bearer credential —
+      // Caddy strips them — so wide-open would let any browser tab or
+      // CLI client point this Puppeteer at internal targets. Browsers
+      // send a real Origin on WS upgrade and get rejected here; non-
+      // browser clients (curl, wscat) can forge it, so the URL allow-
+      // list below is the real backstop. Wildcard ("*") in corsOrigins
+      // disables the check, matching the HTTP CORS plugin's behavior.
+      const origin = (req.headers.origin as string | undefined) ?? "";
+      if (!config.corsOrigins.includes("*") && !config.corsOrigins.includes(origin)) {
+        send(socket, { type: "error", error: "bad-origin", origin });
+        socket.close(4403, "bad-origin");
+        return;
+      }
       const initialUrl = req.query.url ?? "about:blank";
+      if (!isSafeBrowsableUrl(initialUrl)) {
+        send(socket, { type: "error", error: "unsafe-url", url: initialUrl });
+        socket.close(4400, "unsafe-url");
+        return;
+      }
       // First subscriber for a brand-new tab picks the impersonator from
       // their query. Subsequent subscribers join the existing tab and
       // inherit whatever it's currently impersonating — they can
@@ -950,6 +1031,11 @@ app.register(async function (fastify) {
         switch (msg.type) {
           case "navigate": {
             if (typeof msg.url !== "string") return;
+            if (!isSafeBrowsableUrl(msg.url)) {
+              app.log.warn({ slug, id, url: msg.url }, "navigate blocked — unsafe url");
+              send(socket, { type: "error", error: "unsafe-url", url: msg.url });
+              return;
+            }
             void tab.page.goto(msg.url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(err => {
               app.log.warn({ err, url: msg.url }, "navigate failed");
             });

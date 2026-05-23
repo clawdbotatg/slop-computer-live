@@ -1,5 +1,6 @@
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { createHmac, randomBytes } from "node:crypto";
@@ -315,6 +316,13 @@ const PRIMARY_HOST_ADDR = config.adminAddresses[0] ?? null;
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? "info" },
   bodyLimit: 16 * 1024,
+  // Caddy fronts us in prod and sets X-Forwarded-For. Without trustProxy
+  // every request looks like it's coming from Caddy itself (one IP),
+  // which would let any attacker share the same rate-limit bucket as
+  // every honest user. trustProxy=true tells Fastify to read the left-
+  // most XFF entry as the client IP, which is what @fastify/rate-limit
+  // keys on by default.
+  trustProxy: true,
 });
 
 // Image uploads on /v1/avatars come in as raw image/* bytes — register a
@@ -341,7 +349,23 @@ await app.register(cors, {
   credentials: true,
 });
 await app.register(cookie, { secret: config.sessionSecret });
+// global: false so only the password endpoints opt in via per-route
+// config.rateLimit. Every other surface (chat, transcript, etc.) is
+// either keyed on the session token by its own subsystem limiter or
+// genuinely public and uncapped on purpose.
+await app.register(rateLimit, {
+  global: false,
+  keyGenerator: req => req.ip,
+});
 await app.register(websocket);
+
+// Strict per-IP throttle for password-guessing endpoints. 10 attempts
+// per minute is generous for honest mis-types and crushes brute force
+// on the room/guest/godmode/invite passwords. @fastify/rate-limit
+// responds with 429 + Retry-After before our handler ever runs.
+const PASSWORD_RATE_LIMIT = {
+  config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+};
 
 app.get("/health", async () => ({
   ok: true,
@@ -711,6 +735,7 @@ app.get("/v1/state", async (req, reply) => {
     qrState: roomFromReq(req).qr.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
     scrollSync: roomFromReq(req).scrollSync.all(),
+    uiState: roomFromReq(req).uiState.all(),
     walletChat: roomFromReq(req).walletChat.current().state,
   };
 });
@@ -3055,7 +3080,7 @@ const INVITE_COOKIE_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
 
 type InviteBody = { password?: unknown };
 
-app.post<{ Body: InviteBody }>("/auth/invite", async (req, reply) => {
+app.post<{ Body: InviteBody }>("/auth/invite", PASSWORD_RATE_LIMIT, async (req, reply) => {
   const body = (req.body ?? {}) as InviteBody;
   const password = typeof body.password === "string" ? body.password : "";
   if (!password) return reply.code(400).send({ error: "missing-password" });
@@ -3133,7 +3158,7 @@ type RoomAuthBody = { password?: unknown };
 // Public: verify a room's password and get back a slug-scoped cookie.
 // Rejects with 404 if the room hasn't been claimed yet (no password set)
 // — without this rooms would silently accept any password as wrong.
-app.post<{ Params: { slug: string }; Body: RoomAuthBody }>("/v1/rooms/:slug/auth", async (req, reply) => {
+app.post<{ Params: { slug: string }; Body: RoomAuthBody }>("/v1/rooms/:slug/auth", PASSWORD_RATE_LIMIT, async (req, reply) => {
   if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   if (!password) return reply.code(400).send({ error: "missing-password" });
@@ -3346,7 +3371,7 @@ app.post<{ Body: HandleBody }>("/auth/handle", async (req, reply) => {
 
 type PasswordBody = { password?: unknown; handle?: unknown };
 
-app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
+app.post<{ Body: PasswordBody }>("/auth/password", PASSWORD_RATE_LIMIT, async (req, reply) => {
   const body = (req.body ?? {}) as PasswordBody;
   const password = typeof body.password === "string" ? body.password : "";
   const handle = typeof body.handle === "string" ? body.handle.trim().slice(0, 32) : "";
@@ -3377,7 +3402,7 @@ app.post<{ Body: PasswordBody }>("/auth/password", async (req, reply) => {
 
 type GodModeBody = { password?: unknown };
 
-app.post<{ Body: GodModeBody }>("/auth/godmode", async (req, reply) => {
+app.post<{ Body: GodModeBody }>("/auth/godmode", PASSWORD_RATE_LIMIT, async (req, reply) => {
   if (!config.godPassword) {
     return reply.code(503).send({ error: "godmode-not-configured" });
   }
@@ -4010,6 +4035,7 @@ app.register(async function signalRoutes(fastify) {
       qrState: room.qr.current().state,
       previewMedia: room.previewMedia.all(),
       scrollSync: room.scrollSync.all(),
+      uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
@@ -4332,6 +4358,24 @@ app.register(async function signalRoutes(fastify) {
             frac: Math.max(0, Math.min(1, msg.frac)),
             at: msg.at,
           });
+          return;
+        }
+        case "ui_state": {
+          // Broadcast a discrete UI selection — active tab, selected
+          // item id, picked chain, etc. Last-writer-wins (no detach
+          // grace; selections aren't continuous gestures). `key`
+          // namespaces the map; `value` is arbitrary JSON capped at
+          // 4KB serialized server-side.
+          if (typeof msg.key !== "string" || typeof msg.at !== "number" || !("value" in msg)) {
+            return send(socket, { type: "error", error: "bad_ui_state" });
+          }
+          if (msg.key.length === 0 || msg.key.length > 128) {
+            return send(socket, { type: "error", error: "bad_ui_state_key" });
+          }
+          const stored = room.uiState.set(msg.key, { value: msg.value, at: msg.at });
+          if (stored === null) {
+            return send(socket, { type: "error", error: "bad_ui_state_value" });
+          }
           return;
         }
         case "music_state": {
