@@ -25,6 +25,7 @@ import {
   getRoom,
   hibernateRoom,
   isValidSlug,
+  liveCaptionKey,
   listRooms,
   parseSlug,
   type Room,
@@ -4412,6 +4413,48 @@ app.register(async function signalRoutes(fastify) {
             text: msg.text,
             source: "live",
           });
+          return;
+        }
+        case "live_caption": {
+          // Speaker's in-browser STT (useLiveTranscript) firing an
+          // interim or final result. We fan it out as-is — viewers
+          // render whichever frame is freshest. No archive write:
+          // interims would pollute the JSONL, and god-mode is the
+          // canonical archive source for finals anyway.
+          const text = typeof msg.text === "string" ? msg.text.slice(0, TRANSCRIPT_MAX_TEXT) : "";
+          if (!text.trim()) return;
+          const isFinal = msg.isFinal === true;
+          const speakerKey = liveCaptionKey(info);
+          // Speaker should have already emitted live_caption_state on
+          // mount but mark them alive defensively — a caption landing
+          // is itself proof their pipeline is working.
+          if (speakerKey) room.setLiveCaptionAlive(speakerKey, true);
+          // Echo to the sender too — speaker sees their own words at
+          // the same path everyone else does. Roundtrip is local-ish
+          // and still feels instant.
+          room.broadcast({
+            type: "live_caption",
+            text,
+            isFinal,
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            speakerKey,
+            ts: Date.now(),
+          });
+          return;
+        }
+        case "live_caption_state": {
+          // Speaker tells us whether their in-browser STT is currently
+          // viable. `alive=true` suppresses the god-mode transcript_seg
+          // broadcast for this speaker (god-mode keeps archiving — the
+          // canonical transcript is unchanged). `alive=false` (Firefox,
+          // permission denied, recognizer crashed) lets god-mode fill
+          // the captions slot.
+          if (typeof msg.alive !== "boolean") return;
+          const speakerKey = liveCaptionKey(info);
+          if (!speakerKey) return;
+          room.setLiveCaptionAlive(speakerKey, msg.alive);
           return;
         }
         case "set_custom_name": {

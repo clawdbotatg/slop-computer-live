@@ -402,6 +402,22 @@ export type TranscriptSegment = {
   source: "live" | "spectator" | "agent";
 };
 
+/** In-browser STT result — interim or final — broadcast on the room WS
+ *  as `{type:"live_caption", text, isFinal, address, handle, anonId,
+ *  speakerKey, ts}`. Faster than `transcript_seg` (Web Speech finalizes
+ *  ~1s after speech end vs Whisper's ~3-5s) and the server suppresses
+ *  the `transcript_seg` lane for any speaker whose live captions are
+ *  flowing — so a viewer never sees both for the same utterance. */
+export type LiveCaption = {
+  text: string;
+  isFinal: boolean;
+  address: string | null;
+  handle: string | null;
+  anonId: string | null;
+  speakerKey: string | null;
+  ts: number;
+};
+
 /** News-digest item — unified shape for crypto headlines, AI headlines,
  *  and tweets, used by the News app. Mirrors
  *  `packages/relay/src/news-digest.ts`. */
@@ -843,8 +859,24 @@ export type PeerMeshState = {
    *  Whisper appends a new line. `null` until the first segment arrives
    *  in this session. Used by the on-screen subtitle caption. We don't
    *  retain the full transcript here — that's what /v1/transcript +
-   *  TranscriptWindow are for. */
+   *  TranscriptWindow are for.
+   *
+   *  Note: the server suppresses this broadcast for any speaker whose
+   *  in-browser STT is live, so the segment here is only ever for
+   *  speakers who don't have local captions running. */
   latestTranscriptSeg: TranscriptSegment | null;
+  /** Most recent in-browser STT frame from ANY speaker (interim or
+   *  final). Web Speech finalizes ~3-5s before Whisper does, so this
+   *  is the path that paints the live overlay for speakers who run it.
+   *  Carries the speaker's identity inline (no mesh.peers lookup). */
+  liveCaption: LiveCaption | null;
+  /** Push an in-browser STT result over the room WS. Throttling +
+   *  interim-vs-final decisions live in the caller (useLiveTranscript). */
+  sendLiveCaption: (text: string, isFinal: boolean) => void;
+  /** Tell the room whether this peer's in-browser STT is currently
+   *  alive. The server uses this to decide whether to fan out
+   *  god-mode `transcript_seg` events for this speaker. */
+  sendLiveCaptionState: (alive: boolean) => void;
   /** Curated news digest (interleaved crypto/AI/tweets + AI featured
    *  picks). `null` until the first rebuild lands. */
   newsDigestState: NewsDigestState | null;
@@ -1069,6 +1101,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [chyronState, setChyronState] = useState<ChyronState | null>(null);
   const [godViewport, setGodViewportState] = useState<{ width: number; height: number } | null>(null);
   const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
+  const [liveCaption, setLiveCaption] = useState<LiveCaption | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
@@ -1468,6 +1501,22 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       const trimmed = text.trim();
       if (!trimmed) return;
       send({ type: "chat_send", text: trimmed.slice(0, 500) });
+    },
+    [send],
+  );
+
+  const sendLiveCaption = useCallback(
+    (text: string, isFinal: boolean) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      send({ type: "live_caption", text: trimmed.slice(0, 1000), isFinal });
+    },
+    [send],
+  );
+
+  const sendLiveCaptionState = useCallback(
+    (alive: boolean) => {
+      send({ type: "live_caption_state", alive });
     },
     [send],
   );
@@ -2530,6 +2579,22 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "live_caption" && typeof msg.text === "string") {
+          // Interim or final result from a speaker's in-browser STT.
+          // Server-echoes back to the sender too, so the speaker sees
+          // their own captions over the same path everyone else does.
+          setLiveCaption({
+            text: msg.text,
+            isFinal: msg.isFinal === true,
+            address: typeof msg.address === "string" ? msg.address : null,
+            handle: typeof msg.handle === "string" ? msg.handle : null,
+            anonId: typeof msg.anonId === "string" ? msg.anonId : null,
+            speakerKey: typeof msg.speakerKey === "string" ? msg.speakerKey : null,
+            ts: typeof msg.ts === "number" ? msg.ts : Date.now(),
+          });
+          return;
+        }
+
         if (msg.type === "news_digest" && msg.state && typeof msg.state === "object") {
           setNewsDigestState(msg.state as NewsDigestState);
           return;
@@ -2793,6 +2858,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     godViewport,
     setGodViewport,
     latestTranscriptSeg,
+    liveCaption,
+    sendLiveCaption,
+    sendLiveCaptionState,
     newsDigestState,
     files,
     deleteFile,

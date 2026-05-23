@@ -55,6 +55,17 @@ export function isValidSlug(slug: string): boolean {
   return SLUG_REGEX.test(slug);
 }
 
+/** Stable id used to key per-speaker arbitration: lowercased address
+ *  for signed-in users, anonId for anon peers, null if neither is
+ *  available (in which case we can't track the speaker — they bypass
+ *  arbitration and always get the god-mode lane). */
+export function liveCaptionKey(peer: { address?: string | null; anonId?: string | null } | undefined): string | null {
+  if (!peer) return null;
+  if (peer.address) return peer.address.toLowerCase();
+  if (peer.anonId) return peer.anonId;
+  return null;
+}
+
 export function parseSlug(raw: string | null | undefined): string {
   if (!raw) return DEFAULT_SLUG;
   return isValidSlug(raw) ? raw : DEFAULT_SLUG;
@@ -203,6 +214,20 @@ export class Room {
    *  are connected; cleared when the last spectator leaves. */
   private godViewport: { width: number; height: number } | null = null;
 
+  /** Per-speaker live-caption arbitration. Speakers running browser STT
+   *  (useLiveTranscript) emit `live_caption_state {alive}` on connect
+   *  and on recognizer error/recovery. When alive=true we suppress the
+   *  god-mode `transcript_seg` broadcast for that speaker — their
+   *  in-browser captions are 3-5s faster than Whisper, so showing both
+   *  would double-display. The god-mode segment still gets archived as
+   *  the canonical transcript; only the live overlay is swapped.
+   *
+   *  Keyed by stable speaker id (address.toLowerCase() ?? anonId).
+   *  ABSENT entry = "dead/unknown, broadcast god-mode" — that's the
+   *  Firefox / no-Web-Speech default. Cleared on peer disconnect so
+   *  rejoin re-evaluates. */
+  private liveCaptionAlive = new Map<string, boolean>();
+
   readonly todos: TodoList;
   readonly notes: NoteList;
   readonly windows: WindowSet;
@@ -289,7 +314,19 @@ export class Room {
     // archive view but too slow to drive on-screen subtitle captions.
     // Pushing every new segment on the WS lets the SubtitleCaption
     // surface a line within ~50ms of Whisper returning.
-    this.transcript.subscribe(seg => this.broadcast({ type: "transcript_seg", seg }));
+    //
+    // BUT: skip the broadcast when the speaker is currently driving
+    // their own captions via browser STT (`live_caption` frames). The
+    // god-mode segment still lands in the archive (above the subscribe
+    // call) — we just don't paint it as a live caption when the faster
+    // in-browser version already did. `transcript_seg` consumers like
+    // TranscriptWindow re-read the archive via /v1/transcript, so no
+    // viewer feature breaks from the suppression.
+    this.transcript.subscribe(seg => {
+      const speakerKey = seg.address ?? seg.anonId ?? null;
+      if (speakerKey && this.liveCaptionAlive.get(speakerKey) === true) return;
+      this.broadcast({ type: "transcript_seg", seg });
+    });
     this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
@@ -333,7 +370,15 @@ export class Room {
   }
 
   removePeer(id: string): void {
-    const wasSpectator = this.peers.get(id)?.spectator === true;
+    const peer = this.peers.get(id);
+    const wasSpectator = peer?.spectator === true;
+    // Clear live-caption arbitration for this speaker so a rejoin
+    // re-evaluates from scratch — matches the "sticky until rejoin"
+    // rule we agreed on. If another peer in the room shares the same
+    // stable id (same address signed in on two devices), the second
+    // peer's next live_caption_state will repopulate the entry.
+    const speakerKey = liveCaptionKey(peer);
+    if (speakerKey) this.liveCaptionAlive.delete(speakerKey);
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
     // everyone, so the dashed rectangle disappears for surviving peers.
@@ -344,6 +389,11 @@ export class Room {
         this.broadcast({ type: "god_viewport", viewport: null });
       }
     }
+  }
+
+  setLiveCaptionAlive(speakerKey: string, alive: boolean): void {
+    if (alive) this.liveCaptionAlive.set(speakerKey, true);
+    else this.liveCaptionAlive.set(speakerKey, false);
   }
 
   getGodViewport(): { width: number; height: number } | null {
