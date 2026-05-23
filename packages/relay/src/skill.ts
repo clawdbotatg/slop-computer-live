@@ -557,6 +557,37 @@ file isn't re-uploaded — \`src\` references an already-on-disk Jamendo
 track from some other genre. Add returns the new full list of
 tracks.
 
+### Upload your own MP3 → Custom playlist
+
+\`\`\`
+POST ${BASE}/v1/music/upload?slug=${slugStr(slug)}&name=<filename.mp3>
+  content-type: audio/mpeg
+  body: <raw mp3 bytes>
+# → { ok: true, track: <JamendoTrack>, tracks: [<JamendoTrack>, ...] }
+\`\`\`
+
+Drop raw MP3 bytes into the room and it lands in the Custom
+playlist with \`jamendoId: "upload:<hash>"\` and \`source: "upload"\`.
+The relay sniffs the magic bytes (ID3 tag or MPEG frame sync) and
+rejects non-MP3 payloads with \`415 not-mp3\`. Per-room caps:
+
+| Cap | Default | Env var |
+| --- | --- | --- |
+| Tracks per room | 30 | \`UPLOAD_MAX_TRACKS_PER_ROOM\` |
+| Bytes per room | 200 MB | \`UPLOAD_MAX_BYTES_PER_ROOM\` |
+| Bytes per file | 25 MB | \`UPLOAD_MAX_BYTES\` |
+
+Quota errors come back as \`429 track-quota-exceeded\` /
+\`429 byte-quota-exceeded\`. \`DELETE /v1/music/custom/upload:<hash>\`
+also unlinks the file from disk, freeing room quota.
+
+Typical agent flow: fetch the song bytes (yt-dlp, a local file,
+whatever), POST them here, then \`POST /v1/music/state\` with
+\`src: track.src\` and \`index: tracks.length - 1\` to actually start
+playback. Remember the three preconditions for sound to come out
+(music window open, host live, a peer with audio routed in the
+room).
+
 ### Legacy playlist
 
 \`\`\`
