@@ -22,6 +22,64 @@ export type PinnedPeersProps = {
   myId: string | null;
   customNames: Record<string, string>;
   onSetCustomName: (name: string | null) => void;
+  /** Relay-RTT (ms) per peer, from `usePeerMesh().peerPings`. Drives
+   *  the small bar meter next to each name. Missing keys render as a
+   *  gray "no signal" stack. */
+  peerPings: Record<string, number>;
+};
+
+// 3-bar cell-signal style meter. Color + bar count step on relay RTT —
+// thresholds chosen so a typical good connection lights up all three
+// bars (most home/wired peers come back at <80ms) and a clearly bad
+// connection (>500ms or no sample yet) reads as zero.
+const PingMeter = ({ rtt }: { rtt: number | undefined }) => {
+  let bars = 0;
+  let color = "rgba(255,255,255,0.18)";
+  let title = "no ping yet";
+  if (typeof rtt === "number") {
+    title = `${rtt} ms relay RTT`;
+    if (rtt < 80) {
+      bars = 3;
+      color = "#7be88a";
+    } else if (rtt < 200) {
+      bars = 2;
+      color = "#f5d76e";
+    } else if (rtt < 500) {
+      bars = 1;
+      color = "#ff8a4d";
+    } else {
+      bars = 0;
+      color = "#ff5c7a";
+      title = `${rtt} ms — laggy`;
+    }
+  }
+  const heights = [5, 8, 11];
+  return (
+    <span
+      aria-label={title}
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "flex-end",
+        gap: 2,
+        height: 11,
+        flexShrink: 0,
+        cursor: "help",
+      }}
+    >
+      {heights.map((h, i) => (
+        <span
+          key={i}
+          style={{
+            width: 3,
+            height: h,
+            borderRadius: 1,
+            background: i < bars ? color : "rgba(255,255,255,0.12)",
+          }}
+        />
+      ))}
+    </span>
+  );
 };
 
 const MENUBAR_HEIGHT = 38;
@@ -64,7 +122,7 @@ const playChime = (up: boolean) => {
   osc.stop(now + 0.16);
 };
 
-export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: PinnedPeersProps) => {
+export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPings }: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -259,17 +317,19 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName }: Pinne
                     </>
                   )}
                 </span>
-                <span
-                  style={{
-                    color: "var(--slop-text-muted)",
-                    fontSize: 10,
-                    fontFamily: "var(--slop-font-display)",
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    flexShrink: 0,
-                  }}
-                >
-                  {p.role}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                  <PingMeter rtt={peerPings[p.id]} />
+                  <span
+                    style={{
+                      color: "var(--slop-text-muted)",
+                      fontSize: 10,
+                      fontFamily: "var(--slop-font-display)",
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {p.role}
+                  </span>
                 </span>
               </li>
             );

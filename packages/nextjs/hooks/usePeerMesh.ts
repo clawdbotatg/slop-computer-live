@@ -47,7 +47,9 @@ async function fetchIceConfig(): Promise<RTCConfiguration> {
   }
 }
 
-const PING_INTERVAL_MS = 25_000;
+// 10s gives the guest-list ping meter a usefully-live cadence without
+// flooding the relay (a 20-peer room is ~38 fanout msgs/s — trivial).
+const PING_INTERVAL_MS = 10_000;
 const CURSOR_THROTTLE_MS = 50; // 20Hz — was 30Hz; imperceptible at slop tile sizes
 const CURSOR_MIN_DELTA_PX = 4; // skip the broadcast for sub-jitter movement
 const RECONNECT_DELAY_MS = 2000;
@@ -1050,6 +1052,11 @@ export type PeerMeshState = {
   /** User-chosen display names keyed by lowercased address. Wins over
    *  ENS handle when rendering peer labels — see `peerLabel`. */
   customNames: Record<string, string>;
+  /** Relay round-trip-time (ms) per peer, keyed by peerId. Each peer
+   *  measures its own RTT to the relay and broadcasts via `ping_report`;
+   *  this map carries the latest sample per peer for the guest-list
+   *  ping meter. Absent keys = no measurement yet. */
+  peerPings: Record<string, number>;
   /** Set or clear the current user's display name. Pass `null` (or an
    *  empty string) to clear. */
   setCustomName: (name: string | null) => void;
@@ -1131,6 +1138,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // `peerLabel` below). Server-authoritative — `set_custom_name` round-
   // trips through the relay so other peers see the change.
   const [customNames, setCustomNames] = useState<Record<string, string>>({});
+  // Relay round-trip time per peer (ms), keyed by peerId. Drives the
+  // guest-list ping meter. Populated by the `peer_ping` broadcast and
+  // by our own pong measurements (for the local user's row).
+  const [peerPings, setPeerPings] = useState<Record<string, number>>({});
 
   // Mirror of `slots` for synchronous reads inside callbacks (so
   // updateSlot's "new windows come to the front" rule can compute the
@@ -2003,6 +2014,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     let cancelled = false;
     let pingTimer: ReturnType<typeof setInterval> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // Wall-clock send time of the most recent ping; pong reply subtracts
+    // this to derive RTT. We only care about the latest sample — a fresh
+    // ping replaces any in-flight measurement.
+    let lastPingSentAt: number | null = null;
 
     const teardownConnections = () => {
       peerConnectionsRef.current.forEach(pc => {
@@ -2032,8 +2047,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         setConnected(true);
         ws.send(JSON.stringify({ type: "hello" }));
         pingTimer = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+          if (ws.readyState !== WebSocket.OPEN) return;
+          lastPingSentAt = performance.now();
+          ws.send(JSON.stringify({ type: "ping" }));
         }, PING_INTERVAL_MS);
+        // Send the first ping immediately so the meter doesn't sit empty
+        // for the full interval after connect.
+        lastPingSentAt = performance.now();
+        ws.send(JSON.stringify({ type: "ping" }));
         // Re-announce any locally-published streams (e.g. after reconnect).
         for (const [streamId, { kind }] of localStreamsRef.current) {
           const hint = selfRef.current;
@@ -2252,7 +2273,39 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         if (msg.type === "peer_leave" && msg.peer) {
           const peer = msg.peer as Peer;
           setPeers(prev => prev.filter(p => p.id !== peer.id));
+          setPeerPings(prev => {
+            if (!(peer.id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer.id];
+            return next;
+          });
           closePeerConnection(peer.id);
+          return;
+        }
+
+        if (msg.type === "pong") {
+          // RTT to the relay for the local user. Captured from the last
+          // ping we sent; we also fan this out to every other peer so
+          // they can render our row's meter.
+          if (lastPingSentAt == null) return;
+          const rtt = Math.round(performance.now() - lastPingSentAt);
+          lastPingSentAt = null;
+          const meId = myIdRef.current;
+          if (meId) {
+            setPeerPings(prev => (prev[meId] === rtt ? prev : { ...prev, [meId]: rtt }));
+          }
+          // Spectators don't show up in the visible peer list, so don't
+          // pollute the room with their relay-RTT.
+          if (!selfRef.current?.spectator) {
+            send({ type: "ping_report", rtt });
+          }
+          return;
+        }
+
+        if (msg.type === "peer_ping" && typeof msg.from === "string" && typeof msg.rtt === "number") {
+          const from = msg.from;
+          const rtt = Math.round(msg.rtt);
+          setPeerPings(prev => (prev[from] === rtt ? prev : { ...prev, [from]: rtt }));
           return;
         }
 
@@ -2733,6 +2786,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         // 6-hex peerId label. Surviving peers re-broadcast on mousemove
         // (~60Hz) so the visible roster recovers within a frame.
         setCursors({});
+        setPeerPings({});
+        lastPingSentAt = null;
         if (cancelled) return;
         reconnectTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
       };
@@ -2912,5 +2967,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletResummarize,
     customNames,
     setCustomName,
+    peerPings,
   };
 }

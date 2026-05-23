@@ -2582,6 +2582,7 @@ function DesktopInner({ slug }: { slug: string }) {
             myId={mesh.myId}
             customNames={mesh.customNames}
             onSetCustomName={mesh.setCustomName}
+            peerPings={mesh.peerPings}
           />
         ) : null}
 

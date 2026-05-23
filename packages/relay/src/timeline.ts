@@ -1,4 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { config } from "./config.js";
 
 // Twitter home-timeline poll, broadcast to every peer (same pattern as
@@ -51,7 +53,39 @@ export type TimelineState = {
   updatedAt: number;
 };
 
+// Disk-backed so a relay restart (every deploy bounces the service)
+// doesn't wipe the manually-loaded feed. The host clicks TIMELINE once
+// before going live; that click pays for 3 paginated Twitter reads and
+// we want it to stick until the host clicks again, not until the next
+// deploy.
+const TIMELINE_FILE = process.env.TIMELINE_FILE ?? "./.slop-data/timeline.json";
+
 let state: TimelineState | null = null;
+let loaded = false;
+
+function loadFromDisk(): void {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const raw = readFileSync(TIMELINE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as Partial<TimelineState>;
+    if (Array.isArray(parsed.items) && typeof parsed.updatedAt === "number") {
+      state = { items: parsed.items as TimelineItem[], updatedAt: parsed.updatedAt };
+    }
+  } catch {
+    /* fresh — no prior snapshot, leave state null */
+  }
+}
+
+function persistToDisk(): void {
+  if (!state) return;
+  try {
+    mkdirSync(dirname(TIMELINE_FILE), { recursive: true });
+    writeFileSync(TIMELINE_FILE, JSON.stringify(state), "utf8");
+  } catch (err) {
+    console.warn("[timeline] persist failed", err);
+  }
+}
 
 // Research focus — set by `/v1/guest-research` when the host enters a
 // Twitter handle in the Research app. Tweets from this handle get
@@ -82,6 +116,7 @@ export function subscribe(fn: Subscriber): () => void {
 }
 
 export function getState(): TimelineState | null {
+  loadFromDisk();
   return state;
 }
 
@@ -373,6 +408,7 @@ async function pollOnce(): Promise<void> {
   const items = await fetchTimeline();
   if (items.length === 0 && !state) return;
   state = { items, updatedAt: Date.now() };
+  persistToDisk();
   for (const fn of subscribers) {
     try {
       fn(state);

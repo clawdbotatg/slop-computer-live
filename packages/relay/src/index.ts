@@ -4340,6 +4340,14 @@ app.register(async function signalRoutes(fastify) {
         case "ping":
           send(socket, { type: "pong" });
           return;
+        case "ping_report": {
+          // Per-peer relay-RTT for the guest-list ping meter. Clamp +
+          // floor so a peer can't flood the room with garbage payloads.
+          const rtt = typeof msg.rtt === "number" && Number.isFinite(msg.rtt) ? Math.max(0, Math.min(60_000, msg.rtt)) : null;
+          if (rtt == null) return;
+          room.broadcast({ type: "peer_ping", from: peerId, rtt }, peerId);
+          return;
+        }
         case "offer":
         case "answer":
         case "ice": {
