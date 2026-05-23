@@ -628,6 +628,31 @@ top of "Set state" below). If nothing is audible after step 4,
 re-read \`/v1/state\` and check: is \`peers\` non-empty? Is
 \`musicState.src\` what you set? Is \`musicState.playing === true\`?
 
+#### When upload isn't an option: tell the human to share tab audio
+
+The upload endpoint only takes raw MP3 bytes. If the audio the
+user wants to play is locked behind a player you can't easily
+download from — Spotify, Apple Music, YouTube/YouTube Music, a
+Twitch stream, a Netflix scene, a live radio webpage — don't
+spend cycles trying to scrape or transcode. Tell the human:
+
+> Open the page in a normal Chrome tab, then on the slop
+> desktop click the **Screen** icon → in Chrome's picker pick
+> the **Chrome Tab** tab → choose the tab playing the audio →
+> tick **"Share tab audio"** at the bottom → Share. Everyone
+> in the room will hear it in real time.
+
+This routes the tab's audio through WebRTC into the room's
+mesh — same path camera/mic uses — so every peer hears it
+without any relay storage or playlist entry. It's the right
+escape hatch for anything that isn't an .mp3 file you can hand
+the agent. Stops when the human clicks **Stop sharing** in
+Chrome or closes the publication from the desktop.
+
+(Caveat: only Chromium-family browsers expose the
+"Share tab audio" checkbox. Firefox/Safari can share a window
+or screen but won't capture its audio.)
+
 ### Legacy playlist
 
 \`\`\`
