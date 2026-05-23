@@ -341,6 +341,21 @@ chess + music context), feed it all to your own model. There's no
 relay-side endpoint for this — the agent already has Claude. See
 the transcript sub-skill for the read path.
 
+### "Share this media in the room" — pick the right channel
+
+Three paths, pick by what you have in your hands:
+
+| You have | Use | Result |
+| --- | --- | --- |
+| Raw \`.mp3\` bytes (a song you can download) | \`POST /v1/music/upload\` → \`POST /v1/music/state\` | Plays in the shared Slopamp music player, queued in the room's Custom playlist. See \`/v1/skill/music\`. |
+| Any other file (image, video clip, PDF, text, weird audio format, screenshot, anything ≤ 50 MB) | \`POST /v1/files\` | Lands as a desktop icon for every peer; double-click downloads / previews. Agents upload via the same endpoint a human's drag-and-drop hits. See \`/v1/skill/files\`. |
+| Audio you can NOT download as a file — Spotify, Apple Music, YouTube / YouTube Music, Twitch, Netflix, a live radio webpage, a movie playing in another tab | **Tell the human**: open the source in a normal Chrome tab, then on the slop desktop click the **Screen** icon → in Chrome's picker pick the **Chrome Tab** tab → choose the playing tab → tick **"Share tab audio"** at the bottom → Share. | Tab's audio (and optionally video) routes through WebRTC into the room mesh; every peer hears it live, no relay storage, no playlist entry. Stops when the human clicks **Stop sharing** in Chrome. Chromium-only — Firefox/Safari can share a window but won't capture its audio. |
+
+The "share tab" path is also the right answer any time the
+content is DRM'd, live-only, paywalled, or just easier to point
+a browser at than to scrape. Stop trying to bytewise-pirate
+Spotify; ask the human to share their tab.
+
 ## Conventions
 
 - 200/2xx = success. 400 = bad input. 401 = bad/expired token.
@@ -628,30 +643,14 @@ top of "Set state" below). If nothing is audible after step 4,
 re-read \`/v1/state\` and check: is \`peers\` non-empty? Is
 \`musicState.src\` what you set? Is \`musicState.playing === true\`?
 
-#### When upload isn't an option: tell the human to share tab audio
+#### Can't get .mp3 bytes? Pick a different channel
 
-The upload endpoint only takes raw MP3 bytes. If the audio the
-user wants to play is locked behind a player you can't easily
-download from — Spotify, Apple Music, YouTube/YouTube Music, a
-Twitch stream, a Netflix scene, a live radio webpage — don't
-spend cycles trying to scrape or transcode. Tell the human:
-
-> Open the page in a normal Chrome tab, then on the slop
-> desktop click the **Screen** icon → in Chrome's picker pick
-> the **Chrome Tab** tab → choose the tab playing the audio →
-> tick **"Share tab audio"** at the bottom → Share. Everyone
-> in the room will hear it in real time.
-
-This routes the tab's audio through WebRTC into the room's
-mesh — same path camera/mic uses — so every peer hears it
-without any relay storage or playlist entry. It's the right
-escape hatch for anything that isn't an .mp3 file you can hand
-the agent. Stops when the human clicks **Stop sharing** in
-Chrome or closes the publication from the desktop.
-
-(Caveat: only Chromium-family browsers expose the
-"Share tab audio" checkbox. Firefox/Safari can share a window
-or screen but won't capture its audio.)
+This endpoint only takes raw MP3. For anything else — DRM'd or
+streaming audio (Spotify, Apple Music, YouTube, Twitch, Netflix,
+live radio), arbitrary files for the desktop, screenshots,
+movies — see the **"Share this media in the room"** recipe at
+the top of \`/v1/skill\`. It maps each kind of media to the right
+channel (file upload, screen+tab-audio share, or this upload).
 
 ### Legacy playlist
 
