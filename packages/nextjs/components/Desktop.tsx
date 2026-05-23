@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import toast, { type Toast } from "react-hot-toast";
 import type { Address as AddressType } from "viem";
+import { type CommandAction, CommandPalette } from "~~/components/CommandPalette";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
 import { PasswordGate } from "~~/components/PasswordGate";
@@ -131,6 +132,18 @@ function defaultIconPosition(i: number): { x: number; y: number } {
     y: ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH,
   };
 }
+
+// Explicit grid for View → Auto Arrange Icons. 5 columns × 4 rows, hand-
+// curated so related apps cluster (share kinds, time, knowledge, dapps,
+// utility). Apps not listed here fall back to the cascade after the last
+// column so a newly-added app still gets a slot.
+const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
+  ["chat", "video", "audio", "screen"],
+  ["clock", "card", "research", "transcript"],
+  ["glossary", "notes", "todo", "qr"],
+  ["nifty-ink", "abi-ninja", "gas", "news"],
+  ["browser", "wallet", "music", "chess"],
+];
 
 // Slot id keyed by stable owner identity (wallet address or handle) so the
 // layout survives a reload — peerIds are ephemeral and would otherwise reset
@@ -698,11 +711,26 @@ function DesktopInner({ slug }: { slug: string }) {
     [],
   );
 
-  // Snap every desktop icon back to the default left-edge cascade. Iteration
-  // order is the apps catalog order so the layout is stable across runs.
+  // Snap every desktop icon to the curated AUTO_ARRANGE_COLUMNS grid. Apps
+  // not in the grid (anything added later that we forgot to slot) fall back
+  // to the default cascade, positioned past the explicit columns so they
+  // don't collide.
   const autoArrangeIcons = useCallback(() => {
-    apps.forEach((app, i) => {
-      const { x, y } = defaultIconPosition(i);
+    const placed = new Set<string>();
+    AUTO_ARRANGE_COLUMNS.forEach((column, colIdx) => {
+      column.forEach((appId, rowIdx) => {
+        placed.add(appId);
+        mesh.updateSlot({
+          id: `icon-${appId}`,
+          x: ICON_DEFAULT_X + colIdx * ICON_COL_PITCH,
+          y: ICON_DEFAULT_Y0 + rowIdx * ICON_ROW_PITCH,
+        });
+      });
+    });
+    let fallbackIdx = AUTO_ARRANGE_COLUMNS.length * ICONS_PER_COL;
+    apps.forEach(app => {
+      if (placed.has(app.id)) return;
+      const { x, y } = defaultIconPosition(fallbackIdx++);
       mesh.updateSlot({ id: `icon-${app.id}`, x, y });
     });
   }, [apps, mesh]);
@@ -1394,6 +1422,78 @@ function DesktopInner({ slug }: { slug: string }) {
     [myOwnerKey, meshUpdateSlot],
   );
 
+  // Single source of truth for "what happens when you activate an app" —
+  // shared between the icon double-click handler and the command palette
+  // (Ctrl+Shift+Space). Any new app kind only needs to be wired here.
+  const activateApp = useCallback(
+    (app: AppEntry) => {
+      switch (app.kind) {
+        case "chat":
+        case "music":
+        case "chess":
+        case "qr":
+        case "todo":
+        case "notes":
+        case "glossary":
+        case "gas":
+        case "clock":
+        case "wallet":
+        case "research":
+        case "news":
+        case "transcript":
+        case "card":
+          focusApp(app.id);
+          return;
+        case "audio":
+          dismissHint();
+          if (media.activeAudio) focusPub("audio");
+          else setAudioDialog("create");
+          return;
+        case "video":
+          dismissHint();
+          if (media.activeCamera) focusPub("camera");
+          else setVideoDialog("create");
+          return;
+        case "screen":
+          dismissHint();
+          if (media.activeScreen || wantScreenResume) focusPub("screen");
+          else void media.startScreen();
+          return;
+        default:
+          if (app.url) spawnBrowser(app.url, app.id);
+      }
+    },
+    [focusApp, focusPub, dismissHint, media, wantScreenResume, setAudioDialog, setVideoDialog, spawnBrowser],
+  );
+
+  // Flatten apps + every actionable menu item into the launcher's action
+  // list. Disabled / divider menu items are filtered so they can't be
+  // selected. App actions are listed first so a one-word query like
+  // "music" lands on the app before any menu item that mentions it.
+  const paletteActions = useMemo<CommandAction[]>(() => {
+    const appActions: CommandAction[] = apps.map(app => ({
+      id: `app:${app.id}`,
+      label: app.label,
+      group: "App",
+      icon: app.icon,
+      keywords: app.id,
+      run: () => activateApp(app),
+    }));
+    const menuActions: CommandAction[] = [];
+    for (const menu of [fileMenu, editMenu, viewMenu]) {
+      for (const item of menu.items) {
+        if (item.divider || item.disabled || !item.onClick) continue;
+        menuActions.push({
+          id: `menu:${menu.label}:${item.label}`,
+          label: item.label,
+          group: menu.label,
+          run: item.onClick,
+        });
+      }
+    }
+    return [...appActions, ...menuActions];
+  }, [apps, activateApp, fileMenu, editMenu, viewMenu]);
+
   // HARD RULE: any newly-visible window comes to the front, regardless
   // of which mechanism made it appear (Share Audio/Video/Screen, app
   // icon double-click, browser open, file preview, screen-resume
@@ -1583,6 +1683,7 @@ function DesktopInner({ slug }: { slug: string }) {
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
         slug={slug}
       />
+      {session.authenticated ? <CommandPalette actions={paletteActions} /> : null}
       <div
         onDragEnter={e => {
           if (!session.authenticated) return;
@@ -1697,77 +1798,7 @@ function DesktopInner({ slug }: { slug: string }) {
                     }
                     mesh.updateSlot({ id: slotId, x, y });
                   }}
-                  onDoubleClick={() => {
-                    // focusApp lives at the component scope — it
-                    // opens the window AND bumps its z above every
-                    // slot, regardless of which kind of icon
-                    // triggered it (singleton apps, file previews).
-                    switch (app.kind) {
-                      case "chat":
-                        focusApp("chat");
-                        return;
-                      case "music":
-                        focusApp("music");
-                        return;
-                      case "chess":
-                        focusApp("chess");
-                        return;
-                      case "qr":
-                        focusApp("qr");
-                        return;
-                      case "todo":
-                        focusApp("todo");
-                        return;
-                      case "notes":
-                        focusApp("notes");
-                        return;
-                      case "glossary":
-                        focusApp("glossary");
-                        return;
-                      case "gas":
-                        focusApp("gas");
-                        return;
-                      case "clock":
-                        focusApp("clock");
-                        return;
-                      case "wallet":
-                        focusApp("wallet");
-                        return;
-                      case "research":
-                        focusApp("research");
-                        return;
-                      case "news":
-                        focusApp("news");
-                        return;
-                      case "transcript":
-                        focusApp("transcript");
-                        return;
-                      case "card":
-                        focusApp("card");
-                        return;
-                      case "audio":
-                        // Not publishing yet → open the share dialog.
-                        // Already publishing → bring the existing window
-                        // to the front, mirroring how the app icons
-                        // behave when their window is already open.
-                        dismissHint();
-                        if (media.activeAudio) focusPub("audio");
-                        else setAudioDialog("create");
-                        return;
-                      case "video":
-                        dismissHint();
-                        if (media.activeCamera) focusPub("camera");
-                        else setVideoDialog("create");
-                        return;
-                      case "screen":
-                        dismissHint();
-                        if (media.activeScreen || wantScreenResume) focusPub("screen");
-                        else void media.startScreen();
-                        return;
-                      default:
-                        if (app.url) spawnBrowser(app.url, app.id);
-                    }
-                  }}
+                  onDoubleClick={() => activateApp(app)}
                 />
               );
             })
