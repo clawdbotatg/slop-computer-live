@@ -1546,6 +1546,102 @@ function DesktopInner({ slug }: { slug: string }) {
     meshUpdateSlotForVis,
   ]);
 
+  // Global window keyboard shortcuts. Operate on the TOP window — the
+  // visible window with the highest z. Three bindings:
+  //
+  //   Ctrl/Cmd+Shift+W → close   (Mac/Linux "close tab" muscle memory)
+  //   Ctrl/Cmd+Shift+Q → close   (alias — Mac "quit app" muscle memory)
+  //   Ctrl/Cmd+Shift+M → minimize (collapse to docked titlebar pill)
+  //
+  // "Visible window" = whatever's currently rendered: a publication
+  // (camera/audio/screen), a SharedAppWindow, or a SharedBrowser. We
+  // mirror the visibility set the z-bump effect above derives so the
+  // top here matches what the user sees layered on top.
+  //
+  // Minimize from the keyboard sets the slot height to TITLEBAR_HEIGHT
+  // (36). Each peer's local <Window> already treats height<=36 as
+  // "docked", so the multiplayer state flows through the slot system
+  // — no separate "minimized" flag needed. The local savedRect path
+  // inside Window doesn't get to capture the pre-minimize geometry
+  // (we're outside the component), so restoring takes the same
+  // fallback path that runs after a reload — known + acceptable.
+  useEffect(() => {
+    const isEditable = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      const isClose = key === "w" || key === "q";
+      const isMinimize = key === "m";
+      if (!isClose && !isMinimize) return;
+      if (isEditable(e.target)) return;
+
+      // Same visibility derivation as the z-bump effect above. Iterating
+      // mesh.publications + openWindowIds + browsers covers every
+      // window type that has a titlebar; everything else (icons, files,
+      // bars) is fixed chrome and not part of the close/minimize
+      // surface.
+      const visibleSlotIds: string[] = [];
+      for (const pub of mesh.publications) visibleSlotIds.push(slotIdFor(pub));
+      for (const id of mesh.openWindowIds) visibleSlotIds.push(`app-${id}`);
+      for (const browser of Object.values(mesh.browsers)) visibleSlotIds.push(`browser-${browser.id}`);
+      if (visibleSlotIds.length === 0) return;
+
+      let topId: string | null = null;
+      let topZ = -Infinity;
+      for (const sid of visibleSlotIds) {
+        const z = mesh.slots[sid]?.z ?? 0;
+        if (z > topZ) {
+          topZ = z;
+          topId = sid;
+        }
+      }
+      if (!topId) return;
+      e.preventDefault();
+
+      if (isMinimize) {
+        const slot = mesh.slots[topId];
+        if (!slot) return;
+        // Match the in-Window dock pill: width 200, height 36, keep x.
+        // y gets recomputed locally by each peer's <Window> against
+        // their own viewport — see dockedY in Window.tsx.
+        mesh.updateSlot({ id: topId, x: slot.x, y: slot.y, width: 200, height: 36 });
+        return;
+      }
+
+      // Close. Route by slot-id prefix to the matching close action.
+      if (topId.startsWith("app-")) {
+        mesh.closeWindow(topId.slice("app-".length));
+        return;
+      }
+      if (topId.startsWith("browser-")) {
+        mesh.closeBrowser(topId.slice("browser-".length));
+        return;
+      }
+      if (topId.startsWith("owner-")) {
+        const pub = mesh.publications.find(p => slotIdFor(p) === topId);
+        if (pub) closeWindow(pub);
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    mesh.publications,
+    mesh.openWindowIds,
+    mesh.browsers,
+    mesh.slots,
+    mesh.closeWindow,
+    mesh.closeBrowser,
+    mesh.updateSlot,
+    closeWindow,
+  ]);
+
   // File previews — opened on double-click of a desktop file. SHARED
   // across the mesh exactly like every other singleton window: the
   // open-state lives in `mesh.openWindowIds` keyed `preview-<fileId>`,
@@ -2347,7 +2443,12 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={320}
               minHeight={280}
             >
-              <TranscriptWindow relayHttpUrl={RELAY_HTTP} customNames={mesh.customNames} mesh={mesh} />
+              <TranscriptWindow
+                relayHttpUrl={RELAY_HTTP}
+                customNames={mesh.customNames}
+                mesh={mesh}
+                captionsOn={episode.captionsOn}
+              />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
@@ -2375,8 +2476,9 @@ function DesktopInner({ slug }: { slug: string }) {
             recent transcript segment. Sits above the ChyronBar when
             a chyron is set, otherwise above the TimelineBar. Driven
             entirely by the god-mode tab's STT pipeline; auto-fades
-            after a few seconds of silence. */}
-        <SubtitleCaption mesh={mesh} />
+            after a few seconds of silence. Hidden when any peer has
+            toggled captions off from the transcript app. */}
+        {episode.captionsOn ? <SubtitleCaption mesh={mesh} /> : null}
         {/* Chyron — broadcast-TV term for the static lower-third
             banner. Host-written one-liner that sits on top of the
             timeline bar; collapses to zero height when empty so the

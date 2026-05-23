@@ -1343,6 +1343,19 @@ app.post<{ Body: EpisodeSttBody }>("/admin/episode/stt", async (req, reply) => {
   return roomFromReq(req).episode.setSttOn(on);
 });
 
+// Captions overlay toggle. Unlike sttOn (which gates the whole STT
+// pipeline and is host-only), this is a viewing preference any
+// participant can flip from inside the transcript app. The auth gate
+// is the same room-scoped v1 check we use for chyron/etc. — must hold
+// the room cookie (or a room-scoped bearer). Spectators on
+// slop.computer aren't allowed (they haven't paid into the room).
+app.post<{ Body: { on?: unknown } }>("/v1/episode/captions", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const on = req.body?.on === true;
+  return { ok: true, state: roomFromReq(req).episode.setCaptionsOn(on) };
+});
+
 app.get("/admin/transcript/stream", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) {

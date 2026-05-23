@@ -8,6 +8,24 @@ import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
 
+// Toggle the room-wide captions overlay (the auto-rising line that
+// SubtitleCaption paints over the desktop). Anyone in the room can
+// flip — the endpoint enforces a room-scoped auth check. Optimistic
+// state is upstream (episode SSE flips the prop within a tick of the
+// POST landing), so we don't track local pending state here.
+async function postCaptionsOn(relayHttpUrl: string, slug: string, on: boolean): Promise<void> {
+  try {
+    await fetch(withSlug(`${relayHttpUrl}/v1/episode/captions`, slug), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ on }),
+    });
+  } catch {
+    /* network blip — next click retries, episode SSE will re-sync truth */
+  }
+}
+
 type TranscriptSegment = {
   id: string;
   ts: number;
@@ -28,9 +46,12 @@ export type TranscriptWindowProps = {
   relayHttpUrl: string;
   customNames: Record<string, string>;
   mesh: PeerMeshState;
+  /** Room-wide captions overlay flag. Drives the toggle button in the
+   *  footer; anyone in the room can flip it. */
+  captionsOn: boolean;
 };
 
-export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh }: TranscriptWindowProps) => {
+export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh, captionsOn }: TranscriptWindowProps) => {
   const slug = useRoomSlug();
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -114,20 +135,50 @@ export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh }: Transcript
           segments.map(s => <SegmentRow key={s.id} seg={s} customNames={customNames} />)
         )}
       </div>
-      {error ? (
-        <div
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 8px",
+          borderTop: "1px solid var(--slop-bevel-light, #4a4a4a)",
+          fontFamily: "var(--slop-font-display)",
+          fontSize: 11,
+          letterSpacing: "0.04em",
+          textTransform: "uppercase",
+          color: "var(--slop-text-muted)",
+        }}
+      >
+        <span>captions</span>
+        <button
+          type="button"
+          onClick={() => void postCaptionsOn(relayHttpUrl, slug, !captionsOn)}
+          title={
+            captionsOn
+              ? "subtitle overlay is ON for everyone in the room — click to hide"
+              : "subtitle overlay is OFF for everyone in the room — click to show"
+          }
           style={{
-            padding: "4px 8px",
-            fontSize: 10,
-            color: "var(--slop-accent-warn, #f66)",
+            cursor: "pointer",
+            padding: "2px 10px",
+            border: "1px solid var(--slop-bevel-light, #4a4a4a)",
             fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.04em",
-            borderTop: "1px solid var(--slop-bevel-light, #4a4a4a)",
+            fontSize: 11,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            background: captionsOn ? "var(--slop-magenta, #ff3ec9)" : "transparent",
+            color: captionsOn ? "var(--slop-bg, #06030d)" : "var(--slop-text)",
           }}
         >
-          fetch error: {error}
-        </div>
-      ) : null}
+          {captionsOn ? "On" : "Off"}
+        </button>
+        <span style={{ flex: 1 }} />
+        {error ? (
+          <span style={{ color: "var(--slop-accent-warn, #f66)", textTransform: "none", letterSpacing: 0 }}>
+            fetch error: {error}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 };

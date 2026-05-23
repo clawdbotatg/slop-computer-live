@@ -10,9 +10,13 @@ import { withSlug } from "~~/lib/slug";
 
 export type EpisodeState = {
   sttOn: boolean;
+  captionsOn: boolean;
 };
 
-const DEFAULT_STATE: EpisodeState = { sttOn: false };
+// captionsOn defaults to TRUE — they're on by default, the toggle is
+// for muting. sttOn stays false until the server confirms (matching
+// the old default; god-mode reads it for STT enable, conservative).
+const DEFAULT_STATE: EpisodeState = { sttOn: false, captionsOn: true };
 
 export function useEpisodeState(relayHttpUrl: string, slug: string): EpisodeState {
   const [state, setState] = useState<EpisodeState>(DEFAULT_STATE);
@@ -21,12 +25,21 @@ export function useEpisodeState(relayHttpUrl: string, slug: string): EpisodeStat
     let cancelled = false;
     let es: EventSource | null = null;
 
+    const apply = (partial: Partial<EpisodeState>) => {
+      setState(prev => {
+        const next = { ...prev };
+        if (typeof partial.sttOn === "boolean") next.sttOn = partial.sttOn;
+        if (typeof partial.captionsOn === "boolean") next.captionsOn = partial.captionsOn;
+        return next;
+      });
+    };
+
     // Best-effort one-shot fetch so we have a value before SSE settles.
     fetch(withSlug(`${relayHttpUrl}/v1/episode`, slug), { credentials: "include" })
       .then(r => (r.ok ? r.json() : null))
-      .then((data: EpisodeState | null) => {
+      .then((data: Partial<EpisodeState> | null) => {
         if (cancelled || !data) return;
-        if (typeof data.sttOn === "boolean") setState({ sttOn: data.sttOn });
+        apply(data);
       })
       .catch(() => {
         /* SSE will retry */
@@ -34,16 +47,15 @@ export function useEpisodeState(relayHttpUrl: string, slug: string): EpisodeStat
 
     try {
       es = new EventSource(withSlug(`${relayHttpUrl}/v1/episode/stream`, slug), { withCredentials: true });
-      const apply = (raw: string) => {
+      const parse = (raw: string) => {
         try {
-          const data = JSON.parse(raw) as Partial<EpisodeState>;
-          if (typeof data.sttOn === "boolean") setState({ sttOn: data.sttOn });
+          apply(JSON.parse(raw) as Partial<EpisodeState>);
         } catch {
           /* ignore malformed */
         }
       };
-      es.addEventListener("init", e => apply((e as MessageEvent).data));
-      es.addEventListener("episode", e => apply((e as MessageEvent).data));
+      es.addEventListener("init", e => parse((e as MessageEvent).data));
+      es.addEventListener("episode", e => parse((e as MessageEvent).data));
     } catch {
       /* SSE construction can throw in older browsers; one-shot fetch covers us */
     }
