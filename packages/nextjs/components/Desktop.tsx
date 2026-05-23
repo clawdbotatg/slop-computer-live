@@ -1858,16 +1858,18 @@ function DesktopInner({ slug }: { slug: string }) {
             size of the god-mode (OBS capture) window, broadcast by that
             spectator on resize so every peer sees the same bounds. Falls
             back to the 1920×1080 OBS target when no spectator is online.
-            Anchored to top-left because that's where the capture origin
-            sits. Behind everything, never clickable. */}
+            Inflated 3px on every side so the dashed lines sit just
+            outside the spectator's own viewport — otherwise the top +
+            left edges of the line would be visible on their screen and
+            get streamed. Behind everything, never clickable. */}
         <div
           aria-hidden
           style={{
             position: "fixed",
-            top: 0,
-            left: 0,
-            width: mesh.godViewport?.width ?? 1920,
-            height: mesh.godViewport?.height ?? 1080,
+            top: -3,
+            left: -3,
+            width: (mesh.godViewport?.width ?? 1920) + 6,
+            height: (mesh.godViewport?.height ?? 1080) + 6,
             border: "2px dashed var(--slop-magenta, #ff3ec9)",
             boxShadow: "0 0 0 1px rgba(0, 0, 0, 0.35) inset",
             boxSizing: "border-box",
