@@ -3436,17 +3436,10 @@ app.post<{ Body: SiweBody }>("/auth/siwe", async (req, reply) => {
   if (!consumeNonce(nonce)) return reply.code(401).send({ error: "Bad or expired nonce" });
   const check = await verifySiwe({ message, signature: signature as `0x${string}`, expectedNonce: nonce });
   if (!check.ok) return reply.code(401).send({ error: check.error });
-  // Admins bypass the invite gate so the operator can sign in on a fresh
-  // deploy and then share / regenerate the invite from the admin panel.
-  // Everyone else has to have cleared either the legacy global gate
-  // (slop_invite) OR a per-room password gate (any signed slop_room_*).
-  if (
-    !check.isAdmin &&
-    !isInvited(req.cookies[INVITE_COOKIE]) &&
-    !hasAnyValidRoomCookie(req.cookies, config.sessionSecret)
-  ) {
-    return reply.code(403).send({ error: "invite-required" });
-  }
+  // Open sign-in: anyone with a wallet can SIWE and chat. The invite/room
+  // gates still protect host-only and slug-scoped routes downstream (see
+  // v1AuthFromReq's room-cookie check + requireHost), so this only widens
+  // the audience-chat path. Token gating can be layered on later.
   // Resolve the primary ENS name once at login so chat / transcript /
   // cursor labels all carry a real handle instead of null. Cached for an
   // hour, so the per-session cost is one Alchemy call per cold user.
@@ -3483,13 +3476,9 @@ type PasskeyBody = {
 };
 
 app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
-  // Same gate as SIWE — legacy global invite OR any per-room cookie.
-  if (
-    !isInvited(req.cookies[INVITE_COOKIE]) &&
-    !hasAnyValidRoomCookie(req.cookies, config.sessionSecret)
-  ) {
-    return reply.code(403).send({ error: "invite-required" });
-  }
+  // Open sign-in: passkey proves a stable identity (address derived from
+  // qx/qy) the same way SIWE does, so it's gated identically. Downstream
+  // host/room checks still apply for live-mesh and admin endpoints.
   const b = (req.body ?? {}) as PasskeyBody;
   const sNonce = typeof b.nonce === "string" ? b.nonce : "";
   if (!sNonce || !consumeNonce(sNonce)) return reply.code(401).send({ error: "bad-or-expired-nonce" });
