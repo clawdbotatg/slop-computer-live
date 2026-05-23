@@ -93,7 +93,15 @@ export const AudioVisualizer = ({
   useEffect(() => {
     if (!isMine) return;
     for (const t of stream.getAudioTracks()) t.enabled = !selfMuted;
-  }, [stream, selfMuted, isMine]);
+    // Notify any listeners (Desktop's useLiveTranscript gate, etc.) so
+    // the local STT pipeline can shut off when the user mutes — Web
+    // Speech opens its own internal mic capture and ignores
+    // track.enabled, so without this signal the recognizer keeps
+    // broadcasting captions for someone who muted themselves.
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("slop-audio-muted-change", { detail: { slug, muted: selfMuted } }));
+    }
+  }, [stream, selfMuted, isMine, slug]);
   useEffect(() => {
     if (!persistMute || typeof window === "undefined") return;
     try {

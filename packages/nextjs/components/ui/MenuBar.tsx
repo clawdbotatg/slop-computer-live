@@ -553,6 +553,26 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
                   ? "[ failed — see console ]"
                   : "[ copy skill ]"}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event("slop:open-command-palette"));
+            }}
+            style={{ ...itemStyle, justifyContent: "space-between" }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+              (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+              (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+            }}
+          >
+            <span style={{ whiteSpace: "nowrap" }}>[ command palette ]</span>
+            <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>⌃⇧Space</span>
+          </button>
           <a
             href="https://github.com/clawdbotatg/slop-computer-live"
             target="_blank"

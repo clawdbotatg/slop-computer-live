@@ -45,7 +45,15 @@ export function CommandPalette({ actions }: { actions: CommandAction[] }) {
   // Global hotkey. Ctrl+Shift+Space AND Cmd+Shift+Space both work so it's
   // muscle-memory regardless of platform. e.code is checked against
   // "Space" so keyboard layouts that put Space somewhere weird still hit.
+  // A custom `slop:open-command-palette` event is also accepted so the
+  // slop.computer menu (and anything else) can open the launcher without
+  // synthesizing a keystroke.
   useEffect(() => {
+    const open = () => {
+      setOpen(true);
+      setQuery("");
+      setHighlight(0);
+    };
     const onKey = (e: KeyboardEvent) => {
       const isToggle = e.code === "Space" && e.shiftKey && (e.ctrlKey || e.metaKey);
       if (isToggle) {
@@ -56,7 +64,11 @@ export function CommandPalette({ actions }: { actions: CommandAction[] }) {
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("slop:open-command-palette", open);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("slop:open-command-palette", open);
+    };
   }, []);
 
   // Auto-focus the input the moment the modal mounts so the user can just

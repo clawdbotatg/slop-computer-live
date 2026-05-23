@@ -57,6 +57,7 @@ import Cursor from "~~/components/ui/Cursor";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useGodModeStt } from "~~/hooks/useGodModeStt";
+import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
@@ -423,27 +424,57 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const media = useLocalMedia(addStream, stopStream);
 
-  // Per-browser Web Speech STT was retired when god-mode server-side
-  // STT shipped — the god-mode tab transcribes every peer's audio
-  // centrally via OpenAI, so running Web Speech in parallel produced
-  // near-duplicate rows with slightly different formatting from each
-  // engine. `~~/hooks/useLiveTranscript` is left in place as a possible
-  // fallback path if god-mode ever needs to be off, but it's not wired
-  // up here. Same for `sttEligible` — the gating signal it computed
-  // (audio unmuted ∧ track published ∧ video unpaused) only mattered
-  // when the per-browser recognizer needed an enable signal.
   const episode = useEpisodeState(RELAY_HTTP, slug);
   const isGodMode = session.authenticated && session.spectator === true;
   // God-mode server-side STT. Only the streaming box runs this. It
   // walks every other peer's audio track in the mesh, VAD-gates,
   // captures Opus segments, and POSTs them to /v1/transcript/relay
-  // tagged with the speaker's address. The 🛰️ "god is listening"
-  // emoji in the menubar derives from `listening` below.
+  // tagged with the speaker's address. Stays running whenever STT is
+  // on for the episode — it's the canonical archive source even when
+  // we suppress its broadcast for speakers whose in-browser captions
+  // are live. The 🛰️ menubar indicator derives from `listening`.
   const godStt = useGodModeStt({
     enabled: isGodMode && episode.sttOn,
     mesh,
     relayHttpUrl: RELAY_HTTP,
     slug,
+  });
+
+  // Mirror the AudioVisualizer's selfMuted state up to here so the live
+  // STT gate can flip off when the user mutes. AudioVisualizer dispatches
+  // `slop-audio-muted-change` on every mute toggle (and on its initial
+  // localStorage-resume effect), keyed by slug. The localStorage seed
+  // covers the first render before any event fires.
+  const [audioMuted, setAudioMuted] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(audioMutedKey(slug)) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const e = ev as CustomEvent<{ slug?: string; muted?: boolean }>;
+      if (e.detail?.slug !== slug) return;
+      setAudioMuted(!!e.detail.muted);
+    };
+    window.addEventListener("slop-audio-muted-change", handler as EventListener);
+    return () => window.removeEventListener("slop-audio-muted-change", handler as EventListener);
+  }, [slug]);
+
+  // In-browser Web Speech captions. Runs alongside god-mode STT — it's
+  // ~3-5s faster and viewers see the speaker's words form in real time.
+  // God-mode is suppressed (broadcast-side only, archive untouched) for
+  // any speaker whose pipeline reports alive=true; if Web Speech is
+  // unavailable (Firefox) or dies, the hook reports dead and god-mode
+  // takes the captions slot. God-mode itself doesn't run this — its
+  // captures would all be its own muted/empty mic.
+  useLiveTranscript({
+    enabled: !isGodMode && media.activeAudio && !audioMuted && episode.captionsOn,
+    episodeSttOn: episode.sttOn,
+    sendLiveCaption: mesh.sendLiveCaption,
+    sendLiveCaptionState: mesh.sendLiveCaptionState,
   });
 
   // Forward-declared so the share menu's "Stop screen" handler can clear it
