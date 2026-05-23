@@ -20,9 +20,9 @@ import type { Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 // update; the WS echo is the source of truth.
 
 const BAR_HEIGHT = 44;
-// Sized for broadcast capture (1920×1080) — 33px reads at a glance
+// Sized for broadcast capture (1920×1080) — 26px reads at a glance
 // from across the room without dwarfing the bars stacked below it.
-const FONT_SIZE = 33;
+const FONT_SIZE = 26;
 // TimelineBar (24) + HeadlinesBar (24) + TickerBar (28) = 76. Sit
 // directly on top.
 const STACK_BOTTOM = 76;
