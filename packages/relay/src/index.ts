@@ -3622,6 +3622,20 @@ app.post("/admin/finalize", async (req, reply) => {
   void (async () => {
     try {
       const room = roomFromReq(req);
+      // Read the host-baked unfurl card if the host saved one via the
+      // CardWindow disk button. fs sync is fine here — finalize is
+      // already a serialized, host-triggered flow, not a hot path.
+      let cardArchive: { bytes: Buffer; format: string } | null = null;
+      try {
+        const fs = await import("node:fs");
+        const cardPath = cardPublishedFilePath(room.id);
+        const bytes = fs.readFileSync(cardPath);
+        if (bytes.length > 0) {
+          cardArchive = { bytes, format: "image/png" };
+        }
+      } catch {
+        /* no card saved yet — manifest just ships without it */
+      }
       await finalizeRecording({
         recordingsDir: config.recordingsDir,
         pathName: "live",
@@ -3629,6 +3643,7 @@ app.post("/admin/finalize", async (req, reply) => {
         chatArchive: room.chat.readArchive(),
         transcriptArchive: room.transcript.readArchive(),
         participants: room.participants.list(),
+        cardArchive,
         onEvent: writeEvent,
       });
     } catch (err) {

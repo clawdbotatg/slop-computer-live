@@ -54,6 +54,7 @@ export type FinalizeEvent =
   | { phase: "uploading"; bytes: number; totalBytes: number }
   | { phase: "pinning-chat"; messageCount: number }
   | { phase: "pinning-transcript"; segmentCount: number }
+  | { phase: "pinning-card"; sizeBytes: number }
   | { phase: "generating-meta" }
   | { phase: "pinning-manifest" }
   | {
@@ -260,6 +261,12 @@ export async function finalizeRecording(opts: {
    *  pin (the list is tiny relative to chat/transcript/video). Pass `null`
    *  to omit. */
   participants: { address: string; handle: string | null; role: "host" | "guest" }[] | null;
+  /** The host-baked unfurl card PNG (the one CardWindow's disk-save button
+   *  produced). Pinned to IPFS during finalize and referenced under
+   *  `manifest.card.cid` so the per-episode preview image is content-addressed,
+   *  not dependent on `live.slop.computer/v1/cards/<slug>/published.png`
+   *  staying up. Pass `null` if the host never saved a card. */
+  cardArchive: { bytes: Buffer; format: string } | null;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -328,6 +335,25 @@ export async function finalizeRecording(opts: {
           };
         }
 
+        // Pin the host-baked unfurl card PNG. Same dedup-on-content-hash
+        // semantics as everything else kubo pins — same PNG → same CID
+        // across re-finalizes.
+        let cardPin: { cid: string; format: string; sizeBytes: number } | null = null;
+        const cardArchive = opts.cardArchive;
+        if (cardArchive && cardArchive.bytes.length > 0) {
+          emit({ phase: "pinning-card", sizeBytes: cardArchive.bytes.length });
+          const cardCid = await pinBlobToLocalIpfs({
+            apiUrl: opts.ipfsApiUrl,
+            blob: new Blob([cardArchive.bytes], { type: cardArchive.format }),
+            filename: "card.png",
+          });
+          cardPin = {
+            cid: cardCid,
+            format: cardArchive.format,
+            sizeBytes: cardArchive.bytes.length,
+          };
+        }
+
         // Best-effort AI pass: title, one-liner, description, topics, chapters
         // from the transcript + chat. Wrapped in try/catch and returns null on
         // any failure (no key, API down, malformed JSON) — finalize never fails
@@ -357,6 +383,7 @@ export async function finalizeRecording(opts: {
           video: { cid: string; sizeBytes: number; format: string };
           chat?: { cid: string; messageCount: number };
           transcript?: { cid: string; segmentCount: number };
+          card?: { cid: string; format: string; sizeBytes: number };
           participants?: { address: string; role: "host" | "guest"; handle: string | null }[];
           meta?: EpisodeMeta;
         } = {
@@ -369,6 +396,7 @@ export async function finalizeRecording(opts: {
         };
         if (chatPin) manifestJson.chat = chatPin;
         if (transcriptPin) manifestJson.transcript = transcriptPin;
+        if (cardPin) manifestJson.card = cardPin;
         if (opts.participants && opts.participants.length > 0) {
           // Strip extras the frontend doesn't read (firstSeenAt etc.) so the
           // manifest stays minimal. Frontend schema: { address, role?, ens? }.
