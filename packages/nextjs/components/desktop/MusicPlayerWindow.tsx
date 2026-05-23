@@ -101,6 +101,19 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // Smooth display tick — re-render every 100ms while playing so the LCD
   // and seek thumb advance without us having to spam the network.
   const [displayPosition, setDisplayPosition] = useState(0);
+  // MP3 drop-zone state: drag-hover overlay, current upload status, last
+  // error text. Multiple files dropped at once are uploaded sequentially
+  // (one POST per file) so the per-room quota check on the relay sees
+  // each file's bytes before the next request rides in.
+  const [dropHover, setDropHover] = useState(false);
+  const dropDepthRef = useRef(0);
+  const [uploadStatus, setUploadStatus] = useState<{
+    name: string;
+    pct: number;
+    index: number;
+    total: number;
+  } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Derived: current track + play state come straight from the mesh.
   const ms = mesh.musicState;
@@ -221,6 +234,69 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         ?.replace(/\.mp3$/i, "") ?? "track";
     return { title: filename, artist: "—", src };
   }, [ms?.src, tracks]);
+
+  // Upload an MP3 (or several) into the room's custom playlist. POSTs
+  // raw bytes to /v1/music/upload, which sniffs the magic bytes,
+  // enforces the per-room quota, persists to UPLOAD_MUSIC_DIR/<slug>/,
+  // and inserts a synthetic "upload:<hash>" track into the custom
+  // playlist. The mesh broadcast of `music_custom` re-paints the
+  // playlist for every peer; we also flip the active genre to "custom"
+  // so the dropper actually sees their track land.
+  const uploadMp3s = useCallback(
+    async (files: File[]) => {
+      const mp3s = files.filter(f => /\.mp3$/i.test(f.name) || f.type === "audio/mpeg" || f.type === "audio/mp3");
+      if (mp3s.length === 0) {
+        setUploadError("only .mp3 files are supported");
+        return;
+      }
+      setUploadError(null);
+      // Switch to Custom so the new track is visible immediately. The
+      // genre flip is per-mesh — every peer follows. Skip if we're
+      // already on Custom.
+      if (activeGenre !== "custom") mesh.setMusicGenre("custom");
+      for (let i = 0; i < mp3s.length; i += 1) {
+        const file = mp3s[i]!;
+        setUploadStatus({ name: file.name, pct: 0, index: i + 1, total: mp3s.length });
+        try {
+          const bytes = await file.arrayBuffer();
+          // XHR (not fetch) so we get upload progress events. The relay
+          // accepts audio/mpeg as a raw buffer via the existing
+          // addContentTypeParser registrations.
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            const url = withSlug(`${RELAY_HTTP}/v1/music/upload?name=${encodeURIComponent(file.name)}`, slug);
+            xhr.open("POST", url);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader("content-type", file.type || "audio/mpeg");
+            xhr.upload.addEventListener("progress", ev => {
+              if (!ev.lengthComputable) return;
+              setUploadStatus(s => (s ? { ...s, pct: ev.loaded / ev.total } : s));
+            });
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+                return;
+              }
+              try {
+                const err = JSON.parse(xhr.responseText) as { error?: string };
+                reject(new Error(err.error ?? `HTTP ${xhr.status}`));
+              } catch {
+                reject(new Error(`HTTP ${xhr.status}`));
+              }
+            };
+            xhr.onerror = () => reject(new Error("network error"));
+            xhr.send(bytes);
+          });
+        } catch (err) {
+          setUploadError(`${file.name}: ${(err as Error).message}`);
+          setUploadStatus(null);
+          return;
+        }
+      }
+      setUploadStatus(null);
+    },
+    [activeGenre, mesh, slug],
+  );
 
   // Custom-playlist helpers used by the [+]/[−] buttons on each row,
   // and by drag-to-reorder logic when viewing the Custom tab.
@@ -933,7 +1009,37 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
       </div>
 
       {/* === Playlist (separate beveled panel) ========================= */}
+      {/* Drag-and-drop MP3s anywhere on this panel → uploads to the
+          room's Custom playlist. stopPropagation so the desktop's
+          own file-drop handler (which routes to /v1/files for icon
+          drops) doesn't also fire. */}
       <div
+        onDragEnter={e => {
+          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          dropDepthRef.current += 1;
+          setDropHover(true);
+        }}
+        onDragOver={e => {
+          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={e => {
+          e.stopPropagation();
+          dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
+          if (dropDepthRef.current === 0) setDropHover(false);
+        }}
+        onDrop={e => {
+          if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          dropDepthRef.current = 0;
+          setDropHover(false);
+          void uploadMp3s(Array.from(e.dataTransfer.files));
+        }}
         style={{
           flex: 1,
           minHeight: 0,
@@ -945,6 +1051,7 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           borderBottom: "1px solid rgba(255,255,255,0.18)",
           display: "flex",
           flexDirection: "column",
+          position: "relative",
         }}
       >
         {/* Genre selector row — Jamendo-backed trending playlists.
@@ -1216,6 +1323,87 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             })
           )}
         </div>
+        {/* Drop hint — overlays the whole playlist panel while a file is
+            being dragged. Bright lime border + caption keeps it on-brand
+            with the Winamp/CRT look. pointer-events:none so the drag
+            events keep bubbling to the panel itself. */}
+        {dropHover ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              pointerEvents: "none",
+              background: "rgba(124,77,255,0.18)",
+              border: "2px dashed var(--slop-lime, #bcff5b)",
+              borderRadius: 2,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--slop-lime, #bcff5b)",
+              fontSize: 11,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              zIndex: 5,
+            }}
+          >
+            drop mp3s to add to custom playlist
+          </div>
+        ) : null}
+        {/* In-flight upload progress — sits above the playlist rows so
+            the user sees their file climbing 0→100%, then the new
+            track pops into Custom via the mesh broadcast. */}
+        {uploadStatus ? (
+          <div
+            style={{
+              position: "absolute",
+              left: 8,
+              right: 8,
+              bottom: 8,
+              padding: "6px 8px",
+              background: "rgba(0,0,0,0.85)",
+              border: "1px solid rgba(188,255,91,0.4)",
+              borderRadius: 2,
+              fontSize: 9,
+              color: "var(--slop-lime, #bcff5b)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              zIndex: 4,
+            }}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              UPLOADING {uploadStatus.index}/{uploadStatus.total} — {uploadStatus.name}
+            </span>
+            <LoadingBar
+              cells={20}
+              progress={uploadStatus.pct * 100}
+              style={{ fontSize: 9, color: "var(--slop-lime, #bcff5b)" }}
+            />
+          </div>
+        ) : null}
+        {uploadError && !uploadStatus ? (
+          <div
+            onClick={() => setUploadError(null)}
+            style={{
+              position: "absolute",
+              left: 8,
+              right: 8,
+              bottom: 8,
+              padding: "6px 8px",
+              background: "rgba(0,0,0,0.85)",
+              border: "1px solid var(--slop-magenta, #ff3ec9)",
+              borderRadius: 2,
+              fontSize: 9,
+              color: "var(--slop-magenta, #ff3ec9)",
+              letterSpacing: "0.08em",
+              cursor: "pointer",
+              zIndex: 4,
+            }}
+            title="click to dismiss"
+          >
+            UPLOAD FAILED — {uploadError}
+          </div>
+        ) : null}
       </div>
     </div>
   );

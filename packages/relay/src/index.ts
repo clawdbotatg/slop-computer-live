@@ -22,6 +22,7 @@ import {
   DEFAULT_SLUG,
   findPeerRoom,
   getOrCreateRoom,
+  getRoom,
   hibernateRoom,
   isValidSlug,
   listRooms,
@@ -737,6 +738,7 @@ app.get("/v1/state", async (req, reply) => {
     scrollSync: roomFromReq(req).scrollSync.all(),
     uiState: roomFromReq(req).uiState.all(),
     walletChat: roomFromReq(req).walletChat.current().state,
+    headlineState: roomFromReq(req).headline.getState(),
   };
 });
 
@@ -961,6 +963,20 @@ app.post("/v1/headlines/refresh", async (req, reply) => {
     return reply.code(429).send({ error: "rate-limited", retryAfterMs: result.retryAfterMs });
   }
   return { ok: true, state: result.state };
+});
+
+// --- On-screen headline: host-only set/clear --------------------------------
+// One-line static banner pinned above the Twitter timeline bar. Host
+// edits inline (Desktop sends `{ text }`); empty / whitespace-only
+// clears it and the banner collapses to zero height on every peer.
+// Future: an AI agent could call the same endpoint with a transcript-
+// derived headline.
+app.post<{ Body: { text?: unknown } }>("/v1/headline", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const state = roomFromReq(req).headline.setText(req.body?.text);
+  return { ok: true, state };
 });
 
 // --- Chat -------------------------------------------------------------------
@@ -1838,6 +1854,19 @@ app.get<{ Params: { slug: string; filename: string } }>(
 // in prod, `./.slop-data/music` in dev). Manual range-request support so
 // HTML5 <audio> can seek mid-track for the mesh sync.
 const MUSIC_DIR = process.env.MUSIC_DIR ?? "./.slop-data/music";
+
+// Guest uploads land here, partitioned by room slug:
+//   <UPLOAD_MUSIC_DIR>/<slug>/<sha256-prefix>.mp3
+// The same bytes from two different guests share a file (content-addressed
+// inside a room). Per-room quotas are enforced by walking the room's dir
+// on each upload — fine for the small N we cap to.
+const UPLOAD_MUSIC_DIR = process.env.UPLOAD_MUSIC_DIR ?? `${MUSIC_DIR}/uploads`;
+const UPLOAD_MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES ?? String(25 * 1024 * 1024), 10);
+const UPLOAD_MAX_BYTES_PER_ROOM = parseInt(
+  process.env.UPLOAD_MAX_BYTES_PER_ROOM ?? String(200 * 1024 * 1024),
+  10,
+);
+const UPLOAD_MAX_TRACKS_PER_ROOM = parseInt(process.env.UPLOAD_MAX_TRACKS_PER_ROOM ?? "30", 10);
 
 function musicContentType(ext: string): string {
   switch (ext.toLowerCase()) {
@@ -2870,7 +2899,20 @@ app.post<{ Body: AddCustomBody }>("/v1/music/custom/add", async (req, reply) => 
 app.delete<{ Params: { jamendoId: string } }>("/v1/music/custom/:jamendoId", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  const tracks = roomFromReq(req).jamendo.removeFromCustom(req.params.jamendoId);
+  const jamendoId = req.params.jamendoId;
+  const tracks = roomFromReq(req).jamendo.removeFromCustom(jamendoId);
+  // Garbage-collect the underlying MP3 for uploaded tracks — Jamendo
+  // files stay (shared across rooms via the global cache), but uploads
+  // are per-room so removing the playlist entry should free the disk.
+  // Otherwise a room hits its byte-quota with files no one can play.
+  if (jamendoId.startsWith("upload:")) {
+    const hash = jamendoId.slice("upload:".length);
+    if (/^[a-f0-9]{16,64}$/.test(hash)) {
+      const slug = slugFromReq(req);
+      const fs = await import("node:fs/promises");
+      fs.unlink(`${UPLOAD_MUSIC_DIR}/${slug}/${hash}.mp3`).catch(() => {});
+    }
+  }
   return { ok: true, tracks };
 });
 
@@ -2884,6 +2926,120 @@ app.post<{ Body: ReorderCustomBody }>("/v1/music/custom/reorder", async (req, re
   const tracks = roomFromReq(req).jamendo.reorderCustom(ids);
   return { ok: true, tracks };
 });
+
+// --- Guest MP3 upload -----------------------------------------------------
+// Anyone room-authed (guest with a room cookie OR an agent holding a
+// room-scoped bearer) can drop an MP3 into the room's Custom playlist.
+// Raw bytes in the body, original filename via `?name=`. We sniff the
+// first few bytes to confirm it's actually an MP3 — content-type is
+// trusted only as a hint. Per-room caps: max 30 tracks, 200 MB total.
+// The track lands in the Custom playlist with a synthetic
+// jamendoId="upload:<hash>" so the existing custom-add / remove /
+// reorder plumbing handles it identically to a Jamendo track.
+
+function looksLikeMp3(buf: Buffer): boolean {
+  if (buf.length < 4) return false;
+  // ID3v2 tag header — "ID3" followed by a version byte.
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true;
+  // MPEG audio frame sync — 0xFFFx (11 set bits, MPEG-1/2/2.5 layers).
+  // We accept any plausible MP3 frame header, not just one specific layer.
+  if (buf[0] === 0xff && ((buf[1] ?? 0) & 0xe0) === 0xe0) return true;
+  return false;
+}
+
+async function uploadRoomUsage(slug: string): Promise<{ count: number; bytes: number }> {
+  const fs = await import("node:fs/promises");
+  const dir = `${UPLOAD_MUSIC_DIR}/${slug}`;
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return { count: 0, bytes: 0 };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const name of entries) {
+    if (!name.endsWith(".mp3")) continue;
+    try {
+      const stat = await fs.stat(`${dir}/${name}`);
+      if (stat.isFile()) {
+        count += 1;
+        bytes += stat.size;
+      }
+    } catch {
+      /* race: file removed during walk */
+    }
+  }
+  return { count, bytes };
+}
+
+function cleanUploadTitle(name: string): string {
+  const base = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_\-]+/g, " ").trim();
+  if (!base) return "uploaded track";
+  return base.slice(0, 120);
+}
+
+type MusicUploadQuery = { name?: string; slug?: string };
+app.post<{ Querystring: MusicUploadQuery }>(
+  "/v1/music/upload",
+  { bodyLimit: UPLOAD_MAX_BYTES },
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return reply.code(400).send({ error: "empty-body", note: "POST raw MP3 bytes with `?name=<filename>`" });
+    }
+    if (body.length > UPLOAD_MAX_BYTES) {
+      return reply.code(413).send({ error: "too-large", maxBytes: UPLOAD_MAX_BYTES });
+    }
+    if (!looksLikeMp3(body)) {
+      return reply.code(415).send({ error: "not-mp3", note: "first bytes must be an ID3 tag or MPEG frame sync" });
+    }
+
+    const slug = slugFromReq(req);
+    const usage = await uploadRoomUsage(slug);
+    if (usage.count >= UPLOAD_MAX_TRACKS_PER_ROOM) {
+      return reply.code(429).send({ error: "track-quota-exceeded", maxTracks: UPLOAD_MAX_TRACKS_PER_ROOM });
+    }
+    if (usage.bytes + body.length > UPLOAD_MAX_BYTES_PER_ROOM) {
+      return reply
+        .code(429)
+        .send({ error: "byte-quota-exceeded", maxBytesPerRoom: UPLOAD_MAX_BYTES_PER_ROOM, usedBytes: usage.bytes });
+    }
+
+    const crypto = await import("node:crypto");
+    const fs = await import("node:fs/promises");
+    const hash = crypto.createHash("sha256").update(body).digest("hex").slice(0, 16);
+    const dir = `${UPLOAD_MUSIC_DIR}/${slug}`;
+    await fs.mkdir(dir, { recursive: true });
+    const filepath = `${dir}/${hash}.mp3`;
+    // Content-addressed: if the same bytes were already uploaded to this
+    // room, skip the write but still re-add to custom (dedup is per
+    // playlist, not per-disk-file, via JamendoRoomState.addToCustom).
+    try {
+      await fs.access(filepath);
+    } catch {
+      await fs.writeFile(filepath, body);
+    }
+
+    const queryName = typeof req.query?.name === "string" ? req.query.name : "";
+    const headerName = typeof req.headers["x-filename"] === "string" ? (req.headers["x-filename"] as string) : "";
+    const title = cleanUploadTitle(queryName || headerName || "uploaded track");
+    const artistLabel = a.session.handle ?? a.session.address ?? "guest";
+    const track: JamendoTrack = {
+      title,
+      artist: artistLabel,
+      src: `/uploaded-music/${slug}/${hash}.mp3`,
+      duration: 0,
+      jamendoId: `upload:${hash}`,
+      license: "",
+      source: "upload",
+    };
+    const tracks = roomFromReq(req).jamendo.addToCustom(track);
+    return { ok: true, track, tracks };
+  },
+);
 
 // Static serve for the per-genre MP3s. Same range-supporting pattern as
 // /music/<filename>, but two path segments deep so genre playlists stay
@@ -2916,6 +3072,51 @@ app.get<{ Params: { genre: string; filename: string } }>(
     const rangeHeader = req.headers.range;
     reply.header("accept-ranges", "bytes");
     reply.header("content-type", ct);
+    reply.header("cache-control", "public, max-age=3600");
+    if (rangeHeader && /^bytes=/.test(rangeHeader)) {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+      if (m && m[1] !== undefined) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? parseInt(m[2], 10) : stat.size - 1;
+        if (Number.isFinite(start) && start <= end && end < stat.size) {
+          reply.code(206);
+          reply.header("content-range", `bytes ${start}-${end}/${stat.size}`);
+          reply.header("content-length", end - start + 1);
+          return reply.send(fsSync.createReadStream(filepath, { start, end }));
+        }
+      }
+    }
+    reply.header("content-length", stat.size);
+    return reply.send(fsSync.createReadStream(filepath));
+  },
+);
+
+// Public static for guest uploads. Same range pattern as /jamendo-music
+// but partitioned by room slug rather than genre. No auth gate: the
+// underlying MP3 is content-addressed by a 16-hex prefix that has to
+// already be in the room's custom playlist for any client to even
+// know the URL, so enumeration is gated through the same v1 surface
+// that already auths.
+app.get<{ Params: { slug: string; filename: string } }>(
+  "/uploaded-music/:slug/:filename",
+  async (req, reply) => {
+    const { slug, filename } = req.params;
+    if (!isValidSlug(slug)) return reply.code(404).send({ error: "bad-slug" });
+    if (!/^[a-f0-9]{16,64}\.mp3$/i.test(filename) || filename.includes("..")) {
+      return reply.code(400).send({ error: "bad-name" });
+    }
+    const fs = await import("node:fs/promises");
+    const fsSync = await import("node:fs");
+    const filepath = `${UPLOAD_MUSIC_DIR}/${slug}/${filename}`;
+    let stat;
+    try {
+      stat = await fs.stat(filepath);
+    } catch {
+      return reply.code(404).send({ error: "not-found" });
+    }
+    const rangeHeader = req.headers.range;
+    reply.header("accept-ranges", "bytes");
+    reply.header("content-type", "audio/mpeg");
     reply.header("cache-control", "public, max-age=3600");
     if (rangeHeader && /^bytes=/.test(rangeHeader)) {
       const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
@@ -3756,6 +3957,59 @@ app.get("/admin/rooms", async (req, reply) => {
   return { rooms };
 });
 
+// Host-only: nuke a room. Closes all live peers, asks browser-host to
+// destroy its BrowserContext, drops the in-memory Room, and removes
+// ./.slop-data/rooms/<slug> from disk. The host must echo the slug
+// back via `confirm` — the admin UI requires the user to type it,
+// and we re-check server-side so a misconfigured client can't blow
+// away a room with an accidental click.
+//
+// Refuses DEFAULT_SLUG (the always-on sandbox inherits legacy paths)
+// and anything in HOST_WHITELIST (those respawn immediately anyway).
+type RoomDeleteBody = { confirm?: unknown };
+app.delete<{ Params: { slug: string }; Body: RoomDeleteBody }>(
+  "/admin/rooms/:slug",
+  async (req, reply) => {
+    const auth = requireHost(req);
+    if (!auth.ok) return reply.code(401).send({ error: auth.error });
+    const slug = req.params.slug;
+    if (!isValidSlug(slug)) return reply.code(400).send({ error: "bad-slug" });
+    if (slug === DEFAULT_SLUG) return reply.code(400).send({ error: "cannot-delete-default" });
+    if (HOST_WHITELIST.includes(slug)) {
+      return reply.code(400).send({ error: "cannot-delete-whitelisted" });
+    }
+    const body = (req.body ?? {}) as RoomDeleteBody;
+    const confirm = typeof body.confirm === "string" ? body.confirm : "";
+    if (confirm !== slug) {
+      return reply.code(400).send({ error: "confirm-must-match-slug" });
+    }
+    const room = getRoom(slug);
+    if (room) {
+      for (const peer of room.allPeers()) {
+        try {
+          send(peer.ws, { type: "kicked" });
+          peer.ws.close(4404, "room-deleted");
+        } catch {
+          /* ignore */
+        }
+      }
+      room.clearPeers();
+      hibernateRoom(slug);
+    }
+    void notifyBrowserHostHibernate(slug);
+    const fs = await import("node:fs");
+    const dir = `./.slop-data/rooms/${slug}`;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      app.log.warn({ slug, err: (err as Error).message }, "room dir rm failed");
+      return reply.code(500).send({ error: "rm-failed" });
+    }
+    app.log.info({ slug, host: auth.address }, "room deleted");
+    return { ok: true, slug };
+  },
+);
+
 // Host-only "nuke the session wallet" — wipes current + history + tx queue.
 // Same effect as `rm .slop-data/wallet.json` but doesn't require shell access.
 // Used by the admin page's "Reset session wallet" button so the host can
@@ -4037,6 +4291,7 @@ app.register(async function signalRoutes(fastify) {
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
+      headlineState: room.headline.getState(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 

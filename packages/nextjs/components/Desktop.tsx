@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
+import toast, { type Toast } from "react-hot-toast";
 import type { Address as AddressType } from "viem";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
@@ -20,6 +21,7 @@ import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
 import { HeadlinesBar } from "~~/components/desktop/HeadlinesBar";
 import { IncomingTxModal } from "~~/components/desktop/IncomingTxModal";
+import { MarqueeHeadline } from "~~/components/desktop/MarqueeHeadline";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NewsWindow } from "~~/components/desktop/NewsWindow";
@@ -30,6 +32,7 @@ import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
+import { SubtitleCaption } from "~~/components/desktop/SubtitleCaption";
 import { TickerBar } from "~~/components/desktop/TickerBar";
 import { TileBadge } from "~~/components/desktop/TileBadge";
 import { TimelineBar } from "~~/components/desktop/TimelineBar";
@@ -337,6 +340,11 @@ function DesktopInner({ slug }: { slug: string }) {
     [mesh.peers, mesh.customNames],
   );
 
+  // One-shot per session: if the user starts a screen-share without
+  // checking "Share tab audio" in the browser picker, surface the tip
+  // exactly once. Subsequent screen-shares stay quiet — they know now.
+  const screenAudioHintShownRef = useRef(false);
+
   const addStream = useCallback(
     (h: LocalStreamHandle) => {
       setStreams(prev => (prev.some(s => s.id === h.id) ? prev : [...prev, h]));
@@ -348,6 +356,32 @@ function DesktopInner({ slug }: { slug: string }) {
       // placeholder until the user re-acquires.
       const r = readResume(slug);
       writeResume(slug, { ...r, [h.kind]: true });
+      if (h.kind === "screen" && h.stream.getAudioTracks().length === 0 && !screenAudioHintShownRef.current) {
+        screenAudioHintShownRef.current = true;
+        toast.custom(
+          (t: Toast) => (
+            <div
+              style={{
+                background: "var(--slop-bg-panel, #1a0d2e)",
+                border: "1px solid var(--slop-magenta, #ff3ec9)",
+                color: "var(--slop-text, #fff)",
+                padding: "10px 14px",
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                maxWidth: 360,
+                boxShadow: "0 6px 18px rgba(0,0,0,0.55)",
+                opacity: t.visible ? 1 : 0,
+                transition: "opacity 200ms",
+              }}
+            >
+              💡 tip: to share sound too, pick a <b>Chrome Tab</b> and check <b>&quot;Share tab audio&quot;</b> in the
+              picker. window / screen audio doesn&apos;t work on mac.
+            </div>
+          ),
+          { duration: 9000, position: "top-center" },
+        );
+      }
     },
     [mesh, myLabel, slug],
   );
@@ -1980,6 +2014,31 @@ function DesktopInner({ slug }: { slug: string }) {
                   </div>
                 )}
                 <TileBadge bands={pubBands} label={badgeLabel} />
+                {/* Confirm screen-share audio is actually flowing. Only
+                    shows when the publisher checked "Share tab audio" in
+                    the browser picker; absence is itself a useful signal
+                    ("oh, I forgot to tick the box"). */}
+                {pub.kind === "screen" && stream && stream.getAudioTracks().length > 0 ? (
+                  <div
+                    title="sharing tab audio"
+                    style={{
+                      position: "absolute",
+                      bottom: 8,
+                      right: 8,
+                      padding: "3px 8px",
+                      background: "var(--slop-magenta, #ff3ec9)",
+                      color: "#fff",
+                      fontFamily: "var(--slop-font-display)",
+                      fontSize: 10,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      pointerEvents: "none",
+                      zIndex: 4,
+                    }}
+                  >
+                    🔊 audio
+                  </div>
+                ) : null}
               </div>
             </Window>
           );
@@ -2279,6 +2338,17 @@ function DesktopInner({ slug }: { slug: string }) {
             visible on the sign-in screen. */}
         {session.authenticated ? <SlopBackdrop /> : null}
         {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
+        {/* Live STT caption — chyron-style subtitle of the most recent
+            transcript segment. Sits above MarqueeHeadline when a
+            headline is set, otherwise above the TimelineBar. Driven
+            entirely by the god-mode tab's STT pipeline; auto-fades
+            after a few seconds of silence. */}
+        <SubtitleCaption mesh={mesh} />
+        {/* Static "headline" banner — host-written one-liner that sits
+            on top of the timeline bar. Collapses to zero height when
+            empty so the rest of the bar stack stays put. Host-only
+            edit; everyone else just reads it. */}
+        <MarqueeHeadline mesh={mesh} />
         {/* Timeline bar — top of the three-bar stack. Host's Twitter
             home feed (ranked by engagement on the relay). Scrolls
             fastest so the visual hierarchy reads "fastest at top,

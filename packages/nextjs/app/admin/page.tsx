@@ -377,6 +377,13 @@ const AdminPage: NextPage = () => {
     writeAdminPasswords(next);
     setRoomPasswords(next);
   };
+  const forgetRoomPassword = (slug: string) => {
+    const next = { ...readAdminPasswords() };
+    if (!(slug in next)) return;
+    delete next[slug];
+    writeAdminPasswords(next);
+    setRoomPasswords(next);
+  };
 
   useEffect(() => {
     if (!mounted) return;
@@ -637,6 +644,50 @@ const AdminPage: NextPage = () => {
       setCopyStatus(`/${slug} transcript reset (${data?.clearedCount ?? 0} segments) ✓`);
     } catch (e) {
       setCopyStatus((e as Error).message || "network error");
+    }
+  };
+
+  // Two-stage room delete: clicking "Delete" opens a modal that requires
+  // the host to type the slug exactly before the destructive request
+  // fires. The server re-validates the typed slug to defend against an
+  // accidental click in a misconfigured client.
+  const [deletePendingSlug, setDeletePendingSlug] = useState<string | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState<string>("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const openDeleteModal = (slug: string) => {
+    setDeletePendingSlug(slug);
+    setDeleteConfirmText("");
+  };
+  const closeDeleteModal = () => {
+    if (deleteBusy) return;
+    setDeletePendingSlug(null);
+    setDeleteConfirmText("");
+  };
+  const deleteRoom = async (slug: string) => {
+    setCopyStatus("");
+    setDeleteBusy(true);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/rooms/${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: slug }),
+      });
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) {
+        setCopyStatus(`delete failed: ${data?.error ?? res.statusText}`);
+        return;
+      }
+      forgetRoomPassword(slug);
+      setRooms(prev => prev.filter(r => r.slug !== slug));
+      setDeletePendingSlug(null);
+      setDeleteConfirmText("");
+      setCopyStatus(`/${slug} deleted ✓`);
+      void fetchRooms();
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -988,6 +1039,19 @@ const AdminPage: NextPage = () => {
                 >
                   [god]
                 </button>
+                <a
+                  href={`https://slop.computer/admin?liveSlugToSchedule=${encodeURIComponent(r.slug)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="slop-link"
+                  title="open the frontpage scheduler with this slug preloaded"
+                  style={{
+                    fontFamily: "var(--slop-font-display)",
+                    textTransform: "lowercase",
+                  }}
+                >
+                  [schedule]
+                </a>
                 <span style={{ flex: 1 }} />
                 <Button
                   onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
@@ -1017,6 +1081,15 @@ const AdminPage: NextPage = () => {
                 <Button variant="primary" onClick={() => void copyRoomLink(r.slug)}>
                   Copy link
                 </Button>
+                {r.slug === DEFAULT_SLUG ? null : (
+                  <Button
+                    onClick={() => openDeleteModal(r.slug)}
+                    style={{ background: "var(--slop-accent-warn, #c33)", color: "#fff" }}
+                    title="permanently delete this room (in-memory + on-disk)"
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             ))}
           </div>
@@ -1033,6 +1106,69 @@ const AdminPage: NextPage = () => {
           </p>
         ) : null}
       </Bevel>
+
+      {deletePendingSlug ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={closeDeleteModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: 480, width: "92%" }}>
+            <Bevel style={{ padding: 18 }}>
+              <h2
+                style={{
+                  margin: 0,
+                  fontFamily: "var(--slop-font-display)",
+                  textTransform: "uppercase",
+                  color: "var(--slop-magenta, #ff3ec9)",
+                }}
+              >
+                Delete /{deletePendingSlug}?
+              </h2>
+              <p style={{ fontSize: 13, margin: "10px 0", color: "var(--slop-text-muted)" }}>
+                This <strong>permanently</strong> kicks every live peer, tells browser-host to drop its context, and
+                removes <code>.slop-data/rooms/{deletePendingSlug}</code> from disk. There is no undo.
+              </p>
+              <p style={{ fontSize: 12, margin: "8px 0 6px" }}>
+                Type <code>{deletePendingSlug}</code> below to confirm:
+              </p>
+              <TextField
+                placeholder={deletePendingSlug}
+                value={deleteConfirmText}
+                onChange={e => setDeleteConfirmText(e.target.value)}
+                autoFocus
+                style={{ width: "100%" }}
+                disabled={deleteBusy}
+              />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+                <Button onClick={closeDeleteModal} disabled={deleteBusy}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => void deleteRoom(deletePendingSlug)}
+                  disabled={deleteBusy || deleteConfirmText !== deletePendingSlug}
+                  style={
+                    deleteConfirmText === deletePendingSlug && !deleteBusy
+                      ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" }
+                      : undefined
+                  }
+                >
+                  {deleteBusy ? "Deleting…" : "Delete forever"}
+                </Button>
+              </div>
+            </Bevel>
+          </div>
+        </div>
+      ) : null}
 
       <Bevel style={{ padding: 16, maxWidth: 960 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Services</h2>

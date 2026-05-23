@@ -380,6 +380,27 @@ export type TimelineState = {
   updatedAt: number;
 };
 
+/** On-screen headline — a single short string the host writes by hand
+ *  during a live show, broadcast to every peer. Empty `text` collapses
+ *  the bar to zero height. Mirrors `packages/relay/src/headline.ts`. */
+export type HeadlineState = {
+  text: string;
+  updatedAt: number;
+};
+
+/** A finalized STT segment. Mirrors `packages/relay/src/transcript.ts`.
+ *  Broadcast on the room WS as `{type:"transcript_seg", seg}` whenever a
+ *  new line is appended (god-mode Whisper or peer Web Speech). */
+export type TranscriptSegment = {
+  id: string;
+  ts: number;
+  address: string | null;
+  handle: string | null;
+  anonId?: string | null;
+  text: string;
+  source: "live" | "spectator" | "agent";
+};
+
 /** News-digest item — unified shape for crypto headlines, AI headlines,
  *  and tweets, used by the News app. Mirrors
  *  `packages/relay/src/news-digest.ts`. */
@@ -802,6 +823,17 @@ export type PeerMeshState = {
   headlinesState: HeadlinesState | null;
   /** Latest Twitter timeline snapshot. `null` until first poll. */
   timelineState: TimelineState | null;
+  /** Host-written on-screen headline. Empty `text` = no banner shown.
+   *  `null` until the first ws snapshot arrives. */
+  headlineState: HeadlineState | null;
+  /** Host-only: write the on-screen headline. Empty / whitespace clears it. */
+  setHeadline: (text: string) => void;
+  /** Most recent STT segment, pushed by the room's WS broadcast when
+   *  Whisper appends a new line. `null` until the first segment arrives
+   *  in this session. Used by the on-screen subtitle caption. We don't
+   *  retain the full transcript here — that's what /v1/transcript +
+   *  TranscriptWindow are for. */
+  latestTranscriptSeg: TranscriptSegment | null;
   /** Curated news digest (interleaved crypto/AI/tweets + AI featured
    *  picks). `null` until the first rebuild lands. */
   newsDigestState: NewsDigestState | null;
@@ -1023,6 +1055,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [tickerState, setTickerState] = useState<TickerState | null>(null);
   const [headlinesState, setHeadlinesState] = useState<HeadlinesState | null>(null);
   const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
+  const [headlineState, setHeadlineState] = useState<HeadlineState | null>(null);
+  const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [musicGenres, setMusicGenresState] = useState<{ id: string; label: string }[]>([]);
@@ -1568,6 +1602,24 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [slug],
   );
 
+  // Host-only: write the on-screen headline. Empty / whitespace clears
+  // it (the banner collapses to zero height on every peer). No optimistic
+  // local update — the relay echoes `headline` on the WS so every peer
+  // including the host flips at once. Server returns 403 for non-hosts;
+  // the UI only exposes the edit affordance to the host so the POST
+  // should be the only failure surface in practice.
+  const setHeadline = useCallback(
+    (text: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/headline`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      }).catch(err => console.warn("setHeadline failed", err));
+    },
+    [slug],
+  );
+
   // Clear the shared title card — anyone in the room may reset, which
   // hides the generated PNG and brings the template back. Relay
   // broadcasts `card_state: null` so every peer flips at once.
@@ -2003,6 +2055,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.timelineState && typeof msg.timelineState === "object") {
             setTimelineState(msg.timelineState as TimelineState);
           }
+          if (msg.headlineState && typeof msg.headlineState === "object") {
+            setHeadlineState(msg.headlineState as HeadlineState);
+          }
           if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
             setNewsDigestState(msg.newsDigestState as NewsDigestState);
           }
@@ -2417,6 +2472,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "headline" && msg.state && typeof msg.state === "object") {
+          setHeadlineState(msg.state as HeadlineState);
+          return;
+        }
+
+        if (msg.type === "transcript_seg" && msg.seg && typeof msg.seg === "object") {
+          // Only the latest segment — the subtitle UI cross-fades on
+          // each update and doesn't need history. The full transcript
+          // archive lives on /v1/transcript for the dedicated window.
+          setLatestTranscriptSeg(msg.seg as TranscriptSegment);
+          return;
+        }
+
         if (msg.type === "news_digest" && msg.state && typeof msg.state === "object") {
           setNewsDigestState(msg.state as NewsDigestState);
           return;
@@ -2675,6 +2743,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     tickerState,
     headlinesState,
     timelineState,
+    headlineState,
+    setHeadline,
+    latestTranscriptSeg,
     newsDigestState,
     files,
     deleteFile,
