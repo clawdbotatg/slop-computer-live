@@ -470,9 +470,10 @@ function DesktopInner({ slug }: { slug: string }) {
   // unavailable (Firefox) or dies, the hook reports dead and god-mode
   // takes the captions slot. God-mode itself doesn't run this — its
   // captures would all be its own muted/empty mic.
-  useLiveTranscript({
+  const liveStt = useLiveTranscript({
     enabled: !isGodMode && media.activeAudio && !audioMuted && episode.captionsOn,
     episodeSttOn: episode.sttOn,
+    meshConnected: mesh.connected,
     sendLiveCaption: mesh.sendLiveCaption,
     sendLiveCaptionState: mesh.sendLiveCaptionState,
   });
@@ -1843,6 +1844,9 @@ function DesktopInner({ slug }: { slug: string }) {
         meshConnected={mesh.connected}
         godActive={isGodMode}
         godListening={isGodMode && godStt.listening}
+        localSttSupported={!isGodMode && liveStt.supported}
+        localSttListening={liveStt.listening}
+        localSttError={liveStt.lastError}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
         slug={slug}

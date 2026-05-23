@@ -152,7 +152,11 @@ export const SubtitleCaption = ({ mesh }: SubtitleCaptionProps) => {
         left: "50%",
         bottom,
         transform: "translateX(-50%)",
-        zIndex: 60,
+        // Above app windows (which use mesh slot.z, normally 1-100s) so
+        // a wide window can't cover the live caption. Modals + the
+        // command palette still beat us (10000+). 9500 leaves headroom
+        // for future bars without re-tuning.
+        zIndex: 9500,
         maxWidth: "min(86vw, 1400px)",
         padding: "8px 18px",
         background: "rgba(6,8,24,0.78)",

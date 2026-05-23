@@ -40,6 +40,20 @@ interface MenuBarProps {
    *  the cyan halo behind 🛰️ that grows + glows during speech and
    *  shrinks during silence. */
   godListening?: boolean;
+  /** True when the local browser supports Web Speech and this peer
+   *  is wired up to broadcast in-browser STT captions (own desktop
+   *  session, not god-mode). Renders 🎙️ in the menubar so the
+   *  speaker can confirm at a glance that captions are flying off
+   *  their own machine and not waiting on the god-mode round trip. */
+  localSttSupported?: boolean;
+  /** True while a SpeechRecognition session is actively running.
+   *  Drives the magenta halo around 🎙️. */
+  localSttListening?: boolean;
+  /** Last recognizer error, surfaced in the title attribute so the
+   *  user can hover the 🎙️ to see why captions stopped (denied
+   *  perms, recognizer crash, no-speech). `null` means everything
+   *  is healthy. */
+  localSttError?: string | null;
   /** Optional session-wallet chip. If a wallet address is supplied
    *  we render the Address component as a clickable chip; otherwise
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
@@ -59,6 +73,9 @@ export const MenuBar = ({
   meshConnected,
   godActive = false,
   godListening = false,
+  localSttSupported = false,
+  localSttListening = false,
+  localSttError = null,
   walletAddress,
   onWalletClick,
   slug,
@@ -162,6 +179,62 @@ export const MenuBar = ({
                 }}
               />
               <span style={{ position: "relative", zIndex: 1 }}>🛰️</span>
+            </span>
+          ) : null}
+          {localSttSupported ? (
+            <span
+              className="slop-menubar__item"
+              style={{
+                cursor: "help",
+                fontSize: 14,
+                padding: "0 6px",
+                position: "relative",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title={
+                localSttError
+                  ? `local STT error: ${localSttError} — falling back to god-mode captions for this speaker`
+                  : localSttListening
+                    ? "🎙️ local Web Speech STT is live — your captions ride your browser, not the server"
+                    : "🎙️ local STT wired up — will engage when you start talking"
+              }
+              aria-label={localSttListening ? "local STT listening" : "local STT idle"}
+            >
+              {/* Magenta halo to distinguish from god-mode's cyan one.
+                  Halo grows when actively transcribing so the speaker
+                  can verify the pipeline is firing in real time. */}
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  width: localSttListening ? 24 : 8,
+                  height: localSttListening ? 24 : 8,
+                  borderRadius: "50%",
+                  background: "var(--slop-magenta, #ff3ec9)",
+                  opacity: localSttError ? 0.4 : localSttListening ? 0.55 : 0.18,
+                  boxShadow: localSttListening
+                    ? "0 0 14px 2px var(--slop-magenta, #ff3ec9)"
+                    : "0 0 4px var(--slop-magenta, #ff3ec9)",
+                  transform: "translate(-50%, -50%)",
+                  transition: "width 220ms ease, height 220ms ease, opacity 220ms ease, box-shadow 220ms ease",
+                  pointerEvents: "none",
+                  zIndex: 0,
+                  filter: localSttError ? "grayscale(0.5)" : "none",
+                }}
+              />
+              <span
+                style={{
+                  position: "relative",
+                  zIndex: 1,
+                  opacity: localSttError ? 0.5 : 1,
+                }}
+              >
+                🎙️
+              </span>
             </span>
           ) : null}
           <span

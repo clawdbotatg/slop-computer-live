@@ -63,6 +63,12 @@ export type UseLiveTranscriptOptions = {
   /** Host-controlled per-episode flag, read from /v1/episode. When false,
    *  the hook stays dormant even if `enabled` is true. */
   episodeSttOn: boolean;
+  /** Mesh WS connection state. We re-emit our latest alive flag every
+   *  time the socket reopens — the server clears its per-speaker
+   *  arbitration map on disconnect (sticky-until-rejoin), so without
+   *  the re-emit a reconnected speaker silently falls back to god-mode
+   *  captions for the rest of the session. */
+  meshConnected: boolean;
   /** Push a `live_caption` frame on the room WS. Pre-bound (no slug
    *  needed) — the hook just hands off the text + isFinal flag. */
   sendLiveCaption: (text: string, isFinal: boolean) => void;
@@ -100,7 +106,15 @@ const INTERIM_THROTTLE_MS = 100;
 const HUNG_TIMEOUT_MS = 20_000;
 
 export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTranscriptResult {
-  const { enabled: rawEnabled, episodeSttOn, sendLiveCaption, sendLiveCaptionState, lang = "en-US", onError } = opts;
+  const {
+    enabled: rawEnabled,
+    episodeSttOn,
+    meshConnected,
+    sendLiveCaption,
+    sendLiveCaptionState,
+    lang = "en-US",
+    onError,
+  } = opts;
   // Hook is dormant unless BOTH the per-peer gate AND the episode-wide
   // STT flag are on. Either being false stops recognition.
   const enabled = rawEnabled && episodeSttOn;
@@ -125,8 +139,15 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   // call start() while a session is already active).
   const startingRef = useRef(false);
   // Track the alive flag the server thinks we're in, so we don't spam
-  // identical state frames on every minor event.
+  // identical state frames on every minor event. NOTE: this is the
+  // server's *believed* state — reset to null on reconnect since the
+  // server clears its arbitration map when our peer disconnects, and
+  // the next live event must re-prime it.
   const aliveSentRef = useRef<boolean | null>(null);
+  // Independently track the alive flag we *want* the server to know,
+  // so the reconnect effect can re-emit it without recomputing from
+  // recognizer state. Initialized lazily when we first decide.
+  const aliveDesiredRef = useRef<boolean | null>(null);
 
   // Interim throttle: hold the latest pending interim until either
   // INTERIM_THROTTLE_MS elapses or a final lands (which we flush
@@ -138,6 +159,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   const lastResultAtRef = useRef(0);
 
   const setAlive = (alive: boolean) => {
+    aliveDesiredRef.current = alive;
     if (aliveSentRef.current === alive) return;
     aliveSentRef.current = alive;
     sendStateRef.current(alive);
@@ -328,6 +350,29 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     }, 5_000);
     return () => window.clearInterval(id);
   }, [enabled]);
+
+  // WS reconnect handling. Two scenarios this covers:
+  //   1. Initial open race: the gate effect may call setAlive(true)
+  //      before the mesh WS is OPEN; usePeerMesh's send() drops sends
+  //      while not-OPEN. Without this re-emit the server never learns
+  //      the speaker has local STT and keeps broadcasting god-mode.
+  //   2. Mid-session reconnect: the server clears its arbitration map
+  //      on peer disconnect (sticky-until-rejoin), so the rejoined
+  //      peer must re-prime the flag.
+  // Either way: every false→true edge of meshConnected, force-send
+  // whatever state aliveDesiredRef holds.
+  useEffect(() => {
+    if (!meshConnected) {
+      // Server forgets us on disconnect; flip the *sent* shadow so the
+      // next reconnect re-emits even if the desired state hasn't changed.
+      aliveSentRef.current = null;
+      return;
+    }
+    const desired = aliveDesiredRef.current;
+    if (desired == null) return;
+    aliveSentRef.current = desired;
+    sendStateRef.current(desired);
+  }, [meshConnected]);
 
   return { supported, listening, lastError, finalCount };
 }
