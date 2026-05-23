@@ -7,7 +7,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
-import { isKnownFanoutId, listFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
+import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
@@ -5130,6 +5130,9 @@ app
     if (resumed && resumed.status === "active") {
       broadcastChessState(mainRoom, resumed);
     }
+    // Restore any fanouts the admin had running before this restart.
+    // One attempt per destination — see fanout.ts/restoreFanouts.
+    restoreFanouts(line => app.log.info(line));
   })
   .catch(err => {
     app.log.error(err);

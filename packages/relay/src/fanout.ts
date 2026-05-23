@@ -1,5 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 /**
  * Fanout manager: spawns ffmpeg children that re-publish the slop.computer
@@ -9,15 +11,54 @@ import { spawn } from "node:child_process";
  * relay fans out to socials with `-c copy` (no transcode). Stream keys live
  * in relay env, never leave the EC2 box.
  *
- * Process model: one long-lived ffmpeg per destination. Crashes are
- * forgiving — the registry entry is removed and the admin clicks Start to
- * respawn. SIGTERM on relay shutdown so YouTube sees a clean disconnect.
+ * Process model: one long-lived ffmpeg per destination. The admin's
+ * desired on/off state is persisted to disk on every start/stop so that
+ * a relay restart (deploy) can restore the previously-running fanouts —
+ * see restoreFanouts() below. Runtime ffmpeg crashes (network blip,
+ * RTMP server drop) are NOT auto-respawned: the registry entry is
+ * removed and the admin either clicks Start in /admin or waits for the
+ * next relay restart, which will retry exactly once. SIGTERM on relay
+ * shutdown so YouTube sees a clean disconnect (and shutdownAllFanouts
+ * intentionally does NOT clear the desired-state file).
  *
  * X/Twitter caveat: studio.x.com generates RTMP keys per-broadcast.
  * Regenerate in studio.x.com → Producer if it stops working.
  */
 
 type FanoutId = "youtube" | "twitch" | "twitter" | "kick";
+
+const ALL_IDS: readonly FanoutId[] = ["youtube", "twitch", "twitter", "kick"];
+
+const STATE_FILE = process.env.FANOUT_STATE_PATH ?? "/var/lib/slop-relay/fanouts.json";
+
+type DesiredState = Record<FanoutId, boolean>;
+
+function loadDesired(): DesiredState {
+  const empty: DesiredState = { youtube: false, twitch: false, twitter: false, kick: false };
+  try {
+    const raw = readFileSync(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return empty;
+    return {
+      youtube: (parsed as Record<string, unknown>).youtube === true,
+      twitch: (parsed as Record<string, unknown>).twitch === true,
+      twitter: (parsed as Record<string, unknown>).twitter === true,
+      kick: (parsed as Record<string, unknown>).kick === true,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+const desired: DesiredState = loadDesired();
+
+function persistDesired(): void {
+  try {
+    writeFileAtomic(STATE_FILE, JSON.stringify(desired));
+  } catch {
+    /* best-effort — losing this file just means the next restart starts nothing */
+  }
+}
 
 const registry = new Map<FanoutId, ChildProcess>();
 const startedAts = new Map<FanoutId, string>();
@@ -97,14 +138,23 @@ export function startFanout(id: FanoutId, log: (line: string) => void): { ok: tr
     log(`[fanout ${id}] exited with code ${code}`);
     registry.delete(id);
     startedAts.delete(id);
+    // No auto-respawn. The desired-state flag stays as the admin last
+    // set it, so the next relay restart will retry exactly once.
   });
 
   registry.set(id, proc);
   startedAts.set(id, new Date().toISOString());
+  desired[id] = true;
+  persistDesired();
   return { ok: true };
 }
 
 export function stopFanout(id: FanoutId): { ok: true } | { ok: false; error: string } {
+  // Persist the admin's intent first — even if ffmpeg already crashed
+  // and registry is empty, this Stop click means "don't bring it back
+  // on the next relay restart."
+  desired[id] = false;
+  persistDesired();
   const proc = registry.get(id);
   if (!proc) return { ok: false, error: "Not running" };
   proc.kill("SIGTERM");
@@ -118,9 +168,31 @@ export function isKnownFanoutId(id: string): id is FanoutId {
 }
 
 export function shutdownAllFanouts(): void {
+  // Process shutdown (deploy / SIGTERM), not admin intent. Leave the
+  // desired-state file untouched so restoreFanouts() can bring back
+  // whatever was running before.
   for (const [, proc] of registry) {
     proc.kill("SIGTERM");
   }
   registry.clear();
   startedAts.clear();
+}
+
+/**
+ * Boot-time restore: for each destination the admin had previously
+ * marked "on" in the persisted state file, attempt to start it exactly
+ * once. If ffmpeg fails to come up (e.g. missing stream key) or dies
+ * later, we do NOT retry — admin clicks Start in /admin, or the next
+ * relay restart will retry once.
+ */
+export function restoreFanouts(log: (line: string) => void): void {
+  for (const id of ALL_IDS) {
+    if (!desired[id]) continue;
+    const result = startFanout(id, log);
+    if (result.ok) {
+      log(`[fanout ${id}] restored from persisted state`);
+    } else {
+      log(`[fanout ${id}] restore failed: ${result.error}`);
+    }
+  }
 }
