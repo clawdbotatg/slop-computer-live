@@ -970,7 +970,7 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 960 }}>
+      <Bevel style={{ padding: 16, maxWidth: 1280 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
           Every claimed room on disk. The relay only stores scrypt hashes, so <em>Copy link</em> embeds the password
@@ -1052,7 +1052,37 @@ const AdminPage: NextPage = () => {
                 >
                   [schedule]
                 </a>
+                {r.slug === DEFAULT_SLUG ? null : (
+                  <button
+                    type="button"
+                    onClick={() => openDeleteModal(r.slug)}
+                    className="slop-link"
+                    title="permanently delete this room (in-memory + on-disk)"
+                    style={{
+                      background: "transparent",
+                      border: 0,
+                      padding: 0,
+                      margin: 0,
+                      fontFamily: "var(--slop-font-display)",
+                      textTransform: "lowercase",
+                      cursor: "pointer",
+                      color: "var(--slop-accent-warn, #c33)",
+                    }}
+                  >
+                    [delete]
+                  </button>
+                )}
                 <span style={{ flex: 1 }} />
+                <span
+                  style={{
+                    fontFamily: "var(--slop-font-display)",
+                    textTransform: "uppercase",
+                    color: "var(--slop-text-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  STT:
+                </span>
                 <Button
                   onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
                   style={
@@ -1062,7 +1092,7 @@ const AdminPage: NextPage = () => {
                   }
                   title={r.sttOn ? "transcripts ON" : "transcripts OFF"}
                 >
-                  STT {r.sttOn ? "on" : "off"}
+                  {r.sttOn ? "On" : "Off"}
                 </Button>
                 <Button
                   onClick={() => void resetRoomTranscript(r.slug)}
@@ -1076,20 +1106,35 @@ const AdminPage: NextPage = () => {
                   {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
                 </Button>
                 {r.slug === DEFAULT_SLUG ? null : (
-                  <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regenerate</Button>
+                  <>
+                    <span
+                      style={{
+                        fontFamily: "var(--slop-font-display)",
+                        textTransform: "uppercase",
+                        color: "var(--slop-text-muted)",
+                        fontSize: 12,
+                        marginLeft: 6,
+                      }}
+                    >
+                      PASS:
+                    </span>
+                    <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regen</Button>
+                  </>
                 )}
+                <span
+                  style={{
+                    fontFamily: "var(--slop-font-display)",
+                    textTransform: "uppercase",
+                    color: "var(--slop-text-muted)",
+                    fontSize: 12,
+                    marginLeft: 6,
+                  }}
+                >
+                  LINK:
+                </span>
                 <Button variant="primary" onClick={() => void copyRoomLink(r.slug)}>
-                  Copy link
+                  Copy
                 </Button>
-                {r.slug === DEFAULT_SLUG ? null : (
-                  <Button
-                    onClick={() => openDeleteModal(r.slug)}
-                    style={{ background: "var(--slop-accent-warn, #c33)", color: "#fff" }}
-                    title="permanently delete this room (in-memory + on-disk)"
-                  >
-                    Delete
-                  </Button>
-                )}
               </div>
             ))}
           </div>
