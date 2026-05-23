@@ -581,12 +581,52 @@ Quota errors come back as \`429 track-quota-exceeded\` /
 \`429 byte-quota-exceeded\`. \`DELETE /v1/music/custom/upload:<hash>\`
 also unlinks the file from disk, freeing room quota.
 
-Typical agent flow: fetch the song bytes (yt-dlp, a local file,
-whatever), POST them here, then \`POST /v1/music/state\` with
-\`src: track.src\` and \`index: tracks.length - 1\` to actually start
-playback. Remember the three preconditions for sound to come out
-(music window open, host live, a peer with audio routed in the
-room).
+#### End-to-end recipe: upload → play
+
+Four POSTs, in order. The upload alone won't make sound — it
+only adds the track to the playlist. You also have to flip the
+genre to Custom (so the playlist UI matches what's playing),
+make sure the Music window is open (no window → no \`<audio>\`
+element → no playback), and broadcast a music-state snapshot
+with \`playing: true\`.
+
+\`\`\`
+# 1. Upload the MP3 bytes
+POST ${BASE}/v1/music/upload?slug=${slugStr(slug)}&name=<filename.mp3>
+  content-type: audio/mpeg
+  body: <raw mp3 bytes>
+# → { ok: true, track: <JamendoTrack>, tracks: [...] }
+# Capture \`track.src\` (eg "/uploaded-music/<slug>/<hash>.mp3")
+# and \`tracks.length\` from the response — needed below.
+
+# 2. Switch the active genre to Custom (idempotent; skip if already on custom)
+POST ${BASE}/v1/music/genre?slug=${slugStr(slug)}
+  { "genre": "custom" }
+
+# 3. Ensure the Music window is open (precondition for any audio).
+#    Check first via GET /v1/state — if "music" is already in
+#    openWindowIds, skip this POST.
+POST ${BASE}/v1/windows?slug=${slugStr(slug)}
+  { "id": "music" }
+
+# 4. Start playback with the uploaded src + index.
+POST ${BASE}/v1/music/state?slug=${slugStr(slug)}
+  {
+    "src":      "<track.src from step 1>",
+    "index":    <tracks.length - 1 from step 1>,
+    "playing":  true,
+    "position": 0,
+    "at":       <Date.now() in ms>,
+    "volume":   0.7
+  }
+\`\`\`
+
+The relay just stores the snapshot — actual sound requires the
+host's browser tab to be live AND at least one peer with audio
+routed in the room (same set of preconditions called out at the
+top of "Set state" below). If nothing is audible after step 4,
+re-read \`/v1/state\` and check: is \`peers\` non-empty? Is
+\`musicState.src\` what you set? Is \`musicState.playing === true\`?
 
 ### Legacy playlist
 
