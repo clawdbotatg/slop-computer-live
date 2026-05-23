@@ -2335,9 +2335,11 @@ function DesktopInner({ slug }: { slug: string }) {
             (not in the shared slot system). Drag a file icon onto it
             to delete; drag an app icon onto it and it snaps back
             (apps can't be trashed). Gated on auth so the trash isn't
-            visible on the sign-in screen. */}
-        {session.authenticated ? <SlopBackdrop /> : null}
-        {session.authenticated ? <TrashCan trashRef={trashRef} /> : null}
+            visible on the sign-in screen. Both surfaces lift by the
+            chyron bar's height when the host has set a chyron, so
+            they stay clear of the new bar. */}
+        {session.authenticated ? <SlopBackdrop chyronVisible={!!mesh.chyronState?.text} /> : null}
+        {session.authenticated ? <TrashCan trashRef={trashRef} chyronVisible={!!mesh.chyronState?.text} /> : null}
         {/* Live STT caption — broadcast-style subtitle of the most
             recent transcript segment. Sits above the ChyronBar when
             a chyron is set, otherwise above the TimelineBar. Driven

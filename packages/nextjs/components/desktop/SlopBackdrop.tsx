@@ -15,14 +15,26 @@ const SLOP_ASCII = `███████╗██╗      ██████╗
 // Trash can geometry (TRASH_SIZE=88 + TRASH_MARGIN=24): the ASCII block
 // ends just to the left of the trash with a small gap.
 const RIGHT_OFFSET = 24 + 88 + 16;
+const BOTTOM = 168;
+// Lift by the chyron bar height (60) when the host sets a chyron, so
+// the watermark stays clear of the new bar — same delta the trash
+// uses. Kept in sync by hand; if either changes, change both.
+const CHYRON_LIFT = 60;
 
-export const SlopBackdrop = () => (
+export type SlopBackdropProps = {
+  /** True when the host has set a chyron — Desktop drives this from
+   *  `mesh.chyronState?.text`. Adds CHYRON_LIFT to the bottom offset. */
+  chyronVisible: boolean;
+};
+
+export const SlopBackdrop = ({ chyronVisible }: SlopBackdropProps) => (
   <pre
     aria-hidden
     style={{
       position: "fixed",
       right: RIGHT_OFFSET,
-      bottom: 168,
+      bottom: chyronVisible ? BOTTOM + CHYRON_LIFT : BOTTOM,
+      transition: "bottom 0.18s ease-out",
       // inline-block + auto width makes the <pre>'s width hug its text
       // (max-content was flaky on some browsers for <pre>), so the
       // `right` offset anchors the actual ASCII art's right edge — not

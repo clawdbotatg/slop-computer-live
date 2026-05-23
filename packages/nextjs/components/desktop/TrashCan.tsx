@@ -17,14 +17,21 @@ export const TRASH_SIZE = 88;
 // ticker (28) = 76, plus a little breathing room.
 const TRASH_MARGIN = 24;
 const TRASH_BOTTOM = 92;
+// Lift by the chyron bar's height (60) when the chyron banner is up
+// so the trash sits above it instead of being clipped by the new bar.
+const CHYRON_LIFT = 60;
 
 export type TrashCanProps = {
   /** Forwarded ref so the parent can compute bounding-box overlap with
    *  dropped icons in viewport coords. */
   trashRef: React.RefObject<HTMLDivElement | null>;
+  /** True when the host has set a chyron — Desktop drives this from
+   *  `mesh.chyronState?.text`. Adds CHYRON_LIFT to the bottom offset
+   *  so the trash floats above the new bar. */
+  chyronVisible: boolean;
 };
 
-export const TrashCan = ({ trashRef }: TrashCanProps) => {
+export const TrashCan = ({ trashRef, chyronVisible }: TrashCanProps) => {
   const [isHover, setIsHover] = useState(false);
   // Tracks whether the user is mid-drag with a primary button held.
   // We can't reliably detect "an icon is being dragged" specifically,
@@ -70,7 +77,7 @@ export const TrashCan = ({ trashRef }: TrashCanProps) => {
       style={{
         position: "fixed",
         right: TRASH_MARGIN,
-        bottom: TRASH_BOTTOM,
+        bottom: chyronVisible ? TRASH_BOTTOM + CHYRON_LIFT : TRASH_BOTTOM,
         width: TRASH_SIZE,
         height: TRASH_SIZE,
         // Sits between desktop icons (z=1) and all windows. New windows
@@ -84,7 +91,7 @@ export const TrashCan = ({ trashRef }: TrashCanProps) => {
         // capturing pointer events directly.
         pointerEvents: "none",
         userSelect: "none",
-        transition: "transform 0.12s ease-out, filter 0.12s ease-out",
+        transition: "transform 0.12s ease-out, filter 0.12s ease-out, bottom 0.18s ease-out",
         transform: isHover ? "scale(1.12)" : "scale(1)",
         filter: isHover
           ? "drop-shadow(0 0 12px var(--slop-magenta, #ff3ec9)) brightness(1.15)"

@@ -20,10 +20,11 @@ import type { Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 // State is relay-broadcast via mesh.chyronState — no optimistic
 // update; the WS echo is the source of truth.
 
-const BAR_HEIGHT = 44;
-// Sized for broadcast capture (1920×1080) — 26px reads at a glance
-// from across the room without dwarfing the bars stacked below it.
-const FONT_SIZE = 26;
+const BAR_HEIGHT = 60;
+// Sized for broadcast capture (1920×1080) — 39px reads at a glance
+// from across the room. BAR_HEIGHT scales with it so a 39px font has
+// room to breathe inside the bar.
+const FONT_SIZE = 39;
 // TimelineBar (24) + HeadlinesBar (24) + TickerBar (28) = 76. Sit
 // directly on top.
 const STACK_BOTTOM = 76;

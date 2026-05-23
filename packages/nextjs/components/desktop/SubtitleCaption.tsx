@@ -28,7 +28,7 @@ import type { PeerMeshState, TranscriptSegment } from "~~/hooks/usePeerMesh";
 const TIMELINE_BOTTOM = 52; // TimelineBar bottom (above headlines + ticker)
 const TIMELINE_HEIGHT = 24;
 const CHYRON_BAR_BOTTOM = 76; // ChyronBar bottom
-const CHYRON_BAR_HEIGHT = 44;
+const CHYRON_BAR_HEIGHT = 60;
 
 // Visual budget: caption stays opaque for HOLD_MS after a new segment,
 // then fades over FADE_MS. 4s of hold matches a comfortable broadcast
