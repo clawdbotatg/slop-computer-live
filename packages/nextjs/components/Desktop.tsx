@@ -125,19 +125,15 @@ const ICON_ROW_PITCH = 110;
 const ICON_COL_PITCH = 100;
 const ICONS_PER_COL = 6;
 
-function defaultIconPosition(i: number): { x: number; y: number } {
-  const col = Math.floor(i / ICONS_PER_COL);
-  const row = i % ICONS_PER_COL;
-  return {
-    x: ICON_DEFAULT_X + col * ICON_COL_PITCH,
-    y: ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH,
-  };
-}
-
-// Explicit grid for View → Auto Arrange Icons. 5 columns × 4 rows, hand-
+// Explicit grid for View → Auto Arrange Icons AND for the default position
+// of any icon whose slot hasn't been set yet. 5 columns × 4 rows, hand-
 // curated so related apps cluster (share kinds, time, knowledge, dapps,
-// utility). Apps not listed here fall back to the cascade after the last
+// utility). Apps not listed here fall back to a cascade after the last
 // column so a newly-added app still gets a slot.
+//
+// Using this as the fallback (not just the explicit Auto Arrange action)
+// means a freshly-created room renders icons in the curated layout from
+// the first paint — no need for the user to click Auto Arrange.
 const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["chat", "video", "audio", "screen"],
   ["clock", "card", "research", "transcript"],
@@ -145,6 +141,25 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["nifty-ink", "abi-ninja", "gas", "news"],
   ["browser", "wallet", "music", "chess"],
 ];
+
+function defaultIconPosition(appId: string, i: number): { x: number; y: number } {
+  for (let colIdx = 0; colIdx < AUTO_ARRANGE_COLUMNS.length; colIdx++) {
+    const rowIdx = AUTO_ARRANGE_COLUMNS[colIdx].indexOf(appId);
+    if (rowIdx !== -1) {
+      return {
+        x: ICON_DEFAULT_X + colIdx * ICON_COL_PITCH,
+        y: ICON_DEFAULT_Y0 + rowIdx * ICON_ROW_PITCH,
+      };
+    }
+  }
+  const cascadeIdx = AUTO_ARRANGE_COLUMNS.length * ICONS_PER_COL + i;
+  const col = Math.floor(cascadeIdx / ICONS_PER_COL);
+  const row = cascadeIdx % ICONS_PER_COL;
+  return {
+    x: ICON_DEFAULT_X + col * ICON_COL_PITCH,
+    y: ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH,
+  };
+}
 
 // Slot id keyed by stable owner identity (wallet address or handle) so the
 // layout survives a reload — peerIds are ephemeral and would otherwise reset
@@ -743,26 +758,14 @@ function DesktopInner({ slug }: { slug: string }) {
     [],
   );
 
-  // Snap every desktop icon to the curated AUTO_ARRANGE_COLUMNS grid. Apps
-  // not in the grid (anything added later that we forgot to slot) fall back
-  // to the default cascade, positioned past the explicit columns so they
-  // don't collide.
+  // Snap every desktop icon back to its curated default position by writing
+  // the slot state explicitly — overrides any drags users have done. Uses
+  // the same helper as the unset-slot fallback so the two layouts stay in
+  // lockstep: clicking Auto Arrange always produces the layout a brand-new
+  // room would have shown.
   const autoArrangeIcons = useCallback(() => {
-    const placed = new Set<string>();
-    AUTO_ARRANGE_COLUMNS.forEach((column, colIdx) => {
-      column.forEach((appId, rowIdx) => {
-        placed.add(appId);
-        mesh.updateSlot({
-          id: `icon-${appId}`,
-          x: ICON_DEFAULT_X + colIdx * ICON_COL_PITCH,
-          y: ICON_DEFAULT_Y0 + rowIdx * ICON_ROW_PITCH,
-        });
-      });
-    });
-    let fallbackIdx = AUTO_ARRANGE_COLUMNS.length * ICONS_PER_COL;
-    apps.forEach(app => {
-      if (placed.has(app.id)) return;
-      const { x, y } = defaultIconPosition(fallbackIdx++);
+    apps.forEach((app, i) => {
+      const { x, y } = defaultIconPosition(app.id, i);
       mesh.updateSlot({ id: `icon-${app.id}`, x, y });
     });
   }, [apps, mesh]);
@@ -1926,7 +1929,7 @@ function DesktopInner({ slug }: { slug: string }) {
               const hidden = hintActive && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
               if (hidden) return null;
               const slotId = `icon-${app.id}`;
-              const fallback = defaultIconPosition(i);
+              const fallback = defaultIconPosition(app.id, i);
               const slot = mesh.slots[slotId] ?? {
                 id: slotId,
                 x: fallback.x,
