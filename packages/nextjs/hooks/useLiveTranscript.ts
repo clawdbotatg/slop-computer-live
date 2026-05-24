@@ -90,13 +90,20 @@ export type UseLiveTranscriptResult = {
   lastError: string | null;
   /** Count of final segments emitted in this hook's lifetime. */
   finalCount: number;
+  /** Monotonically-incrementing counter — bumps once per onresult event
+   *  (interim or final). Lets the UI flash a "result just fired" pulse
+   *  so the speaker can visually confirm Web Speech is producing output
+   *  word-by-word rather than only finalizing on pause. */
+  resultTick: number;
 };
 
-// Web Speech can fire interim updates 5-10x per second on a fast
-// speaker; ~10Hz is plenty for "feels real-time" without flooding the
-// WS fanout. Finals always bypass the throttle so the locked text
-// always reaches the wire.
-const INTERIM_THROTTLE_MS = 100;
+// Throttle is a guard, not a target. Chrome's own onresult cadence is
+// the actual gate — typically 100-300ms between updates while a speaker
+// is mid-word. Setting this floor to 33ms (~30Hz) means we never delay
+// a Chrome-emitted interim, but a runaway recognizer (some Android
+// builds) won't flood the WS either. Each interim is ~50-150 bytes;
+// even at 30Hz that's <5KB/s per speaker — trivial.
+const INTERIM_THROTTLE_MS = 33;
 
 // "Recognizer hung" watchdog: if `enabled` is true but no result (interim
 // or final) has fired in this long, declare the speaker dead. Web Speech
@@ -122,6 +129,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   const [listening, setListening] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [finalCount, setFinalCount] = useState(0);
+  const [resultTick, setResultTick] = useState(0);
 
   // Stable refs so the inner handlers see the latest values without
   // re-binding the entire recognizer on every render.
@@ -199,6 +207,9 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
 
     rec.onresult = ev => {
       lastResultAtRef.current = Date.now();
+      // Bump the visible-pulse counter so the menubar 🎙️ flashes on
+      // every recognition event. Cheap React update — single integer.
+      setResultTick(c => c + 1);
       // Iterate from resultIndex — the browser may batch multiple
       // updates into a single event, and we'd otherwise re-emit earlier
       // results on repeats.
@@ -374,5 +385,5 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     sendStateRef.current(desired);
   }, [meshConnected]);
 
-  return { supported, listening, lastError, finalCount };
+  return { supported, listening, lastError, finalCount, resultTick };
 }

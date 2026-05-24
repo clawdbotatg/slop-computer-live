@@ -54,6 +54,12 @@ interface MenuBarProps {
    *  perms, recognizer crash, no-speech). `null` means everything
    *  is healthy. */
   localSttError?: string | null;
+  /** Monotonically-incrementing counter — bumps on every Web Speech
+   *  `onresult` event. Drives a brief flash on the 🎙️ halo so the
+   *  speaker can confirm interims are firing word-by-word and the
+   *  caption pipeline isn't actually stalled waiting on a sentence-
+   *  end finalize. */
+  localSttResultTick?: number;
   /** Optional session-wallet chip. If a wallet address is supplied
    *  we render the Address component as a clickable chip; otherwise
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
@@ -76,11 +82,23 @@ export const MenuBar = ({
   localSttSupported = false,
   localSttListening = false,
   localSttError = null,
+  localSttResultTick = 0,
   walletAddress,
   onWalletClick,
   slug,
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
+
+  // Pulse the 🎙️ halo briefly on every Web Speech result event so the
+  // user can see word-by-word firing. Holds for 220ms past the latest
+  // tick, then settles back to the calm "listening" state.
+  const [sttPulse, setSttPulse] = useState(false);
+  useEffect(() => {
+    if (!localSttResultTick) return;
+    setSttPulse(true);
+    const id = window.setTimeout(() => setSttPulse(false), 220);
+    return () => window.clearTimeout(id);
+  }, [localSttResultTick]);
 
   const authNode = session.authenticated ? (
     <PowerMenu
@@ -203,24 +221,32 @@ export const MenuBar = ({
               aria-label={localSttListening ? "local STT listening" : "local STT idle"}
             >
               {/* Magenta halo to distinguish from god-mode's cyan one.
-                  Halo grows when actively transcribing so the speaker
-                  can verify the pipeline is firing in real time. */}
+                  Calm size when idle, swells when the recognizer is
+                  running, and FLASHES bright + larger on every onresult
+                  tick so word-by-word interim activity reads visually. */}
               <span
                 aria-hidden
                 style={{
                   position: "absolute",
                   top: "50%",
                   left: "50%",
-                  width: localSttListening ? 24 : 8,
-                  height: localSttListening ? 24 : 8,
+                  width: sttPulse ? 30 : localSttListening ? 22 : 8,
+                  height: sttPulse ? 30 : localSttListening ? 22 : 8,
                   borderRadius: "50%",
                   background: "var(--slop-magenta, #ff3ec9)",
-                  opacity: localSttError ? 0.4 : localSttListening ? 0.55 : 0.18,
-                  boxShadow: localSttListening
-                    ? "0 0 14px 2px var(--slop-magenta, #ff3ec9)"
-                    : "0 0 4px var(--slop-magenta, #ff3ec9)",
+                  opacity: localSttError ? 0.4 : sttPulse ? 0.85 : localSttListening ? 0.5 : 0.18,
+                  boxShadow: sttPulse
+                    ? "0 0 20px 4px var(--slop-magenta, #ff3ec9)"
+                    : localSttListening
+                      ? "0 0 12px 2px var(--slop-magenta, #ff3ec9)"
+                      : "0 0 4px var(--slop-magenta, #ff3ec9)",
                   transform: "translate(-50%, -50%)",
-                  transition: "width 220ms ease, height 220ms ease, opacity 220ms ease, box-shadow 220ms ease",
+                  // Snappy on the way in (pulse hit), gentle on settle —
+                  // matches how the eye expects a recognition flash to
+                  // feel.
+                  transition: sttPulse
+                    ? "width 80ms ease-out, height 80ms ease-out, opacity 80ms ease-out, box-shadow 80ms ease-out"
+                    : "width 280ms ease-in, height 280ms ease-in, opacity 280ms ease-in, box-shadow 280ms ease-in",
                   pointerEvents: "none",
                   zIndex: 0,
                   filter: localSttError ? "grayscale(0.5)" : "none",

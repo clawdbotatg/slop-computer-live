@@ -1847,6 +1847,7 @@ function DesktopInner({ slug }: { slug: string }) {
         localSttSupported={!isGodMode && liveStt.supported}
         localSttListening={liveStt.listening}
         localSttError={liveStt.lastError}
+        localSttResultTick={liveStt.resultTick}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
         slug={slug}
