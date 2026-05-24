@@ -372,7 +372,7 @@ const PASSWORD_RATE_LIMIT = {
 app.get("/health", async () => ({
   ok: true,
   service: "slop-relay",
-  peers: listPeers().length,
+  peers: [...listRooms()].reduce((n, r) => n + r.peerCount(), 0),
 }));
 
 // --- Apps registry ----------------------------------------------------------
@@ -702,7 +702,7 @@ app.get("/v1/state", async (req, reply) => {
       // agents from having to derive it themselves.
       ownerKey: (a.session.address ?? a.session.handle ?? "").toLowerCase() || null,
     },
-    peers: listPeers(),
+    peers: roomFromReq(req).listPeers(),
     publications: roomFromReq(req).desktop.listPublications(),
     slots: roomFromReq(req).desktop.getSlots(),
     browsers: roomFromReq(req).browsers.list(),
@@ -3951,7 +3951,8 @@ app.post("/admin/finalize", async (req, reply) => {
 app.get("/admin/peers", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return { peers: listPeers() };
+  const peers = [...listRooms()].flatMap(r => r.listPeers().map(p => ({ ...p, slug: r.id })));
+  return { peers };
 });
 
 // Lists every claimed room (anything with an `auth.json` on disk).

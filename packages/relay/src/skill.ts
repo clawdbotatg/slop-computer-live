@@ -480,28 +480,40 @@ export function skillMusic(token: string, isHost: boolean, slug: string | null =
 
 ${slugNote(slug)}
 
-> ⚠ **Setting music state ≠ producing sound.** The relay just stores
-> a snapshot; only **a peer browser with the slopamp window mounted**
-> actually plays audio. The agent has no speakers and neither does
-> the relay. Before any \`/v1/music/state\` POST, verify all three —
-> none of which \`/v1/music/state\` checks for you:
+> ⚠ **\`musicState.playing === true\` IS NOT THE SAME AS "music is
+> audible".** Read this twice. The relay stores a snapshot; only **a
+> peer browser with the slopamp window mounted** actually emits sound.
+> The agent has no speakers and neither does the relay. A room can
+> sit for hours with \`playing: true\` in state and produce *exactly
+> zero* audio — because nobody opened the window, or every peer
+> disconnected, or Chrome's autoplay gate is unclicked.
 >
-> 1. \`"music" ∈ state.openWindowIds\`. If not, open it first:
->    \`POST ${BASE}/v1/windows?slug=${slugStr(slug)} { "id": "music" }\`.
->    No window mounted = no \`<audio>\` element = no sound, ever.
-> 2. \`state.peers.length > 0\`. With zero peers there is literally
->    no browser in the room to play the file. \`/v1/music/state\`
->    will still return \`ok:true\` — it's silently writing to a
->    snapshot no one is reading.
-> 3. The peer has clicked once in the slopamp tab (Chrome's
->    autoplay gate). Not checkable server-side; if state shows
->    \`playing: true\` and it's still silent for a connected user,
->    ask them to click in the tab and re-fire with a fresh \`at\`.
+> **Before you tell the user "music is already playing" or
+> "I started the music":** re-read \`GET /v1/state?slug=${slugStr(slug)}\`
+> and verify ALL THREE:
 >
-> Always report back what you **wrote** ("set the room to track X,
-> 1 peer connected, window open"), never what you can't verify
-> ("now playing"). The user knows the difference and will be
-> furious if you lie.
+> 1. \`"music" ∈ state.openWindowIds\`. **If not, sound is impossible —
+>    period.** No window means no \`<audio>\` element means no
+>    playback, regardless of what \`musicState.playing\` says. Open it
+>    with \`POST ${BASE}/v1/windows?slug=${slugStr(slug)} { "id": "music" }\`
+>    *before* claiming anything is playing.
+> 2. \`state.peers.length > 0\`. With zero peers there is literally no
+>    browser in the room to play the file. \`/v1/music/state\` POSTs
+>    return \`ok:true\` while silently writing to a snapshot no one is
+>    reading. Same trap on the read side: \`playing: true\` with 0
+>    peers = 0 audible bytes.
+> 3. The peer has clicked once in the slopamp tab (Chrome's autoplay
+>    gate). Not checkable server-side; if state shows \`playing: true\`
+>    and a connected user reports silence, ask them to click in the
+>    tab and re-fire \`/v1/music/state\` with a fresh \`at\`.
+>
+> **Reporting rule.** Report back what you **verified**, not what the
+> snapshot field said. Wrong: "music is already playing." Right:
+> "musicState shows playing: true (track X), but the music window is
+> closed and there are N peers — nobody is actually hearing audio.
+> Want me to open the window?" The user knows the difference between
+> a stored boolean and audible sound, and will be furious if you
+> conflate them.
 
 Playback is one shared snapshot **per room** — track src + index,
 playing/paused, position-at-timestamp, and master volume. Anyone in
