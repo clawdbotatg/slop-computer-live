@@ -73,28 +73,49 @@ function normalizeCardAddresses(s: string): string {
   return s.replace(/0x[a-fA-F0-9]{40}/g, m => m.toLowerCase());
 }
 
-// Pull every distinct 40-hex address out of a piece of calldata + the
-// target slot. The target is always relevant (it's the contract being
-// hit); calldata typically holds the token(s) and recipient. Deduped,
-// lowercased. The 0x0…0 placeholder is *not* filtered because some
-// routers use it as a native-ETH sentinel in calldata, and the resolver
-// recognizes it.
+// Pull every distinct address out of a piece of calldata + the target
+// slot. Addresses inside ABI-encoded calldata are NOT `0x`-prefixed —
+// they're 20-byte values left-padded to 32 bytes (24 zero hex chars +
+// 40 address hex chars). The earlier `/0x[a-fA-F0-9]{40}/g` regex only
+// caught the literal `0x` prefix at the very start of the calldata,
+// matching one bogus address (selector + first arg slot) and missing
+// every real token/recipient. This pass scans for the padded form
+// instead. The 0x0…0 placeholder is filtered out — it's the native
+// sentinel and the summarizer adds it back unconditionally.
 function extractAddressesFromCalls(
   target: string,
   data: string,
   calls: SummarizeCall[] | undefined,
 ): string[] {
   const set = new Set<string>();
-  const push = (s: string) => {
-    const matches = s.match(/0x[a-fA-F0-9]{40}/g);
-    if (matches) for (const m of matches) set.add(m.toLowerCase());
+  const ZERO40 = "0".repeat(40);
+  const pushAddress = (a: string) => {
+    if (!a) return;
+    const lower = a.toLowerCase();
+    if (lower === `0x${ZERO40}`) return;
+    if (/^0x[a-f0-9]{40}$/i.test(lower)) set.add(lower);
   };
-  push(target);
-  push(data);
-  if (calls) for (const c of calls) {
-    push(c.target);
-    push(c.data);
-  }
+  // The top-level target (and per-call target in a batch) are clean
+  // 0x-prefixed 40-hex strings — push them directly.
+  pushAddress(target);
+  if (calls) for (const c of calls) pushAddress(c.target);
+
+  const scanCalldata = (s: string) => {
+    if (!s) return;
+    const hex = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
+    // ABI words are 32 bytes = 64 hex chars. Walk every 64-char window
+    // that's all hex and ends in a 40-hex address with 24 leading zeros.
+    // Using a global regex with no capture groups, then sliding via
+    // matchAll keeps this O(n).
+    const re = /0{24}[0-9a-f]{40}/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(hex)) !== null) {
+      pushAddress("0x" + m[0].slice(24).toLowerCase());
+    }
+  };
+  scanCalldata(data);
+  if (calls) for (const c of calls) scanCalldata(c.data);
+
   return Array.from(set);
 }
 
@@ -143,6 +164,19 @@ function applyResolvedTokensToCard(
   chainId: number,
 ): CardFromAI {
   const chainSlug = CHAIN_SLUG_BY_ID[chainId] ?? null;
+  // Build a symbol → ResolvedToken index from the same set. The AI
+  // sometimes emits the token's MAINNET address instead of the
+  // chain-correct one (USDC mainnet 0xA0b8…EB48 in calldata that's
+  // actually doing a swap to Base USDC 0x8335…2913). Address match
+  // misses → no thumbnail. The symbol-match fallback rescues that
+  // case by using whichever USDC the relay actually pre-resolved from
+  // the calldata.
+  const bySymbol = new Map<string, ResolvedToken>();
+  for (const r of resolved.values()) {
+    const k = r.symbol.toUpperCase();
+    if (!bySymbol.has(k)) bySymbol.set(k, r);
+  }
+
   const fixAsset = (a: AssetFromAI): AssetFromAI => {
     if (!a || typeof a !== "object") return a;
     // Treat a null/missing address as native — look it up under the
@@ -151,11 +185,18 @@ function applyResolvedTokensToCard(
     // continues to read `address: null` as the native sentinel.
     const rawAddr = typeof a.address === "string" ? a.address.toLowerCase() : null;
     const lookupAddr = rawAddr ?? NATIVE_ADDRESS;
-    const r = resolved.get(lookupAddr);
+    let r = resolved.get(lookupAddr) ?? null;
+    if (!r && typeof a.symbol === "string") {
+      // Address whiff — try the symbol map. This is what catches the AI
+      // emitting the wrong-chain address but the right symbol.
+      r = bySymbol.get(a.symbol.toUpperCase()) ?? null;
+    }
     if (!r) return { ...a, address: rawAddr, chain: a.chain ?? chainSlug };
     return {
       ...a,
-      address: rawAddr,
+      // Prefer the canonical address from our resolver over whatever the
+      // AI emitted (which may have been the wrong chain's USDC).
+      address: r.address,
       symbol: r.symbol,
       chain: chainSlug,
       thumbnail: r.thumbnail,

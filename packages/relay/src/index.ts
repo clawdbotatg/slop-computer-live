@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import { encodeAbiParameters, keccak256, parseAbiParameters } from "viem";
 import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
@@ -2934,6 +2935,100 @@ app.get<{ Querystring: { hash?: string; chain?: string } }>("/v1/wallet/transact
   if (!hash) return reply.code(400).send({ error: "missing-hash" });
   reply.header("cache-control", "no-store");
   return fetchTransactionModal(hash, (req.query.chain ?? "ethereum").trim());
+});
+
+// Propose a wallet tx from an agent without going through the WS. Same end
+// result as the `wallet_tx_propose` WS handler: pushes a pending entry into
+// the room's wallet tx queue, which auto-broadcasts `wallet_txs` to every
+// live peer via Room's wallet subscriber. The agent supplies the human-
+// readable summary directly, skipping the AI summarization pass. execHash
+// is derived server-side from the current multisig + the proposed call so
+// agents don't have to import viem to talk to us.
+type WalletProposeBody = {
+  target?: unknown;
+  value?: unknown;
+  data?: unknown;
+  deadline?: unknown;
+  nonce?: unknown;
+  summary?: unknown;
+  chainId?: unknown;
+};
+
+app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const cur = room.wallet.getCurrent();
+  if (!cur) return reply.code(409).send({ error: "no_wallet" });
+  const body = (req.body ?? {}) as WalletProposeBody;
+  const target = typeof body.target === "string" ? body.target : "";
+  const value = typeof body.value === "string" ? body.value : "";
+  const data = typeof body.data === "string" ? body.data : "";
+  const deadline = typeof body.deadline === "string" ? body.deadline : "";
+  const nonce = typeof body.nonce === "string" ? body.nonce : "";
+  if (!/^0x[a-fA-F0-9]{40}$/.test(target)) return reply.code(400).send({ error: "bad-target" });
+  if (!/^0x[a-fA-F0-9]*$/.test(data)) return reply.code(400).send({ error: "bad-data" });
+  if (!value || !deadline || !nonce) {
+    return reply.code(400).send({ error: "missing-fields", required: ["value", "deadline", "nonce"] });
+  }
+  // chainId: optional in body, otherwise fall back to a deployment we know
+  // exists. Mirrors the WS `wallet_tx_propose` path.
+  const incomingChainId = typeof body.chainId === "number" ? body.chainId : null;
+  const fallbackChain = Number(Object.keys(cur.deployments)[0] ?? "0");
+  const chainId = incomingChainId ?? fallbackChain;
+  if (!Number.isFinite(chainId) || chainId === 0) {
+    return reply.code(400).send({ error: "no_chain" });
+  }
+  let execHash: `0x${string}`;
+  try {
+    execHash = keccak256(
+      encodeAbiParameters(
+        parseAbiParameters("uint256, address, uint256, uint256, address, uint256, bytes32"),
+        [
+          BigInt(chainId),
+          cur.address as `0x${string}`,
+          BigInt(nonce),
+          BigInt(deadline),
+          target as `0x${string}`,
+          BigInt(value),
+          keccak256(data as `0x${string}`),
+        ],
+      ),
+    );
+  } catch {
+    return reply.code(400).send({ error: "bad-bigint" });
+  }
+  const tx = room.wallet.proposeTx({
+    multisigAddress: cur.address,
+    chainId,
+    from: a.session.address,
+    fromLabel: a.session.handle ?? a.session.address ?? null,
+    source: "manual",
+    browserId: null,
+    target,
+    value,
+    data,
+    deadline,
+    nonce,
+    execHash,
+  });
+  // Agent-provided summary wins; if absent, fire the AI summarizer the
+  // same way the WS path does so the queue UI doesn't sit summary-less.
+  const summary = typeof body.summary === "string" ? body.summary.slice(0, 1000) : "";
+  if (summary) {
+    if (!tx.summary) room.wallet.setTxSummary(tx.id, summary);
+  } else if (!tx.summary) {
+    void summarizeTransaction({
+      chainId,
+      multisigAddress: cur.address,
+      target: tx.target,
+      value: tx.value,
+      data: tx.data,
+      calls: tx.calls,
+    }).then(s => room.wallet.setTxSummary(tx.id, s));
+  }
+  room.broadcast({ type: "wallet_tx_attention", txId: tx.id, source: tx.source, at: Date.now() });
+  return { ok: true, id: tx.id };
 });
 
 // --- Jamendo genre playlists -----------------------------------------------
