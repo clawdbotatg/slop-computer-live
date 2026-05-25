@@ -71,29 +71,30 @@ const AUTO_TARGET_RMS = 0.3;
 // drowned in their own room noise.
 const AUTO_GAIN_MAX = 2.0;
 // Input RMS below this counts as "silence" — we hold the gain in
-// place rather than continuing to lerp toward an absurd target. 0.1
-// is well above room ambience AND quiet breathing — only real,
-// committed speech crosses the gate. Anything quieter just freezes
-// the gain at the last good value, which is what we want: no
-// auto-amplification of background noise.
-const AUTO_NOISE_FLOOR = 0.1;
-// Peak decay per tick (10Hz). 0.99 ≈ -0.9 dB/sec when we DO decay —
-// but most of the time we don't, because of the silence-hold below.
-const AUTO_PEAK_DECAY = 0.99;
+// place rather than continuing to lerp toward an absurd target. 0.075
+// is above typical room ambience but still catches quieter
+// speech — at 0.1 even fairly normal talking was being treated as
+// silence and the auto wasn't engaging often enough.
+const AUTO_NOISE_FLOOR = 0.075;
+// Peak decay per tick (10Hz). 0.97 = -1.3 dB/tick = ~2.3s to half.
+// Fast enough that going from a loud source to a quiet one re-
+// converges in a few seconds, slow enough that a sentence with
+// internal pauses keeps a stable peak. Silence-gate (above) means
+// pure silence never decays the peak at all.
+const AUTO_PEAK_DECAY = 0.97;
 // Asymmetric ramp toward the auto-derived target. Down = ducking a
 // hot signal; we want that fast so a loud burst doesn't blow past
-// 0dBFS. Up = restoring a quiet signal; we want that *slow* so a
-// pause between sentences doesn't audibly crank the gain. Numbers
-// are lerp factors per 100ms tick (10Hz; see BUS_TICK_HZ in
-// useAudioBus.ts).
+// 0dBFS. Up = restoring a quiet signal; slower so a pause between
+// sentences doesn't audibly crank the gain. Numbers are lerp
+// factors per 100ms tick (10Hz). Effective settle times (to 90%):
 //
-//   DOWN ≈ 0.18 → settles in ~0.4s
-//   UP   ≈ 0.012 → settles in ~7s
+//   DOWN ≈ 0.30 → ~0.6s
+//   UP   ≈ 0.05 → ~4.5s
 //
 // Tweak in pairs — the asymmetry is the point. Re-tune if the tick
 // rate changes; these are baked at 10Hz.
-const AUTO_GAIN_LERP_DOWN = 0.18;
-const AUTO_GAIN_LERP_UP = 0.012;
+const AUTO_GAIN_LERP_DOWN = 0.3;
+const AUTO_GAIN_LERP_UP = 0.05;
 // Minimum change in desiredGain to bother emitting a snapshot. The
 // auto loop fires 15× a second; without this throttle the popup is
 // re-rendering for sub-percent gain wiggles. 0.02 ≈ 2 percentage
