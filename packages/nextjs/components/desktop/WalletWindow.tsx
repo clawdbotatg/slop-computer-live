@@ -14,6 +14,7 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
+import { TokenAvatar } from "~~/components/desktop/wallet/TokenAvatar";
 import { WalletAssetsPanel } from "~~/components/desktop/wallet/WalletAssetsPanel";
 import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
 import { WalletHeader } from "~~/components/desktop/wallet/WalletHeader";
@@ -1597,10 +1598,21 @@ const SignerCollectionBar = ({
 // ----------------------------------------------------------------------------
 
 // Structured AI summary card. The relay's wallet-ai prompt asks Claude
-// for this exact shape; the client parses + renders it with token pills
+// for this exact shape; the client parses + renders it with token chips
 // + <Address> cards. If parsing fails (old summary, or model returned
 // prose), the raw string falls back to a single-line text render.
-type TxSummaryAsset = { symbol: string; amount: string; address?: string | null };
+//
+// `chain` + `thumbnail` are populated by the relay's post-processing
+// step (wallet-ai.ts) — it overwrites the model's guess from a Zerion
+// lookup keyed on `address`, which is also what fixes CLAWD→UNI-style
+// symbol hallucinations.
+type TxSummaryAsset = {
+  symbol: string;
+  amount: string;
+  address?: string | null;
+  chain?: string | null;
+  thumbnail?: string | null;
+};
 type TxSummaryCard = {
   headline: string;
   kind?: "swap" | "send" | "approve" | "mint" | "deploy" | "call";
@@ -1633,20 +1645,21 @@ const parseSummaryCard = (raw: string | null): TxSummaryCard | null => {
   }
 };
 
-// "out" = leaving the multisig (magenta loss-side), "in" = arriving (lime gain-side).
+// "out" = leaving the multisig (magenta loss-side), "in" = arriving
+// (lime gain-side). Uses the shared TokenAvatar so the chip carries the
+// same icon + chain badge that the Assets tab shows for that token.
 const AssetPill = ({ asset, direction }: { asset: TxSummaryAsset; direction: "in" | "out" }) => {
   const isOut = direction === "out";
   const border = isOut ? "rgba(255,62,201,0.4)" : "rgba(123,232,138,0.5)";
   const bg = isOut ? "rgba(255,62,201,0.10)" : "rgba(123,232,138,0.10)";
-  const accent = isOut ? "var(--slop-magenta, #ff3ec9)" : "#7be88a";
   const sym = asset.symbol || "Token";
   return (
     <span
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
-        padding: "4px 10px",
+        gap: 8,
+        padding: "4px 10px 4px 6px",
         background: bg,
         border: `1px solid ${border}`,
         borderRadius: 999,
@@ -1654,23 +1667,7 @@ const AssetPill = ({ asset, direction }: { asset: TxSummaryAsset; direction: "in
         lineHeight: 1.2,
       }}
     >
-      <span
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: "50%",
-          background: "rgba(255,255,255,0.04)",
-          border: `1px solid ${border}`,
-          color: accent,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "var(--slop-font-display)",
-          fontSize: 9,
-        }}
-      >
-        {sym.slice(0, 3).toUpperCase()}
-      </span>
+      <TokenAvatar symbol={sym} thumbnail={asset.thumbnail ?? null} chain={asset.chain ?? null} size={22} />
       <span style={{ fontFamily: "var(--slop-font-display)", fontWeight: 600 }}>{asset.amount}</span>
       <span style={{ color: "var(--slop-text-muted)" }}>{sym}</span>
     </span>
