@@ -66,9 +66,17 @@ const STREAM_RECONNECT_BACKOFF_MS = 10_000; // min interval between retries per 
 // after every addTrack. Full mesh means one encoder per peer-connection,
 // so capping bitrate/framerate/resolution here is the single biggest
 // CPU lever on the publisher side.
-const CAMERA_MAX_BITRATE = 600_000; // 600 kbps — tile-sized video
-const CAMERA_MAX_FRAMERATE = 24;
-const SCREEN_MAX_BITRATE = 1_500_000; // higher for text legibility
+//
+// Original numbers were tuned for "tile-sized" playback only (600 kbps
+// camera). That looks fine in a 240px tile but falls apart when a
+// god-mode session re-encodes the captured desktop at 3 Mbps for the
+// RTMP broadcast — two lossy h264 passes back-to-back produce visible
+// compression artifacts in the final stream. Bumped to give the
+// broadcast pass room to breathe; modern laptops + typical home upload
+// (10+ Mbps) handle these comfortably.
+const CAMERA_MAX_BITRATE = 1_500_000; // 1.5 Mbps — clean 480p, decent 720p
+const CAMERA_MAX_FRAMERATE = 30;
+const SCREEN_MAX_BITRATE = 2_500_000; // 2.5 Mbps — sharp text in screen shares
 const SCREEN_MAX_FRAMERATE = 15;
 
 function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotKind): void {
