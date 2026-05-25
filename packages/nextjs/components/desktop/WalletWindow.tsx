@@ -178,6 +178,35 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress]);
 
+  // Auto-refresh balances when any tx transitions to "executed". The
+  // first walletTxs pass after wallet load just seeds the baseline —
+  // we only refresh on genuinely new executions, not historical ones
+  // that were already in the list at mount time.
+  const executedTxIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    executedTxIdsRef.current = null;
+  }, [walletAddress]);
+  useEffect(() => {
+    if (!walletAddress) return;
+    const current = new Set<string>();
+    for (const t of mesh.walletTxs) {
+      if (t.status === "executed") current.add(t.id);
+    }
+    if (executedTxIdsRef.current === null) {
+      executedTxIdsRef.current = current;
+      return;
+    }
+    let hasNew = false;
+    for (const id of current) {
+      if (!executedTxIdsRef.current.has(id)) {
+        hasNew = true;
+        break;
+      }
+    }
+    executedTxIdsRef.current = current;
+    if (hasNew) void refreshPortfolio();
+  }, [mesh.walletTxs, walletAddress, refreshPortfolio]);
+
   return (
     <div
       style={{
@@ -2245,15 +2274,15 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     >
       {/* Pinned bottom-right escape hatch — any signer can drop a
        *  pending tx without waiting for the stuck-executing timeout
-       *  to surface the Try-again / Remove pair. Hidden for executed/
-       *  failed txs (those are history) and for stuck-executing
-       *  (handled by the inline Try-again / Remove pair below). */}
-      {tx.status === "pending" ? (
+       *  to surface the Try-again / Remove pair. Also shown on every
+       *  card in the Recent section (compact mode) so finished txs
+       *  can be cleared from the list. */}
+      {tx.status === "pending" || compact ? (
         <button
           type="button"
           onClick={onRemoveTx}
-          title="Drop this transaction from the queue."
-          aria-label="Remove transaction"
+          title={tx.status === "pending" ? "Drop this transaction from the queue." : "Clear from recent."}
+          aria-label={tx.status === "pending" ? "Remove transaction" : "Clear from recent"}
           style={{
             position: "absolute",
             right: 6,
@@ -2411,14 +2440,16 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </details>
       ) : null}
 
-      <SignerCollectionBar
-        wallet={wallet}
-        tx={tx}
-        peers={mesh.peers as Peer[]}
-        customNames={mesh.customNames}
-        myAddress={myLowerAddress || null}
-        compact={compact}
-      />
+      {tx.status === "executed" ? null : (
+        <SignerCollectionBar
+          wallet={wallet}
+          tx={tx}
+          peers={mesh.peers as Peer[]}
+          customNames={mesh.customNames}
+          myAddress={myLowerAddress || null}
+          compact={compact}
+        />
+      )}
 
       {tx.status === "executing" || (tx.status === "pending" && execHash) ? (
         <TxProgressBar
