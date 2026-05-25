@@ -2225,18 +2225,86 @@ Anatomy:
 - **REST endpoints** in \`packages/relay/src/index.ts\` —
   \`GET/POST /v1/my\` reading and writing \`roomFromReq(req).mine\`.
 - **Add to /v1/state** snapshot (same file, the big \`/v1/state\`
-  handler), so the WS \`hello\` and the REST snapshot ship the field
-  to new joiners.
-- **Add a kind** to \`DEFAULT_APPS\` with \`kind: "my"\` and to the
-  windows sub-skill table.
+  handler — TWO places, both the initial GET handler and the WS
+  \`hello\` payload). New joiners need the field both ways.
+- **Add a kind** to \`DEFAULT_APPS\` *and* to the \`AppEntry["kind"]\`
+  union right above it (\`packages/relay/src/index.ts\`). The union
+  isn't auto-generated; check-types fails on the cast otherwise.
+- **Mirror the kind on the frontend.** \`packages/nextjs/components/Desktop.tsx\`
+  has its own \`AppEntry["kind"]\` union (separate from the relay's) —
+  add the kind there too, or the next typecheck fails.
+- **Route the icon double-click.** Same \`Desktop.tsx\`: add your kind
+  to the \`activateApp\` switch alongside chess/music/qr/etc, so it
+  calls \`focusApp(app.id)\`. **Silent failure mode** — without this
+  case the icon falls through to the URL-spawn default and double-
+  clicking does nothing, no console error.
 - **Window component** in
   \`packages/nextjs/components/desktop/MyWindow.tsx\`, mounted in
-  \`Desktop.tsx\`, subscribing via \`usePeerMesh\` (see
-  \`packages/nextjs/hooks/usePeerMesh.ts\` — add a state slot + setter
-  + a \`my_state\` case in the WS message handler).
+  \`Desktop.tsx\` inside a \`<SharedAppWindow id="my">\`, subscribing
+  via \`usePeerMesh\` (see \`packages/nextjs/hooks/usePeerMesh.ts\` — add
+  a state slot + setter + a \`my_state\` case in the WS message handler
+  + hydrate the field from the initial \`hello\` payload).
 
-Match existing patterns — research and clock are the cleanest
-examples of "state snapshot + broadcast + REST + window."
+Match existing patterns:
+- **Low-frequency state** (turn-based, chat-like, edit-then-broadcast):
+  \`research-state.ts\` + \`ResearchWindow.tsx\`, \`clock.ts\` + \`ClockWindow.tsx\`.
+- **High-frequency state** (real-time physics, held-key input,
+  per-frame updates): \`pong.ts\` + \`PongWindow.tsx\`. Read **L2.5**
+  below before you write a single line of physics — there are three
+  traps that look fine in dev and break with a remote peer.
+
+### L2.5 — real-time input / physics (extra rules on top of L2)
+
+If your app needs held-key input, dragged-cursor input, or a relay-
+driven physics tick (anything updating faster than ~1 Hz), follow
+these on top of the L2 anatomy. Skipping them produces bugs that
+only show up with a second peer — local solo testing looks perfect.
+
+1. **Authority split — local owns local input, server owns shared.**
+   The server's record of YOUR own paddle/cursor/brush lags your
+   fingers by ~1 RTT. If you reconcile your local value against the
+   server's broadcast every tick, your input snaps backwards every
+   frame — visible as oscillation while a key is held. Keep the
+   local value as the single source of truth while you hold input;
+   reset it only on ownership change (seat acquire/release, focus
+   loss, peer disconnect). The server's stored value matters only
+   for what OTHER peers render. See the \`localPaddleRef\` /
+   \`pongStateRef\` split in \`PongWindow.tsx\`.
+
+2. **RAF loops read fast-changing state via refs, NOT useEffect deps.**
+   Putting your 30Hz state in a \`useEffect\` dep array tears down +
+   restarts the \`requestAnimationFrame\` loop on every server snapshot.
+   Each restart drops one input-integration frame and resets \`prevT\`,
+   so held-key motion stutters. Pattern: small effect that copies
+   state to a ref, the RAF effect itself on \`[]\` deps reading the ref.
+
+3. **Throttle network sends to 20-30 Hz, not per-frame.** Integrate
+   input at 60 Hz locally for smooth rendering, but only send the
+   latest value at \`SEND_HZ\` (timestamp-throttled). The server's tick
+   uses whatever your last sent value was; sending 60×/sec wastes
+   relay CPU + bandwidth for no visible gain.
+
+4. **Stop the relay-side physics ticker when nobody's playing.** A
+   \`setInterval\` lives forever until cleared. Start it when the
+   game is actually playable (e.g. both seats filled); clear it on
+   the first event that breaks that condition (peer disconnects,
+   match ends). Otherwise an abandoned room burns CPU and broadcasts
+   ghost snapshots to zero peers. See \`Pong.afterSeatChange()\` and
+   \`Pong.stopTicker()\`.
+
+5. **Free per-peer-owned slots on WS disconnect.** Whatever your
+   "I own this seat" data is, hook it into \`Room.removePeer()\` so
+   the seat releases when the peer's socket closes. Without this, a
+   simple page refresh leaves the seat locked and the next claim
+   attempts return 409. Pong does \`this.pong.release(peerOwnerKey)\`
+   inline in \`removePeer\`.
+
+6. **WS for input, REST for control.** High-frequency client→server
+   messages (paddle moves, cursor drags) go via the existing WS
+   socket — \`send({ type: "my_input", ... })\` in usePeerMesh, handled
+   in the giant \`socket.on("message")\` switch in \`index.ts\`. Reserve
+   REST endpoints (\`/v1/my/claim\`, \`/v1/my/reset\`) for low-frequency
+   control verbs, especially the ones agents need to drive via curl.
 
 ### L3 — web3 dapp the slop-computer can browse
 

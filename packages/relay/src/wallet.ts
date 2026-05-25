@@ -322,6 +322,23 @@ export class WalletState {
 
   proposeTx(input: ProposeTxInput): WalletTx {
     this.load();
+    // Dedup: a re-clicked swap (the dapp double-fired, or the user
+    // clicked twice while waiting for the queue UI to update) produces
+    // an identical execHash because the on-chain nonce hasn't moved.
+    // Collapse onto the existing pending entry instead of stacking
+    // duplicates the signers then have to triage. Scoped to chainId +
+    // multisig so two wallets / chains with coincidentally equal
+    // hashes can't collide.
+    const execHashLower = input.execHash.toLowerCase();
+    const multisigLower = input.multisigAddress.toLowerCase();
+    const existing = this.state.txs.find(
+      t =>
+        t.status === "pending" &&
+        t.execHash === execHashLower &&
+        t.multisigAddress === multisigLower &&
+        t.chainId === input.chainId,
+    );
+    if (existing) return existing;
     const now = Date.now();
     const tx: WalletTx = {
       id: randomBytes(8).toString("hex"),

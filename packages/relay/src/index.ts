@@ -5245,13 +5245,18 @@ app.register(async function signalRoutes(fastify) {
             execHash: msg.execHash,
           });
           // Fire-and-forget AI summary — broadcasts when it lands.
-          void summarizeTransaction({
-            chainId,
-            multisigAddress: cur.address,
-            target: tx.target,
-            value: tx.value,
-            data: tx.data,
-          }).then(summary => room.wallet.setTxSummary(tx.id, summary));
+          // Skip when proposeTx returned an existing pending tx
+          // (double-click dedup) that already has a summary; the
+          // in-flight summary for the first propose still wins.
+          if (!tx.summary) {
+            void summarizeTransaction({
+              chainId,
+              multisigAddress: cur.address,
+              target: tx.target,
+              value: tx.value,
+              data: tx.data,
+            }).then(summary => room.wallet.setTxSummary(tx.id, summary));
+          }
           return;
         }
         case "wallet_tx_sign": {
