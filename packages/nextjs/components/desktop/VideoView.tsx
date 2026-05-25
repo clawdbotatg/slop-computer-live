@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAudioBusElement } from "~~/hooks/useAudioBus";
+import { useAudioBusStream } from "~~/hooks/useAudioBus";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
 
@@ -97,8 +97,12 @@ export const VideoView = ({
 
   // God-mode only — route this video's audio through the shared
   // AudioBus. Camera streams bundle mic audio; screen shares may
-  // carry system audio. No-op when audioBusId is null.
-  useAudioBusElement(videoRef, audioBusId ?? "", audioBusLabel, !!audioBusId);
+  // carry system audio. We tap the MediaStream directly because
+  // createMediaElementSource gives silent output on srcObject-bound
+  // elements in Chromium. The <video> below is force-muted while the
+  // bus is active so we don't double-play.
+  const busActive = !!audioBusId;
+  useAudioBusStream(stream, audioBusId ?? "", audioBusLabel, busActive);
 
   // Reload-without-gesture can leave an unmuted <video> paused (Chrome's
   // autoplay policy occasionally bites WebRTC streams too). The page
@@ -125,7 +129,11 @@ export const VideoView = ({
         // Self-publication is always muted (echo prevention). For
         // remote, the per-user `selfMuted` toggle silences this peer's
         // local playback only — the upstream stream is unchanged.
-        muted={muted || (!isMine && selfMuted)}
+        // When the AudioBus owns this stream we mute the element too
+        // so the bus is the sole audible path (otherwise the audio
+        // would play twice — direct from this element AND through
+        // the bus's MediaStreamSource).
+        muted={muted || (!isMine && selfMuted) || busActive}
         style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
       />
       {!isMine ? (

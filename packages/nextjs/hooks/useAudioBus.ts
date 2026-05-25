@@ -101,10 +101,37 @@ export function useAudioBusOwner(enabled: boolean): void {
   }, [enabled]);
 }
 
-// Register an HTMLMediaElement with the bus while `enabled` is true.
-// `id` should be stable per source (streamId for peers, "music" for
-// the music player, `preview-${fileId}` for previews). `label` is the
-// human-readable name shown in the /eq popup row.
+// Register a raw MediaStream with the bus while `enabled` is true.
+// Use this for WebRTC peer streams — `createMediaElementSource` on an
+// `srcObject`-bound element produces silence in Chromium for stream
+// inputs (a long-standing quirk), so we tap the MediaStream directly
+// instead. The accompanying media element must be muted while enabled
+// so the bus + the element don't both try to drive the speakers.
+export function useAudioBusStream(stream: MediaStream | null, id: string, label: string, enabled: boolean): void {
+  useEffect(() => {
+    if (!enabled) return;
+    if (!stream) return;
+    if (stream.getAudioTracks().length === 0) return;
+    const bus = audioBus();
+    const ok = bus.registerStream(stream, id, label);
+    if (!ok) return;
+    return () => {
+      bus.unregister(id);
+    };
+  }, [stream, id, enabled]);
+
+  // Keep the label fresh if it changes without re-registering.
+  useEffect(() => {
+    if (!enabled) return;
+    audioBus().setSourceLabel(id, label);
+  }, [id, label, enabled]);
+}
+
+// Register an HTMLMediaElement (with an HTTP `src=`, not `srcObject`)
+// with the bus while `enabled` is true. `id` should be stable per
+// source ("music" for the music player, `preview-${fileId}` for
+// previews). For MediaStream-bound elements use `useAudioBusStream`
+// instead — see the comment there.
 //
 // Takes a ref object (not a plain element) so the effect can read
 // `.current` after React has committed the ref — passing the element

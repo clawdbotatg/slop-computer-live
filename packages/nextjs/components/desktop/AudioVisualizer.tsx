@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAudioBusElement } from "~~/hooks/useAudioBus";
+import { useAudioBusStream } from "~~/hooks/useAudioBus";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -130,9 +130,13 @@ export const AudioVisualizer = ({
   }, [stream]);
 
   // God-mode only — route this peer's playback through the shared
-  // AudioBus so the broadcaster can mix + EQ it before tab capture.
+  // AudioBus by tapping the MediaStream directly (NOT the audio
+  // element — Chromium gives silent output for createMediaElementSource
+  // on srcObject-bound elements). The element below is force-muted
+  // while the bus is active so the bus is the only audible path.
   // No-op when audioBusId is null (non-spectator sessions).
-  useAudioBusElement(audioRef, audioBusId ?? "", audioBusLabel, !!audioBusId);
+  const busActive = !!audioBusId;
+  useAudioBusStream(stream, audioBusId ?? "", audioBusLabel, busActive);
 
   useEffect(() => {
     type AudioContextCtor = new () => AudioContext;
@@ -281,7 +285,7 @@ export const AudioVisualizer = ({
       {/* `muted` prop = self-published feedback prevention. `selfMuted`
           on a remote stream = "I don't want to hear this peer." Either
           one mutes the local element. */}
-      <audio ref={audioRef} autoPlay muted={muted || (!isMine && selfMuted)} style={{ display: "none" }} />
+      <audio ref={audioRef} autoPlay muted={muted || (!isMine && selfMuted) || busActive} style={{ display: "none" }} />
       {effectiveAvatar ? (
         <img
           src={effectiveAvatar}
