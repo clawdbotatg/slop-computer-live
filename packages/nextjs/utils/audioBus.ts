@@ -125,6 +125,12 @@ type SourceEntry = {
   /** Last snapshot-emitted desiredGain. Auto-loop diffs against this
    *  to decide whether the change is worth a snapshot push. */
   lastEmittedGain: number;
+  /** 0..1 — the source's "I want to be this loud in the mix"
+   *  preference. The music player drives this with its volume
+   *  slider so user volume reductions stick instead of getting
+   *  cranked back up by the auto-leveler. Auto's effective target
+   *  for this source is `AUTO_TARGET_RMS * userTargetScale`. */
+  userTargetScale: number;
 };
 
 class AudioBusImpl {
@@ -249,6 +255,7 @@ class AudioBusImpl {
       desiredGain: 1,
       peakRms: 0,
       lastEmittedGain: 1,
+      userTargetScale: 1,
     });
     this.emit();
     return true;
@@ -305,6 +312,7 @@ class AudioBusImpl {
       desiredGain: 1,
       peakRms: 0,
       lastEmittedGain: 1,
+      userTargetScale: 1,
     });
     this.emit();
     return true;
@@ -353,6 +361,22 @@ class AudioBusImpl {
     const clamped = Math.max(0, Math.min(4, gain));
     entry.desiredGain = clamped;
     if (!entry.muted) entry.gainNode.gain.value = clamped;
+  }
+
+  /** Set the source's "I want to be this loud in the mix" preference
+   *  (0..1). Auto-level treats `AUTO_TARGET_RMS * scale` as the
+   *  effective target for this source. The music player calls this
+   *  with its volume slider so user volume reductions stick instead
+   *  of getting cranked back up by the auto. Not driven by the popup
+   *  — separate concept from the bus's per-source manual gain slider. */
+  setSourceTargetScale(id: string, scale: number): void {
+    const entry = this.sources.get(id);
+    if (!entry) return;
+    const clamped = Math.max(0, Math.min(1, scale));
+    if (entry.userTargetScale === clamped) return;
+    entry.userTargetScale = clamped;
+    // No emit() — this isn't a popup-visible field. Auto-loop will
+    // converge on the new target within a few ticks.
   }
 
   setAutoEnabled(enabled: boolean): void {
@@ -460,11 +484,13 @@ class AudioBusImpl {
     }
     if (entry.peakRms < AUTO_NOISE_FLOOR) return false;
 
-    // 2× hard cap. We *could* boost a really quiet mic 4× to hit
-    // target, but every dB of boost is also a dB of background noise
-    // — capping at 2× keeps SNR sane. Quiet speakers stay slightly
-    // quiet; that's the right trade-off.
-    const targetGain = Math.max(0, Math.min(AUTO_GAIN_MAX, AUTO_TARGET_RMS / entry.peakRms));
+    // Effective target = global target × source's user preference.
+    // The music player drives userTargetScale with its volume slider
+    // so turning music down actually keeps music down (instead of
+    // the auto cranking gain to compensate for the lower input).
+    // Cap on max gain prevents noise amplification on quiet mics.
+    const effectiveTarget = AUTO_TARGET_RMS * entry.userTargetScale;
+    const targetGain = Math.max(0, Math.min(AUTO_GAIN_MAX, effectiveTarget / entry.peakRms));
 
     // Asymmetric ramp: fast down (ducks hot signals), slow up
     // (doesn't audibly hunt during pauses). See the const comments

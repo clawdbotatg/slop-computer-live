@@ -142,7 +142,7 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["clock", "card", "research", "transcript"],
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
-  ["browser", "wallet", "music", "chess"],
+  ["browser", "wallet", "music", "chess", "pong"],
 ];
 
 function defaultIconPosition(appId: string, i: number): { x: number; y: number } {
