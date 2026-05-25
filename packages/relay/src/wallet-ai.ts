@@ -18,7 +18,7 @@
 // model's symbol/thumbnail/decimals fields for any input/output whose
 // `address` was resolved — defense in depth against further drift.
 
-import { resolveTokenByAddress, type ResolvedToken } from "./wallet-tokens.js";
+import { NATIVE_ADDRESS, resolveTokenByAddress, type ResolvedToken } from "./wallet-tokens.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
@@ -145,17 +145,17 @@ function applyResolvedTokensToCard(
   const chainSlug = CHAIN_SLUG_BY_ID[chainId] ?? null;
   const fixAsset = (a: AssetFromAI): AssetFromAI => {
     if (!a || typeof a !== "object") return a;
-    const addr = typeof a.address === "string" ? a.address.toLowerCase() : null;
-    if (!addr) {
-      // Native (no address) — at minimum stamp the chain so the client
-      // can render a chain badge on the ETH chip.
-      return { ...a, chain: a.chain ?? chainSlug };
-    }
-    const r = resolved.get(addr);
-    if (!r) return { ...a, address: addr, chain: a.chain ?? chainSlug };
+    // Treat a null/missing address as native — look it up under the
+    // 0x0…0 sentinel which the summarizer pre-resolved. Preserve the
+    // null in the output so the client's "ETH on Base" rendering
+    // continues to read `address: null` as the native sentinel.
+    const rawAddr = typeof a.address === "string" ? a.address.toLowerCase() : null;
+    const lookupAddr = rawAddr ?? NATIVE_ADDRESS;
+    const r = resolved.get(lookupAddr);
+    if (!r) return { ...a, address: rawAddr, chain: a.chain ?? chainSlug };
     return {
       ...a,
-      address: addr,
+      address: rawAddr,
       symbol: r.symbol,
       chain: chainSlug,
       thumbnail: r.thumbnail,
@@ -181,7 +181,12 @@ export async function summarizeTransaction(args: SummarizeArgs): Promise<string>
   // ── Pre-resolve every address we can see in the calldata. This is the
   //    core fix for "swap to CLAWD shows UNI": the AI now sees the
   //    canonical (address, symbol) pairs in its prompt and can't drift.
-  const addresses = extractAddressesFromCalls(args.target, args.data, args.calls);
+  //    NATIVE_ADDRESS is always included so null-address assets in the
+  //    response (the AI emits `"address": null` for ETH) still pick up
+  //    a proper symbol + Zerion icon at apply time.
+  const addresses = Array.from(
+    new Set([...extractAddressesFromCalls(args.target, args.data, args.calls), NATIVE_ADDRESS]),
+  );
   const resolved = new Map<string, ResolvedToken>();
   await Promise.all(
     addresses.map(async addr => {

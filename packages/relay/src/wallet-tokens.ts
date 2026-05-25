@@ -135,7 +135,7 @@ const ZERION_CHAIN_SLUG: Record<number, string> = {
   100: "xdai",
 };
 
-const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
 const NATIVE_SYMBOL_BY_CHAIN: Record<number, { symbol: string; name: string }> = {
   1: { symbol: "ETH", name: "Ether" },
   8453: { symbol: "ETH", name: "Ether" },
@@ -143,6 +143,18 @@ const NATIVE_SYMBOL_BY_CHAIN: Record<number, { symbol: string; name: string }> =
   10: { symbol: "ETH", name: "Ether" },
   137: { symbol: "MATIC", name: "Matic" },
   100: { symbol: "xDAI", name: "xDai" },
+};
+
+// Zerion fungible IDs for native assets. Every EVM ETH-chain shares the
+// same canonical "eth" fungible — Base/Arb/Optimism native ETH all resolve
+// to the same icon. Polygon and Gnosis have their own slugs.
+const ZERION_NATIVE_FUNGIBLE_ID: Record<number, string> = {
+  1: "eth",
+  8453: "eth",
+  42161: "eth",
+  10: "eth",
+  137: "polygon-ecosystem-token",
+  100: "xdai",
 };
 
 const resolveCache = new Map<string, ResolvedToken | null>();
@@ -153,11 +165,85 @@ function zerionAuthHeader(): string | null {
   return `Basic ${Buffer.from(`${key}:`).toString("base64")}`;
 }
 
+// Pull a Zerion fungible's icon URL by its canonical ID. Used for natives
+// (where there's no contract to search by) — we already know the ID.
+async function fetchZerionIconById(fungibleId: string): Promise<string | null> {
+  const auth = zerionAuthHeader();
+  if (!auth) return null;
+  try {
+    const res = await fetch(`https://api.zerion.io/v1/fungibles/${fungibleId}?currency=usd`, {
+      headers: { Authorization: auth, accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { attributes?: { icon?: { url?: string } } } };
+    return json.data?.attributes?.icon?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Search Zerion's fungibles index by contract address, scoping the impl
+// match to the right chain. Returns the canonical token + Zerion's icon
+// URL when found. Long-tail tokens like CLAWD live here.
+async function fetchZerionTokenByAddress(
+  chainId: number,
+  lower: string,
+): Promise<ResolvedToken | null> {
+  const auth = zerionAuthHeader();
+  if (!auth) return null;
+  const chainSlug = ZERION_CHAIN_SLUG[chainId] ?? null;
+  try {
+    const res = await fetch(
+      `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(lower)}&currency=usd&page[size]=10`,
+      { headers: { Authorization: auth, accept: "application/json" } },
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      data?: Array<{
+        attributes?: {
+          symbol?: string;
+          name?: string;
+          icon?: { url?: string };
+          implementations?: Array<{ chain_id?: string; address?: string | null; decimals?: number }>;
+        };
+      }>;
+    };
+    // Find a fungible whose implementations contains *this* (chain, address).
+    // Zerion's search index is fuzzy — without this check we'd accept a hit
+    // on the same address on a different chain, or on a different token
+    // entirely that happened to mention this address in its description.
+    for (const f of json.data ?? []) {
+      const impls = f.attributes?.implementations ?? [];
+      const match = impls.find(
+        i =>
+          (i.address ?? "").toLowerCase() === lower &&
+          (chainSlug ? i.chain_id === chainSlug : true),
+      );
+      if (match && f.attributes?.symbol) {
+        return {
+          address: lower,
+          chainId,
+          symbol: f.attributes.symbol,
+          name: f.attributes.name ?? f.attributes.symbol,
+          decimals: match.decimals ?? 18,
+          thumbnail: f.attributes.icon?.url ?? null,
+        };
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
 /**
  * Resolve a token's metadata by chain + contract address. Returns null when
- * the address can't be matched. Hits an in-memory cache; on a miss, walks
- * TOKEN_ADDRESSES then Zerion. Safe to call concurrently — each address +
- * chain pair fans out at most one Zerion request thanks to cache memoization.
+ * the address can't be matched. Hits an in-memory cache; on a miss, calls
+ * Zerion (always — even for tokens in TOKEN_ADDRESSES, because we want the
+ * icon URL Zerion has and the registry doesn't carry one). The in-memory
+ * registry is the fallback when Zerion misses or there's no API key.
+ * Safe to call concurrently — each (chain, address) pair fans out at most
+ * one Zerion request thanks to cache memoization.
  */
 export async function resolveTokenByAddress(
   chainId: number,
@@ -167,22 +253,35 @@ export async function resolveTokenByAddress(
   const cacheKey = `${chainId}:${lower}`;
   if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
 
-  // Native: short-circuit on the all-zeros sentinel.
+  // Native: get the canonical symbol/decimals from our map and the icon
+  // from Zerion's fungibles-by-id endpoint.
   if (lower === NATIVE_ADDRESS) {
     const meta = NATIVE_SYMBOL_BY_CHAIN[chainId] ?? { symbol: "ETH", name: "Ether" };
+    const fungibleId = ZERION_NATIVE_FUNGIBLE_ID[chainId];
+    const thumbnail = fungibleId ? await fetchZerionIconById(fungibleId) : null;
     const r: ResolvedToken = {
       address: lower,
       chainId,
       symbol: meta.symbol,
       name: meta.name,
       decimals: 18,
-      thumbnail: null,
+      thumbnail,
     };
     resolveCache.set(cacheKey, r);
     return r;
   }
 
-  // 1) In-memory registry — flip the per-chain symbol→address map.
+  // ERC-20: try Zerion first so the icon comes through. Even when the
+  // token is in TOKEN_ADDRESSES (USDC, etc.) we still want Zerion's
+  // canonical icon URL — the in-memory registry doesn't carry one.
+  const fromZerion = await fetchZerionTokenByAddress(chainId, lower);
+  if (fromZerion) {
+    resolveCache.set(cacheKey, fromZerion);
+    return fromZerion;
+  }
+
+  // Zerion missed or key unset — fall back to the in-memory registry for
+  // at least symbol/decimals/name (no icon).
   const chainTokens = TOKEN_ADDRESSES[String(chainId)];
   if (chainTokens) {
     for (const [symbol, entry] of Object.entries(chainTokens)) {
@@ -200,60 +299,7 @@ export async function resolveTokenByAddress(
       }
     }
   }
-
-  // 2) Zerion search by contract — covers long-tail tokens like CLAWD.
-  const auth = zerionAuthHeader();
-  if (!auth) {
-    resolveCache.set(cacheKey, null);
-    return null;
-  }
-  const chainSlug = ZERION_CHAIN_SLUG[chainId] ?? null;
-  try {
-    const res = await fetch(
-      `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(lower)}&currency=usd&page[size]=10`,
-      { headers: { Authorization: auth, accept: "application/json" } },
-    );
-    if (!res.ok) {
-      resolveCache.set(cacheKey, null);
-      return null;
-    }
-    const json = (await res.json()) as {
-      data?: Array<{
-        attributes?: {
-          symbol?: string;
-          name?: string;
-          icon?: { url?: string };
-          implementations?: Array<{ chain_id?: string; address?: string | null; decimals?: number }>;
-        };
-      }>;
-    };
-    // Find a fungible whose implementations contains *this* (chain, address).
-    // Zerion's search index is fuzzy — without this check we'd accept a
-    // hit on the same address on a different chain, or on a different token
-    // entirely that happened to mention this address in its description.
-    for (const f of json.data ?? []) {
-      const impls = f.attributes?.implementations ?? [];
-      const match = impls.find(
-        i =>
-          (i.address ?? "").toLowerCase() === lower &&
-          (chainSlug ? i.chain_id === chainSlug : true),
-      );
-      if (match && f.attributes?.symbol) {
-        const r: ResolvedToken = {
-          address: lower,
-          chainId,
-          symbol: f.attributes.symbol,
-          name: f.attributes.name ?? f.attributes.symbol,
-          decimals: match.decimals ?? 18,
-          thumbnail: f.attributes.icon?.url ?? null,
-        };
-        resolveCache.set(cacheKey, r);
-        return r;
-      }
-    }
-  } catch {
-    // fall through to cached null
-  }
   resolveCache.set(cacheKey, null);
   return null;
 }
+
