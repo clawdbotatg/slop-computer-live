@@ -46,3 +46,8 @@ packages/nextjs/public/music/
 # Icon generator local cache (full-res PNGs from OpenAI). Published icons
 # live in packages/nextjs/public/icons/ — those ARE committed.
 packages/icon-gen/out/
+
+# browser-host warmup cookies — generated locally via `yarn warmup`, scp'd
+# to prod once. Contains Google's bot-detection cookies (NID/SOCS/CONSENT)
+# from the warmup session — keep out of git.
+packages/browser-host/cookies.json

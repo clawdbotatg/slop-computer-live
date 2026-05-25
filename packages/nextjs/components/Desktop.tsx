@@ -2256,9 +2256,23 @@ function DesktopInner({ slug }: { slug: string }) {
                       isMine={pub.peerId === mesh.myId}
                       onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
                       persistPause={pub.peerId === mesh.myId}
+                      // God-mode only: camera publications bundle the
+                      // publisher's mic on the same stream, so the
+                      // video element is where that audio plays —
+                      // route it through the EQ bus too.
+                      audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                      audioBusLabel={`${badgeLabel} · cam`}
                     />
                   ) : (
-                    <VideoView stream={stream} muted={pub.peerId === mesh.myId} isMine={pub.peerId === mesh.myId} />
+                    <VideoView
+                      stream={stream}
+                      muted={pub.peerId === mesh.myId}
+                      isMine={pub.peerId === mesh.myId}
+                      // Screen shares can carry system audio (browser
+                      // tab capture with audio=true). Same wiring.
+                      audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                      audioBusLabel={`${badgeLabel} · screen`}
+                    />
                   )
                 ) : (
                   <div

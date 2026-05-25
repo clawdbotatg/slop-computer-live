@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useAudioBusElement } from "~~/hooks/useAudioBus";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
 
@@ -29,6 +30,14 @@ export type VideoViewProps = {
    *  Only set for the publisher's own camera. Screen-share and remote
    *  views keep ephemeral local-only state. */
   persistPause?: boolean;
+  /** When set, register the inner `<video>` element with the shared
+   *  AudioBus under this id. Camera publications carry the publisher's
+   *  mic (see lockstep enable above) and screen shares can carry
+   *  system audio — both need to ride the bus in god-mode so the EQ
+   *  popup sees them. null on non-spectator sessions. */
+  audioBusId?: string | null;
+  /** Human-readable label for the /eq popup row. */
+  audioBusLabel?: string;
 };
 
 // Camera / screen-share renderer with a publisher-only pause toggle in the
@@ -41,6 +50,8 @@ export const VideoView = ({
   isMine = false,
   onSettings,
   persistPause = false,
+  audioBusId = null,
+  audioBusLabel = "video",
 }: VideoViewProps) => {
   const slug = useRoomSlug();
   const storageKey = videoPausedKey(slug);
@@ -83,6 +94,11 @@ export const VideoView = ({
     for (const t of stream.getVideoTracks()) t.enabled = !paused;
     for (const t of stream.getAudioTracks()) t.enabled = !paused;
   }, [stream, paused, isMine]);
+
+  // God-mode only — route this video's audio through the shared
+  // AudioBus. Camera streams bundle mic audio; screen shares may
+  // carry system audio. No-op when audioBusId is null.
+  useAudioBusElement(videoRef, audioBusId ?? "", audioBusLabel, !!audioBusId);
 
   // Reload-without-gesture can leave an unmuted <video> paused (Chrome's
   // autoplay policy occasionally bites WebRTC streams too). The page

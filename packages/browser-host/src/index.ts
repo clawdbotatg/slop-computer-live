@@ -12,10 +12,12 @@
 // every other room (or OOM-ing the prod box). Idle timer destroys tabs
 // that the user interacted with but then walked away from.
 
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { Browser, BrowserContext, CDPSession, Page } from "puppeteer";
+import type { Browser, BrowserContext, CDPSession, CookieData, Page } from "puppeteer";
 import puppeteerVanilla from "puppeteer";
 // puppeteer-extra wraps the same Chromium puppeteer downloads, then layers
 // the stealth plugin which patches ~20 fingerprint vectors (navigator.webdriver,
@@ -110,6 +112,32 @@ export function isSafeBrowsableUrl(raw: string): boolean {
 
 const MAX_TABS_PER_ROOM = 5;
 const MAX_TABS_TOTAL = 30;
+
+// Cookies loaded once at boot from config.cookiesPath. Injected into every
+// new BrowserContext (per-room) so Google etc. see a "returning visitor"
+// with real bot-detection cookies (NID/SOCS/CONSENT) instead of a fresh
+// fingerprint on each room. Operator generates the file via `yarn warmup`.
+let warmupCookies: CookieData[] = [];
+async function loadWarmupCookies(): Promise<void> {
+  const abs = resolve(process.cwd(), config.cookiesPath);
+  try {
+    const raw = await readFile(abs, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      app.log.warn({ path: abs }, "cookies file is not a JSON array — ignoring");
+      return;
+    }
+    warmupCookies = parsed as CookieData[];
+    app.log.info({ path: abs, count: warmupCookies.length }, "warmup cookies loaded");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      app.log.info({ path: abs }, "no cookies file — skipping warmup injection (run `yarn warmup` to create one)");
+    } else {
+      app.log.warn({ path: abs, err: (err as Error).message }, "failed to load cookies file");
+    }
+  }
+}
 
 let browser: Browser | null = null;
 let browserBootPromise: Promise<Browser> | null = null;
@@ -218,9 +246,16 @@ async function getOrCreateRoomBrowser(slug: string): Promise<RoomBrowser> {
   const boot = (async () => {
     const b = await getBrowser();
     const ctx = await b.createBrowserContext();
+    if (warmupCookies.length > 0) {
+      try {
+        await ctx.setCookie(...warmupCookies);
+      } catch (err) {
+        app.log.warn({ slug, err: (err as Error).message }, "warmup cookie injection failed");
+      }
+    }
     const rb: RoomBrowser = { slug, context: ctx, tabs: new Map() };
     roomBrowsers.set(slug, rb);
-    app.log.info({ slug }, "room context created");
+    app.log.info({ slug, cookies: warmupCookies.length }, "room context created");
     return rb;
   })().finally(() => roomBoots.delete(slug));
   roomBoots.set(slug, boot);
@@ -358,6 +393,12 @@ async function createTab(
     await destroyTab(slug, victim.id);
   }
   const page = await rb.context.newPage();
+
+  // Pin UA explicitly so the page never advertises "HeadlessChrome" — the
+  // stealth plugin patches navigator.userAgent in JS-land, but the HTTP
+  // request header sent by the network stack can still leak depending on
+  // the puppeteer/Chromium versions. setUserAgent overrides both.
+  await page.setUserAgent(config.userAgent);
 
   await page.setViewport({
     width: config.viewport.width,
@@ -1215,6 +1256,8 @@ app.register(async function (fastify) {
 });
 
 // ---- Boot -----------------------------------------------------------------
+
+await loadWarmupCookies();
 
 app
   .listen({ port: config.port, host: config.host })
