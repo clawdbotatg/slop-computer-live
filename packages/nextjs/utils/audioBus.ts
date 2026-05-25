@@ -71,10 +71,12 @@ const AUTO_TARGET_RMS = 0.3;
 // drowned in their own room noise.
 const AUTO_GAIN_MAX = 2.0;
 // Input RMS below this counts as "silence" — we hold the gain in
-// place rather than continuing to lerp toward an absurd target. 0.04
-// is roughly room ambience on a typical condenser; below this no
-// reasonable mic + voice combination is producing actual speech.
-const AUTO_NOISE_FLOOR = 0.04;
+// place rather than continuing to lerp toward an absurd target. 0.1
+// is well above room ambience AND quiet breathing — only real,
+// committed speech crosses the gate. Anything quieter just freezes
+// the gain at the last good value, which is what we want: no
+// auto-amplification of background noise.
+const AUTO_NOISE_FLOOR = 0.1;
 // Peak decay per tick (10Hz). 0.99 ≈ -0.9 dB/sec when we DO decay —
 // but most of the time we don't, because of the silence-hold below.
 const AUTO_PEAK_DECAY = 0.99;
