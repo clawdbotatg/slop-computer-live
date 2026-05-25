@@ -545,7 +545,10 @@ const AssetDetailModal = ({ asset, slug, onClose }: { asset: PortfolioAsset; slu
           width: "100%",
           maxWidth: 460,
           maxHeight: "85vh",
-          overflow: "auto",
+          // Card itself doesn't scroll — the body region inside does. This
+          // way the header (with close button) stays pinned and the user
+          // can always dismiss without scrolling back to the top.
+          overflow: "hidden",
           background: "var(--slop-panel, #0a0f24)",
           border: `1px solid ${ACCENT}`,
           borderRadius: 8,
@@ -553,42 +556,24 @@ const AssetDetailModal = ({ asset, slug, onClose }: { asset: PortfolioAsset; slu
           color: "var(--slop-text)",
           fontFamily: "var(--slop-font-body)",
           position: "relative",
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
         }}
       >
-        {/* Close button */}
-        <button
-          type="button"
-          aria-label="Close"
-          onClick={onClose}
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            width: 24,
-            height: 24,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "transparent",
-            border: "1px solid rgba(255,62,201,0.3)",
-            color: ACCENT,
-            cursor: "pointer",
-            fontSize: 14,
-            lineHeight: 1,
-            borderRadius: 4,
-          }}
-        >
-          ×
-        </button>
-
-        {/* Header: icon + name + symbol */}
+        {/* Header: icon + name + symbol + close. flexShrink: 0 keeps it
+            pinned at the top while the body scrolls underneath. */}
         <div
           style={{
             display: "flex",
             alignItems: "center",
             gap: 12,
             padding: 16,
+            paddingRight: 44,
             borderBottom: "1px dashed rgba(255,62,201,0.25)",
+            flexShrink: 0,
+            position: "relative",
+            background: "var(--slop-panel, #0a0f24)",
           }}
         >
           <TokenAvatar
@@ -625,10 +610,50 @@ const AssetDetailModal = ({ asset, slug, onClose }: { asset: PortfolioAsset; slu
               {asset.protocol ? <span style={{ color: "var(--slop-text-muted)" }}> · via {asset.protocol}</span> : null}
             </div>
           </div>
+          {/* Close button — lives inside the pinned header so it's always
+              reachable regardless of how far the body has scrolled. */}
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            style={{
+              position: "absolute",
+              top: 12,
+              right: 12,
+              width: 24,
+              height: 24,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "1px solid rgba(255,62,201,0.3)",
+              color: ACCENT,
+              cursor: "pointer",
+              fontSize: 14,
+              lineHeight: 1,
+              borderRadius: 4,
+            }}
+          >
+            ×
+          </button>
         </div>
 
-        {/* Body */}
-        <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* Body — the scrollable region. flex:1 + minHeight:0 lets it shrink
+            inside the column flexbox; overscrollBehavior:contain stops wheel
+            scroll at the edges from bubbling to the wallet window underneath. */}
+        <div
+          style={{
+            padding: 14,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            overscrollBehavior: "contain",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
           {/* Your holdings — pulled from the row that opened the modal */}
           <div
             style={{
