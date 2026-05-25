@@ -31,7 +31,6 @@ export const DenoiseToggle = ({ denoise, setDenoise }: DenoiseToggleProps) => {
         style={{ cursor: "pointer" }}
       />
       <span style={{ fontSize: 12, color: "var(--slop-text)" }}>Reduce background noise</span>
-      <span style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>— keyboard, fans, kids; turn off for music</span>
     </label>
   );
 };
