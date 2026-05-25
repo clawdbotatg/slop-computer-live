@@ -71,11 +71,12 @@ const AUTO_TARGET_RMS = 0.3;
 // drowned in their own room noise.
 const AUTO_GAIN_MAX = 2.0;
 // Input RMS below this counts as "silence" — we hold the gain in
-// place rather than continuing to lerp toward an absurd target. 0.075
-// is above typical room ambience but still catches quieter
-// speech — at 0.1 even fairly normal talking was being treated as
-// silence and the auto wasn't engaging often enough.
-const AUTO_NOISE_FLOOR = 0.075;
+// place rather than continuing to lerp toward an absurd target. 0.05
+// catches normal-to-quiet speech (mid 20%+ on the meter bar — the
+// bar uses a sqrt curve so 0.05 RMS shows as ~25% fill). Still well
+// above typical room ambience (0.005-0.02), so pure silence + HVAC
+// hum still freeze the gain.
+const AUTO_NOISE_FLOOR = 0.05;
 // Peak decay per tick (10Hz). 0.97 = -1.3 dB/tick = ~2.3s to half.
 // Fast enough that going from a loud source to a quiet one re-
 // converges in a few seconds, slow enough that a sentence with
