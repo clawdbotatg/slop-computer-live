@@ -1,11 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { type Portfolio, type PortfolioAsset, zerionChainToId } from "./types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { type Portfolio, type PortfolioAsset, toRawUnits, zerionChainToId } from "./types";
+import { AddressInput } from "@scaffold-ui/components";
+import { type Address as AddressType, type Hex, encodeFunctionData, erc20Abi, formatUnits } from "viem";
+import { usePublicClient } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
-import type { WalletRecord } from "~~/hooks/usePeerMesh";
+import { MultisigAbi } from "~~/contracts/multisig";
+import type { PeerMeshState, WalletRecord } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
+import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
+
+const NATIVE_TOKEN_PLACEHOLDER = "0x0000000000000000000000000000000000000000";
+
+// True for ETH/native rows — they have no real ERC-20 contract on the
+// chain, so a send goes as msg.value with empty calldata.
+const isNativeAsset = (a: PortfolioAsset): boolean =>
+  !a.contractAddress || a.contractAddress.toLowerCase() === NATIVE_TOKEN_PLACEHOLDER;
 
 // Read-only portfolio + activity view for the multisig. Fetched from the
 // relay's /v1/wallet/* proxies (which hold the Zerion key). The data is
@@ -335,102 +347,43 @@ const AssetRow = ({
   );
 };
 
-export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
+export type WalletAssetsPanelProps = {
+  wallet: WalletRecord;
+  mesh: PeerMeshState;
+  portfolio: Portfolio | null;
+  loading: boolean;
+  error: string | null;
+};
+
+export const WalletAssetsPanel = ({ wallet, mesh, portfolio, loading, error }: WalletAssetsPanelProps) => {
   const slug = useRoomSlug();
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<PortfolioAsset | null>(null);
+  const [sendAsset, setSendAsset] = useState<PortfolioAsset | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [pRes, aRes] = await Promise.all([
-        fetch(withSlug(`${RELAY_HTTP}/v1/wallet/portfolio?address=${wallet.address}`, slug), {
-          credentials: "include",
-        }),
-        fetch(withSlug(`${RELAY_HTTP}/v1/wallet/activity?address=${wallet.address}`, slug), {
-          credentials: "include",
-        }),
-      ]);
-      if (pRes.ok) setPortfolio((await pRes.json()) as Portfolio);
-      else setError(`portfolio: relay ${pRes.status}`);
-      if (aRes.ok) {
-        const data = (await aRes.json()) as { items?: ActivityItem[] };
-        setActivity(data.items ?? []);
-      }
-    } catch (err) {
-      setError(`network error: ${String(err).slice(0, 160)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [wallet.address, slug]);
-
+  // Activity has its own fetch (it's not used outside this panel, so
+  // there's no reason to hoist it the way portfolio is). Re-runs only
+  // when the wallet address or slug changes.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    fetch(withSlug(`${RELAY_HTTP}/v1/wallet/activity?address=${wallet.address}`, slug), {
+      credentials: "include",
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: { items?: ActivityItem[] } | null) => {
+        if (cancelled) return;
+        setActivity(data?.items ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setActivity([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet.address, slug]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: 14 }}>
-      {/* Total */}
-      <div
-        style={{
-          padding: 12,
-          borderRadius: 6,
-          background: "linear-gradient(180deg, rgba(255,62,201,0.08) 0%, rgba(255,62,201,0.02) 100%)",
-          border: "1px solid rgba(255,62,201,0.3)",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 9,
-            color: "var(--slop-text-muted)",
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-          }}
-        >
-          Wallet balance
-        </div>
-        <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "var(--slop-font-display)", marginTop: 2 }}>
-          {portfolio ? fmtUsd(portfolio.totalBalanceUsd) : loading ? "…" : "$0"}
-        </div>
-        {portfolio && parseFloat(portfolio.change1dUsd) !== 0 ? (
-          <div
-            style={{
-              fontSize: 11,
-              marginTop: 2,
-              color: parseFloat(portfolio.change1dUsd) >= 0 ? "#7be88a" : "#ff7676",
-            }}
-          >
-            {parseFloat(portfolio.change1dUsd) >= 0 ? "▲" : "▼"} {fmtUsd(Math.abs(parseFloat(portfolio.change1dUsd)))} (
-            {portfolio.change1dPct}%) 24h
-          </div>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          style={{
-            marginTop: 8,
-            padding: "3px 8px",
-            fontSize: 9,
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            background: "transparent",
-            color: "var(--slop-text-muted)",
-            border: "1px solid rgba(255,62,201,0.3)",
-            borderRadius: 3,
-            cursor: loading ? "default" : "pointer",
-          }}
-        >
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
-
       {error ? (
         <div
           style={{
@@ -453,7 +406,12 @@ export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
           <SectionLabel>Assets ({portfolio.assets.length})</SectionLabel>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {portfolio.assets.map((a, i) => (
-              <AssetRow key={`${a.contractAddress}-${a.blockchain}-${i}`} a={a} onOpen={setSelected} onSend={null} />
+              <AssetRow
+                key={`${a.contractAddress}-${a.blockchain}-${i}`}
+                a={a}
+                onOpen={setSelected}
+                onSend={setSendAsset}
+              />
             ))}
           </div>
         </div>
@@ -468,6 +426,7 @@ export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
           <SectionLabel>DeFi positions ({portfolio.defiPositions.length})</SectionLabel>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {portfolio.defiPositions.map((a, i) => (
+              // DeFi positions aren't simple transfers — no send affordance.
               <AssetRow key={`defi-${a.contractAddress}-${i}`} a={a} onOpen={setSelected} onSend={null} />
             ))}
           </div>
@@ -520,6 +479,9 @@ export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
       ) : null}
 
       {selected ? <AssetDetailModal asset={selected} slug={slug} onClose={() => setSelected(null)} /> : null}
+      {sendAsset ? (
+        <SendAssetModal asset={sendAsset} wallet={wallet} mesh={mesh} onClose={() => setSendAsset(null)} />
+      ) : null}
     </div>
   );
 };
@@ -933,5 +895,365 @@ const DataRow = ({ label, value }: { label: string; value: React.ReactNode | nul
     )}
   </div>
 );
+
+// ============================================================================
+// SendAssetModal — per-asset send form. AddressInput + editable amount
+// (prefilled to max balance with a [max] chip). On send, proposes a
+// single WalletTx — ERC-20 transfer for token rows, msg.value for the
+// native row. Drops it into the multisig queue (Transactions tab) where
+// signers approve + execute.
+// ============================================================================
+
+const SendAssetModal = ({
+  asset,
+  wallet,
+  mesh,
+  onClose,
+}: {
+  asset: PortfolioAsset;
+  wallet: WalletRecord;
+  mesh: PeerMeshState;
+  onClose: () => void;
+}) => {
+  const chainId = zerionChainToId(asset.blockchain);
+  const publicClient = usePublicClient({ chainId: chainId ?? undefined });
+  const native = isNativeAsset(asset);
+  const decimals = asset.tokenDecimals ?? 18;
+
+  // Local form state. Amount string mirrors what the user typed so we
+  // can re-fill it from [max] without losing the input element's
+  // selection/cursor on each keystroke.
+  const [recipient, setRecipient] = useState<string>("");
+  const [amount, setAmount] = useState<string>(() => asset.balance);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+
+  // Esc closes — same UX as AssetDetailModal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const maxRaw = useMemo(() => toRawUnits(asset.balance, decimals), [asset.balance, decimals]);
+  const amountRaw = useMemo(() => toRawUnits(amount, decimals), [amount, decimals]);
+  const recipientValid = /^0x[a-fA-F0-9]{40}$/.test(recipient.trim());
+  const amountValid = amountRaw > 0n && amountRaw <= maxRaw;
+  const overMax = amountRaw > maxRaw;
+  const chainSupported = chainId != null;
+  const deployedOnChain = chainId != null && chainId in wallet.deployments;
+  const canSend = recipientValid && amountValid && chainSupported && deployedOnChain && !submitting;
+
+  const onSend = useCallback(async () => {
+    setError(null);
+    if (!chainId) {
+      setError(`${asset.blockchain} isn't supported by the multisig`);
+      return;
+    }
+    if (!deployedOnChain) {
+      setError(`multisig isn't deployed on ${asset.blockchain} yet`);
+      return;
+    }
+    if (!publicClient) {
+      setError("no RPC client for this chain");
+      return;
+    }
+    if (!recipientValid) {
+      setError("recipient is not a valid address");
+      return;
+    }
+    if (!amountValid) {
+      setError(overMax ? "amount exceeds balance" : "amount must be greater than 0");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const nonce = (await publicClient.readContract({
+        address: wallet.address as AddressType,
+        abi: MultisigAbi,
+        functionName: "nonce",
+      })) as bigint;
+      const deadline = defaultDeadline();
+      const to = recipient.trim() as AddressType;
+      // ERC-20 row → encode `transfer(to, amount)`, send to the token
+      // contract with value=0. Native row → send raw to recipient with
+      // amount as value and empty calldata.
+      const target: AddressType = native ? to : (asset.contractAddress as AddressType);
+      const value: bigint = native ? amountRaw : 0n;
+      const data: Hex = native
+        ? "0x"
+        : encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "transfer",
+            args: [to, amountRaw],
+          });
+      const execHash = computeExecHash({
+        chainId,
+        multisig: wallet.address as AddressType,
+        nonce,
+        deadline,
+        target,
+        value,
+        data,
+      });
+      mesh.walletProposeTx({
+        chainId,
+        target,
+        value: value.toString(),
+        data,
+        deadline: deadline.toString(),
+        nonce: nonce.toString(),
+        execHash,
+        source: "manual",
+        browserId: null,
+      });
+      setSent(true);
+    } catch (err) {
+      setError(String(err).slice(0, 200));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [
+    chainId,
+    deployedOnChain,
+    publicClient,
+    recipient,
+    recipientValid,
+    amountRaw,
+    amountValid,
+    overMax,
+    native,
+    asset.contractAddress,
+    asset.blockchain,
+    wallet.address,
+    mesh,
+  ]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        backdropFilter: "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
+        zIndex: 10000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          background: "var(--slop-panel, #0a0f24)",
+          border: `1px solid ${ACCENT}`,
+          borderRadius: 8,
+          boxShadow: "0 10px 60px rgba(255,62,201,0.25)",
+          color: "var(--slop-text)",
+          fontFamily: "var(--slop-font-body)",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: 14,
+            paddingRight: 44,
+            borderBottom: "1px dashed rgba(255,62,201,0.25)",
+            position: "relative",
+          }}
+        >
+          <TokenAvatar symbol={asset.tokenSymbol} thumbnail={asset.thumbnail} chain={asset.blockchain} size={36} />
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 12,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: ACCENT,
+              }}
+            >
+              Send {asset.tokenSymbol}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--slop-text-muted)", marginTop: 2 }}>
+              on {asset.blockchain} · balance{" "}
+              {parseFloat(asset.balance).toLocaleString("en-US", { maximumFractionDigits: 6 })} {asset.tokenSymbol}
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            style={{
+              position: "absolute",
+              top: 10,
+              right: 10,
+              width: 24,
+              height: 24,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "1px solid rgba(255,62,201,0.3)",
+              color: ACCENT,
+              cursor: "pointer",
+              fontSize: 14,
+              lineHeight: 1,
+              borderRadius: 4,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          {!chainSupported ? (
+            <div style={{ fontSize: 11, color: "#ff9a9a" }}>
+              The multisig factory isn&apos;t deployed on {asset.blockchain} — sends from this chain are not supported.
+            </div>
+          ) : !deployedOnChain ? (
+            <div style={{ fontSize: 11, color: "#ff9a9a" }}>
+              The multisig isn&apos;t deployed on {asset.blockchain} yet — deploy it on that chain first.
+            </div>
+          ) : null}
+
+          <div>
+            <label
+              style={{
+                fontSize: 10,
+                color: "var(--slop-text-muted)",
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                display: "block",
+                marginBottom: 4,
+              }}
+            >
+              Recipient
+            </label>
+            <AddressInput
+              value={recipient}
+              placeholder="0x… or vitalik.eth"
+              onChange={next => setRecipient(next ?? "")}
+            />
+          </div>
+
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+              <label
+                style={{
+                  fontSize: 10,
+                  color: "var(--slop-text-muted)",
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Amount
+              </label>
+              <button
+                type="button"
+                onClick={() => setAmount(asset.balance)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${ACCENT}`,
+                  color: ACCENT,
+                  fontSize: 9,
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  padding: "2px 6px",
+                  borderRadius: 3,
+                  cursor: "pointer",
+                }}
+              >
+                Max
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
+              <input
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                placeholder="0.0"
+                inputMode="decimal"
+                style={{
+                  flex: 1,
+                  padding: "6px 8px",
+                  background: "rgba(0,0,0,0.4)",
+                  border: `1px solid ${overMax ? "#ff7676" : "rgba(255,62,201,0.3)"}`,
+                  borderRadius: 4,
+                  color: "var(--slop-text)",
+                  fontFamily: "var(--slop-font-mono, monospace)",
+                  fontSize: 13,
+                  minWidth: 0,
+                }}
+              />
+              <span
+                style={{
+                  padding: "6px 8px",
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,62,201,0.2)",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  color: "var(--slop-text-muted)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                }}
+              >
+                {asset.tokenSymbol}
+              </span>
+            </div>
+            {overMax ? (
+              <div style={{ fontSize: 10, color: "#ff7676", marginTop: 4 }}>
+                exceeds balance ({formatUnits(maxRaw, decimals)} {asset.tokenSymbol})
+              </div>
+            ) : null}
+          </div>
+
+          {error ? <div style={{ fontSize: 11, color: "#ff7676" }}>{error}</div> : null}
+
+          <button
+            type="button"
+            onClick={() => void onSend()}
+            disabled={!canSend && !sent}
+            style={{
+              marginTop: 4,
+              padding: "8px 12px",
+              fontSize: 11,
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              fontWeight: 700,
+              background: sent ? "rgba(123,232,138,0.2)" : canSend ? ACCENT : "rgba(255,62,201,0.25)",
+              color: sent ? "#7be88a" : canSend ? "#06030d" : "var(--slop-text-muted)",
+              border: sent ? "1px solid rgba(123,232,138,0.4)" : "none",
+              borderRadius: 4,
+              cursor: canSend ? "pointer" : "default",
+            }}
+          >
+            {sent ? "✓ In multisig queue" : submitting ? "Proposing…" : "Propose send"}
+          </button>
+          {sent ? (
+            <div style={{ fontSize: 10, color: "var(--slop-text-muted)", textAlign: "center" }}>
+              Open the Transactions tab to sign + execute.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default WalletAssetsPanel;

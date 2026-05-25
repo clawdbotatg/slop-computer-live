@@ -16,13 +16,18 @@ import {
 } from "wagmi";
 import { WalletAssetsPanel } from "~~/components/desktop/wallet/WalletAssetsPanel";
 import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
+import { WalletHeader } from "~~/components/desktop/wallet/WalletHeader";
+import type { Portfolio } from "~~/components/desktop/wallet/types";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
 import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
+
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
 // One resolved deploy-time signer slot. Carries everything needed to
 // build both the `createMultisig` args (EOA address vs passkey qx/qy/
@@ -131,6 +136,47 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     lastAttentionRef.current = at;
   }, [walletAttention, wallet, tab]);
 
+  // Portfolio state is hoisted up here from WalletAssetsPanel so the
+  // sticky header above the tabs can show the balance + drive a
+  // refresh, and the same fetch result powers the Assets tab list and
+  // the send-all batch builder. One fetch shared across three readers.
+  const slug = useRoomSlug();
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
+
+  const refreshPortfolio = useCallback(async () => {
+    if (!wallet) return;
+    setPortfolioLoading(true);
+    setPortfolioError(null);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/wallet/portfolio?address=${wallet.address}`, slug), {
+        credentials: "include",
+      });
+      if (res.ok) setPortfolio((await res.json()) as Portfolio);
+      else setPortfolioError(`portfolio: relay ${res.status}`);
+    } catch (err) {
+      setPortfolioError(`network error: ${String(err).slice(0, 160)}`);
+    } finally {
+      setPortfolioLoading(false);
+    }
+  }, [wallet, slug]);
+
+  // Reset + refetch when the multisig address changes (new episode /
+  // first deploy). Clearing the prior result avoids the header briefly
+  // showing the old wallet's balance during the new fetch.
+  const walletAddress = wallet?.address ?? null;
+  useEffect(() => {
+    if (!walletAddress) {
+      setPortfolio(null);
+      setPortfolioError(null);
+      return;
+    }
+    setPortfolio(null);
+    void refreshPortfolio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletAddress]);
+
   return (
     <div
       style={{
@@ -143,6 +189,15 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
         overflow: "hidden",
       }}
     >
+      {wallet ? (
+        <WalletHeader
+          wallet={wallet}
+          mesh={mesh}
+          portfolio={portfolio}
+          loading={portfolioLoading}
+          onRefresh={() => void refreshPortfolio()}
+        />
+      ) : null}
       <TabBar tab={tab} setTab={setTab} walletReady={!!wallet} pendingCount={pendingCount} />
       {/* Deploy tab body. */}
       <div
@@ -178,7 +233,13 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
             overflow: "auto",
           }}
         >
-          <WalletAssetsPanel wallet={wallet} />
+          <WalletAssetsPanel
+            wallet={wallet}
+            mesh={mesh}
+            portfolio={portfolio}
+            loading={portfolioLoading}
+            error={portfolioError}
+          />
         </div>
       ) : null}
       {/* Transactions tab body — dedicated to the multisig queue (txs
@@ -1535,6 +1596,134 @@ const SignerCollectionBar = ({
 // Tx card — sign + execute. Chain comes from the tx itself, not the wallet.
 // ----------------------------------------------------------------------------
 
+// Structured AI summary card. The relay's wallet-ai prompt asks Claude
+// for this exact shape; the client parses + renders it with token pills
+// + <Address> cards. If parsing fails (old summary, or model returned
+// prose), the raw string falls back to a single-line text render.
+type TxSummaryAsset = { symbol: string; amount: string; address?: string | null };
+type TxSummaryCard = {
+  headline: string;
+  kind?: "swap" | "send" | "approve" | "mint" | "deploy" | "call";
+  inputs: TxSummaryAsset[];
+  outputs: TxSummaryAsset[];
+  to?: string | null;
+  contract?: { address: string; label: string } | null;
+};
+
+const parseSummaryCard = (raw: string | null): TxSummaryCard | null => {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const o = JSON.parse(trimmed);
+    if (!o || typeof o !== "object") return null;
+    if (typeof o.headline !== "string") return null;
+    if (!Array.isArray(o.inputs) || !Array.isArray(o.outputs)) return null;
+    return o as TxSummaryCard;
+  } catch {
+    return null;
+  }
+};
+
+// "out" = leaving the multisig (magenta loss-side), "in" = arriving (lime gain-side).
+const AssetPill = ({ asset, direction }: { asset: TxSummaryAsset; direction: "in" | "out" }) => {
+  const isOut = direction === "out";
+  const border = isOut ? "rgba(255,62,201,0.4)" : "rgba(123,232,138,0.5)";
+  const bg = isOut ? "rgba(255,62,201,0.10)" : "rgba(123,232,138,0.10)";
+  const accent = isOut ? "var(--slop-magenta, #ff3ec9)" : "#7be88a";
+  const sym = asset.symbol || "Token";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 10px",
+        background: bg,
+        border: `1px solid ${border}`,
+        borderRadius: 999,
+        fontSize: 12,
+        lineHeight: 1.2,
+      }}
+    >
+      <span
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.04)",
+          border: `1px solid ${border}`,
+          color: accent,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "var(--slop-font-display)",
+          fontSize: 9,
+        }}
+      >
+        {sym.slice(0, 3).toUpperCase()}
+      </span>
+      <span style={{ fontFamily: "var(--slop-font-display)", fontWeight: 600 }}>{asset.amount}</span>
+      <span style={{ color: "var(--slop-text-muted)" }}>{sym}</span>
+    </span>
+  );
+};
+
+const TxSummaryCardView = ({ card }: { card: TxSummaryCard }) => {
+  const hasFlow = card.inputs.length > 0 || card.outputs.length > 0;
+  return (
+    <div
+      style={{
+        padding: 10,
+        background: "rgba(255,62,201,0.06)",
+        borderRadius: 6,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          fontFamily: "var(--slop-font-display)",
+          color: "var(--slop-text, #f5f0ff)",
+        }}
+      >
+        {card.headline}
+      </div>
+      {hasFlow ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {card.inputs.map((a, i) => (
+            <AssetPill key={`in-${i}`} asset={a} direction="out" />
+          ))}
+          {card.inputs.length > 0 && card.outputs.length > 0 ? (
+            <span style={{ color: "var(--slop-magenta, #ff3ec9)", fontSize: 16, lineHeight: 1 }}>→</span>
+          ) : null}
+          {card.outputs.map((a, i) => (
+            <AssetPill key={`out-${i}`} asset={a} direction="in" />
+          ))}
+        </div>
+      ) : null}
+      {card.to ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+          <span style={{ color: "var(--slop-text-muted)" }}>to</span>
+          <Address address={card.to as AddressType} size="xs" onlyEnsOrAddress />
+        </div>
+      ) : null}
+      {card.contract ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--slop-text-muted)" }}>via</span>
+          <Address address={card.contract.address as AddressType} size="xs" onlyEnsOrAddress />
+          {card.contract.label ? (
+            <span style={{ color: "var(--slop-text-muted)" }}>· {card.contract.label}</span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 type TxCardProps = {
   tx: WalletTx;
   wallet: WalletRecord;
@@ -1587,6 +1776,32 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     }
   }, [execReceipt, mesh, tx.id]);
 
+  // The "executing" status is set on relay state when someone clicks
+  // Execute, but the receipt watcher is local to that signer's tab.
+  // If they close the tab, lose RPC, or hit an unmined tx, the relay
+  // state hangs at "executing" forever. After STUCK_MS we show
+  // Try-again / Remove buttons so any signer can break the deadlock.
+  const STUCK_MS = 15_000;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (tx.status !== "executing") return;
+    const elapsed = Date.now() - tx.updatedAt;
+    if (elapsed >= STUCK_MS) {
+      setNow(Date.now());
+      return;
+    }
+    const t = setTimeout(() => setNow(Date.now()), STUCK_MS - elapsed);
+    return () => clearTimeout(t);
+  }, [tx.status, tx.updatedAt]);
+  const isStuckExecuting = tx.status === "executing" && now - tx.updatedAt >= STUCK_MS;
+
+  const onResetToPending = useCallback(() => {
+    mesh.walletSetTxStatus(tx.id, "pending");
+  }, [mesh, tx.id]);
+  const onRemoveTx = useCallback(() => {
+    mesh.walletRemoveTx(tx.id);
+  }, [mesh, tx.id]);
+
   const onSign = useCallback(async () => {
     setErr(null);
     if (!mySignerEntry) {
@@ -1633,6 +1848,11 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     }
   }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
 
+  // A tx with `calls` is a batched proposal — exec goes through
+  // execBatchTransaction instead of execTransaction. The top-level
+  // target/value/data are sentinels and ignored here.
+  const isBatchTx = !!tx.calls && tx.calls.length > 0;
+
   const onExecute = useCallback(async () => {
     setErr(null);
     if (!connectedAddress) {
@@ -1654,31 +1874,48 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       // overshoot the outer limit. A 1.5x multiplier matches what wallets
       // like Safe use for the same reason. 800k floor in case estimate
       // is wildly off — txs that need more than 800k still get the 1.5x.
-      const args = [tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted] as const;
+      const functionName = isBatchTx ? "execBatchTransaction" : "execTransaction";
+      const args = isBatchTx
+        ? ([
+            (tx.calls ?? []).map(c => ({
+              target: c.target as AddressType,
+              value: BigInt(c.value),
+              data: c.data as Hex,
+            })),
+            BigInt(tx.deadline),
+            sorted,
+          ] as const)
+        : ([tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted] as const);
       let gasLimit: bigint | undefined;
       if (txPublicClient && connectedAddress) {
         try {
           const estimate = await txPublicClient.estimateContractGas({
             address: wallet.address as AddressType,
             abi: MultisigAbi,
-            functionName: "execTransaction",
-            args,
+            functionName,
+            // viem's overload inference can't keep up with the union of
+            // args shapes here, so we widen at the call site — the
+            // runtime branches above guarantee the right shape.
+            args: args as never,
             account: connectedAddress as AddressType,
           });
+          // Batch txs do more work — give them a fatter floor. Single
+          // txs keep the 800k floor that was tuned for swaps.
+          const minFloor = isBatchTx ? 1_500_000n : 800_000n;
           const buffered = (estimate * 3n) / 2n;
-          gasLimit = buffered < 800_000n ? 800_000n : buffered;
+          gasLimit = buffered < minFloor ? minFloor : buffered;
         } catch {
           // If estimate fails (sometimes happens with revert-prone calldata),
           // fall back to a high fixed limit so the signer can still try.
-          gasLimit = 1_500_000n;
+          gasLimit = isBatchTx ? 3_000_000n : 1_500_000n;
         }
       }
       const hash = await writeContractAsync({
         address: wallet.address as AddressType,
         abi: MultisigAbi,
-        functionName: "execTransaction",
+        functionName,
         chainId: tx.chainId,
-        args,
+        args: args as never,
         gas: gasLimit,
       });
       setExecHash(hash);
@@ -1693,12 +1930,14 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     tx.value,
     tx.data,
     tx.deadline,
+    tx.calls,
     tx.id,
     tx.chainId,
     wallet.address,
     writeContractAsync,
     mesh,
     txPublicClient,
+    isBatchTx,
   ]);
 
   const onResummarize = useCallback(() => {
@@ -1751,19 +1990,93 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </span>
       </div>
 
-      <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span style={{ color: "var(--slop-text-muted)" }}>to</span>
-        <Address address={tx.target as AddressType} size="xs" onlyEnsOrAddress />
-        <span style={{ color: "var(--slop-text-muted)" }}>·</span>
-        <span>{valueEth} ETH</span>
-      </div>
+      {isBatchTx ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ color: "var(--slop-text-muted)" }}>batch</span>
+            <span style={{ fontWeight: 600 }}>{(tx.calls ?? []).length} calls</span>
+            <span style={{ color: "var(--slop-text-muted)" }}>·</span>
+            <span>execBatchTransaction</span>
+          </div>
+          <ul
+            style={{
+              listStyle: "none",
+              margin: 0,
+              padding: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            {(tx.calls ?? []).slice(0, compact ? 3 : 20).map((c, i) => {
+              let v = "0";
+              try {
+                v = formatEther(BigInt(c.value));
+              } catch {
+                v = c.value;
+              }
+              return (
+                <li
+                  key={`${c.target}-${i}`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 11,
+                    padding: "4px 6px",
+                    background: "rgba(255,255,255,0.025)",
+                    border: "1px solid rgba(255,62,201,0.14)",
+                    borderRadius: 3,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>{i + 1}.</span>
+                  <Address address={c.target as AddressType} size="xs" onlyEnsOrAddress />
+                  <span style={{ color: "var(--slop-text-muted)" }}>·</span>
+                  <span>{v} ETH</span>
+                  {c.data && c.data !== "0x" ? (
+                    <span style={{ color: "var(--slop-text-muted)", fontSize: 10, fontFamily: "monospace" }}>
+                      data {c.data.slice(0, 10)}…
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+            {compact && (tx.calls ?? []).length > 3 ? (
+              <li style={{ fontSize: 10, color: "var(--slop-text-muted)", paddingLeft: 6 }}>
+                +{(tx.calls ?? []).length - 3} more
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--slop-text-muted)" }}>to</span>
+          <Address address={tx.target as AddressType} size="xs" onlyEnsOrAddress />
+          <span style={{ color: "var(--slop-text-muted)" }}>·</span>
+          <span>{valueEth} ETH</span>
+        </div>
+      )}
 
       {tx.summary ? (
-        <div
-          style={{ fontSize: 12, lineHeight: 1.5, padding: 8, background: "rgba(255,62,201,0.06)", borderRadius: 4 }}
-        >
-          {tx.summary}
-        </div>
+        (() => {
+          const card = parseSummaryCard(tx.summary);
+          return card ? (
+            <TxSummaryCardView card={card} />
+          ) : (
+            <div
+              style={{
+                fontSize: 12,
+                lineHeight: 1.5,
+                padding: 8,
+                background: "rgba(255,62,201,0.06)",
+                borderRadius: 4,
+              }}
+            >
+              {tx.summary}
+            </div>
+          );
+        })()
       ) : (
         <div style={{ fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
           summarizing…
@@ -1785,7 +2098,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       )}
 
-      {!compact ? (
+      {!compact && !isBatchTx ? (
         <details style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
           <summary style={{ cursor: "pointer", userSelect: "none" }}>raw calldata</summary>
           <div style={{ wordBreak: "break-all", fontFamily: "monospace", marginTop: 4 }}>{tx.data}</div>
@@ -1835,6 +2148,18 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
             disabled={writing || execWaiting || !enoughSigs || expired}
           >
             {execWaiting ? "Waiting…" : writing ? "Submitting…" : "Execute"}
+          </Button>
+        </div>
+      ) : isStuckExecuting ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
+            stuck waiting for receipt
+          </span>
+          <Button onClick={onResetToPending} title="Reset to pending so signers can press Execute again.">
+            Try again
+          </Button>
+          <Button onClick={onRemoveTx} title="Drop this transaction from the queue.">
+            Remove
           </Button>
         </div>
       ) : tx.txHash ? (

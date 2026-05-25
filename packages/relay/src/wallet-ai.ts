@@ -1,11 +1,14 @@
 // Plain-English transaction summarizer. Hands tx-data + target to
-// Claude and gets back a short human sentence we display next to the
-// signature dialog. Used by the wallet UI so signers know what they're
-// about to approve without staring at raw calldata.
+// Claude and gets back a structured JSON card we render next to the
+// signature dialog with token pills + <Address> cards. Used by the
+// wallet UI so signers know what they're about to approve without
+// staring at raw calldata.
 //
-// Falls back to a calldata-only summary when ANTHROPIC_API_KEY is unset
-// (or the request fails) — that way local dev without a key still
-// surfaces *something* useful, just not the model-generated paragraph.
+// The returned string is a JSON object (see TxSummaryCard schema in
+// the prompt below) — the client parses it; if parsing fails it
+// renders the raw string as plain text. Falls back to a calldata-only
+// plain-text string when ANTHROPIC_API_KEY is unset or the request
+// fails — so local dev without a key still surfaces something useful.
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
@@ -37,36 +40,85 @@ function fallbackSummary(args: SummarizeArgs): string {
   return `Calls selector ${sel} on ${targetShort} with ${valueWei}. (Set ANTHROPIC_API_KEY on the relay for an AI summary.)`;
 }
 
+// Strip ``` fences, leading "json" tags, and any prose before the
+// first `{`. The model is told to emit pure JSON but occasionally
+// wraps it — be lenient.
+function extractJson(text: string): string {
+  const t = text.trim();
+  const fenceMatch = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const fenceBody = fenceMatch?.[1];
+  if (fenceBody) return fenceBody.trim();
+  const firstBrace = t.indexOf("{");
+  const lastBrace = t.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) return t.slice(firstBrace, lastBrace + 1);
+  return t;
+}
+
+// We don't need to use the parsed shape on the relay — the client
+// is the one that consumes it. But validating that we got valid
+// JSON with the right shape lets us flag bad model output instead
+// of silently shipping garbage to every peer.
+function looksLikeSummaryCard(s: string): boolean {
+  try {
+    const o = JSON.parse(s);
+    return (
+      o &&
+      typeof o === "object" &&
+      typeof o.headline === "string" &&
+      Array.isArray(o.inputs) &&
+      Array.isArray(o.outputs)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
   if (!ANTHROPIC_API_KEY) return fallbackSummary(args);
 
   const isBatch = args.calls && args.calls.length > 0;
-  const prompt = isBatch
-    ? `A multisig wallet on chain ${args.chainId} is being asked to execute a BATCH of transactions atomically via execBatchTransaction. Decode and explain it in plain English.
-
-Multisig: ${args.multisigAddress}
-
-Calls (${args.calls!.length}):
+  const txBlock = isBatch
+    ? `BATCH of ${args.calls!.length} calls (executed atomically via execBatchTransaction):
 ${args
   .calls!.map(
     (c, i) => `  ${i + 1}. target=${c.target}  value=${c.value} wei  data=${c.data.slice(0, 138)}${c.data.length > 138 ? "…" : ""}`,
   )
-  .join("\n")}
+  .join("\n")}`
+    : `Target:   ${args.target}
+Value:    ${args.value} wei
+Calldata: ${args.data}`;
 
-Write 1–4 short sentences. Cover what each call does at a high level (e.g. "send 0.5 ETH to 0xabc…, transfer 100 USDC to 0xabc…, transfer 50 DAI to 0xabc…"). If they're all transfers to the same recipient, say so. Be concrete and terse. Recognize common ERC-20/721/1155 selectors (transfer, transferFrom, approve, safeTransferFrom).`
-    : `A multisig wallet on chain ${args.chainId} is being asked to send a transaction. Decode and explain it in plain English.
+  const prompt = `A multisig wallet on chain ${args.chainId} is about to send a transaction.
+The signer is a caveman — explain it in as few words as possible.
 
 Multisig: ${args.multisigAddress}
-Target:    ${args.target}
-Value:     ${args.value} wei
-Calldata:  ${args.data}
 
-Write 1–3 short sentences. Cover:
-- What function is being called (recognize common ERC-20/721/1155, Uniswap, Seaport, ENS, Safe, etc. selectors)
-- Who/what the recipient/contract is, if it's a well-known one
-- Any token amounts or addresses being moved
+${txBlock}
 
-Be concrete and terse. Don't hedge. If the selector is unknown, say "calls function <selector> on <contract>" — don't guess wildly.`;
+Decode the calldata. Recognize common selectors: ERC-20 (transfer / transferFrom / approve),
+ERC-721 / ERC-1155, Uniswap V2/V3/V4 (incl. UniversalRouter \`execute\` with commands 0x10/0x00 = V4_SWAP),
+Seaport, ENS, Safe, LI.FI, common bridges.
+
+Respond with ONE JSON object — no prose, no markdown fences, no preamble. Schema:
+
+{
+  "headline": "Swap ETH for USDC",        // 2–6 words, plain English. NO selectors, NO hex, NO wei. "Swap ETH for USDC", "Send 100 USDC", "Approve Uniswap to spend USDC", "Mint 1 NFT".
+  "kind": "swap" | "send" | "approve" | "mint" | "deploy" | "call",
+  "inputs":  [{ "symbol": "ETH",  "amount": "0.00005", "address": null }],   // tokens leaving the multisig. Use "ETH" for native. amount is a human-readable decimal string (NOT wei).
+  "outputs": [{ "symbol": "USDC", "amount": "~1.68",   "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }],  // tokens arriving. Use "~" prefix for slippage-tolerant min-out values.
+  "to": null,                                                                 // recipient address for a plain send/transfer; null otherwise.
+  "contract": { "address": "0xfdf6...fbc7", "label": "Uniswap Universal Router" }  // the target contract + a friendly label, or null if unknown.
+}
+
+Rules:
+- Amounts are human-readable decimals (use the token's decimals, e.g. 6 for USDC, 18 for ETH/most ERC-20s). NEVER include wei.
+- For a swap, "inputs" is what leaves the multisig and "outputs" is what arrives.
+- For a plain transfer/send, "inputs" is what leaves; "outputs" is empty; "to" is the recipient.
+- For an approve, "inputs" and "outputs" are empty; "contract" is the token; the headline says e.g. "Approve Uniswap to spend USDC".
+- Never invent token symbols. If a token address is unfamiliar, use \`"symbol": "Token ABCD"\` where ABCD is the last 4 hex of the address.
+- If you can't decode the call at all: headline "Unknown call", kind "call", empty inputs/outputs, contract set to the target with label "Unknown".
+- Addresses MUST be the full 0x-prefixed 40-char hex (no truncation, no ellipsis).
+- Output the JSON object and nothing else. No code fences. No leading or trailing text.`;
 
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -78,7 +130,7 @@ Be concrete and terse. Don't hedge. If the selector is unknown, say "calls funct
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 400,
+        max_tokens: 600,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -87,12 +139,17 @@ Be concrete and terse. Don't hedge. If the selector is unknown, say "calls funct
       return `(AI summary failed: ${res.status}) ${fallbackSummary(args)} — ${text.slice(0, 120)}`;
     }
     const json = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-    const out = (json.content ?? [])
+    const raw = (json.content ?? [])
       .filter(c => c.type === "text")
       .map(c => c.text ?? "")
       .join("\n")
       .trim();
-    return out || fallbackSummary(args);
+    if (!raw) return fallbackSummary(args);
+    const candidate = extractJson(raw);
+    if (looksLikeSummaryCard(candidate)) return candidate;
+    // Model returned prose despite instructions — ship it raw; the
+    // client falls back to plain-text rendering.
+    return raw;
   } catch (err) {
     return `(AI summary error: ${String(err).slice(0, 100)}) ${fallbackSummary(args)}`;
   }
