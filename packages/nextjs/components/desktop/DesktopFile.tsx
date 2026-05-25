@@ -149,6 +149,17 @@ export const DesktopFile = ({
         startX: dragRef.current.x,
         startY: dragRef.current.y,
       });
+    } else if (!movedRef.current) {
+      // No drag movement — this was a tap. setPointerCapture in
+      // startDrag suppresses the synthetic `click` event on iPad
+      // Safari, so we detect double-taps on pointerup ourselves.
+      const now = Date.now();
+      if (now - lastTapRef.current < 400) {
+        lastTapRef.current = 0;
+        onPreview();
+      } else {
+        lastTapRef.current = now;
+      }
     }
     dragRef.current = null;
     setIsDragging(false);
@@ -163,16 +174,6 @@ export const DesktopFile = ({
       onPointerCancel={endDrag}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onClick={() => {
-        if (movedRef.current) return;
-        const now = Date.now();
-        if (now - lastTapRef.current < 400) {
-          lastTapRef.current = 0;
-          onPreview();
-        } else {
-          lastTapRef.current = now;
-        }
-      }}
       data-grab="true"
       style={{
         position: "absolute",

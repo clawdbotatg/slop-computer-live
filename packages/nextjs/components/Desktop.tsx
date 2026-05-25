@@ -138,11 +138,11 @@ const ICONS_PER_COL = 6;
 // means a freshly-created room renders icons in the curated layout from
 // the first paint — no need for the user to click Auto Arrange.
 const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
-  ["chat", "video", "audio", "screen"],
+  ["chat", "video", "audio", "screen", "pong"],
   ["clock", "card", "research", "transcript"],
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
-  ["browser", "wallet", "music", "chess", "pong"],
+  ["browser", "wallet", "music", "chess"],
 ];
 
 function defaultIconPosition(appId: string, i: number): { x: number; y: number } {

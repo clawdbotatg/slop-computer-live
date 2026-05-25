@@ -38,12 +38,14 @@ export const DesktopIcon = ({
   // unchanged coords and we save a slot update for nothing.
   const dragMovedRef = useRef(false);
 
-  // iPad Safari doesn't reliably fire `dblclick` for touch double-taps,
-  // so we count two `click`s within 400ms ourselves. Native `onClick` is
-  // reliable on both mouse and touch.
+  // iPad Safari doesn't deliver `click` (or `dblclick`) reliably to the
+  // inner div — react-rnd's draggable wrapper sets pointer capture on
+  // touchstart, which suppresses the synthetic click. So we count taps
+  // inside react-rnd's own `onDragStop` (which fires on every pointer
+  // release, including no-movement taps) and call `onDoubleClick` after
+  // two taps within 400ms.
   const lastTapRef = useRef<number>(0);
-  const handleClick = () => {
-    if (dragMovedRef.current) return;
+  const registerTap = () => {
     const now = Date.now();
     if (now - lastTapRef.current < 400) {
       lastTapRef.current = 0;
@@ -55,7 +57,6 @@ export const DesktopIcon = ({
 
   const body = (
     <div
-      onClick={handleClick}
       style={{
         width: size,
         height: size + LABEL_HEIGHT,
@@ -130,8 +131,11 @@ export const DesktopIcon = ({
         if (d.x !== x || d.y !== y) dragMovedRef.current = true;
       }}
       onDragStop={(_e, d) => {
-        if (!dragMovedRef.current) return;
-        onMove?.({ x: d.x, y: d.y });
+        if (dragMovedRef.current) {
+          onMove?.({ x: d.x, y: d.y });
+          return;
+        }
+        registerTap();
       }}
     >
       {body}
