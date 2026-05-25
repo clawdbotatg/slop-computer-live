@@ -408,14 +408,28 @@ export const MusicPlayerWindow = ({
   // Push the shown volume into the live audio element + persist locally
   // (so a returning peer, joining when no music state is set, lands at
   // the volume they last used).
+  //
+  // God-mode wrinkle: when the AudioBus owns this <audio> element we
+  // CANNOT apply audio.volume — the bus's auto-leveler would see the
+  // quieter input and crank source gain right back up to compensate,
+  // making the volume slider effectively a no-op. Instead, keep
+  // audio.volume pinned at 1 and tell the bus our target preference
+  // (audioBus.setSourceTargetScale) so the auto aims for a lower
+  // post-gain RMS when the user wants lower. End result: turning
+  // music down actually turns music down in the mix.
   useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = shownVolume;
+    if (audioRef.current) {
+      audioRef.current.volume = audioBusEnabled ? 1 : shownVolume;
+    }
+    if (audioBusEnabled) {
+      audioBus().setSourceTargetScale("music", shownVolume);
+    }
     try {
       window.localStorage.setItem(VOLUME_KEY, String(shownVolume));
     } catch {
       /* ignore */
     }
-  }, [shownVolume]);
+  }, [shownVolume, audioBusEnabled]);
 
   // When the mesh-shared volume changes (someone else dragged + released
   // their slider), keep our local draft in sync so the slider thumb
