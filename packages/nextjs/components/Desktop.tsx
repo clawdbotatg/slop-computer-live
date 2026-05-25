@@ -97,6 +97,7 @@ type AppEntry = {
     | "screen"
     | "music"
     | "chess"
+    | "pong"
     | "qr"
     | "todo"
     | "notes"
@@ -1509,6 +1510,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "chat":
         case "music":
         case "chess":
+        case "pong":
         case "qr":
         case "todo":
         case "notes":
