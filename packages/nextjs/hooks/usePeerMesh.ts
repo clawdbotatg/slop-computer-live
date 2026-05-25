@@ -107,6 +107,37 @@ function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotK
   }
 }
 
+// macOS / VideoToolbox has no hardware VP8 decoder, so a high-res
+// screenshare delivered as VP8 ends up software-decoded by libvpx on
+// the receiver and chokes its CPU (visible as choppy playback even
+// though the publisher is encoding fine). VP9 and H.264 are both
+// hardware-accelerated on Apple Silicon, so we bias every video
+// transceiver's codec list toward VP9 → H.264 → everything else,
+// dropping VP8 to the back. setCodecPreferences only affects the
+// *next* negotiation, so this must run before createOffer /
+// createAnswer; on the answerer side it must also run after
+// setRemoteDescription so the transceivers created from the remote
+// offer get prefs applied.
+function preferEfficientVideoCodecs(pc: RTCPeerConnection): void {
+  if (typeof RTCRtpSender.getCapabilities !== "function") return;
+  const caps = RTCRtpSender.getCapabilities("video");
+  if (!caps?.codecs?.length) return;
+  const isPreferred = (mimeType: string) => /\/(VP9|H264)$/i.test(mimeType);
+  const preferred = caps.codecs.filter(c => isPreferred(c.mimeType));
+  if (preferred.length === 0) return;
+  const others = caps.codecs.filter(c => !isPreferred(c.mimeType));
+  const ordered = [...preferred, ...others];
+  for (const transceiver of pc.getTransceivers()) {
+    if (transceiver.receiver.track?.kind !== "video") continue;
+    if (typeof transceiver.setCodecPreferences !== "function") continue;
+    try {
+      transceiver.setCodecPreferences(ordered);
+    } catch (err) {
+      console.warn("[mesh] setCodecPreferences failed", err);
+    }
+  }
+}
+
 export type Peer = {
   id: string;
   role: "host" | "guest";
@@ -1321,6 +1352,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
         applySenderCaps(pc, stream, kind);
       }
+      preferEfficientVideoCodecs(pc);
 
       pc.ontrack = event => {
         const stream = event.streams[0] ?? new MediaStream([event.track]);
@@ -1387,6 +1419,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       if (!pc) pc = createPeerConnection(from);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(payload));
+        // setRemoteDescription may have spun up new transceivers (one per
+        // m-line in the offer) — apply codec prefs before answering so
+        // VP8 is dropped to the back of the list for the inbound video.
+        preferEfficientVideoCodecs(pc);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         send({ type: "answer", to: from, payload: pc.localDescription!.toJSON() });
@@ -1433,6 +1469,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
         }
         applySenderCaps(pc, stream, kind);
+        preferEfficientVideoCodecs(pc);
       }
       send({ type: "publish", streamId: stream.id, kind, label });
     },

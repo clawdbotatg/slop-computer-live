@@ -63,13 +63,14 @@ const STORAGE_KEY = "slop-audio-bus-eq-v1";
 // "comfortable speech" — high enough to be clearly audible, low enough
 // that a louder source can headroom past it without clipping.
 const AUTO_TARGET_RMS = 0.3;
-// Hard cap on per-source gain. 2× (+6dB) is the most we're willing to
-// amplify ANY source. The temptation is to allow 4× so quiet mics get
-// pulled all the way to target — but every dB of boost also boosts
-// noise, and 4× turned background room hum into a constant whoosh.
-// 2× keeps SNR sane; quiet speakers stay a touch quiet but aren't
-// drowned in their own room noise.
-const AUTO_GAIN_MAX = 2.0;
+// Hard cap on per-source gain. 4× (+12dB) gives the auto enough
+// headroom to actually balance a quiet mic (0.08 RMS speech) against
+// a loud source (0.5 RMS music). At 2× a 4-stop loudness gap was
+// physically uncloseable — quiet voices stayed quiet next to hot
+// music no matter what the auto did. Noise amplification during
+// pauses is bounded by the silence gate below; this is the right
+// trade.
+const AUTO_GAIN_MAX = 4.0;
 // Input RMS below this counts as "silence" — we hold the gain in
 // place rather than continuing to lerp toward an absurd target. 0.05
 // catches normal-to-quiet speech (mid 20%+ on the meter bar — the
@@ -77,25 +78,25 @@ const AUTO_GAIN_MAX = 2.0;
 // above typical room ambience (0.005-0.02), so pure silence + HVAC
 // hum still freeze the gain.
 const AUTO_NOISE_FLOOR = 0.05;
-// Peak decay per tick (10Hz). 0.97 = -1.3 dB/tick = ~2.3s to half.
-// Fast enough that going from a loud source to a quiet one re-
-// converges in a few seconds, slow enough that a sentence with
-// internal pauses keeps a stable peak. Silence-gate (above) means
-// pure silence never decays the peak at all.
-const AUTO_PEAK_DECAY = 0.97;
+// Peak decay per tick (10Hz). 0.95 = ~13s settle to half.
+// During audible-but-below-peak the peak slowly relaxes so the auto
+// can track a source that's getting quieter over time. Silence-gate
+// above means pure silence never decays the peak at all.
+const AUTO_PEAK_DECAY = 0.95;
 // Asymmetric ramp toward the auto-derived target. Down = ducking a
-// hot signal; we want that fast so a loud burst doesn't blow past
-// 0dBFS. Up = restoring a quiet signal; slower so a pause between
-// sentences doesn't audibly crank the gain. Numbers are lerp
-// factors per 100ms tick (10Hz). Effective settle times (to 90%):
+// hot signal — needs to be fast so a music drop or screen-share
+// burst doesn't blow past the mix. Up = boosting a quiet source —
+// still slower than down so a pause between words doesn't audibly
+// hunt, but fast enough that a new quiet source settles to balance
+// within a couple of seconds (was ~4.5s, now ~1.5s).
 //
-//   DOWN ≈ 0.30 → ~0.6s
-//   UP   ≈ 0.05 → ~4.5s
+//   DOWN ≈ 0.5 → ~0.4s to 90%
+//   UP   ≈ 0.15 → ~1.5s to 90%
 //
 // Tweak in pairs — the asymmetry is the point. Re-tune if the tick
 // rate changes; these are baked at 10Hz.
-const AUTO_GAIN_LERP_DOWN = 0.3;
-const AUTO_GAIN_LERP_UP = 0.05;
+const AUTO_GAIN_LERP_DOWN = 0.5;
+const AUTO_GAIN_LERP_UP = 0.15;
 // Minimum change in desiredGain to bother emitting a snapshot. The
 // auto loop fires 15× a second; without this throttle the popup is
 // re-rendering for sub-percent gain wiggles. 0.02 ≈ 2 percentage
