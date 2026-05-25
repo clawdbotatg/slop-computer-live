@@ -122,10 +122,17 @@ export const PROVIDER_INJECT_SCRIPT = (
     // bindings are exposed by the host via Runtime.addBinding; the page
     // calls them like a normal global function and the host receives a
     // Runtime.bindingCalled CDP event with the JSON payload.
-    if (typeof globalThis.__slopTxRequest === "function") {
+    var hasBinding = typeof globalThis.__slopTxRequest === "function";
+    // Surface via console.warn so the host's page.on("console") pipe picks
+    // it up (only error/warn levels are forwarded). [SLOP-TX-DEBUG] is
+    // grep-able if we want to remove this later.
+    try { console.warn("[SLOP-TX-DEBUG] inject.emitTxRequest", { method: payload && payload.method, hasBinding: hasBinding }); } catch (e) { /* ignore */ }
+    if (hasBinding) {
       try {
         globalThis.__slopTxRequest(JSON.stringify(payload));
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        try { console.warn("[SLOP-TX-DEBUG] inject binding-call threw", String(e)); } catch (_) { /* ignore */ }
+      }
     }
   }
 

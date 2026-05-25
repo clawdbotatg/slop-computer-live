@@ -1310,7 +1310,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
   const send = useCallback((msg: object) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      return;
+    }
+    // Surface drops for tx-flow messages — these are the ones whose silent
+    // loss looks like "first attempt vanished, second worked". Other types
+    // (cursor spam, frequent slot updates) would be too noisy to log.
+    const type = (msg as { type?: unknown }).type;
+    if (type === "wallet_tx_propose" || type === "tx_forward" || type === "tx_request" || type === "wallet_tx_sign") {
+      console.warn("[SLOP-TX-DEBUG] relay-send dropped — ws not OPEN", {
+        type,
+        readyState: ws ? ws.readyState : "null",
+      });
+    }
   }, []);
 
   const closePeerConnection = useCallback((peerId: string) => {

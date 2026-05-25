@@ -265,6 +265,7 @@ const SendAllModal = ({
     const to = recipient.trim() as AddressType;
     setSubmitting(true);
     const results: ProposeOutcome[] = [];
+    let anyOk = false;
     try {
       for (const [chainId, assets] of chainEntries) {
         const client = clientFor(chainId);
@@ -334,6 +335,7 @@ const SendAllModal = ({
             calls,
           });
           results.push({ chainId, ok: true, calls: calls.length });
+          anyOk = true;
         } catch (err) {
           results.push({ chainId, ok: false, reason: String(err).slice(0, 120), calls: assets.length });
         }
@@ -341,8 +343,14 @@ const SendAllModal = ({
     } finally {
       setSubmitting(false);
       setOutcomes(results);
+      // If at least one chain proposed successfully, close the modal so
+      // the user lands on the Transactions tab to sign. WalletWindow
+      // auto-jumps on the `wallet_tx_attention` ping the relay sends
+      // for every successful propose. Keep the modal open only when
+      // EVERY chain failed — that's the case the user has to look at.
+      if (anyOk) onClose();
     }
-  }, [recipientValid, recipient, chainEntries, clientFor, wallet.address, mesh]);
+  }, [recipientValid, recipient, chainEntries, clientFor, wallet.address, mesh, onClose]);
 
   return (
     <div

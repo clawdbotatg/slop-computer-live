@@ -5209,8 +5209,23 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "wallet_tx_propose": {
+          app.log.info(
+            {
+              slug: room.id,
+              from: info.address,
+              source: msg.source,
+              browserId: msg.browserId,
+              hasCurrent: !!room.wallet.getCurrent(),
+              chainId: msg.chainId,
+              target: msg.target,
+            },
+            "[SLOP-TX-DEBUG] wallet_tx_propose received",
+          );
           const cur = room.wallet.getCurrent();
-          if (!cur) return send(socket, { type: "error", error: "no_wallet" });
+          if (!cur) {
+            app.log.warn({ slug: room.id, from: info.address }, "[SLOP-TX-DEBUG] propose rejected — no_wallet");
+            return send(socket, { type: "error", error: "no_wallet" });
+          }
           if (
             typeof msg.target !== "string" ||
             typeof msg.value !== "string" ||
@@ -5219,6 +5234,7 @@ app.register(async function signalRoutes(fastify) {
             typeof msg.nonce !== "string" ||
             typeof msg.execHash !== "string"
           ) {
+            app.log.warn({ slug: room.id, from: info.address, msg }, "[SLOP-TX-DEBUG] propose rejected — bad_propose");
             return send(socket, { type: "error", error: "bad_propose" });
           }
           // chainId is now per-tx, not per-wallet — the client tells us

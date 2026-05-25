@@ -1,6 +1,6 @@
 // Plain-English transaction summarizer. Hands tx-data + target to
 // Claude and gets back a structured JSON card we render next to the
-// signature dialog with token pills + <Address> cards. Used by the
+// signature dialog with token chips + <Address> cards. Used by the
 // wallet UI so signers know what they're about to approve without
 // staring at raw calldata.
 //
@@ -9,6 +9,16 @@
 // renders the raw string as plain text. Falls back to a calldata-only
 // plain-text string when ANTHROPIC_API_KEY is unset or the request
 // fails — so local dev without a key still surfaces something useful.
+//
+// Token resolution: before the Claude call, every 40-hex address in
+// the calldata + the top-level target is resolved against the
+// in-memory `TOKEN_ADDRESSES` registry and Zerion. The resolved table
+// is (a) injected into the prompt so the model stops hallucinating
+// symbols for long-tail tokens, and (b) used to *overwrite* the
+// model's symbol/thumbnail/decimals fields for any input/output whose
+// `address` was resolved — defense in depth against further drift.
+
+import { resolveTokenByAddress, type ResolvedToken } from "./wallet-tokens.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
@@ -54,25 +64,6 @@ function extractJson(text: string): string {
   return t;
 }
 
-// We don't need to use the parsed shape on the relay — the client
-// is the one that consumes it. But validating that we got valid
-// JSON with the right shape lets us flag bad model output instead
-// of silently shipping garbage to every peer.
-function looksLikeSummaryCard(s: string): boolean {
-  try {
-    const o = JSON.parse(s);
-    return (
-      o &&
-      typeof o === "object" &&
-      typeof o.headline === "string" &&
-      Array.isArray(o.inputs) &&
-      Array.isArray(o.outputs)
-    );
-  } catch {
-    return false;
-  }
-}
-
 // LLMs hallucinate the EIP-55 case bits on addresses they generate —
 // they'll happily emit `0x34Aa3F…` when the real checksum is `0x34aA3F…`.
 // viem's getAddress() then throws and the client renders "Invalid address".
@@ -82,8 +73,130 @@ function normalizeCardAddresses(s: string): string {
   return s.replace(/0x[a-fA-F0-9]{40}/g, m => m.toLowerCase());
 }
 
+// Pull every distinct 40-hex address out of a piece of calldata + the
+// target slot. The target is always relevant (it's the contract being
+// hit); calldata typically holds the token(s) and recipient. Deduped,
+// lowercased. The 0x0…0 placeholder is *not* filtered because some
+// routers use it as a native-ETH sentinel in calldata, and the resolver
+// recognizes it.
+function extractAddressesFromCalls(
+  target: string,
+  data: string,
+  calls: SummarizeCall[] | undefined,
+): string[] {
+  const set = new Set<string>();
+  const push = (s: string) => {
+    const matches = s.match(/0x[a-fA-F0-9]{40}/g);
+    if (matches) for (const m of matches) set.add(m.toLowerCase());
+  };
+  push(target);
+  push(data);
+  if (calls) for (const c of calls) {
+    push(c.target);
+    push(c.data);
+  }
+  return Array.from(set);
+}
+
+// Zerion slug used in the "chain" field on each TxSummaryAsset we emit.
+// Mirrors the mapping used elsewhere in the wallet UI so the client's
+// TokenAvatar can pick the right chain badge from CHAIN_ICONS.
+const CHAIN_SLUG_BY_ID: Record<number, string> = {
+  1: "ethereum",
+  8453: "base",
+  42161: "arbitrum",
+  10: "optimism",
+  137: "polygon",
+  100: "xdai",
+};
+
+// Schema enforced on the client. Mirrored loosely here so the post-
+// processor knows what to walk. Loose typing — we don't trust the AI
+// output, we just probe for the fields we care about.
+type AssetFromAI = {
+  symbol?: string;
+  amount?: string;
+  address?: string | null;
+  chain?: string | null;
+  thumbnail?: string | null;
+  decimals?: number | null;
+};
+
+type CardFromAI = {
+  headline?: string;
+  kind?: string;
+  inputs?: AssetFromAI[];
+  outputs?: AssetFromAI[];
+  to?: string | null;
+  contract?: { address?: string; label?: string } | null;
+};
+
+// Apply a resolved-token table on top of the AI's response. For any
+// asset that has an `address` field, look it up in the resolved map and
+// overwrite the symbol/name/thumbnail/decimals/chain from the canonical
+// source. This is what kills the CLAWD→UNI hallucination: the AI can
+// emit whatever it wants, but if it emitted the correct address we'll
+// fix the symbol downstream.
+function applyResolvedTokensToCard(
+  card: CardFromAI,
+  resolved: Map<string, ResolvedToken>,
+  chainId: number,
+): CardFromAI {
+  const chainSlug = CHAIN_SLUG_BY_ID[chainId] ?? null;
+  const fixAsset = (a: AssetFromAI): AssetFromAI => {
+    if (!a || typeof a !== "object") return a;
+    const addr = typeof a.address === "string" ? a.address.toLowerCase() : null;
+    if (!addr) {
+      // Native (no address) — at minimum stamp the chain so the client
+      // can render a chain badge on the ETH chip.
+      return { ...a, chain: a.chain ?? chainSlug };
+    }
+    const r = resolved.get(addr);
+    if (!r) return { ...a, address: addr, chain: a.chain ?? chainSlug };
+    return {
+      ...a,
+      address: addr,
+      symbol: r.symbol,
+      chain: chainSlug,
+      thumbnail: r.thumbnail,
+      decimals: r.decimals,
+    };
+  };
+  return {
+    ...card,
+    inputs: Array.isArray(card.inputs) ? card.inputs.map(fixAsset) : [],
+    outputs: Array.isArray(card.outputs) ? card.outputs.map(fixAsset) : [],
+  };
+}
+
+function looksLikeSummaryCard(card: unknown): boolean {
+  if (!card || typeof card !== "object") return false;
+  const o = card as { headline?: unknown; inputs?: unknown; outputs?: unknown };
+  return typeof o.headline === "string" && Array.isArray(o.inputs) && Array.isArray(o.outputs);
+}
+
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
   if (!ANTHROPIC_API_KEY) return fallbackSummary(args);
+
+  // ── Pre-resolve every address we can see in the calldata. This is the
+  //    core fix for "swap to CLAWD shows UNI": the AI now sees the
+  //    canonical (address, symbol) pairs in its prompt and can't drift.
+  const addresses = extractAddressesFromCalls(args.target, args.data, args.calls);
+  const resolved = new Map<string, ResolvedToken>();
+  await Promise.all(
+    addresses.map(async addr => {
+      const r = await resolveTokenByAddress(args.chainId, addr);
+      if (r) resolved.set(addr, r);
+    }),
+  );
+
+  const knownTokensBlock =
+    resolved.size > 0
+      ? `\nKnown tokens at addresses in this calldata (CANONICAL — use these symbols, do NOT invent others):
+${Array.from(resolved.values())
+  .map(r => `  ${r.address} → ${r.symbol} (${r.name}, ${r.decimals} decimals)`)
+  .join("\n")}\n`
+      : "";
 
   const isBatch = args.calls && args.calls.length > 0;
   const txBlock = isBatch
@@ -103,7 +216,7 @@ The signer is a caveman — explain it in as few words as possible.
 Multisig: ${args.multisigAddress}
 
 ${txBlock}
-
+${knownTokensBlock}
 Decode the calldata. Recognize common selectors: ERC-20 (transfer / transferFrom / approve),
 ERC-721 / ERC-1155, Uniswap V2/V3/V4 (incl. UniversalRouter \`execute\` with commands 0x10/0x00 = V4_SWAP),
 Seaport, ENS, Safe, LI.FI, common bridges.
@@ -111,20 +224,22 @@ Seaport, ENS, Safe, LI.FI, common bridges.
 Respond with ONE JSON object — no prose, no markdown fences, no preamble. Schema:
 
 {
-  "headline": "Swap ETH for USDC",        // 2–6 words, plain English. NO selectors, NO hex, NO wei. "Swap ETH for USDC", "Send 100 USDC", "Approve Uniswap to spend USDC", "Mint 1 NFT".
+  "headline": "Swap ETH for CLAWD",                                                          // 2–6 words, plain English. NO selectors, NO hex, NO wei.
   "kind": "swap" | "send" | "approve" | "mint" | "deploy" | "call",
-  "inputs":  [{ "symbol": "ETH",  "amount": "0.00005", "address": null }],   // tokens leaving the multisig. Use "ETH" for native. amount is a human-readable decimal string (NOT wei).
-  "outputs": [{ "symbol": "USDC", "amount": "~1.68",   "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }],  // tokens arriving. Use "~" prefix for slippage-tolerant min-out values.
-  "to": null,                                                                 // recipient address for a plain send/transfer; null otherwise.
-  "contract": { "address": "0xfdf6...fbc7", "label": "Uniswap Universal Router" }  // the target contract + a friendly label, or null if unknown.
+  "inputs":  [{ "symbol": "ETH",   "amount": "0.00005", "address": null }],                  // tokens leaving the multisig. Use "ETH" for native. amount is human-readable.
+  "outputs": [{ "symbol": "CLAWD", "amount": "~1.68",   "address": "0x...full 40 hex..." }], // tokens arriving. "~" prefix = slippage-tolerant min-out.
+  "to": null,                                                                                 // recipient address for a plain send/transfer; null otherwise.
+  "contract": { "address": "0x...", "label": "Uniswap Universal Router" }                     // the target contract + a friendly label, or null if unknown.
 }
 
 Rules:
 - Amounts are human-readable decimals (use the token's decimals, e.g. 6 for USDC, 18 for ETH/most ERC-20s). NEVER include wei.
+- ALWAYS include the token's contract \`address\` (full 40-hex, lowercase OK) on every non-native input/output. The client uses it to render the token icon + chain badge from the canonical registry. For native ETH use \`"address": null\`.
+- If a token address appears in the "Known tokens" block above, USE THAT EXACT SYMBOL. Do not substitute a similar-sounding symbol.
 - For a swap, "inputs" is what leaves the multisig and "outputs" is what arrives.
 - For a plain transfer/send, "inputs" is what leaves; "outputs" is empty; "to" is the recipient.
 - For an approve, "inputs" and "outputs" are empty; "contract" is the token; the headline says e.g. "Approve Uniswap to spend USDC".
-- Never invent token symbols. If a token address is unfamiliar, use \`"symbol": "Token ABCD"\` where ABCD is the last 4 hex of the address.
+- If a token address is unfamiliar AND not in the Known tokens block, use \`"symbol": "Token ABCD"\` where ABCD is the last 4 hex of the address — never guess.
 - If you can't decode the call at all: headline "Unknown call", kind "call", empty inputs/outputs, contract set to the target with label "Unknown".
 - Addresses MUST be the full 0x-prefixed 40-char hex (no truncation, no ellipsis).
 - Output the JSON object and nothing else. No code fences. No leading or trailing text.`;
@@ -139,7 +254,7 @@ Rules:
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 600,
+        max_tokens: 700,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -155,7 +270,16 @@ Rules:
       .trim();
     if (!raw) return fallbackSummary(args);
     const candidate = extractJson(raw);
-    if (looksLikeSummaryCard(candidate)) return normalizeCardAddresses(candidate);
+    let parsed: CardFromAI | null = null;
+    try {
+      parsed = JSON.parse(normalizeCardAddresses(candidate)) as CardFromAI;
+    } catch {
+      parsed = null;
+    }
+    if (parsed && looksLikeSummaryCard(parsed)) {
+      const fixed = applyResolvedTokensToCard(parsed, resolved, args.chainId);
+      return JSON.stringify(fixed);
+    }
     // Model returned prose despite instructions — ship it raw; the
     // client falls back to plain-text rendering. Still scrub address
     // case so any inline 0x… in the prose renders cleanly.

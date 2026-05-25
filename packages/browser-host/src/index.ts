@@ -602,7 +602,10 @@ async function createTab(
       }
       const tab = getTab(slug, id);
       if (!tab) return;
-      app.log.info({ slug, id, method: parsed.method }, "tx_request captured");
+      app.log.info(
+        { slug, id, method: parsed.method, subscribers: tab.subscribers.size, impersonator: tab.impersonatedAddress, chainId: tab.chainId },
+        "[SLOP-TX-DEBUG] tx_request captured",
+      );
       broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params });
       void forwardTxToRelay(tab, parsed);
       return;

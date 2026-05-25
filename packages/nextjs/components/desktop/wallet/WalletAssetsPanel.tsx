@@ -1011,6 +1011,10 @@ const SendAssetModal = ({
         browserId: null,
       });
       setSent(true);
+      // Close so the user lands on the Transactions tab — WalletWindow
+      // auto-jumps on the wallet_tx_attention ping that the relay
+      // broadcasts for every successful propose.
+      onClose();
     } catch (err) {
       setError(String(err).slice(0, 200));
     } finally {
@@ -1030,6 +1034,7 @@ const SendAssetModal = ({
     asset.blockchain,
     wallet.address,
     mesh,
+    onClose,
   ]);
 
   return (

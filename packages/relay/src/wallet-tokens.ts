@@ -7,6 +7,8 @@
 // then falls back to a LI.FI token-list lookup. Keep entries here to
 // well-known tokens the model should never have to guess.
 
+import { config } from "./config.js";
+
 export type TokenEntry = { address: string; decimals: number; name: string };
 
 export const TOKEN_ADDRESSES: Record<string, Record<string, TokenEntry>> = {
@@ -101,4 +103,157 @@ export function lookupToken(chainId: number | string, symbol: string): TokenEntr
   if (chain[upper]) return chain[upper];
   const match = Object.entries(chain).find(([k]) => k.toUpperCase() === upper);
   return match ? match[1] : null;
+}
+
+// ============================================================================
+// Address → token resolver
+// ----------------------------------------------------------------------------
+// The wallet-ai summarizer needs to know what's behind each address in a
+// piece of calldata so it stops hallucinating "UNI" for unfamiliar tokens.
+// This resolver checks the in-memory `TOKEN_ADDRESSES` first (free + fast),
+// then falls back to Zerion's fungibles search (which indexes long-tail
+// tokens by contract address). Results are cached in-process forever —
+// tokens don't change.
+// ============================================================================
+
+export type ResolvedToken = {
+  address: string;
+  chainId: number;
+  symbol: string;
+  name: string;
+  decimals: number;
+  thumbnail: string | null;
+};
+
+// chainId → Zerion chain slug used in `implementations[].chain_id`.
+const ZERION_CHAIN_SLUG: Record<number, string> = {
+  1: "ethereum",
+  8453: "base",
+  42161: "arbitrum",
+  10: "optimism",
+  137: "polygon",
+  100: "xdai",
+};
+
+const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
+const NATIVE_SYMBOL_BY_CHAIN: Record<number, { symbol: string; name: string }> = {
+  1: { symbol: "ETH", name: "Ether" },
+  8453: { symbol: "ETH", name: "Ether" },
+  42161: { symbol: "ETH", name: "Ether" },
+  10: { symbol: "ETH", name: "Ether" },
+  137: { symbol: "MATIC", name: "Matic" },
+  100: { symbol: "xDAI", name: "xDai" },
+};
+
+const resolveCache = new Map<string, ResolvedToken | null>();
+
+function zerionAuthHeader(): string | null {
+  const key = config.zerionApiKey;
+  if (!key) return null;
+  return `Basic ${Buffer.from(`${key}:`).toString("base64")}`;
+}
+
+/**
+ * Resolve a token's metadata by chain + contract address. Returns null when
+ * the address can't be matched. Hits an in-memory cache; on a miss, walks
+ * TOKEN_ADDRESSES then Zerion. Safe to call concurrently — each address +
+ * chain pair fans out at most one Zerion request thanks to cache memoization.
+ */
+export async function resolveTokenByAddress(
+  chainId: number,
+  address: string,
+): Promise<ResolvedToken | null> {
+  const lower = address.toLowerCase();
+  const cacheKey = `${chainId}:${lower}`;
+  if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
+
+  // Native: short-circuit on the all-zeros sentinel.
+  if (lower === NATIVE_ADDRESS) {
+    const meta = NATIVE_SYMBOL_BY_CHAIN[chainId] ?? { symbol: "ETH", name: "Ether" };
+    const r: ResolvedToken = {
+      address: lower,
+      chainId,
+      symbol: meta.symbol,
+      name: meta.name,
+      decimals: 18,
+      thumbnail: null,
+    };
+    resolveCache.set(cacheKey, r);
+    return r;
+  }
+
+  // 1) In-memory registry — flip the per-chain symbol→address map.
+  const chainTokens = TOKEN_ADDRESSES[String(chainId)];
+  if (chainTokens) {
+    for (const [symbol, entry] of Object.entries(chainTokens)) {
+      if (entry.address.toLowerCase() === lower) {
+        const r: ResolvedToken = {
+          address: lower,
+          chainId,
+          symbol,
+          name: entry.name,
+          decimals: entry.decimals,
+          thumbnail: null,
+        };
+        resolveCache.set(cacheKey, r);
+        return r;
+      }
+    }
+  }
+
+  // 2) Zerion search by contract — covers long-tail tokens like CLAWD.
+  const auth = zerionAuthHeader();
+  if (!auth) {
+    resolveCache.set(cacheKey, null);
+    return null;
+  }
+  const chainSlug = ZERION_CHAIN_SLUG[chainId] ?? null;
+  try {
+    const res = await fetch(
+      `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(lower)}&currency=usd&page[size]=10`,
+      { headers: { Authorization: auth, accept: "application/json" } },
+    );
+    if (!res.ok) {
+      resolveCache.set(cacheKey, null);
+      return null;
+    }
+    const json = (await res.json()) as {
+      data?: Array<{
+        attributes?: {
+          symbol?: string;
+          name?: string;
+          icon?: { url?: string };
+          implementations?: Array<{ chain_id?: string; address?: string | null; decimals?: number }>;
+        };
+      }>;
+    };
+    // Find a fungible whose implementations contains *this* (chain, address).
+    // Zerion's search index is fuzzy — without this check we'd accept a
+    // hit on the same address on a different chain, or on a different token
+    // entirely that happened to mention this address in its description.
+    for (const f of json.data ?? []) {
+      const impls = f.attributes?.implementations ?? [];
+      const match = impls.find(
+        i =>
+          (i.address ?? "").toLowerCase() === lower &&
+          (chainSlug ? i.chain_id === chainSlug : true),
+      );
+      if (match && f.attributes?.symbol) {
+        const r: ResolvedToken = {
+          address: lower,
+          chainId,
+          symbol: f.attributes.symbol,
+          name: f.attributes.name ?? f.attributes.symbol,
+          decimals: match.decimals ?? 18,
+          thumbnail: f.attributes.icon?.url ?? null,
+        };
+        resolveCache.set(cacheKey, r);
+        return r;
+      }
+    }
+  } catch {
+    // fall through to cached null
+  }
+  resolveCache.set(cacheKey, null);
+  return null;
 }

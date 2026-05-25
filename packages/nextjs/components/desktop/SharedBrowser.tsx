@@ -505,14 +505,43 @@ export const SharedBrowser = ({
         // through to the local panel without queueing.
         const browserChainId = hostChainIdRef.current;
         const walletDeployedHere = !!w && browserChainId in w.deployments;
+        console.warn("[SLOP-TX-DEBUG] tx_request received", {
+          method,
+          hasWallet: !!w,
+          walletAddress: w?.address ?? null,
+          hasPropose: !!propose,
+          hasPublicClient: !!publicClient,
+          publicClientChainId: publicClient?.chain?.id ?? null,
+          to,
+          calldataPrefix: calldata.slice(0, 12),
+          impersonator: imp,
+          impMatchesWallet,
+          browserChainId,
+          walletDeployments: w ? Object.keys(w.deployments) : [],
+          walletDeployedHere,
+          willPropose: !!(
+            w &&
+            propose &&
+            publicClient &&
+            to &&
+            calldata.startsWith("0x") &&
+            impMatchesWallet &&
+            walletDeployedHere
+          ),
+        });
         if (w && propose && publicClient && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
           void (async () => {
             try {
+              console.warn("[SLOP-TX-DEBUG] propose-IIFE start — reading multisig nonce");
               const nonce = (await publicClient.readContract({
                 address: w.address as AddressType,
                 abi: MultisigAbi,
                 functionName: "nonce",
               })) as bigint;
+              console.warn("[SLOP-TX-DEBUG] nonce read OK", {
+                nonce: nonce.toString(),
+                readOnChain: publicClient.chain?.id ?? null,
+              });
               const deadline = defaultDeadline();
               const target = to as AddressType;
               const valueWei = value && value !== "0x" ? BigInt(value) : 0n;
@@ -526,6 +555,12 @@ export const SharedBrowser = ({
                 value: valueWei,
                 data,
               });
+              console.warn("[SLOP-TX-DEBUG] calling walletProposeTx", {
+                chainId: browserChainId,
+                target,
+                valueWei: valueWei.toString(),
+                execHash,
+              });
               propose({
                 chainId: browserChainId,
                 target,
@@ -537,8 +572,9 @@ export const SharedBrowser = ({
                 source: "browser",
                 browserId: browser.id,
               });
+              console.warn("[SLOP-TX-DEBUG] walletProposeTx returned");
             } catch (err) {
-              console.warn("[wallet] failed to enqueue browser tx", err);
+              console.warn("[SLOP-TX-DEBUG] propose-IIFE THREW — first-attempt drop suspect", err);
             }
           })();
         }
