@@ -1759,8 +1759,8 @@ Per-room **session multisig**. Each room can have one active
 multisig wallet whose deployment is deterministic across chains
 (CREATE2 — same address everywhere). The deploy, signing, and
 execution all happen over WebSockets from connected browsers; the
-REST surface for agents is read-mostly: see the current wallet,
-watch pending txs, read summaries.
+The REST surface lets agents read wallet state **and propose new
+transactions** — see the Mutation paths section below.
 
 ### Read state
 
@@ -1809,14 +1809,33 @@ The full wallet picture is inside \`GET /v1/state?slug=${slugStr(slug)}\`:
 
 ### Mutation paths
 
-There are **no** authenticated REST endpoints for deploying, signing,
-proposing, or executing — those flow over the room's WebSocket so
-the wallet UI can stay reactive. Agents driving wallet behavior need
-a WS client connected to \`wss://live.slop.computer/signal?slug=${slugStr(slug)}\`
-with the appropriate session token. That's out of scope for this
-skill doc — ask the host for the WS message types.
+Deploying, signing, and executing still flow over WebSocket. But
+**proposing a new transaction** can now be done via REST:
 
-The one host-only REST mutation:
+\`\`\`
+POST ${BASE}/v1/wallet/propose?slug=${slugStr(slug)}
+Authorization: Bearer <agent-token>
+Content-Type: application/json
+
+{
+  "target":   "0x...",          // destination address (required)
+  "value":    "0",              // wei as decimal string (required, "0" for token calls)
+  "data":     "0x...",          // calldata hex (required, "0x" for ETH sends)
+  "deadline": "1780000000",     // unix timestamp as decimal string (required)
+  "nonce":    "6",              // tx nonce as decimal string (required)
+  "summary":  "Send 0.01 ETH", // plain-English description (optional — AI will generate if omitted)
+  "chainId":  8453              // optional — defaults to first deployed chain of the multisig
+}
+\`\`\`
+
+Returns \`{ ok: true, id: "<txId>" }\` on success. The tx is immediately
+broadcast to all live WS peers and the wallet window surfaces on their desktop.
+\`execHash\` is derived server-side — agents don't need viem.
+
+Error codes: \`401\` bad/expired token · \`409\` no wallet in this room ·
+\`400\` missing fields / bad address / bad bigint / unknown chain.
+
+The one host-only admin mutation:
 
 \`\`\`
 POST ${BASE}/admin/wallet/reset?slug=${slugStr(slug)}
