@@ -8,6 +8,7 @@ import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
+import { audioBus } from "~~/utils/audioBus";
 
 // Music player window body — designed to live inside a <SharedAppWindow>.
 // Aesthetic: classic Winamp 2.x main-window — big amber LCD time digits,
@@ -349,10 +350,32 @@ export const MusicPlayerWindow = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Idempotency sentinel for setupGraph — true once we've either
+  // built our own graph OR borrowed the bus's analyser. Separate from
+  // audioCtxRef because in god-mode we don't own a context.
+  const graphReadyRef = useRef(false);
 
   const setupGraph = useCallback(() => {
     const a = audioRef.current;
-    if (!a || audioCtxRef.current) return;
+    if (!a || graphReadyRef.current) return;
+    // God-mode path: the AudioBus already owns this <audio> element
+    // (it called createMediaElementSource on mount). A second call
+    // here would throw InvalidStateError — that's exactly what was
+    // killing the spectrum visualizer on the broadcast box. Instead,
+    // borrow the bus's per-source AnalyserNode and skip our own
+    // graph entirely. Balance/panning is dropped in this mode (the
+    // bus doesn't currently expose per-source panning).
+    if (audioBusEnabled) {
+      const busAnalyser = audioBus().getAnalyser("music");
+      if (busAnalyser) {
+        analyserRef.current = busAnalyser;
+        graphReadyRef.current = true;
+      }
+      // If the bus hasn't registered the source yet (rare race), we
+      // just no-op and try again next tick — visualizer stays dark
+      // until the bus catches up.
+      return;
+    }
     type Ctor = new () => AudioContext;
     const C = window.AudioContext ?? (window as unknown as { webkitAudioContext?: Ctor }).webkitAudioContext;
     if (!C) return;
@@ -369,10 +392,11 @@ export const MusicPlayerWindow = ({
       audioCtxRef.current = ctx;
       analyserRef.current = analyser;
       pannerRef.current = panner;
+      graphReadyRef.current = true;
     } catch (err) {
       console.warn("music graph init failed", err);
     }
-  }, []);
+  }, [audioBusEnabled]);
 
   // The slider's displayed value: while the user is mid-drag, that's
   // their in-flight draft; otherwise it's whatever the mesh says

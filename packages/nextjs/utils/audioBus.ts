@@ -251,15 +251,25 @@ class AudioBusImpl {
     return true;
   }
 
-  /** Build a meter tap. Small FFT (256) — we only need RMS, not
-   *  spectrum, so the cheapest analyser that still gives reliable
-   *  time-domain data is plenty. */
+  /** Build a meter tap. fftSize 256 + smoothing 0.7 gives reasonable
+   *  RMS reads for the meter bars AND usable byte-frequency data for
+   *  any consumer that wants a spectrum (the music player's visualizer
+   *  reads getAnalyser("music") because its own createMediaElementSource
+   *  would fight ours). */
   private makeMeter(ctx: AudioContext): { analyser: AnalyserNode; meterBuf: Uint8Array } {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.3;
+    analyser.smoothingTimeConstant = 0.7;
     const meterBuf = new Uint8Array(analyser.fftSize);
     return { analyser, meterBuf };
+  }
+
+  /** Expose a source's AnalyserNode so consumers (music player's
+   *  visualizer) can read frequency/time data. Returns null when the
+   *  source isn't registered (bus not active, or different id). The
+   *  node belongs to the bus — don't reconnect/disconnect it. */
+  getAnalyser(id: string): AnalyserNode | null {
+    return this.sources.get(id)?.analyser ?? null;
   }
 
   /** Route a raw MediaStream through the bus. Used when no audio

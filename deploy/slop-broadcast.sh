@@ -154,7 +154,33 @@ env \
     --window-size="${WIN_W},${WIN_H}" \
     --user-data-dir="$PROFILE_DIR" \
     --enable-logging=stderr --v=0 \
+    --use-gl=swiftshader \
+    --ignore-gpu-blocklist \
+    --enable-gpu-rasterization \
+    --enable-zero-copy \
+    --enable-features=CanvasOopRasterization \
+    --font-render-hinting=full \
+    --disable-background-timer-throttling \
+    --disable-backgrounding-occluded-windows \
+    --disable-renderer-backgrounding \
   2>/dev/null &
+# Render flags above:
+#   --use-gl=swiftshader: software OpenGL backend. Xvfb has no GPU,
+#     so without this any WebGL workload silently fails. SwiftShader
+#     is slow but correct — Canvas/spectrum visualizers that were
+#     rendering nothing now render properly.
+#   --ignore-gpu-blocklist + --enable-gpu-rasterization + --enable-zero-copy
+#     + --enable-features=CanvasOopRasterization: let Chrome use
+#     hardware paths even when its conservative blocklist would
+#     normally disable them; on a real GPU box this lights up
+#     accelerated 2D canvas + zero-copy compositing. No effect on a
+#     no-GPU box but the cost of having them is zero, so they're
+#     left on so the same script works on either deployment.
+#   --font-render-hinting=full: sharper text in the captured frame
+#     before x264 throws away high-frequency detail.
+#   --disable-background-{timer,renderer}-... + --disable-backgrounding-...:
+#     same flags slop-browser-host uses. Without them Chrome thinks
+#     the Xvfb display is "occluded" and throttles rendering.
 # Chrome on headless Linux fills the journal with dbus/UPower/GCM/gpu
 # errors that mean nothing to us. Discard chrome's stderr so the
 # admin-panel log view is actually useful. We still see the
