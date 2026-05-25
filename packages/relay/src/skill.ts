@@ -570,6 +570,40 @@ GET ${BASE}/v1/music/genre/<genre>/playlist?slug=${slugStr(slug)}
 #     ] }
 \`\`\`
 
+### Quick play (Jamendo genre) — 3 calls, no fumbling
+
+The minimum to get a genre playing. Do these in order, don't skip any.
+
+\`\`\`
+# 1. Open the music window (required — no window = no <audio> element = no sound)
+POST ${BASE}/v1/windows?slug=${slugStr(slug)}
+  { "id": "music" }
+
+# 2. Set the genre (pick one: pop rock electronic hiphop indie dance folk punk country house)
+POST ${BASE}/v1/music/genre?slug=${slugStr(slug)}
+  { "genre": "electronic" }
+
+# 3. Fetch the playlist, grab tracks[0], then start playback.
+#    NOTE: "index" is required in the state payload — omitting it returns 400 bad-state.
+#    Use python3 (or any proper JSON tool) to build the payload; shell variable
+#    interpolation inside JSON strings is fragile and will silently produce bad JSON.
+GET ${BASE}/v1/music/genre/electronic/playlist?slug=${slugStr(slug)}
+# → { tracks: [{ title, artist, src, ... }, ...] }
+
+POST ${BASE}/v1/music/state?slug=${slugStr(slug)}
+  {
+    "src":      "<tracks[0].src>",
+    "index":    0,
+    "playing":  true,
+    "position": 0,
+    "at":       <Date.now() in ms>,
+    "volume":   0.8
+  }
+\`\`\`
+
+That's it. If the user hears nothing after these 3 calls, Chrome's autoplay gate
+is blocking — ask them to click once inside the slopamp window.
+
 ### Per-room custom playlist
 
 \`\`\`
