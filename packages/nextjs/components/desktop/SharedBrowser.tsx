@@ -233,17 +233,24 @@ export const SharedBrowser = ({
     hostChainIdRef.current = chainId;
   }, [chainId]);
 
-  // Pin the publicClient to the BROWSER's chain — not wagmi's. The
-  // captured tx is for the chain the impersonator is on, so the multisig
-  // nonce read has to happen there too. Without the explicit chainId
-  // this returns wagmi's currently-selected client; if no wallet is
-  // connected, that defaults to the first chain in wagmiConfig, which
-  // may not match the impersonator. Symptom: readContract throws (no
-  // contract at the multisig address on that chain) → catch → propose()
-  // never fires → the wallet's pending-tx counter stays at 0. After the
-  // first attempt, wagmi/state settle into something that happens to
-  // match — and the second attempt lands instantly.
-  const publicClient = usePublicClient({ chainId });
+  // One publicClient per chain the multisig factory deploys to.
+  // The captured tx might be for a different chain than the SharedBrowser
+  // is showing (Uniswap V4 has its own chain selector independent of
+  // wallet_switchEthereumChain), so we can't pin to a single chain.
+  // wagmi hooks must be called unconditionally, so fan out across all
+  // three supported chains and pick the right one at tx-capture time.
+  const mainnetClient = usePublicClient({ chainId: 1 });
+  const baseClient = usePublicClient({ chainId: 8453 });
+  const gnosisClient = usePublicClient({ chainId: 100 });
+  const clientForChain = useCallback(
+    (cid: number) => {
+      if (cid === 1) return mainnetClient;
+      if (cid === 8453) return baseClient;
+      if (cid === 100) return gnosisClient;
+      return null;
+    },
+    [mainnetClient, baseClient, gnosisClient],
+  );
 
   // ---- Impersonator picker --------------------------------------------------
   // Dropdown lets you act as: the deployed session wallet, any other
@@ -510,19 +517,49 @@ export const SharedBrowser = ({
         const propose = proposeRef.current;
         const imp = impersonatorRef.current;
         const impMatchesWallet = !!w && imp.toLowerCase() === w.address.toLowerCase();
-        // The browser host's current chain is what the dapp thinks it's
-        // on, and is the chain we should queue the multisig tx against
-        // — provided the wallet has been deployed there. If not, fall
-        // through to the local panel without queueing.
-        const browserChainId = hostChainIdRef.current;
+        // Pick the chain to queue against:
+        // 1) tx.chainId from the dapp's tx params — Uniswap V4 and most
+        //    modern dapps have their own chain selector that operates
+        //    independently of the wallet provider; they generate calldata
+        //    for their selected chain and put it on the tx params. This
+        //    is the most reliable signal of "what chain is this tx for".
+        // 2) host's reported chainId — what the tab thinks it's on (only
+        //    matches the dapp's selection when wallet_switchEthereumChain
+        //    was honored).
+        // 3) if the multisig isn't deployed on either, fall through to
+        //    the local panel — propose would fail anyway.
+        let browserChainId = hostChainIdRef.current;
+        if (params[0] && typeof params[0] === "object") {
+          const cidRaw = (params[0] as { chainId?: unknown }).chainId;
+          let parsed: number | null = null;
+          if (typeof cidRaw === "string" && cidRaw.startsWith("0x")) parsed = parseInt(cidRaw, 16);
+          else if (typeof cidRaw === "number") parsed = cidRaw;
+          if (parsed != null && Number.isFinite(parsed)) browserChainId = parsed;
+        }
+        // If still not on a chain the multisig is deployed on, fall back
+        // to ANY deployed chain — better to queue on something the user
+        // can sign than to drop the tx on the floor. The user can spot
+        // the wrong-chain mismatch in the Transactions tab if it happens.
+        if (w && !(browserChainId in w.deployments)) {
+          const deployedChainIds = Object.keys(w.deployments).map(Number);
+          if (deployedChainIds.length > 0) {
+            console.warn("[SLOP-TX-DEBUG] multisig not on inferred chain — retrying on deployed chain", {
+              inferred: browserChainId,
+              fallback: deployedChainIds[0],
+              available: deployedChainIds,
+            });
+            browserChainId = deployedChainIds[0];
+          }
+        }
         const walletDeployedHere = !!w && browserChainId in w.deployments;
+        const txClient = clientForChain(browserChainId);
         console.warn("[SLOP-TX-DEBUG] tx_request received", {
           method,
           hasWallet: !!w,
           walletAddress: w?.address ?? null,
           hasPropose: !!propose,
-          hasPublicClient: !!publicClient,
-          publicClientChainId: publicClient?.chain?.id ?? null,
+          hasTxClient: !!txClient,
+          txClientChainId: txClient?.chain?.id ?? null,
           to,
           calldataPrefix: calldata.slice(0, 12),
           impersonator: imp,
@@ -533,25 +570,27 @@ export const SharedBrowser = ({
           willPropose: !!(
             w &&
             propose &&
-            publicClient &&
+            txClient &&
             to &&
             calldata.startsWith("0x") &&
             impMatchesWallet &&
             walletDeployedHere
           ),
         });
-        if (w && propose && publicClient && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
+        if (w && propose && txClient && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
           void (async () => {
             try {
-              console.warn("[SLOP-TX-DEBUG] propose-IIFE start — reading multisig nonce");
-              const nonce = (await publicClient.readContract({
+              console.warn("[SLOP-TX-DEBUG] propose-IIFE start — reading multisig nonce", {
+                chain: txClient.chain?.id ?? null,
+              });
+              const nonce = (await txClient.readContract({
                 address: w.address as AddressType,
                 abi: MultisigAbi,
                 functionName: "nonce",
               })) as bigint;
               console.warn("[SLOP-TX-DEBUG] nonce read OK", {
                 nonce: nonce.toString(),
-                readOnChain: publicClient.chain?.id ?? null,
+                readOnChain: txClient.chain?.id ?? null,
               });
               const deadline = defaultDeadline();
               const target = to as AddressType;
