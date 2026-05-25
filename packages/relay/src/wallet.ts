@@ -20,6 +20,15 @@ export type WalletSigner = {
   address: string; // 0x-lowercased 20-byte address
   label: string; // ENS / handle / short-addr for display
   signerType: WalletSignerType;
+  // P-256 public key + credential-id hash. Populated for passkey
+  // signers so the multisig contract can verify their WebAuthn
+  // assertions: `address` is just `keccak256(qx||qy)[-20:]`, the
+  // contract stores qx/qy/credentialIdHash on-chain and we mirror them
+  // here so any peer who wants to ask "is this exec hash signable by
+  // signer X?" has the data they need. Undefined for EOA signers.
+  qx?: string;
+  qy?: string;
+  credentialIdHash?: string;
 };
 
 // The multisig's CREATE2 address is the same on every chain (factory at

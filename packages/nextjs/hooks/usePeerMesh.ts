@@ -106,6 +106,11 @@ export type Peer = {
   // video offers), but every display layer filters spectators out
   // before rendering.
   spectator?: boolean;
+  /** P-256 pubkey + credential-id hash. Populated for passkey peers
+   *  (signed in via /auth/passkey). The deploy form auto-routes peers
+   *  with this field into the `passkeyQxs/Qys/credentialIdHashes`
+   *  arrays of `createMultisig` instead of the EOA array. */
+  passkey?: { qx: string; qy: string; credentialIdHash: string };
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
@@ -206,6 +211,13 @@ export type WalletSigner = {
   address: string;
   label: string;
   signerType: "eoa" | "passkey";
+  /** P-256 pubkey + credential-id hash. Populated for passkey signers
+   *  so the multisig contract can verify their WebAuthn assertions,
+   *  and so the local user can identify *their* passkey credential
+   *  (via credentialIdHash) when signing later. Undefined for EOA. */
+  qx?: string;
+  qy?: string;
+  credentialIdHash?: string;
 };
 export type WalletDeployment = {
   txHash: string | null;

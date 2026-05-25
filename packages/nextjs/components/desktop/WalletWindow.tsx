@@ -22,6 +22,21 @@ import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePe
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
+import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
+
+// One resolved deploy-time signer slot. Carries everything needed to
+// build both the `createMultisig` args (EOA address vs passkey qx/qy/
+// credentialIdHash) and the WalletRecord.signers entry for the relay.
+// Passkey fields are populated by looking up peer.passkey (for remote
+// passkey peers) or local storage (for the local passkey user).
+type ResolvedSigner = {
+  address: AddressType;
+  label: string;
+  signerType: "eoa" | "passkey";
+  qx?: `0x${string}`;
+  qy?: `0x${string}`;
+  credentialIdHash?: `0x${string}`;
+};
 
 // The AI wallet (assets + chat) used to be an <iframe> of
 // wallet.slop.computer. It's now native: the conversational engine runs
@@ -59,7 +74,15 @@ type WalletTab = "deploy" | "chat" | "assets" | "transactions";
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   const wallet = mesh.wallet;
-  const [tab, setTab] = useState<WalletTab>(wallet ? "chat" : "deploy");
+  // If the window is opening fresh because a tx just landed in the
+  // queue (browser dapp, AI wallet, etc.), land directly on the
+  // transactions tab so the signing UI is right there. Otherwise chat
+  // is the headline.
+  const [tab, setTab] = useState<WalletTab>(() => {
+    if (!wallet) return "deploy";
+    if (mesh.walletTxs.some(t => t.status === "pending")) return "transactions";
+    return "chat";
+  });
 
   // Auto-switch to Chat the first time a wallet shows up (initial
   // deploy) — the conversation is the headline. Don't yank the user
@@ -296,7 +319,15 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     [draftOrDefault, mesh],
   );
 
-  type Candidate = { address: string; label: string; isMe: boolean; source: "peer" | "me" | "custom" };
+  type Candidate = {
+    address: string;
+    label: string;
+    isMe: boolean;
+    source: "peer" | "me" | "custom";
+    /** Present for passkey signers — the local user's own (from
+     *  storage) or a remote passkey peer's (from peer.passkey). */
+    passkey?: { qx: string; qy: string; credentialIdHash: string };
+  };
   const candidateSigners = useMemo<Candidate[]>(() => {
     const out = new Map<string, Candidate>();
     for (const p of mesh.peers as Peer[]) {
@@ -308,15 +339,28 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
         label: custom ?? p.handle ?? short(p.address),
         isMe: p.id === mesh.myId,
         source: "peer",
+        ...(p.passkey ? { passkey: p.passkey } : {}),
       });
     }
     if (myAddress) {
       const lower = myAddress.toLowerCase();
       const custom = mesh.customNames[lower];
+      // Fall back to localStorage for the local user — peer.passkey is
+      // only populated for OTHER passkey peers when the relay
+      // re-broadcasts them; the local user's own pubkey lives in
+      // `slop:passkey:identity:<addr>` after a successful /auth/passkey.
+      const localPasskey = getStoredPasskeyIdentity(lower);
       const ex = out.get(lower);
-      if (!ex)
-        out.set(lower, { address: lower, label: custom ?? myHandle ?? short(myAddress), isMe: true, source: "me" });
-      else out.set(lower, { ...ex, isMe: true });
+      const merged: Candidate = ex
+        ? { ...ex, isMe: true, ...(ex.passkey ? {} : localPasskey ? { passkey: localPasskey } : {}) }
+        : {
+            address: lower,
+            label: custom ?? myHandle ?? short(myAddress),
+            isMe: true,
+            source: "me",
+            ...(localPasskey ? { passkey: localPasskey } : {}),
+          };
+      out.set(lower, merged);
     }
     for (const c of draftOrDefault.customSigners) {
       const lower = c.address.toLowerCase();
@@ -365,10 +409,36 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     if (existing) return existing.salt as Hex;
     return saltFromLabel(`${effectiveDeployer ?? "0x0"}:${effectiveLabel}`);
   }, [existing, effectiveDeployer, effectiveLabel]);
-  const effectiveSigners = useMemo(
-    () => (existing ? existing.signers : selectedSigners.map(s => ({ address: s.address, label: s.label }))),
-    [existing, selectedSigners],
-  );
+  // Rich signer set used by both the `createMultisig` call (partition
+  // into EOA vs passkey arrays) and the WalletRecord we hand the relay
+  // post-deploy. For an already-deployed wallet we trust the persisted
+  // record verbatim; pre-deploy we resolve from the candidate list +
+  // peer/local-storage passkey lookup.
+  const effectiveSigners = useMemo<ResolvedSigner[]>(() => {
+    if (existing) {
+      return existing.signers.map(s => ({
+        address: s.address as AddressType,
+        label: s.label,
+        signerType: s.signerType,
+        ...(s.qx ? { qx: s.qx as `0x${string}` } : {}),
+        ...(s.qy ? { qy: s.qy as `0x${string}` } : {}),
+        ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash as `0x${string}` } : {}),
+      }));
+    }
+    return selectedSigners.map(s => {
+      const base: ResolvedSigner = {
+        address: s.address as AddressType,
+        label: s.label,
+        signerType: s.passkey ? "passkey" : "eoa",
+      };
+      if (s.passkey) {
+        base.qx = s.passkey.qx as `0x${string}`;
+        base.qy = s.passkey.qy as `0x${string}`;
+        base.credentialIdHash = s.passkey.credentialIdHash as `0x${string}`;
+      }
+      return base;
+    });
+  }, [existing, selectedSigners]);
   const effectiveThreshold = existing ? existing.threshold : draftOrDefault.threshold;
 
   // Predicted multisig address. Same on every chain since the factory
@@ -564,7 +634,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
           predicted={predictedAddress}
           deployer={effectiveDeployer}
           salt={effectiveSalt}
-          signers={effectiveSigners.map(s => s.address as AddressType)}
+          signers={effectiveSigners}
           threshold={effectiveThreshold}
           label={effectiveLabel}
           canDeploy={isHost}
@@ -648,7 +718,7 @@ type ChainGridProps = {
   predicted: AddressType | null;
   deployer: AddressType | null;
   salt: Hex;
-  signers: AddressType[];
+  signers: ResolvedSigner[];
   threshold: number;
   label: string;
   /** Local user can submit a deploy tx. False for non-hosts — the
@@ -699,7 +769,7 @@ type ChainRowProps = {
   predicted: AddressType | null;
   deployer: AddressType | null;
   salt: Hex;
-  signers: AddressType[];
+  signers: ResolvedSigner[];
   threshold: number;
   label: string;
   canDeploy: boolean;
@@ -851,7 +921,14 @@ const ChainRow = ({
           address: multisigAddr.toLowerCase(),
           deployer: deployer.toLowerCase(),
           salt,
-          signers: signers.map(addr => ({ address: addr.toLowerCase(), label: short(addr), signerType: "eoa" })),
+          signers: signers.map(s => ({
+            address: s.address.toLowerCase(),
+            label: s.label,
+            signerType: s.signerType,
+            ...(s.qx ? { qx: s.qx } : {}),
+            ...(s.qy ? { qy: s.qy } : {}),
+            ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
+          })),
           threshold,
           deployments: {
             [chainId]: { txHash: receipt.transactionHash, deployedAt: Date.now() },
@@ -888,6 +965,24 @@ const ChainRow = ({
       setErr("pick at least one signer");
       return;
     }
+    // Partition the resolved signer set into the contract's two
+    // parallel arrays. A passkey signer is one we have full pubkey
+    // data for (qx + qy + credentialIdHash); fall back to EOA otherwise.
+    // The contract registers each kind into its own table, so getting
+    // this wrong reverts later with `SignerTypeMismatch` at sign time.
+    const eoaSigners: AddressType[] = [];
+    const passkeyQxs: `0x${string}`[] = [];
+    const passkeyQys: `0x${string}`[] = [];
+    const credentialIdHashes: `0x${string}`[] = [];
+    for (const s of signers) {
+      if (s.signerType === "passkey" && s.qx && s.qy && s.credentialIdHash) {
+        passkeyQxs.push(s.qx);
+        passkeyQys.push(s.qy);
+        credentialIdHashes.push(s.credentialIdHash);
+      } else {
+        eoaSigners.push(s.address);
+      }
+    }
     try {
       if (connectedChainId !== chainId) {
         await switchChainAsync({ chainId });
@@ -897,7 +992,7 @@ const ChainRow = ({
         abi: MultisigFactoryAbi,
         functionName: "createMultisig",
         chainId,
-        args: [signers, [], [], [], BigInt(threshold), salt],
+        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, BigInt(threshold), salt],
       });
       setTxHash(hash);
     } catch (e) {
@@ -929,7 +1024,14 @@ const ChainRow = ({
       address: localPredicted.toLowerCase(),
       deployer: deployer.toLowerCase(),
       salt,
-      signers: signers.map(addr => ({ address: addr.toLowerCase(), label: short(addr), signerType: "eoa" })),
+      signers: signers.map(s => ({
+        address: s.address.toLowerCase(),
+        label: s.label,
+        signerType: s.signerType,
+        ...(s.qx ? { qx: s.qx } : {}),
+        ...(s.qy ? { qy: s.qy } : {}),
+        ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
+      })),
       threshold,
       deployments: { [chainId]: { txHash: null, deployedAt: Date.now() } },
       createdAt: Date.now(),
@@ -1396,9 +1498,21 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     pollingInterval: 2000,
   });
   const [err, setErr] = useState<string | null>(null);
+  // True while the WebAuthn passkey prompt is open. wagmi's
+  // useSignMessage.isPending only covers the EOA path; we track this
+  // ourselves so the Sign button stays disabled during the OS sheet
+  // and doesn't double-prompt on a stray click.
+  const [passkeySigning, setPasskeySigning] = useState(false);
 
-  const myLowerAddress = (connectedAddress ?? myAddress ?? "").toLowerCase();
-  const isMySigner = wallet.signers.some(s => s.address.toLowerCase() === myLowerAddress);
+  // Identify the local user against the wallet's registered signers.
+  // For EOA signers we need the wagmi-connected address; for passkey
+  // signers we use the relay session's `myAddress` (the passkey-derived
+  // identity). Trying both lets one browser participate as either kind.
+  const lowerCandidates = [connectedAddress?.toLowerCase(), myAddress?.toLowerCase()].filter((a): a is string => !!a);
+  const mySignerEntry = wallet.signers.find(s => lowerCandidates.includes(s.address.toLowerCase())) ?? null;
+  const myLowerAddress = mySignerEntry?.address.toLowerCase() ?? "";
+  const isMySigner = !!mySignerEntry;
+  const isPasskeySigner = mySignerEntry?.signerType === "passkey";
   const hasMySig = !!myLowerAddress && tx.signatures.some(s => s.signer.toLowerCase() === myLowerAddress);
   const enoughSigs = tx.signatures.length >= wallet.threshold;
 
@@ -1415,6 +1529,38 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
 
   const onSign = useCallback(async () => {
     setErr(null);
+    if (!mySignerEntry) {
+      setErr("you're not a signer on this multisig");
+      return;
+    }
+    if (mySignerEntry.signerType === "passkey") {
+      // Passkey path: locate the credential locally (we stashed it after
+      // /auth/passkey), prompt the authenticator, ABI-encode the result.
+      const identity = getStoredPasskeyIdentity(mySignerEntry.address);
+      const qx = (mySignerEntry.qx ?? identity?.qx) as `0x${string}` | undefined;
+      const qy = (mySignerEntry.qy ?? identity?.qy) as `0x${string}` | undefined;
+      const credentialIdBase64Url = identity?.credentialIdBase64Url;
+      if (!qx || !qy || !credentialIdBase64Url) {
+        setErr("missing passkey credentials — sign in with your passkey first");
+        return;
+      }
+      setPasskeySigning(true);
+      try {
+        const data = await signMultisigExecWithPasskey({
+          credentialIdBase64Url,
+          execHash: tx.execHash as `0x${string}`,
+          qx,
+          qy,
+        });
+        mesh.walletSignTx(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
+      } catch (e) {
+        setErr(String(e).slice(0, 200));
+      } finally {
+        setPasskeySigning(false);
+      }
+      return;
+    }
+    // EOA path — needs the wagmi wallet.
     if (!connectedAddress) {
       setErr("connect your wallet to sign");
       return;
@@ -1425,7 +1571,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     } catch (e) {
       setErr(String(e).slice(0, 200));
     }
-  }, [connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
+  }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
 
   const onExecute = useCallback(async () => {
     setErr(null);
@@ -1494,10 +1640,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     mesh,
     txPublicClient,
   ]);
-
-  const onRemove = useCallback(() => {
-    mesh.walletRemoveTx(tx.id);
-  }, [mesh, tx.id]);
 
   const onResummarize = useCallback(() => {
     mesh.walletResummarize(tx.id);
@@ -1610,9 +1752,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       {tx.status === "pending" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <Button
-            variant="primary"
+            variant={enoughSigs ? undefined : "primary"}
             onClick={onSign}
-            disabled={signing || !isMySigner || hasMySig || expired}
+            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired}
             title={
               !isMySigner
                 ? "You aren't a registered signer on this multisig."
@@ -1620,16 +1762,19 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
                   ? "You've already signed."
                   : expired
                     ? "Past deadline."
-                    : "Sign this transaction."
+                    : isPasskeySigner
+                      ? "Sign this transaction with your passkey."
+                      : "Sign this transaction."
             }
           >
-            {hasMySig ? "Signed" : signing ? "Signing…" : "Sign"}
+            {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : "Sign"}
           </Button>
-          <Button onClick={onExecute} disabled={writing || execWaiting || !enoughSigs || expired}>
+          <Button
+            variant={enoughSigs ? "primary" : undefined}
+            onClick={onExecute}
+            disabled={writing || execWaiting || !enoughSigs || expired}
+          >
             {execWaiting ? "Waiting…" : writing ? "Submitting…" : "Execute"}
-          </Button>
-          <Button onClick={onRemove} disabled={writing}>
-            Dismiss
           </Button>
         </div>
       ) : tx.txHash ? (

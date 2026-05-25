@@ -29,6 +29,14 @@ export type Session = {
   // pointed at any other. Undefined on cookie sessions: those are
   // room-scoped by the slop_room_<slug> cookie instead.
   roomSlug?: string;
+  // P-256 public key + credential-id hash for passkey sessions. The
+  // multisig contract needs the raw qx/qy to verify a WebAuthn assertion
+  // against a registered passkey signer, and credentialIdHash is the
+  // on-chain lookup key (`keccak256(credentialId)`). We stash these on
+  // the session so other peers in the same room can register this user
+  // as a passkey signer via PeerInfo.passkey without re-prompting them.
+  // Undefined for SIWE/anon/password sessions.
+  passkey?: { qx: string; qy: string; credentialIdHash: string };
 };
 
 // Persist sessions to disk so a relay restart (every deploy) doesn't
@@ -109,6 +117,7 @@ export function createSession(args: {
   handle: string | null;
   anonId?: string | null;
   spectator?: boolean;
+  passkey?: { qx: string; qy: string; credentialIdHash: string };
 }): Session {
   pruneSessions();
   const token = randomBytes(32).toString("hex");

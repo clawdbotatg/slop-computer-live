@@ -22,7 +22,29 @@ const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 
 const RP_NAME = "Slop Computer Live";
 
-export type PasskeyAuthResult = { address: string; credentialIdBase64Url: string };
+// localStorage key for the full passkey identity record (qx / qy /
+// credentialId). The bare credentialId already lives at
+// slop:passkey:credId for the JoinCard's "remembered passkey"
+// shortcut — this is the bigger record needed to sign multisig txs.
+// Keyed by the passkey's derived address so multiple identities on
+// the same browser don't clobber each other.
+const PASSKEY_IDENTITY_PREFIX = "slop:passkey:identity:";
+
+export type StoredPasskeyIdentity = {
+  address: string; // 0x-lowercased passkey-derived address
+  qx: string; // 0x-prefixed 32-byte hex
+  qy: string; // 0x-prefixed 32-byte hex
+  credentialIdBase64Url: string;
+  credentialIdHash: string; // 0x-prefixed keccak256(rawCredentialId)
+};
+
+export type PasskeyAuthResult = {
+  address: string;
+  credentialIdBase64Url: string;
+  qx: string;
+  qy: string;
+  credentialIdHash: string;
+};
 
 // Stages reported via onStage so a progress UI can advance in lockstep
 // with the two passkey prompts:
@@ -95,6 +117,7 @@ export async function createPasskeyAndAuth(opts: PasskeyFlowOptions = {}): Promi
   });
 
   onStage?.("verify");
+  const rawIdBytes = new Uint8Array(cred.rawId);
   return postPasskeyAuth({
     qx,
     qy,
@@ -103,7 +126,8 @@ export async function createPasskeyAndAuth(opts: PasskeyFlowOptions = {}): Promi
     authenticatorData: sign.authenticatorData,
     clientDataJSON: sign.clientDataJSON,
     nonceHex,
-    credentialIdBase64Url: base64UrlFromBytes(new Uint8Array(cred.rawId)),
+    credentialIdBase64Url: base64UrlFromBytes(rawIdBytes),
+    credentialIdHashHex: "0x" + bytesToHex(keccak_256(rawIdBytes)),
   });
 }
 
@@ -206,6 +230,7 @@ export async function loginWithExistingPasskey(opts: LoginOptions = {}): Promise
   if (!chosen) throw new Error("no-candidate-matched-second-sig");
 
   onStage?.("verify");
+  const rawIdBytes = new Uint8Array(cred1.rawId);
   return postPasskeyAuth({
     qx: chosen.qx,
     qy: chosen.qy,
@@ -214,7 +239,8 @@ export async function loginWithExistingPasskey(opts: LoginOptions = {}): Promise
     authenticatorData: authData2,
     clientDataJSON: clientData2,
     nonceHex,
-    credentialIdBase64Url: base64UrlFromBytes(new Uint8Array(cred1.rawId)),
+    credentialIdBase64Url: base64UrlFromBytes(rawIdBytes),
+    credentialIdHashHex: "0x" + bytesToHex(keccak_256(rawIdBytes)),
   });
 }
 
@@ -241,6 +267,7 @@ async function postPasskeyAuth(args: {
   clientDataJSON: Uint8Array;
   nonceHex: string;
   credentialIdBase64Url: string;
+  credentialIdHashHex: string;
 }): Promise<PasskeyAuthResult> {
   const body = {
     qx: bytesToHex(args.qx),
@@ -250,6 +277,7 @@ async function postPasskeyAuth(args: {
     authenticatorData: bytesToHex(args.authenticatorData),
     clientDataJSON: bytesToHex(args.clientDataJSON),
     nonce: args.nonceHex,
+    credentialIdHash: args.credentialIdHashHex,
   };
   const res = await fetch(`${RELAY_HTTP}/auth/passkey`, {
     method: "POST",
@@ -263,7 +291,140 @@ async function postPasskeyAuth(args: {
   }
   const j = (await res.json()) as { address?: string };
   if (!j.address) throw new Error("no-address-returned");
-  return { address: j.address, credentialIdBase64Url: args.credentialIdBase64Url };
+  const result: PasskeyAuthResult = {
+    address: j.address,
+    credentialIdBase64Url: args.credentialIdBase64Url,
+    qx: "0x" + bytesToHex(args.qx),
+    qy: "0x" + bytesToHex(args.qy),
+    credentialIdHash: args.credentialIdHashHex,
+  };
+  // Cache the full identity locally so the multisig tx-signing flow
+  // can read qx/qy without re-hitting the authenticator. Best-effort —
+  // private-mode / quota errors silently fall through (signing falls
+  // back to a fresh credentialId+pubkey lookup).
+  try {
+    if (typeof window !== "undefined") {
+      const key = PASSKEY_IDENTITY_PREFIX + result.address.toLowerCase();
+      const rec: StoredPasskeyIdentity = {
+        address: result.address.toLowerCase(),
+        qx: result.qx,
+        qy: result.qy,
+        credentialIdBase64Url: result.credentialIdBase64Url,
+        credentialIdHash: result.credentialIdHash,
+      };
+      window.localStorage.setItem(key, JSON.stringify(rec));
+    }
+  } catch {
+    /* private mode / quota */
+  }
+  return result;
+}
+
+export function getStoredPasskeyIdentity(address: string): StoredPasskeyIdentity | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(PASSKEY_IDENTITY_PREFIX + address.toLowerCase());
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredPasskeyIdentity;
+  } catch {
+    return null;
+  }
+}
+
+// Sign a multisig exec hash with the user's passkey. Returns the
+// ABI-encoded `(qx, qy, WebAuthnAuth)` blob the contract decodes into
+// `Signature.data` for a passkey signer. Throws if the user cancels
+// the WebAuthn prompt or the authenticator returns an empty assertion.
+//
+// The challenge is exactly the 32 bytes of execHash — Multisig.sol
+// does `abi.encodePacked(hash)` when calling `WebAuthn.verify`, which
+// passes through unchanged for a bytes32.
+export async function signMultisigExecWithPasskey(args: {
+  credentialIdBase64Url: string;
+  execHash: `0x${string}`;
+  // Public key the signature must verify against. Used for local
+  // sanity-check + low-S normalization (the contract rejects high-S).
+  qx: `0x${string}`;
+  qy: `0x${string}`;
+}): Promise<`0x${string}`> {
+  if (typeof window === "undefined") throw new Error("no-window");
+
+  const cred = (await navigator.credentials.get({
+    publicKey: {
+      challenge: hexToBytes(args.execHash.slice(2)),
+      rpId: window.location.hostname,
+      userVerification: "required",
+      allowCredentials: [
+        {
+          id: bytesFromBase64Url(args.credentialIdBase64Url),
+          type: "public-key",
+          transports: ["internal", "hybrid"] as AuthenticatorTransport[],
+        },
+      ],
+      timeout: 60_000,
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("passkey-sign-cancelled");
+
+  const a = cred.response as AuthenticatorAssertionResponse;
+  const sigDer = parseDerSignature(new Uint8Array(a.signature));
+  // OZ WebAuthn.verify rejects high-S signatures (s > N/2). Authenticators
+  // sometimes return high-S — normalize before encoding.
+  const sLow = sigDer.s > P256_N / 2n ? P256_N - sigDer.s : sigDer.s;
+  const rBytes32 = bigintTo32(sigDer.r);
+  const sBytes32 = bigintTo32(sLow);
+
+  const authenticatorData = new Uint8Array(a.authenticatorData);
+  const clientDataJSON = new Uint8Array(a.clientDataJSON);
+  const clientDataJSONText = new TextDecoder().decode(clientDataJSON);
+
+  // The contract reads `clientDataJSON` as a string and uses
+  // challengeIndex / typeIndex to substring-locate the `"challenge"` and
+  // `"type"` keys. We mirror the same locate logic the OZ test vectors
+  // use — find the literal substring.
+  const challengeIdx = clientDataJSONText.indexOf('"challenge"');
+  const typeIdx = clientDataJSONText.indexOf('"type"');
+  if (challengeIdx < 0 || typeIdx < 0) {
+    throw new Error("passkey-clientdata-missing-fields");
+  }
+
+  // viem encodeAbiParameters: outer is (bytes32 qx, bytes32 qy,
+  // WebAuthn.WebAuthnAuth) where WebAuthnAuth is
+  // (bytes32 r, bytes32 s, uint256 challengeIndex, uint256 typeIndex,
+  //  bytes authenticatorData, string clientDataJSON).
+  // We build this with viem at the call site to avoid pulling another
+  // ABI-encoder into this file — return the raw fields and let the
+  // caller encode. Easier said than done: import here is fine.
+  const { encodeAbiParameters } = await import("viem");
+  return encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "bytes32" },
+      {
+        type: "tuple",
+        components: [
+          { name: "r", type: "bytes32" },
+          { name: "s", type: "bytes32" },
+          { name: "challengeIndex", type: "uint256" },
+          { name: "typeIndex", type: "uint256" },
+          { name: "authenticatorData", type: "bytes" },
+          { name: "clientDataJSON", type: "string" },
+        ],
+      },
+    ],
+    [
+      args.qx,
+      args.qy,
+      {
+        r: ("0x" + bytesToHex(rBytes32)) as `0x${string}`,
+        s: ("0x" + bytesToHex(sBytes32)) as `0x${string}`,
+        challengeIndex: BigInt(challengeIdx),
+        typeIndex: BigInt(typeIdx),
+        authenticatorData: ("0x" + bytesToHex(authenticatorData)) as `0x${string}`,
+        clientDataJSON: clientDataJSONText,
+      },
+    ],
+  ) as `0x${string}`;
 }
 
 // ---- helpers (signing) -----------------------------------------------------

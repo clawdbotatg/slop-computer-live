@@ -83,7 +83,7 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function bytesToHex(b: Uint8Array): string {
+export function bytesToHex(b: Uint8Array): string {
   let out = "";
   for (const v of b) out += v.toString(16).padStart(2, "0");
   return out;

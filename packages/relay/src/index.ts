@@ -48,7 +48,7 @@ import {
   issueNonce,
 } from "./sessions.js";
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
-import { bytesToBase64Url, hexToBytes, verifyPasskey } from "./passkey.js";
+import { bytesToBase64Url, bytesToHex, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import type { ChessGame } from "./chess.js";
 import { listAvailableAIPlayers } from "./ai-players.js";
@@ -102,7 +102,7 @@ import {
   refreshGenre,
 } from "./jamendo.js";
 import { type ClockState } from "./clock.js";
-import type { WalletRecord, WalletTx } from "./wallet.js";
+import type { WalletRecord, WalletSigner, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
 import {
@@ -3519,6 +3519,10 @@ type PasskeyBody = {
   authenticatorData?: unknown;
   clientDataJSON?: unknown;
   nonce?: unknown;
+  // Hex `keccak256(rawCredentialId)`. The multisig contract uses this as
+  // the passkey lookup key; we stash it on the session so the deploy
+  // form can write it onto the WalletSigner record without re-prompting.
+  credentialIdHash?: unknown;
 };
 
 app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
@@ -3554,8 +3558,27 @@ app.post<{ Body: PasskeyBody }>("/auth/passkey", async (req, reply) => {
   });
   if (!result.ok) return reply.code(401).send({ error: result.error });
 
+  // Bind the qx/qy/credentialIdHash to the session so the deploy form can
+  // detect this peer as a passkey signer and route them into the passkey
+  // arrays of `createMultisig` without re-prompting. credentialIdHash is
+  // shaped by the client (32-byte keccak256 of the raw rawId); we only
+  // sanity-check the hex.
+  let credentialIdHashHex: string | null = null;
+  if (typeof b.credentialIdHash === "string") {
+    const h = b.credentialIdHash.toLowerCase();
+    if (/^0x[0-9a-f]{64}$/.test(h)) credentialIdHashHex = h;
+  }
+  const passkeyMeta = credentialIdHashHex
+    ? { qx: "0x" + bytesToHex(qx), qy: "0x" + bytesToHex(qy), credentialIdHash: credentialIdHashHex }
+    : undefined;
+
   const handle = result.address ? await reverseLookupEns(result.address) : null;
-  const session = createSession({ role: "guest", address: result.address, handle });
+  const session = createSession({
+    role: "guest",
+    address: result.address,
+    handle,
+    passkey: passkeyMeta,
+  });
   reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
   return { ok: true, role: "guest", address: result.address, isAdmin: false };
 });
@@ -4271,6 +4294,7 @@ app.register(async function signalRoutes(fastify) {
       anonId: session.anonId ?? null,
       connectedAt: Date.now(),
       ...(isSpectator ? { spectator: true as const } : {}),
+      ...(session.passkey ? { passkey: session.passkey } : {}),
     };
 
     // Garbage-collect peers from this session whose socket is already
@@ -4907,12 +4931,39 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_wallet_deploy" });
           }
-          const signers = rec.signers
-            .filter(
-              (s): s is { address: string; label: string; signerType: "eoa" | "passkey" } =>
-                !!s && typeof s.address === "string" && typeof s.label === "string" && (s.signerType === "eoa" || s.signerType === "passkey"),
-            )
-            .map(s => ({ address: s.address.toLowerCase(), label: s.label, signerType: s.signerType }));
+          const signers: WalletSigner[] = [];
+          for (const raw of rec.signers as unknown[]) {
+            if (!raw || typeof raw !== "object") continue;
+            const s = raw as {
+              address?: unknown;
+              label?: unknown;
+              signerType?: unknown;
+              qx?: unknown;
+              qy?: unknown;
+              credentialIdHash?: unknown;
+            };
+            if (typeof s.address !== "string" || typeof s.label !== "string") continue;
+            if (s.signerType !== "eoa" && s.signerType !== "passkey") continue;
+            const signer: WalletSigner = {
+              address: s.address.toLowerCase(),
+              label: s.label,
+              signerType: s.signerType,
+            };
+            if (s.signerType === "passkey") {
+              // Preserve qx/qy/credentialIdHash if the client supplied
+              // them — without them the rest of the room can't sign
+              // exec hashes against this signer later.
+              if (typeof s.qx === "string" && /^0x[0-9a-fA-F]{64}$/.test(s.qx)) signer.qx = s.qx.toLowerCase();
+              if (typeof s.qy === "string" && /^0x[0-9a-fA-F]{64}$/.test(s.qy)) signer.qy = s.qy.toLowerCase();
+              if (
+                typeof s.credentialIdHash === "string" &&
+                /^0x[0-9a-fA-F]{64}$/.test(s.credentialIdHash)
+              ) {
+                signer.credentialIdHash = s.credentialIdHash.toLowerCase();
+              }
+            }
+            signers.push(signer);
+          }
           if (signers.length === 0) return send(socket, { type: "error", error: "no_signers" });
           const deployments: Record<number, { txHash: string | null; deployedAt: number }> = {};
           for (const [k, v] of Object.entries(rec.deployments)) {

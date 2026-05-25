@@ -1616,6 +1616,24 @@ function DesktopInner({ slug }: { slug: string }) {
     meshUpdateSlotForVis,
   ]);
 
+  // When a tx gets enqueued from a SharedBrowser dapp, surface the
+  // wallet window so the user lands directly on the signing UI instead
+  // of having to hunt for it behind the browser. WalletWindow's initial
+  // tab logic picks "transactions" when a pending tx already exists at
+  // mount, and the existing pendingCount-jump effect handles the case
+  // where the wallet was already open.
+  const browserPendingCount = useMemo(
+    () => mesh.walletTxs.filter(t => t.status === "pending" && t.source === "browser").length,
+    [mesh.walletTxs],
+  );
+  const lastBrowserPendingRef = useRef(browserPendingCount);
+  useEffect(() => {
+    if (browserPendingCount > lastBrowserPendingRef.current) {
+      focusApp("wallet");
+    }
+    lastBrowserPendingRef.current = browserPendingCount;
+  }, [browserPendingCount, focusApp]);
+
   // Find the slot id of the currently-topmost visible window — what
   // a "close top window" / "minimize top window" action should target.
   // Iterating mesh.publications + openWindowIds + browsers covers every

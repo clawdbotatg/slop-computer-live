@@ -29,6 +29,12 @@ export type PeerInfo = {
   // video), but filtered out of the visible guest list on every
   // client.
   spectator?: boolean;
+  // Mirrored from the session for passkey peers. Lets other peers in
+  // the same room register this user as a passkey signer on a multisig
+  // (the deploy form auto-routes signers with a `passkey` field into
+  // the passkey arrays of `createMultisig`). Undefined for SIWE/anon
+  // peers. The pubkey is public-by-design; nothing sensitive here.
+  passkey?: { qx: string; qy: string; credentialIdHash: string };
 };
 
 export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };
