@@ -28,7 +28,8 @@ export type EqBand = {
 export type AudioBusSource = {
   id: string;
   label: string;
-  /** 0..1.5 (allow ~+3.5dB boost above unity). UI clamps to 0..1.5. */
+  /** 0..4 (up to +12dB boost — auto-level needs the headroom to lift
+   *  a quiet mic up to a loud one). */
   gain: number;
   muted: boolean;
 };
@@ -37,6 +38,10 @@ export type AudioBusSnapshot = {
   masterGain: number;
   bands: EqBand[];
   sources: AudioBusSource[];
+  /** When true, the bus is continuously adjusting source gains to
+   *  match a target RMS — meters across all sources land at the same
+   *  height. Manual gain adjustments from the popup turn this off. */
+  autoEnabled: boolean;
 };
 
 // 6 peaking bands across the audible range. Same layout as Winamp /
@@ -49,6 +54,34 @@ const BAND_FREQS = [60, 170, 350, 1000, 3500, 10000];
 const PEAKING_Q = 1.0;
 
 const STORAGE_KEY = "slop-audio-bus-eq-v1";
+
+// Auto-level tuning. These constants live in code on purpose — the
+// popup checkbox just enables/disables; users don't get knobs for the
+// target or the rates. Re-tune here if levels feel wrong in practice.
+//
+// Target post-gain RMS we drive every active source toward. 0.3 is
+// "comfortable speech" — high enough to be clearly audible, low enough
+// that a louder source can headroom past it without clipping.
+const AUTO_TARGET_RMS = 0.3;
+// Don't auto-adjust until a source has hit at least this RMS. Without
+// this gate, a silent source gets its gain pinned to the max (4×) and
+// then explosively snaps down the moment real audio starts. Threshold
+// is roughly the floor of room noise on a half-decent mic.
+const AUTO_NOISE_FLOOR = 0.02;
+// Peak decay per tick (15Hz). 0.985 ≈ -1.3 dB/sec — slow enough that
+// a sentence with internal pauses keeps a stable peak, fast enough
+// that going from a loud source to a quiet one re-converges within a
+// few seconds.
+const AUTO_PEAK_DECAY = 0.985;
+// Smoothing for the gain ramp toward the auto-derived target. Lerp
+// factor at 15Hz; 0.04 settles in ~1.5s. Larger = snappier but
+// audibly "pumpy"; smaller = smoother but lags real changes.
+const AUTO_GAIN_LERP = 0.04;
+// Minimum change in desiredGain to bother emitting a snapshot. The
+// auto loop fires 15× a second; without this throttle the popup is
+// re-rendering for sub-percent gain wiggles. 0.02 ≈ 2 percentage
+// points on the slider.
+const AUTO_SNAPSHOT_EPSILON = 0.02;
 
 type SourceEntry = {
   id: string;
@@ -65,6 +98,13 @@ type SourceEntry = {
   muted: boolean;
   /** Cached user-set gain so unmute can restore it instead of snapping to 1. */
   desiredGain: number;
+  /** Rolling peak of post-gain RMS — input signal RMS / current gain
+   *  so a gain change doesn't change the peak estimate of what's
+   *  actually arriving from the source. Drives auto-level. */
+  peakRms: number;
+  /** Last snapshot-emitted desiredGain. Auto-loop diffs against this
+   *  to decide whether the change is worth a snapshot push. */
+  lastEmittedGain: number;
 };
 
 class AudioBusImpl {
@@ -75,6 +115,10 @@ class AudioBusImpl {
   private filters: BiquadFilterNode[] = [];
   private bands: EqBand[] = BAND_FREQS.map(freq => ({ freq, gain: 0 }));
   private masterGain = 1;
+  /** When true the bus continuously adjusts each source's gain to
+   *  match AUTO_TARGET_RMS. The popup checkbox toggles it; any manual
+   *  set-source-gain (user dragging a slider) also flips it off. */
+  private autoEnabled = true;
   private sources = new Map<string, SourceEntry>();
   /** Anti-duplicate guard: once an element has been wrapped in a
    *  MediaElementSourceNode it must never be wrapped again (browser
@@ -95,6 +139,7 @@ class AudioBusImpl {
     // Reload persisted EQ state — masters love their tuning sticking
     // across browser-host bounces.
     this.loadPersisted();
+    this.loadPersistedAuto();
   }
 
   private ensureContext(): AudioContext | null {
@@ -173,7 +218,18 @@ class AudioBusImpl {
     src.connect(gainNode);
     gainNode.connect(analyser);
     analyser.connect(this.sumNode);
-    this.sources.set(id, { id, label, gainNode, analyser, meterBuf, el, muted: false, desiredGain: 1 });
+    this.sources.set(id, {
+      id,
+      label,
+      gainNode,
+      analyser,
+      meterBuf,
+      el,
+      muted: false,
+      desiredGain: 1,
+      peakRms: 0,
+      lastEmittedGain: 1,
+    });
     this.emit();
     return true;
   }
@@ -208,7 +264,18 @@ class AudioBusImpl {
     src.connect(gainNode);
     gainNode.connect(analyser);
     analyser.connect(this.sumNode);
-    this.sources.set(id, { id, label, gainNode, analyser, meterBuf, el: null, muted: false, desiredGain: 1 });
+    this.sources.set(id, {
+      id,
+      label,
+      gainNode,
+      analyser,
+      meterBuf,
+      el: null,
+      muted: false,
+      desiredGain: 1,
+      peakRms: 0,
+      lastEmittedGain: 1,
+    });
     this.emit();
     return true;
   }
@@ -240,13 +307,33 @@ class AudioBusImpl {
 
   // --- mutations from the /eq popup ---
 
+  /** User-origin gain change from the popup slider. Flips auto OFF so
+   *  the manual value doesn't get clobbered on the next auto tick. */
   setSourceGain(id: string, gain: number): void {
+    this.setAutoEnabled(false);
+    this._setSourceGainInternal(id, gain);
+    this.emit();
+  }
+
+  /** Internal: apply gain without disengaging auto. Called by the
+   *  auto-level tick + the public setter above. */
+  private _setSourceGainInternal(id: string, gain: number): void {
     const entry = this.sources.get(id);
     if (!entry) return;
-    const clamped = Math.max(0, Math.min(1.5, gain));
+    const clamped = Math.max(0, Math.min(4, gain));
     entry.desiredGain = clamped;
     if (!entry.muted) entry.gainNode.gain.value = clamped;
+  }
+
+  setAutoEnabled(enabled: boolean): void {
+    if (this.autoEnabled === enabled) return;
+    this.autoEnabled = enabled;
+    this.persistAuto();
     this.emit();
+  }
+
+  isAutoEnabled(): boolean {
+    return this.autoEnabled;
   }
 
   setSourceMuted(id: string, muted: boolean): void {
@@ -287,9 +374,14 @@ class AudioBusImpl {
   /** Read post-gain RMS for every active source. Returns a plain
    *  record so it serializes cleanly across BroadcastChannel. Values
    *  are 0..1 (perceptual headroom — speech peaks ~0.3, hot music
-   *  ~0.7). The popup uses these to render meter bars. */
+   *  ~0.7). The popup uses these to render meter bars.
+   *
+   *  Side effect: also runs auto-level when enabled. We piggyback on
+   *  the same analyser read so we only walk the source list + analyse
+   *  the time-domain buffer ONCE per tick. */
   readLevels(): Record<string, number> {
     const out: Record<string, number> = {};
+    let anyGainShifted = false;
     for (const entry of this.sources.values()) {
       entry.analyser.getByteTimeDomainData(entry.meterBuf);
       let sum = 0;
@@ -298,9 +390,41 @@ class AudioBusImpl {
         const v = ((buf[i] ?? 128) - 128) / 128;
         sum += v * v;
       }
-      out[entry.id] = Math.sqrt(sum / buf.length);
+      const postGainRms = Math.sqrt(sum / buf.length);
+      out[entry.id] = postGainRms;
+      if (this.autoEnabled && !entry.muted) {
+        if (this.tickAuto(entry, postGainRms)) anyGainShifted = true;
+      }
     }
+    // Snapshot only when auto-driven gains have drifted enough to
+    // matter — otherwise we'd be re-emitting 15×/sec for sub-percent
+    // wiggles. The popup still gets live meter bars every tick via
+    // the levels message that wraps this call.
+    if (anyGainShifted) this.emit();
     return out;
+  }
+
+  /** Run one auto-level step on a single source. Returns true when
+   *  the desiredGain crossed AUTO_SNAPSHOT_EPSILON since the last
+   *  emit — caller uses that as the snapshot-throttle signal. */
+  private tickAuto(entry: SourceEntry, postGainRms: number): boolean {
+    // Recover input RMS by dividing out current gain. Without this
+    // the feedback loop is unstable: bumping gain raises the measured
+    // RMS which leaves the gain pinned at its current value.
+    const currentGain = Math.max(0.001, entry.gainNode.gain.value);
+    const inputRms = postGainRms / currentGain;
+    entry.peakRms = Math.max(entry.peakRms * AUTO_PEAK_DECAY, inputRms);
+    if (entry.peakRms < AUTO_NOISE_FLOOR) return false;
+    const targetGain = Math.max(0, Math.min(4, AUTO_TARGET_RMS / entry.peakRms));
+    // One-pole low-pass on the gain to avoid pumping. At 15Hz with
+    // AUTO_GAIN_LERP=0.04 this settles in roughly a second.
+    const newGain = entry.desiredGain + (targetGain - entry.desiredGain) * AUTO_GAIN_LERP;
+    this._setSourceGainInternal(entry.id, newGain);
+    if (Math.abs(newGain - entry.lastEmittedGain) > AUTO_SNAPSHOT_EPSILON) {
+      entry.lastEmittedGain = newGain;
+      return true;
+    }
+    return false;
   }
 
   snapshot(): AudioBusSnapshot {
@@ -313,6 +437,7 @@ class AudioBusImpl {
         gain: s.desiredGain,
         muted: s.muted,
       })),
+      autoEnabled: this.autoEnabled,
     };
   }
 
@@ -342,6 +467,26 @@ class AudioBusImpl {
   }
 
   // --- persistence (EQ only, not per-source gain — sources come and go) ---
+
+  private persistAuto(): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("slop-audio-bus-auto-v1", this.autoEnabled ? "1" : "0");
+    } catch {
+      /* quota / private mode */
+    }
+  }
+
+  private loadPersistedAuto(): void {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("slop-audio-bus-auto-v1");
+      if (raw === "0") this.autoEnabled = false;
+      // raw === "1" or null both keep default true.
+    } catch {
+      /* ignore */
+    }
+  }
 
   private persist(): void {
     if (typeof window === "undefined") return;
@@ -401,6 +546,7 @@ export type BusInboundMessage =
   | { type: "set-source-muted"; id: string; muted: boolean }
   | { type: "set-band-gain"; bandIndex: number; db: number }
   | { type: "set-master-gain"; gain: number }
+  | { type: "set-auto-enabled"; enabled: boolean }
   | { type: "reset-eq" };
 
 export type BusOutboundMessage =

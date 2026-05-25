@@ -81,6 +81,9 @@ export function useAudioBusOwner(enabled: boolean): void {
           case "set-master-gain":
             bus.setMasterGain(msg.gain);
             break;
+          case "set-auto-enabled":
+            bus.setAutoEnabled(msg.enabled);
+            break;
           case "reset-eq":
             bus.resetEq();
             break;

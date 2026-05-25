@@ -1626,23 +1626,23 @@ function DesktopInner({ slug }: { slug: string }) {
     meshUpdateSlotForVis,
   ]);
 
-  // When a tx gets enqueued from a SharedBrowser dapp, surface the
+  // When a tx gets proposed from a SharedBrowser dapp, surface the
   // wallet window so the user lands directly on the signing UI instead
-  // of having to hunt for it behind the browser. WalletWindow's initial
-  // tab logic picks "transactions" when a pending tx already exists at
-  // mount, and the existing pendingCount-jump effect handles the case
-  // where the wallet was already open.
-  const browserPendingCount = useMemo(
-    () => mesh.walletTxs.filter(t => t.status === "pending" && t.source === "browser").length,
-    [mesh.walletTxs],
-  );
-  const lastBrowserPendingRef = useRef(browserPendingCount);
+  // of having to hunt for it behind the browser. We key off the relay's
+  // wallet_tx_attention ping — bumped on every propose attempt,
+  // including the deduped second-click case where walletTxs itself
+  // doesn't change — so a confused user who clicks swap twice still
+  // gets the wallet pulled in front. WalletWindow's own effects handle
+  // the tab switch and initial-mount default.
+  const walletAttention = mesh.walletAttention;
+  const lastWalletAttentionRef = useRef(walletAttention?.at ?? 0);
   useEffect(() => {
-    if (browserPendingCount > lastBrowserPendingRef.current) {
+    const at = walletAttention?.at ?? 0;
+    if (at > lastWalletAttentionRef.current && walletAttention?.source === "browser") {
       focusApp("wallet");
     }
-    lastBrowserPendingRef.current = browserPendingCount;
-  }, [browserPendingCount, focusApp]);
+    lastWalletAttentionRef.current = at;
+  }, [walletAttention, focusApp]);
 
   // Find the slot id of the currently-topmost visible window — what
   // a "close top window" / "minimize top window" action should target.

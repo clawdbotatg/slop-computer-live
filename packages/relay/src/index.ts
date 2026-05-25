@@ -5257,6 +5257,17 @@ app.register(async function signalRoutes(fastify) {
               data: tx.data,
             }).then(summary => room.wallet.setTxSummary(tx.id, summary));
           }
+          // Every propose attempt — including the deduped second click
+          // — pings the room so all peers' wallet windows surface to
+          // the front on the transactions tab. Without this, a user
+          // who clicked twice would have their second click silently
+          // collapsed by the dedup guard without any UI feedback.
+          room.broadcast({
+            type: "wallet_tx_attention",
+            txId: tx.id,
+            source: tx.source,
+            at: Date.now(),
+          });
           return;
         }
         case "wallet_tx_sign": {

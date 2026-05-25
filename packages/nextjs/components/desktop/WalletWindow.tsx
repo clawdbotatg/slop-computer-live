@@ -117,6 +117,20 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     lastPendingCountRef.current = pendingCount;
   }, [pendingCount, wallet, tab]);
 
+  // Server pings `walletAttention` on every propose, including the
+  // deduped second-click case where pendingCount didn't change. Mirror
+  // the tab-jump for that path so a re-click still surfaces the
+  // transactions tab.
+  const walletAttention = mesh.walletAttention;
+  const lastAttentionRef = useRef(walletAttention?.at ?? 0);
+  useEffect(() => {
+    const at = walletAttention?.at ?? 0;
+    if (at > lastAttentionRef.current && wallet && tab !== "deploy") {
+      setTab("transactions");
+    }
+    lastAttentionRef.current = at;
+  }, [walletAttention, wallet, tab]);
+
   return (
     <div
       style={{

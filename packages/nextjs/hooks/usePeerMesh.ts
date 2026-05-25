@@ -1094,6 +1094,10 @@ export type PeerMeshState = {
   walletHistory: WalletRecord[];
   /** Pending tx queue for `wallet` plus a tail of executed/failed txs. */
   walletTxs: WalletTx[];
+  /** Most recent `wallet_tx_propose` ping from the relay — bumps on
+   *  every propose attempt including dedup hits, so UI can surface
+   *  the wallet window even when walletTxs didn't change. */
+  walletAttention: { at: number; source: WalletTx["source"] } | null;
   /** Tell the relay a multisig has just been deployed (first chain). */
   walletDeploy: (rec: WalletRecord) => void;
   /** Record an additional chain the current wallet has been deployed
@@ -1204,6 +1208,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
   const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
   const [walletDraft, setWalletDraft] = useState<WalletDraft | null>(null);
+  // Server pings this every time `wallet_tx_propose` is processed —
+  // including double-click dedup hits that don't add a new tx. UI
+  // surfaces (Desktop, WalletWindow) watch the timestamp to refocus
+  // the wallet window even when walletTxs didn't change.
+  const [walletAttention, setWalletAttention] = useState<{ at: number; source: WalletTx["source"] } | null>(null);
   // User-chosen display names keyed by lowercased address. Wins over
   // ENS handle and address-shorthand in the label-fallback chain (see
   // `peerLabel` below). Server-authoritative — `set_custom_name` round-
@@ -2870,6 +2879,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "wallet_tx_attention") {
+          const source = msg.source === "browser" ? "browser" : "manual";
+          const at = typeof msg.at === "number" ? msg.at : Date.now();
+          setWalletAttention({ at, source });
+          return;
+        }
+
         if (msg.type === "tx_request" && typeof msg.browserId === "string" && typeof msg.calldata === "string") {
           const req: TxRequest = {
             from: typeof msg.from === "string" ? msg.from : "",
@@ -3164,6 +3180,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     wallet,
     walletHistory,
     walletTxs,
+    walletAttention,
     walletDraft,
     walletDraftUpdate,
     walletDeploy,

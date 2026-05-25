@@ -232,9 +232,29 @@ const EqPopupPage = () => {
       <section style={panelStyle}>
         <div style={sectionHeaderStyle}>
           <span>sources</span>
-          <span style={{ fontSize: 8, color: cssVar("text-muted", "#7878a0") }}>
-            {snap ? snap.sources.length : "—"}
-          </span>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              cursor: "pointer",
+              color: snap?.autoEnabled ? cssVar("lime", "#bcff5b") : cssVar("text-muted", "#7878a0"),
+            }}
+            title={
+              snap?.autoEnabled
+                ? "Auto-level on: source gains continuously match the loudest to a shared target. Drag a slider to take manual control."
+                : "Auto-level off: manual gain control. Toggle to re-engage."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={!!snap?.autoEnabled}
+              disabled={!snap}
+              onChange={e => post({ type: "set-auto-enabled", enabled: e.target.checked })}
+              style={{ accentColor: cssVar("lime", "#bcff5b"), margin: 0 }}
+            />
+            auto
+          </label>
         </div>
         {snap && snap.sources.length === 0 ? (
           <div
@@ -347,7 +367,7 @@ const SourceRow = ({
         <input
           type="range"
           min={0}
-          max={1.5}
+          max={4}
           step={0.01}
           value={gain}
           disabled={muted}
