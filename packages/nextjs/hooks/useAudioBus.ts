@@ -30,7 +30,20 @@ export function useAudioBusOwner(enabled: boolean): void {
     const BC = typeof BroadcastChannel === "undefined" ? null : BroadcastChannel;
     const channel = BC ? new BC(AUDIO_BUS_CHANNEL) : null;
     let unsub: (() => void) | null = null;
+    let levelsTimer: ReturnType<typeof setInterval> | null = null;
     if (channel) {
+      // Stream post-gain RMS for every source ~15Hz. Cheap (one
+      // analyser read + scalar math per source) and gives the popup
+      // smooth meter bars without flooding the channel.
+      levelsTimer = setInterval(() => {
+        const levels = bus.readLevels();
+        const msg: BusOutboundMessage = { type: "levels", levels };
+        try {
+          channel.postMessage(msg);
+        } catch {
+          /* channel closed */
+        }
+      }, 66);
       // Push snapshots to the popup on every mutation. subscribe()
       // fires once immediately so the popup gets initial state if
       // we connect after it asked.
@@ -78,6 +91,7 @@ export function useAudioBusOwner(enabled: boolean): void {
     return () => {
       window.removeEventListener(ACTIVATED_EVENT, onActivated);
       unsub?.();
+      if (levelsTimer !== null) clearInterval(levelsTimer);
       try {
         channel?.close();
       } catch {

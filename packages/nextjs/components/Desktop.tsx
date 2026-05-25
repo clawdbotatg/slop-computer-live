@@ -1888,7 +1888,11 @@ function DesktopInner({ slug }: { slug: string }) {
           isGodMode
             ? () => {
                 const target = `/eq?slug=${encodeURIComponent(slug)}`;
-                const features = "popup=yes,width=380,height=560,menubar=no,toolbar=no,location=no,status=no";
+                // Skinny + tall — sits cleanly on the side of a
+                // monitor without blocking the broadcast view. Every
+                // control inside is a horizontal slider so this width
+                // is enough.
+                const features = "popup=yes,width=150,height=600,menubar=no,toolbar=no,location=no,status=no";
                 // `noopener` would null out the opener — we need the
                 // reference for the popup to find the right
                 // BroadcastChannel name. Channels are scoped by the

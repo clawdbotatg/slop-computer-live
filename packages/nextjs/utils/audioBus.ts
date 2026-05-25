@@ -54,6 +54,12 @@ type SourceEntry = {
   id: string;
   label: string;
   gainNode: GainNode;
+  /** Tap on the post-gain signal so meters reflect what actually
+   *  contributes to the mix — moving the source's gain slider
+   *  immediately shows up in the meter. */
+  analyser: AnalyserNode;
+  /** Reused time-domain buffer to avoid per-tick allocation. */
+  meterBuf: Uint8Array;
   /** Truly null when registerStream was used (no element exists). */
   el: HTMLMediaElement | null;
   muted: boolean;
@@ -163,11 +169,24 @@ class AudioBusImpl {
     this.wrappedElements.add(el);
     const gainNode = ctx.createGain();
     gainNode.gain.value = 1;
+    const { analyser, meterBuf } = this.makeMeter(ctx);
     src.connect(gainNode);
-    gainNode.connect(this.sumNode);
-    this.sources.set(id, { id, label, gainNode, el, muted: false, desiredGain: 1 });
+    gainNode.connect(analyser);
+    analyser.connect(this.sumNode);
+    this.sources.set(id, { id, label, gainNode, analyser, meterBuf, el, muted: false, desiredGain: 1 });
     this.emit();
     return true;
+  }
+
+  /** Build a meter tap. Small FFT (256) — we only need RMS, not
+   *  spectrum, so the cheapest analyser that still gives reliable
+   *  time-domain data is plenty. */
+  private makeMeter(ctx: AudioContext): { analyser: AnalyserNode; meterBuf: Uint8Array } {
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.3;
+    const meterBuf = new Uint8Array(analyser.fftSize);
+    return { analyser, meterBuf };
   }
 
   /** Route a raw MediaStream through the bus. Used when no audio
@@ -185,9 +204,11 @@ class AudioBusImpl {
     }
     const gainNode = ctx.createGain();
     gainNode.gain.value = 1;
+    const { analyser, meterBuf } = this.makeMeter(ctx);
     src.connect(gainNode);
-    gainNode.connect(this.sumNode);
-    this.sources.set(id, { id, label, gainNode, el: null, muted: false, desiredGain: 1 });
+    gainNode.connect(analyser);
+    analyser.connect(this.sumNode);
+    this.sources.set(id, { id, label, gainNode, analyser, meterBuf, el: null, muted: false, desiredGain: 1 });
     this.emit();
     return true;
   }
@@ -197,6 +218,11 @@ class AudioBusImpl {
     if (!entry) return;
     try {
       entry.gainNode.disconnect();
+    } catch {
+      /* already gone */
+    }
+    try {
+      entry.analyser.disconnect();
     } catch {
       /* already gone */
     }
@@ -257,6 +283,25 @@ class AudioBusImpl {
   }
 
   // --- snapshots ---
+
+  /** Read post-gain RMS for every active source. Returns a plain
+   *  record so it serializes cleanly across BroadcastChannel. Values
+   *  are 0..1 (perceptual headroom — speech peaks ~0.3, hot music
+   *  ~0.7). The popup uses these to render meter bars. */
+  readLevels(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const entry of this.sources.values()) {
+      entry.analyser.getByteTimeDomainData(entry.meterBuf);
+      let sum = 0;
+      const buf = entry.meterBuf;
+      for (let i = 0; i < buf.length; i++) {
+        const v = ((buf[i] ?? 128) - 128) / 128;
+        sum += v * v;
+      }
+      out[entry.id] = Math.sqrt(sum / buf.length);
+    }
+    return out;
+  }
 
   snapshot(): AudioBusSnapshot {
     return {
@@ -358,4 +403,6 @@ export type BusInboundMessage =
   | { type: "set-master-gain"; gain: number }
   | { type: "reset-eq" };
 
-export type BusOutboundMessage = { type: "snapshot"; snapshot: AudioBusSnapshot };
+export type BusOutboundMessage =
+  | { type: "snapshot"; snapshot: AudioBusSnapshot }
+  | { type: "levels"; levels: Record<string, number> };

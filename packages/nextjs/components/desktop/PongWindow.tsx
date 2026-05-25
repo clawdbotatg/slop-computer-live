@@ -37,6 +37,11 @@ export const PongWindow = ({ mesh }: Props) => {
   const seatRef = useRef<PongSide | null>(myPongSeat);
   const fieldRef = useRef(field);
   const pongPaddleRef = useRef(pongPaddle);
+  // Latest pongState in a ref so the RAF loop can read it without
+  // restarting every server tick (~30Hz). Restarting the loop on
+  // every snapshot dropped frames mid-integration and contributed to
+  // visible paddle jitter.
+  const pongStateRef = useRef(pongState);
 
   useEffect(() => {
     seatRef.current = myPongSeat;
@@ -47,23 +52,22 @@ export const PongWindow = ({ mesh }: Props) => {
   useEffect(() => {
     pongPaddleRef.current = pongPaddle;
   }, [pongPaddle]);
-
-  // When the server snapshot moves OUR paddle (e.g. on first frame
-  // after claim, or after a brief disconnect), adopt the server value
-  // as our local truth so we don't yo-yo back from drift.
   useEffect(() => {
-    if (!myPongSeat) {
-      localPaddleRef.current = fieldRef.current.h / 2;
-      return;
-    }
-    const serverY = pongState.paddles[myPongSeat];
-    // Only adopt the server value when the gap is large — otherwise
-    // local input feels laggy. 8px is below visual perception at this
-    // scale but above normal jitter.
-    if (Math.abs(serverY - localPaddleRef.current) > 8) {
-      localPaddleRef.current = serverY;
-    }
-  }, [pongState.paddles, myPongSeat]);
+    pongStateRef.current = pongState;
+  }, [pongState]);
+
+  // Reset the local paddle on seat acquisition / loss. We intentionally
+  // do NOT reconcile against `pongState.paddles[myPongSeat]` on every
+  // server snapshot: the server's record of OUR paddle lags our input
+  // by ~1 RTT, so adopting it mid-move snaps us backwards. The local
+  // ref is the single source of truth for our own paddle while seated;
+  // the server's stored value only matters for what the OPPONENT sees.
+  useEffect(() => {
+    localPaddleRef.current = fieldRef.current.h / 2;
+    // Make sure the next move forces a send (the throttle's "value
+    // changed" check would otherwise debounce the reset).
+    lastSentValueRef.current = -1;
+  }, [myPongSeat]);
 
   // Keyboard input — only attach when the window is focused / hovered.
   // We listen on document but only act on the keys we care about.
@@ -123,12 +127,12 @@ export const PongWindow = ({ mesh }: Props) => {
           }
         }
       }
-      paint(canvasRef.current, pongState, seat, localPaddleRef.current);
+      paint(canvasRef.current, pongStateRef.current, seat, localPaddleRef.current);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [pongState]);
+  }, []);
 
   // Resize the canvas to fit the container while preserving aspect.
   const [canvasSize, setCanvasSize] = useState({ w: field.w, h: field.h });
