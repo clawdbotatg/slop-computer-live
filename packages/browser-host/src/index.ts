@@ -110,6 +110,31 @@ export function isSafeBrowsableUrl(raw: string): boolean {
   return true;
 }
 
+// Google search is unusable from datacenter IPs — captcha never resolves,
+// no amount of cookie warmup or fingerprint stealth fixes it. Rewrite
+// every main-frame navigation that lands on a google.com search page (or
+// the bare homepage) to DuckDuckGo. Maps/Gmail/Calendar live on different
+// subdomains and are left alone. Returns the rewrite target, or null if
+// the URL should pass through untouched.
+export function maybeRewriteSearch(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  // Match google.com, google.co.uk, www.google.fr, etc., but not
+  // maps.google.com / mail.google.com / news.google.com.
+  if (!/^(www\.)?google(\.[a-z]{2,3}){1,2}$/.test(host)) return null;
+  if (u.pathname === "/search") {
+    const q = u.searchParams.get("q") ?? "";
+    return q ? `https://duckduckgo.com/?q=${encodeURIComponent(q)}` : "https://duckduckgo.com/";
+  }
+  if (u.pathname === "/" || u.pathname === "") return "https://duckduckgo.com/";
+  return null;
+}
+
 const MAX_TABS_PER_ROOM = 5;
 const MAX_TABS_TOTAL = 30;
 
@@ -535,6 +560,22 @@ async function createTab(
       app.log.warn({ slug, id, reqUrl }, "blocked unsafe subresource");
       void req.abort("blockedbyclient").catch(() => undefined);
       return;
+    }
+    // Search-engine rewrite: only fire on main-frame top-level navigations,
+    // never on subresource fetches (a page that embeds google.com analytics
+    // or fonts shouldn't get redirected to ddg). Subframe iframes are also
+    // left alone — only the real navigation to a Google search page is
+    // intercepted, because that's the surface that captchas the user.
+    if (req.isNavigationRequest() && req.frame() === page.mainFrame()) {
+      const rewrite = maybeRewriteSearch(reqUrl);
+      if (rewrite) {
+        app.log.info({ slug, id, from: reqUrl, to: rewrite }, "search rewrite → ddg");
+        void req.respond({
+          status: 302,
+          headers: { Location: rewrite },
+        });
+        return;
+      }
     }
     void req.continue();
   });
