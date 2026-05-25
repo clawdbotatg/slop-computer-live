@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { type Portfolio, type PortfolioAsset, zerionChainToId } from "./types";
 import { LoadingBar } from "~~/components/ui";
 import type { WalletRecord } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -10,6 +11,10 @@ import { withSlug } from "~~/lib/slug";
 // relay's /v1/wallet/* proxies (which hold the Zerion key). The data is
 // inherently the same for every peer — it's just the multisig's on-chain
 // state — so there's no mesh state here, each viewer fetches their own.
+//
+// Portfolio state is now owned by WalletWindow (so the wallet header
+// above the tabs and this panel share one fetch). This panel renders
+// the list + activity + per-asset send affordance.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -53,25 +58,6 @@ const CHAIN_TOKEN_EXPLORER: Record<string, string> = {
   avalanche: "https://snowtrace.io/token/",
 };
 
-type PortfolioAsset = {
-  blockchain: string;
-  tokenName: string;
-  tokenSymbol: string;
-  positionType: string;
-  protocol: string | null;
-  balance: string;
-  balanceUsd: string;
-  contractAddress: string;
-  thumbnail: string;
-};
-type Portfolio = {
-  totalBalanceUsd: string;
-  assets: PortfolioAsset[];
-  defiPositions: PortfolioAsset[];
-  change1dUsd: string;
-  change1dPct: string;
-  error?: string;
-};
 type ActivityItem = {
   id: string;
   chain: string;
@@ -219,63 +205,135 @@ const TokenAvatar = ({
   );
 };
 
-const AssetRow = ({ a, onOpen }: { a: PortfolioAsset; onOpen: (a: PortfolioAsset) => void }) => (
-  <button
-    type="button"
-    onClick={() => onOpen(a)}
-    style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      padding: "8px 10px",
-      background: "rgba(255,255,255,0.025)",
-      border: "1px solid rgba(255,62,201,0.14)",
-      borderRadius: 4,
-      cursor: "pointer",
-      width: "100%",
-      textAlign: "left",
-      color: "inherit",
-      font: "inherit",
-      transition: "background 120ms, border-color 120ms",
-    }}
-    onMouseEnter={e => {
-      e.currentTarget.style.background = "rgba(255,62,201,0.08)";
-      e.currentTarget.style.borderColor = "rgba(255,62,201,0.4)";
-    }}
-    onMouseLeave={e => {
-      e.currentTarget.style.background = "rgba(255,255,255,0.025)";
-      e.currentTarget.style.borderColor = "rgba(255,62,201,0.14)";
-    }}
-    title={`View details for ${a.tokenSymbol}`}
-  >
-    <TokenAvatar symbol={a.tokenSymbol} thumbnail={a.thumbnail} chain={a.blockchain} size={28} />
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, display: "flex", alignItems: "baseline", gap: 6 }}>
-        <span>{a.tokenSymbol}</span>
-        {a.tokenName && a.tokenName.toLowerCase() !== a.tokenSymbol.toLowerCase() ? (
-          <span
-            style={{
-              color: "var(--slop-text-muted)",
-              fontWeight: 400,
-              fontSize: 11,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              minWidth: 0,
-            }}
-          >
-            {a.tokenName}
-          </span>
-        ) : null}
-        {a.protocol ? <span style={{ color: "var(--slop-text-muted)", fontWeight: 400 }}> · {a.protocol}</span> : null}
-      </div>
-      <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
-        {parseFloat(a.balance).toLocaleString("en-US", { maximumFractionDigits: 4 })} on {a.blockchain}
+const AssetRow = ({
+  a,
+  onOpen,
+  onSend,
+}: {
+  a: PortfolioAsset;
+  onOpen: (a: PortfolioAsset) => void;
+  onSend: ((a: PortfolioAsset) => void) | null;
+}) => {
+  // Send affordance is only enabled when (a) we have an onSend handler
+  // (DeFi positions don't get one — they're not raw transfers), (b) the
+  // asset is on a chain the multisig is deployed on. The icon still
+  // renders disabled so users learn it exists, with a tooltip.
+  const chainId = zerionChainToId(a.blockchain);
+  const sendable = !!onSend && chainId != null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "stretch",
+        gap: 0,
+        background: "rgba(255,255,255,0.025)",
+        border: "1px solid rgba(255,62,201,0.14)",
+        borderRadius: 4,
+        overflow: "hidden",
+        transition: "background 120ms, border-color 120ms",
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.background = "rgba(255,62,201,0.08)";
+        e.currentTarget.style.borderColor = "rgba(255,62,201,0.4)";
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background = "rgba(255,255,255,0.025)";
+        e.currentTarget.style.borderColor = "rgba(255,62,201,0.14)";
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(a)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 10px",
+          background: "transparent",
+          border: 0,
+          flex: 1,
+          minWidth: 0,
+          cursor: "pointer",
+          textAlign: "left",
+          color: "inherit",
+          font: "inherit",
+        }}
+        title={`View details for ${a.tokenSymbol}`}
+      >
+        <TokenAvatar symbol={a.tokenSymbol} thumbnail={a.thumbnail} chain={a.blockchain} size={28} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span>{a.tokenSymbol}</span>
+            {a.tokenName && a.tokenName.toLowerCase() !== a.tokenSymbol.toLowerCase() ? (
+              <span
+                style={{
+                  color: "var(--slop-text-muted)",
+                  fontWeight: 400,
+                  fontSize: 11,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  minWidth: 0,
+                }}
+              >
+                {a.tokenName}
+              </span>
+            ) : null}
+            {a.protocol ? (
+              <span style={{ color: "var(--slop-text-muted)", fontWeight: 400 }}> · {a.protocol}</span>
+            ) : null}
+          </div>
+          <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+            {parseFloat(a.balance).toLocaleString("en-US", { maximumFractionDigits: 4 })} on {a.blockchain}
+          </div>
+        </div>
+      </button>
+      {onSend ? (
+        <button
+          type="button"
+          onClick={e => {
+            e.stopPropagation();
+            if (sendable) onSend(a);
+          }}
+          disabled={!sendable}
+          title={
+            sendable
+              ? `Send ${a.tokenSymbol}…`
+              : `Multisig isn't deployed on ${a.blockchain} — can't send from this chain.`
+          }
+          aria-label={`Send ${a.tokenSymbol}`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0 10px",
+            background: "transparent",
+            border: 0,
+            borderLeft: "1px dashed rgba(255,62,201,0.18)",
+            color: sendable ? ACCENT : "var(--slop-text-muted)",
+            cursor: sendable ? "pointer" : "not-allowed",
+            opacity: sendable ? 1 : 0.4,
+            fontSize: 14,
+          }}
+        >
+          ↗
+        </button>
+      ) : null}
+      <div
+        style={{
+          padding: "8px 10px",
+          fontSize: 12,
+          fontFamily: "var(--slop-font-mono, monospace)",
+          display: "flex",
+          alignItems: "center",
+          flexShrink: 0,
+        }}
+      >
+        {fmtUsd(a.balanceUsd)}
       </div>
     </div>
-    <div style={{ fontSize: 12, fontFamily: "var(--slop-font-mono, monospace)" }}>{fmtUsd(a.balanceUsd)}</div>
-  </button>
-);
+  );
+};
 
 export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
   const slug = useRoomSlug();
@@ -395,7 +453,7 @@ export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
           <SectionLabel>Assets ({portfolio.assets.length})</SectionLabel>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {portfolio.assets.map((a, i) => (
-              <AssetRow key={`${a.contractAddress}-${a.blockchain}-${i}`} a={a} onOpen={setSelected} />
+              <AssetRow key={`${a.contractAddress}-${a.blockchain}-${i}`} a={a} onOpen={setSelected} onSend={null} />
             ))}
           </div>
         </div>
@@ -410,7 +468,7 @@ export const WalletAssetsPanel = ({ wallet }: { wallet: WalletRecord }) => {
           <SectionLabel>DeFi positions ({portfolio.defiPositions.length})</SectionLabel>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {portfolio.defiPositions.map((a, i) => (
-              <AssetRow key={`defi-${a.contractAddress}-${i}`} a={a} onOpen={setSelected} />
+              <AssetRow key={`defi-${a.contractAddress}-${i}`} a={a} onOpen={setSelected} onSend={null} />
             ))}
           </div>
         </div>

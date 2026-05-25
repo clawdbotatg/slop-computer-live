@@ -5230,6 +5230,22 @@ app.register(async function signalRoutes(fastify) {
           if (!Number.isFinite(chainId) || chainId === 0) {
             return send(socket, { type: "error", error: "no_chain" });
           }
+          // Optional batched calls — when provided, exec uses
+          // Multisig.execBatchTransaction and target/value/data are
+          // sentinels (multisig self-address, "0", "0x").
+          let batchCalls: { target: string; value: string; data: string }[] | undefined;
+          if (Array.isArray(msg.calls) && msg.calls.length > 0) {
+            const valid = msg.calls.every(
+              (c: unknown) =>
+                c &&
+                typeof c === "object" &&
+                typeof (c as { target?: unknown }).target === "string" &&
+                typeof (c as { value?: unknown }).value === "string" &&
+                typeof (c as { data?: unknown }).data === "string",
+            );
+            if (!valid) return send(socket, { type: "error", error: "bad_calls" });
+            batchCalls = (msg.calls as { target: string; value: string; data: string }[]).slice(0, 50);
+          }
           const tx = room.wallet.proposeTx({
             multisigAddress: cur.address,
             chainId,
@@ -5243,6 +5259,7 @@ app.register(async function signalRoutes(fastify) {
             deadline: msg.deadline,
             nonce: msg.nonce,
             execHash: msg.execHash,
+            ...(batchCalls ? { calls: batchCalls } : {}),
           });
           // Fire-and-forget AI summary — broadcasts when it lands.
           // Skip when proposeTx returned an existing pending tx
@@ -5255,6 +5272,7 @@ app.register(async function signalRoutes(fastify) {
               target: tx.target,
               value: tx.value,
               data: tx.data,
+              calls: tx.calls,
             }).then(summary => room.wallet.setTxSummary(tx.id, summary));
           }
           // Every propose attempt — including the deduped second click
@@ -5312,6 +5330,7 @@ app.register(async function signalRoutes(fastify) {
             target: tx.target,
             value: tx.value,
             data: tx.data,
+            calls: tx.calls,
           }).then(summary => room.wallet.setTxSummary(tx.id, summary));
           return;
         }

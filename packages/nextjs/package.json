@@ -25,6 +25,7 @@
     "burner-connector": "0.0.20",
     "chess.js": "^1.4.0",
     "daisyui": "^5.0.9",
+    "hls.js": "~1.5.17",
     "next": "^15.2.8",
     "next-nprogress-bar": "^2.3.13",
     "next-themes": "^0.3.0",

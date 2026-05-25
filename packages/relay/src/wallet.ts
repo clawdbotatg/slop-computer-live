@@ -63,6 +63,15 @@ export type WalletTxSignature = {
 
 export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
 
+// One sub-call inside a batched tx (Multisig.execBatchTransaction).
+// Single-call txs leave WalletTx.calls undefined / empty and use the
+// top-level target/value/data fields.
+export type WalletTxCall = {
+  target: string; // 0x-lowercased
+  value: string; // decimal wei
+  data: string; // 0x-prefixed
+};
+
 export type WalletTx = {
   id: string;
   multisigAddress: string; // lowercased
@@ -76,13 +85,19 @@ export type WalletTx = {
   data: string; // 0x-prefixed calldata
   deadline: string; // decimal string of bigint
   nonce: string; // decimal string at proposal time (matches multisig.nonce())
-  execHash: string; // 0x-prefixed
+  execHash: string; // 0x-prefixed (single: getExecHash, batch: getBatchExecHash)
   summary: string | null; // AI-generated plain-English summary
   signatures: WalletTxSignature[];
   status: WalletTxStatus;
   txHash: string | null; // execution tx hash
   createdAt: number;
   updatedAt: number;
+  // When present and non-empty, this is a batched tx executed via
+  // Multisig.execBatchTransaction(calls, deadline, signatures). The
+  // top-level target/value/data are sentinels (multisig self-address,
+  // 0, 0x) and ignored at execute time. The execHash is computed from
+  // the batch instead of (target, value, data).
+  calls?: WalletTxCall[];
 };
 
 // Collaborative pre-deploy form state — replicated to every peer so
@@ -169,6 +184,10 @@ export type ProposeTxInput = {
   deadline: string;
   nonce: string;
   execHash: string;
+  // Optional: when set, this becomes a batched tx (execBatchTransaction).
+  // target/value/data are still required (as sentinels) so the schema
+  // stays uniform.
+  calls?: WalletTxCall[];
 };
 
 export class WalletState {
@@ -340,6 +359,14 @@ export class WalletState {
     );
     if (existing) return existing;
     const now = Date.now();
+    const normalizedCalls =
+      Array.isArray(input.calls) && input.calls.length > 0
+        ? input.calls.map(c => ({
+            target: c.target.toLowerCase(),
+            value: c.value,
+            data: c.data,
+          }))
+        : undefined;
     const tx: WalletTx = {
       id: randomBytes(8).toString("hex"),
       multisigAddress: input.multisigAddress.toLowerCase(),
@@ -360,6 +387,7 @@ export class WalletState {
       txHash: null,
       createdAt: now,
       updatedAt: now,
+      ...(normalizedCalls ? { calls: normalizedCalls } : {}),
     };
     this.state.txs.unshift(tx);
     if (this.state.txs.length > MAX_TXS) this.state.txs.length = MAX_TXS;

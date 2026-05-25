@@ -1312,21 +1312,15 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
               lineHeight: 1.5,
             }}
           >
-            No transactions to sign on {chainMeta(activeChain).label}.
-            <br />
-            <span style={{ fontSize: 11 }}>
-              When the AI wallet sends a transaction (Send / Swap / etc.), it lands here for signers to approve and
-              execute. Captured txs from in-room dapps (SharedBrowser) land here too. If you sent something and
-              don&apos;t see it, check the browser console for <code>[wallet] iframe → parent message</code> entries to
-              see whether the iframe posted the propose_tx message.
-            </span>
             {txsOnOtherChains.length > 0 ? (
-              <div style={{ marginTop: 8, fontSize: 11, color: "var(--slop-cyan, #3fcfff)" }}>
+              <div style={{ fontSize: 11, color: "var(--slop-cyan, #3fcfff)" }}>
                 {txsOnOtherChains.length} transaction{txsOnOtherChains.length === 1 ? "" : "s"} on{" "}
                 {Array.from(new Set(txsOnOtherChains.map(t => chainMeta(t.chainId).label))).join(", ")} — switch the
                 chain picker above to view.
               </div>
-            ) : null}
+            ) : (
+              <>No pending transactions.</>
+            )}
           </div>
         ) : (
           pendingTxs.map(tx => <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />)

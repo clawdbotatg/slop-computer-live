@@ -3230,6 +3230,7 @@ __metadata:
     eslint-config-next: "npm:^15.2.3"
     eslint-config-prettier: "npm:^10.1.1"
     eslint-plugin-prettier: "npm:^5.2.4"
+    hls.js: "npm:~1.5.17"
     next: "npm:^15.2.8"
     next-nprogress-bar: "npm:^2.3.13"
     next-themes: "npm:^0.3.0"
@@ -9769,6 +9770,13 @@ __metadata:
   version: 0.2.7
   resolution: "heap@npm:0.2.7"
   checksum: 10/6374f6510af79bf47f2cfcee265bf608e6ed2b2694875974d1cb5654ddc98af05347dcf3a42ee9a7de318b576022d6f4d00fe06fa65a4a65c4c60638375eabfe
+  languageName: node
+  linkType: hard
+
+"hls.js@npm:~1.5.17":
+  version: 1.5.20
+  resolution: "hls.js@npm:1.5.20"
+  checksum: 10/1819ce448604d7c7f3b546c67588a04f271b29ed97e3854ef2d1888458cfd5257480eab5bebbd7fa930cdba6aa6d0ecf95f104f82b1d011511923a6750e6f7fb
   languageName: node
   linkType: hard
 

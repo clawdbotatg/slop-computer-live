@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { StreamMonitor } from "~~/components/StreamMonitor";
 import {
   AUDIO_BUS_CHANNEL,
   type AudioBusSnapshot,
@@ -101,7 +102,11 @@ const EqPopupPage = () => {
   return (
     <div
       style={{
+        // Fill the popup window. The stream monitor lives in a
+        // bottom-fixed flex region so it stays put while the EQ
+        // section above scrolls when sources stack up.
         minHeight: "100vh",
+        height: "100vh",
         background: cssVar("bg", "#06030d"),
         color: cssVar("text", "#e8e0ff"),
         fontFamily: "var(--slop-font-display, ui-monospace, monospace)",
@@ -110,182 +115,189 @@ const EqPopupPage = () => {
         display: "flex",
         flexDirection: "column",
         gap: 10,
+        overflow: "hidden",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
-        <h1
-          style={{
-            fontSize: 10,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            margin: 0,
-            color: cssVar("magenta", "#ff3ec9"),
-          }}
-        >
-          EQ
-        </h1>
-        <span
-          style={{
-            fontSize: 8,
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-            color: connected ? cssVar("lime", "#bcff5b") : cssVar("text-muted", "#7878a0"),
-          }}
-          title={connected ? "Receiving snapshots + levels from the desktop tab" : "Waiting for the desktop tab"}
-        >
-          {connected ? "● live" : "○ wait"}
-        </span>
-      </div>
-
-      {/* Master EQ — 6 horizontal sliders stacked. */}
-      <section style={panelStyle}>
-        <div style={sectionHeaderStyle}>
-          <span>master</span>
-          <button type="button" style={resetBtnStyle} onClick={() => post({ type: "reset-eq" })}>
-            rst
-          </button>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingTop: 6 }}>
-          {BAND_LABELS.map((label, i) => {
-            const band = snap?.bands[i];
-            const value = band?.gain ?? 0;
-            return (
-              <div
-                key={label}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "28px 1fr 28px",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 9,
-                    color: cssVar("text-muted", "#7878a0"),
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {label}
-                </span>
-                <input
-                  type="range"
-                  min={-12}
-                  max={12}
-                  step={0.5}
-                  value={value}
-                  disabled={!snap}
-                  onChange={e => post({ type: "set-band-gain", bandIndex: i, db: parseFloat(e.target.value) })}
-                  style={{ width: "100%", accentColor: cssVar("cyan", "#3fcfff"), margin: 0 }}
-                />
-                <span
-                  style={{
-                    fontSize: 8,
-                    color: value === 0 ? cssVar("text-muted", "#7878a0") : cssVar("cyan", "#3fcfff"),
-                    textAlign: "right",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {value > 0 ? "+" : ""}
-                  {value.toFixed(1)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <div
-          style={{
-            marginTop: 8,
-            paddingTop: 6,
-            borderTop: `1px dashed ${cssVar("bevel-light", "rgba(255,255,255,0.18)")}`,
-            display: "grid",
-            gridTemplateColumns: "28px 1fr 28px",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          <span style={{ fontSize: 9, color: cssVar("magenta", "#ff3ec9"), letterSpacing: "0.04em" }}>amp</span>
-          <input
-            type="range"
-            min={0}
-            max={1.5}
-            step={0.01}
-            value={snap?.masterGain ?? 1}
-            disabled={!snap}
-            onChange={e => post({ type: "set-master-gain", gain: parseFloat(e.target.value) })}
-            style={{ width: "100%", accentColor: cssVar("magenta", "#ff3ec9"), margin: 0 }}
-          />
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+          <h1
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              margin: 0,
+              color: cssVar("magenta", "#ff3ec9"),
+            }}
+          >
+            EQ
+          </h1>
           <span
             style={{
               fontSize: 8,
-              color: cssVar("magenta", "#ff3ec9"),
-              textAlign: "right",
-              fontVariantNumeric: "tabular-nums",
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              color: connected ? cssVar("lime", "#bcff5b") : cssVar("text-muted", "#7878a0"),
             }}
+            title={connected ? "Receiving snapshots + levels from the desktop tab" : "Waiting for the desktop tab"}
           >
-            {snap ? `${Math.round(snap.masterGain * 100)}` : "—"}
+            {connected ? "● live" : "○ wait"}
           </span>
         </div>
-      </section>
 
-      {/* Per-source mixer — mute + label + LIVE meter + gain. */}
-      <section style={panelStyle}>
-        <div style={sectionHeaderStyle}>
-          <span>sources</span>
-          <label
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              cursor: "pointer",
-              color: snap?.autoEnabled ? cssVar("lime", "#bcff5b") : cssVar("text-muted", "#7878a0"),
-            }}
-            title={
-              snap?.autoEnabled
-                ? "Auto-level on: source gains continuously match the loudest to a shared target. Drag a slider to take manual control."
-                : "Auto-level off: manual gain control. Toggle to re-engage."
-            }
-          >
-            <input
-              type="checkbox"
-              checked={!!snap?.autoEnabled}
-              disabled={!snap}
-              onChange={e => post({ type: "set-auto-enabled", enabled: e.target.checked })}
-              style={{ accentColor: cssVar("lime", "#bcff5b"), margin: 0 }}
-            />
-            auto
-          </label>
-        </div>
-        {snap && snap.sources.length === 0 ? (
+        {/* Master EQ — 6 horizontal sliders stacked. */}
+        <section style={panelStyle}>
+          <div style={sectionHeaderStyle}>
+            <span>master</span>
+            <button type="button" style={resetBtnStyle} onClick={() => post({ type: "reset-eq" })}>
+              rst
+            </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingTop: 6 }}>
+            {BAND_LABELS.map((label, i) => {
+              const band = snap?.bands[i];
+              const value = band?.gain ?? 0;
+              return (
+                <div
+                  key={label}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "28px 1fr 28px",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: cssVar("text-muted", "#7878a0"),
+                      letterSpacing: "0.04em",
+                    }}
+                  >
+                    {label}
+                  </span>
+                  <input
+                    type="range"
+                    min={-12}
+                    max={12}
+                    step={0.5}
+                    value={value}
+                    disabled={!snap}
+                    onChange={e => post({ type: "set-band-gain", bandIndex: i, db: parseFloat(e.target.value) })}
+                    style={{ width: "100%", accentColor: cssVar("cyan", "#3fcfff"), margin: 0 }}
+                  />
+                  <span
+                    style={{
+                      fontSize: 8,
+                      color: value === 0 ? cssVar("text-muted", "#7878a0") : cssVar("cyan", "#3fcfff"),
+                      textAlign: "right",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {value > 0 ? "+" : ""}
+                    {value.toFixed(1)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
           <div
             style={{
-              padding: "10px 2px",
-              fontSize: 9,
-              color: cssVar("text-muted", "#7878a0"),
-              textAlign: "center",
+              marginTop: 8,
+              paddingTop: 6,
+              borderTop: `1px dashed ${cssVar("bevel-light", "rgba(255,255,255,0.18)")}`,
+              display: "grid",
+              gridTemplateColumns: "28px 1fr 28px",
+              alignItems: "center",
+              gap: 4,
             }}
           >
-            no audio yet
+            <span style={{ fontSize: 9, color: cssVar("magenta", "#ff3ec9"), letterSpacing: "0.04em" }}>amp</span>
+            <input
+              type="range"
+              min={0}
+              max={1.5}
+              step={0.01}
+              value={snap?.masterGain ?? 1}
+              disabled={!snap}
+              onChange={e => post({ type: "set-master-gain", gain: parseFloat(e.target.value) })}
+              style={{ width: "100%", accentColor: cssVar("magenta", "#ff3ec9"), margin: 0 }}
+            />
+            <span
+              style={{
+                fontSize: 8,
+                color: cssVar("magenta", "#ff3ec9"),
+                textAlign: "right",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {snap ? `${Math.round(snap.masterGain * 100)}` : "—"}
+            </span>
           </div>
-        ) : null}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
-          {snap?.sources.map(src => {
-            const rms = levels[src.id] ?? 0;
-            return (
-              <SourceRow
-                key={src.id}
-                id={src.id}
-                label={src.label}
-                gain={src.gain}
-                muted={src.muted}
-                rms={rms}
-                onToggleMute={() => post({ type: "set-source-muted", id: src.id, muted: !src.muted })}
-                onSetGain={g => post({ type: "set-source-gain", id: src.id, gain: g })}
+        </section>
+
+        {/* Per-source mixer — mute + label + LIVE meter + gain. */}
+        <section style={panelStyle}>
+          <div style={sectionHeaderStyle}>
+            <span>sources</span>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                cursor: "pointer",
+                color: snap?.autoEnabled ? cssVar("lime", "#bcff5b") : cssVar("text-muted", "#7878a0"),
+              }}
+              title={
+                snap?.autoEnabled
+                  ? "Auto-level on: source gains continuously match the loudest to a shared target. Drag a slider to take manual control."
+                  : "Auto-level off: manual gain control. Toggle to re-engage."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={!!snap?.autoEnabled}
+                disabled={!snap}
+                onChange={e => post({ type: "set-auto-enabled", enabled: e.target.checked })}
+                style={{ accentColor: cssVar("lime", "#bcff5b"), margin: 0 }}
               />
-            );
-          })}
-        </div>
-      </section>
+              auto
+            </label>
+          </div>
+          {snap && snap.sources.length === 0 ? (
+            <div
+              style={{
+                padding: "10px 2px",
+                fontSize: 9,
+                color: cssVar("text-muted", "#7878a0"),
+                textAlign: "center",
+              }}
+            >
+              no audio yet
+            </div>
+          ) : null}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+            {snap?.sources.map(src => {
+              const rms = levels[src.id] ?? 0;
+              return (
+                <SourceRow
+                  key={src.id}
+                  id={src.id}
+                  label={src.label}
+                  gain={src.gain}
+                  muted={src.muted}
+                  rms={rms}
+                  onToggleMute={() => post({ type: "set-source-muted", id: src.id, muted: !src.muted })}
+                  onSetGain={g => post({ type: "set-source-gain", id: src.id, gain: g })}
+                />
+              );
+            })}
+          </div>
+        </section>
+      </div>
+      {/* Stream monitor — pinned to the bottom outside the scrollable
+          EQ region. Self-contained: pulls the HLS feed and renders
+          its own status pill + stats. */}
+      <StreamMonitor />
     </div>
   );
 };

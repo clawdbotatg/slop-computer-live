@@ -296,6 +296,13 @@ export type WalletTxSignature = {
   receivedAt: number;
 };
 export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
+// One sub-call inside a batched tx (Multisig.execBatchTransaction).
+// Mirrors the relay shape — see packages/relay/src/wallet.ts.
+export type WalletTxCall = {
+  target: string;
+  value: string;
+  data: string;
+};
 export type WalletTx = {
   id: string;
   multisigAddress: string;
@@ -316,6 +323,10 @@ export type WalletTx = {
   txHash: string | null;
   createdAt: number;
   updatedAt: number;
+  // When present + non-empty, this tx is a batched
+  // Multisig.execBatchTransaction call. The top-level target/value/data
+  // are sentinels (self-address, "0", "0x") and ignored at exec time.
+  calls?: WalletTxCall[];
 };
 
 export type ChatMessage = {
@@ -1156,6 +1167,8 @@ export type PeerMeshState = {
     execHash: string;
     source: WalletTx["source"];
     browserId?: string | null;
+    /** When set + non-empty, becomes a batched execBatchTransaction. */
+    calls?: WalletTxCall[];
   }) => void;
   walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => void;
   walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
@@ -2108,6 +2121,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       execHash: string;
       source: WalletTx["source"];
       browserId?: string | null;
+      calls?: WalletTxCall[];
     }) => {
       send({
         type: "wallet_tx_propose",
@@ -2120,6 +2134,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         execHash: req.execHash,
         source: req.source,
         browserId: req.browserId ?? null,
+        ...(req.calls && req.calls.length > 0 ? { calls: req.calls } : {}),
       });
     },
     [send],

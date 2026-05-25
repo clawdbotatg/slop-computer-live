@@ -1890,10 +1890,12 @@ function DesktopInner({ slug }: { slug: string }) {
             ? () => {
                 const target = `/eq?slug=${encodeURIComponent(slug)}`;
                 // Skinny + tall — sits cleanly on the side of a
-                // monitor without blocking the broadcast view. Every
-                // control inside is a horizontal slider so this width
-                // is enough.
-                const features = "popup=yes,width=150,height=600,menubar=no,toolbar=no,location=no,status=no";
+                // monitor without blocking the broadcast view. 760
+                // tall fits 6 EQ bands + master + a few sources +
+                // the stream monitor at the bottom without
+                // scrolling; source list scrolls if it grows past
+                // that.
+                const features = "popup=yes,width=150,height=760,menubar=no,toolbar=no,location=no,status=no";
                 // `noopener` would null out the opener — we need the
                 // reference for the popup to find the right
                 // BroadcastChannel name. Channels are scoped by the
