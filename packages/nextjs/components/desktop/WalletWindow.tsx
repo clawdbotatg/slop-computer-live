@@ -470,7 +470,12 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
       {existing ? (
-        <DeployedSummary wallet={existing} onArchive={() => mesh.walletNewEpisode()} />
+        <DeployedSummary
+          wallet={existing}
+          customNames={mesh.customNames}
+          myAddress={myAddress}
+          onArchive={() => mesh.walletNewEpisode()}
+        />
       ) : (
         <>
           <div>
@@ -663,7 +668,18 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
 // chain grid once the wallet exists.
 // ============================================================================
 
-const DeployedSummary = ({ wallet, onArchive }: { wallet: WalletRecord; onArchive: () => void }) => {
+const DeployedSummary = ({
+  wallet,
+  customNames,
+  myAddress,
+  onArchive,
+}: {
+  wallet: WalletRecord;
+  customNames: Record<string, string>;
+  myAddress: string | null;
+  onArchive: () => void;
+}) => {
+  const myLower = myAddress?.toLowerCase() ?? null;
   return (
     <div
       style={{
@@ -716,6 +732,42 @@ const DeployedSummary = ({ wallet, onArchive }: { wallet: WalletRecord; onArchiv
           .map(k => chainMeta(Number(k)).label)
           .join(", ")}
       </div>
+      <ul
+        style={{
+          listStyle: "none",
+          margin: "2px 0 0",
+          padding: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        {wallet.signers.map(s => {
+          const isMe = myLower && s.address.toLowerCase() === myLower;
+          return (
+            <li
+              key={s.address}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 8px",
+                borderRadius: 4,
+                background: isMe ? "rgba(255,62,201,0.12)" : "rgba(255,255,255,0.025)",
+                border: `1px solid ${isMe ? "rgba(255,62,201,0.28)" : "rgba(255,255,255,0.06)"}`,
+                fontSize: 11,
+                minWidth: 0,
+              }}
+            >
+              <SlopAddress address={s.address} customNames={customNames} />
+              {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+              {s.signerType === "passkey" ? (
+                <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>· passkey</span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 };

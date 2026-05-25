@@ -71,6 +71,13 @@ const AUTO_TARGET_RMS = 0.3;
 // pauses is bounded by the silence gate below; this is the right
 // trade.
 const AUTO_GAIN_MAX = 4.0;
+// Floor on auto-derived gain. -60dB — practically inaudible, but
+// nonzero so postRms / gain stays well-defined when a source's
+// userTargetScale is set to 0 (e.g. music volume slider all the way
+// down). Without this floor, gain → 0 makes the input-estimate
+// recovery divide-by-near-zero, the silence gate latches, and
+// the source can't recover when the user raises volume back up.
+const AUTO_GAIN_MIN = 0.001;
 // Input RMS below this counts as "silence" — we hold the gain in
 // place rather than continuing to lerp toward an absurd target. 0.05
 // catches normal-to-quiet speech (mid 20%+ on the meter bar — the
@@ -489,8 +496,16 @@ class AudioBusImpl {
     // so turning music down actually keeps music down (instead of
     // the auto cranking gain to compensate for the lower input).
     // Cap on max gain prevents noise amplification on quiet mics.
+    //
+    // FLOOR at AUTO_GAIN_MIN, NOT 0. If gain reached exactly 0 the
+    // post-gain analyser RMS would also be 0, the input estimate
+    // (postRms / gain) would collapse, the silence gate would latch,
+    // and we'd never recover when the user raised volume back up.
+    // -60dB is "effectively muted" to the ear but keeps the bus
+    // measuring the source so it can re-engage.
     const effectiveTarget = AUTO_TARGET_RMS * entry.userTargetScale;
-    const targetGain = Math.max(0, Math.min(AUTO_GAIN_MAX, effectiveTarget / entry.peakRms));
+    const rawTarget = effectiveTarget / entry.peakRms;
+    const targetGain = Math.max(AUTO_GAIN_MIN, Math.min(AUTO_GAIN_MAX, rawTarget));
 
     // Asymmetric ramp: fast down (ducks hot signals), slow up
     // (doesn't audibly hunt during pauses). See the const comments
