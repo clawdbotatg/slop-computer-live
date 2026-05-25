@@ -73,6 +73,15 @@ function looksLikeSummaryCard(s: string): boolean {
   }
 }
 
+// LLMs hallucinate the EIP-55 case bits on addresses they generate —
+// they'll happily emit `0x34Aa3F…` when the real checksum is `0x34aA3F…`.
+// viem's getAddress() then throws and the client renders "Invalid address".
+// Lowercasing every 40-hex string in the card sidesteps it: viem accepts
+// all-lowercase and rebuilds the correct checksum at display time.
+function normalizeCardAddresses(s: string): string {
+  return s.replace(/0x[a-fA-F0-9]{40}/g, m => m.toLowerCase());
+}
+
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
   if (!ANTHROPIC_API_KEY) return fallbackSummary(args);
 
@@ -146,10 +155,11 @@ Rules:
       .trim();
     if (!raw) return fallbackSummary(args);
     const candidate = extractJson(raw);
-    if (looksLikeSummaryCard(candidate)) return candidate;
+    if (looksLikeSummaryCard(candidate)) return normalizeCardAddresses(candidate);
     // Model returned prose despite instructions — ship it raw; the
-    // client falls back to plain-text rendering.
-    return raw;
+    // client falls back to plain-text rendering. Still scrub address
+    // case so any inline 0x… in the prose renders cleanly.
+    return normalizeCardAddresses(raw);
   } catch (err) {
     return `(AI summary error: ${String(err).slice(0, 100)}) ${fallbackSummary(args)}`;
   }

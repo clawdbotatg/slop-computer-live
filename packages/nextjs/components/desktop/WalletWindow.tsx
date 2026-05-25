@@ -1610,12 +1610,20 @@ type TxSummaryCard = {
   contract?: { address: string; label: string } | null;
 };
 
+// LLMs hallucinate EIP-55 checksum case (e.g. "0x34Aa3F…" instead of
+// "0x34aA3F…"). viem's getAddress() rejects the bad-case form and the
+// Address component shows "Invalid address". Lowercase any 40-hex
+// address in the card so viem can rebuild the correct checksum at
+// display time. The relay also normalizes new summaries — this layer
+// is for summaries that were cached before the relay fix landed.
+const lowerCaseHexAddrs = (s: string): string => s.replace(/0x[a-fA-F0-9]{40}/g, m => m.toLowerCase());
+
 const parseSummaryCard = (raw: string | null): TxSummaryCard | null => {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed.startsWith("{")) return null;
   try {
-    const o = JSON.parse(trimmed);
+    const o = JSON.parse(lowerCaseHexAddrs(trimmed));
     if (!o || typeof o !== "object") return null;
     if (typeof o.headline !== "string") return null;
     if (!Array.isArray(o.inputs) || !Array.isArray(o.outputs)) return null;
@@ -1971,8 +1979,47 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         flexDirection: "column",
         gap: 8,
         marginBottom: 6,
+        // Relative so the bottom-right [×] remove button can pin to
+        // the card without disturbing the rest of the layout.
+        position: "relative",
       }}
     >
+      {/* Pinned bottom-right escape hatch — any signer can drop a
+       *  pending tx without waiting for the stuck-executing timeout
+       *  to surface the Try-again / Remove pair. Hidden for executed/
+       *  failed txs (those are history) and for stuck-executing
+       *  (handled by the inline Try-again / Remove pair below). */}
+      {tx.status === "pending" ? (
+        <button
+          type="button"
+          onClick={onRemoveTx}
+          title="Drop this transaction from the queue."
+          aria-label="Remove transaction"
+          style={{
+            position: "absolute",
+            right: 6,
+            bottom: 6,
+            width: 22,
+            height: 22,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "transparent",
+            border: "1px solid rgba(255,118,118,0.35)",
+            color: "#ff9a9a",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontSize: 13,
+            lineHeight: 1,
+            opacity: 0.6,
+            transition: "opacity 120ms",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+          onMouseLeave={e => (e.currentTarget.style.opacity = "0.6")}
+        >
+          ×
+        </button>
+      ) : null}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <span
           style={{
