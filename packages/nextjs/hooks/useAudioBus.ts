@@ -32,9 +32,15 @@ export function useAudioBusOwner(enabled: boolean): void {
     let unsub: (() => void) | null = null;
     let levelsTimer: ReturnType<typeof setInterval> | null = null;
     if (channel) {
-      // Stream post-gain RMS for every source ~15Hz. Cheap (one
-      // analyser read + scalar math per source) and gives the popup
-      // smooth meter bars without flooding the channel.
+      // Stream post-gain RMS for every source ~10Hz. The auto-level
+      // tick lives inside readLevels (one analyser read + scalar math
+      // per source) — at 10Hz the whole loop is ~5k ops + 1
+      // postMessage, well under any plausible video-codec contention.
+      // Higher rates (15-20Hz) looked smoother on the meter but
+      // weren't worth the additional main-thread work on a constrained
+      // spectator/streaming box. Re-tuning here: the auto lerp
+      // constants in audioBus.ts are baked at 10Hz; bump both in
+      // lockstep if changing.
       levelsTimer = setInterval(() => {
         const levels = bus.readLevels();
         const msg: BusOutboundMessage = { type: "levels", levels };
@@ -43,7 +49,7 @@ export function useAudioBusOwner(enabled: boolean): void {
         } catch {
           /* channel closed */
         }
-      }, 66);
+      }, 100);
       // Push snapshots to the popup on every mutation. subscribe()
       // fires once immediately so the popup gets initial state if
       // we connect after it asked.

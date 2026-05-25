@@ -63,29 +63,35 @@ const STORAGE_KEY = "slop-audio-bus-eq-v1";
 // "comfortable speech" — high enough to be clearly audible, low enough
 // that a louder source can headroom past it without clipping.
 const AUTO_TARGET_RMS = 0.3;
-// Don't auto-adjust until a source has hit at least this RMS. Without
-// this gate, a silent source gets its gain pinned to the max (4×) and
-// then explosively snaps down the moment real audio starts. Threshold
-// is roughly the floor of room noise on a half-decent mic.
-const AUTO_NOISE_FLOOR = 0.02;
-// Peak decay per tick (15Hz). 0.992 ≈ -0.7 dB/sec. We only decay when
-// the input is AUDIBLE but below the current peak — silent ticks hold
-// the peak in place. Without that hold, a few seconds of silence
-// would let the peak drift toward zero, sending `target/peak` to the
-// 4× cap and audibly cranking the user up.
-const AUTO_PEAK_DECAY = 0.992;
+// Hard cap on per-source gain. 2× (+6dB) is the most we're willing to
+// amplify ANY source. The temptation is to allow 4× so quiet mics get
+// pulled all the way to target — but every dB of boost also boosts
+// noise, and 4× turned background room hum into a constant whoosh.
+// 2× keeps SNR sane; quiet speakers stay a touch quiet but aren't
+// drowned in their own room noise.
+const AUTO_GAIN_MAX = 2.0;
+// Input RMS below this counts as "silence" — we hold the gain in
+// place rather than continuing to lerp toward an absurd target. 0.04
+// is roughly room ambience on a typical condenser; below this no
+// reasonable mic + voice combination is producing actual speech.
+const AUTO_NOISE_FLOOR = 0.04;
+// Peak decay per tick (10Hz). 0.99 ≈ -0.9 dB/sec when we DO decay —
+// but most of the time we don't, because of the silence-hold below.
+const AUTO_PEAK_DECAY = 0.99;
 // Asymmetric ramp toward the auto-derived target. Down = ducking a
 // hot signal; we want that fast so a loud burst doesn't blow past
 // 0dBFS. Up = restoring a quiet signal; we want that *slow* so a
 // pause between sentences doesn't audibly crank the gain. Numbers
-// are lerp factors per 66ms tick.
+// are lerp factors per 100ms tick (10Hz; see BUS_TICK_HZ in
+// useAudioBus.ts).
 //
-//   DOWN ≈ 0.12 → settles in ~0.4s
-//   UP   ≈ 0.008 → settles in ~7s
+//   DOWN ≈ 0.18 → settles in ~0.4s
+//   UP   ≈ 0.012 → settles in ~7s
 //
-// Tweak in pairs — the asymmetry is the point.
-const AUTO_GAIN_LERP_DOWN = 0.12;
-const AUTO_GAIN_LERP_UP = 0.008;
+// Tweak in pairs — the asymmetry is the point. Re-tune if the tick
+// rate changes; these are baked at 10Hz.
+const AUTO_GAIN_LERP_DOWN = 0.18;
+const AUTO_GAIN_LERP_UP = 0.012;
 // Minimum change in desiredGain to bother emitting a snapshot. The
 // auto loop fires 15× a second; without this throttle the popup is
 // re-rendering for sub-percent gain wiggles. 0.02 ≈ 2 percentage
@@ -422,19 +428,29 @@ class AudioBusImpl {
     // RMS which leaves the gain pinned at its current value.
     const currentGain = Math.max(0.001, entry.gainNode.gain.value);
     const inputRms = postGainRms / currentGain;
-    // Peak tracking with a silence-hold. Three cases:
-    //  - input above peak: peak jumps up instantly (catch fast attacks)
-    //  - audible-but-below-peak: peak decays slowly toward input
-    //  - below noise floor (silence): peak HELD as-is
-    // That hold is the fix for "going quiet cranks the gain to the
-    // moon" — decaying peak during silence sends target/peak → cap.
+
+    // HARD silence gate. When the source is below the noise floor we
+    // do NOTHING — no peak update, no gain change. Previously the
+    // gain kept slowly lerping toward `target/peak` during silence,
+    // which over a few seconds cranks every quiet mic up to the cap
+    // and turns room hum into a constant whoosh. Silence = freeze.
+    if (inputRms < AUTO_NOISE_FLOOR) return false;
+
+    // Audible — update the peak. Jump up instantly on a louder
+    // sample; decay slowly toward the current sample when below peak.
     if (inputRms > entry.peakRms) {
       entry.peakRms = inputRms;
-    } else if (inputRms > AUTO_NOISE_FLOOR) {
+    } else {
       entry.peakRms *= AUTO_PEAK_DECAY;
     }
     if (entry.peakRms < AUTO_NOISE_FLOOR) return false;
-    const targetGain = Math.max(0, Math.min(4, AUTO_TARGET_RMS / entry.peakRms));
+
+    // 2× hard cap. We *could* boost a really quiet mic 4× to hit
+    // target, but every dB of boost is also a dB of background noise
+    // — capping at 2× keeps SNR sane. Quiet speakers stay slightly
+    // quiet; that's the right trade-off.
+    const targetGain = Math.max(0, Math.min(AUTO_GAIN_MAX, AUTO_TARGET_RMS / entry.peakRms));
+
     // Asymmetric ramp: fast down (ducks hot signals), slow up
     // (doesn't audibly hunt during pauses). See the const comments
     // for the time-constants.
