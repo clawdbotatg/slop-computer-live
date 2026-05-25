@@ -28,6 +28,7 @@ import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NewsWindow } from "~~/components/desktop/NewsWindow";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
+import { PongWindow } from "~~/components/desktop/PongWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
@@ -2442,6 +2443,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={420}
             >
               <ChessWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="pong"
+              title="PONG"
+              defaultSlot={{ x: 180, y: 100, width: 560, height: 420 }}
+              minWidth={420}
+              minHeight={320}
+            >
+              <PongWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

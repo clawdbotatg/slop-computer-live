@@ -647,14 +647,24 @@ const AdminPage: NextPage = () => {
     }
   };
 
-  // Two-stage room delete: clicking "Delete" opens a modal that requires
-  // the host to type the slug exactly before the destructive request
-  // fires. The server re-validates the typed slug to defend against an
-  // accidental click in a misconfigured client.
+  // Two-stage room delete/clear: clicking "Delete" or "Clear" opens a
+  // modal that requires the host to type the slug exactly before the
+  // destructive request fires. The server re-validates the typed slug
+  // to defend against an accidental click in a misconfigured client.
+  // "Clear" hits a different endpoint that allows DEFAULT_SLUG (the
+  // room respawns empty on next access).
+  type PendingAction = "delete" | "clear";
+  const [pendingAction, setPendingAction] = useState<PendingAction>("delete");
   const [deletePendingSlug, setDeletePendingSlug] = useState<string | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState<string>("");
   const [deleteBusy, setDeleteBusy] = useState(false);
   const openDeleteModal = (slug: string) => {
+    setPendingAction("delete");
+    setDeletePendingSlug(slug);
+    setDeleteConfirmText("");
+  };
+  const openClearModal = (slug: string) => {
+    setPendingAction("clear");
     setDeletePendingSlug(slug);
     setDeleteConfirmText("");
   };
@@ -683,6 +693,31 @@ const AdminPage: NextPage = () => {
       setDeletePendingSlug(null);
       setDeleteConfirmText("");
       setCopyStatus(`/${slug} deleted ✓`);
+      void fetchRooms();
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+  const clearRoom = async (slug: string) => {
+    setCopyStatus("");
+    setDeleteBusy(true);
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/rooms/${encodeURIComponent(slug)}/clear`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: slug }),
+      });
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) {
+        setCopyStatus(`clear failed: ${data?.error ?? res.statusText}`);
+        return;
+      }
+      setDeletePendingSlug(null);
+      setDeleteConfirmText("");
+      setCopyStatus(`/${slug} cleared ✓`);
       void fetchRooms();
     } catch (e) {
       setCopyStatus((e as Error).message || "network error");
@@ -1052,7 +1087,26 @@ const AdminPage: NextPage = () => {
                 >
                   [schedule]
                 </a>
-                {r.slug === DEFAULT_SLUG ? null : (
+                {r.slug === DEFAULT_SLUG ? (
+                  <button
+                    type="button"
+                    onClick={() => openClearModal(r.slug)}
+                    className="slop-link"
+                    title="wipe this room's storage and respawn it empty"
+                    style={{
+                      background: "transparent",
+                      border: 0,
+                      padding: 0,
+                      margin: 0,
+                      fontFamily: "var(--slop-font-display)",
+                      textTransform: "lowercase",
+                      cursor: "pointer",
+                      color: "var(--slop-accent-warn, #c33)",
+                    }}
+                  >
+                    [clear]
+                  </button>
+                ) : (
                   <button
                     type="button"
                     onClick={() => openDeleteModal(r.slug)}
@@ -1177,11 +1231,20 @@ const AdminPage: NextPage = () => {
                   color: "var(--slop-magenta, #ff3ec9)",
                 }}
               >
-                Delete /{deletePendingSlug}?
+                {pendingAction === "clear" ? "Clear" : "Delete"} /{deletePendingSlug}?
               </h2>
               <p style={{ fontSize: 13, margin: "10px 0", color: "var(--slop-text-muted)" }}>
-                This <strong>permanently</strong> kicks every live peer, tells browser-host to drop its context, and
-                removes <code>.slop-data/rooms/{deletePendingSlug}</code> from disk. There is no undo.
+                {pendingAction === "clear" ? (
+                  <>
+                    This kicks every live peer, tells browser-host to drop its context, and removes{" "}
+                    <code>.slop-data/rooms/{deletePendingSlug}</code> from disk. The room respawns empty on next visit.
+                  </>
+                ) : (
+                  <>
+                    This <strong>permanently</strong> kicks every live peer, tells browser-host to drop its context, and
+                    removes <code>.slop-data/rooms/{deletePendingSlug}</code> from disk. There is no undo.
+                  </>
+                )}
               </p>
               <p style={{ fontSize: 12, margin: "8px 0 6px" }}>
                 Type <code>{deletePendingSlug}</code> below to confirm:
@@ -1199,7 +1262,9 @@ const AdminPage: NextPage = () => {
                   Cancel
                 </Button>
                 <Button
-                  onClick={() => void deleteRoom(deletePendingSlug)}
+                  onClick={() =>
+                    void (pendingAction === "clear" ? clearRoom(deletePendingSlug) : deleteRoom(deletePendingSlug))
+                  }
                   disabled={deleteBusy || deleteConfirmText !== deletePendingSlug}
                   style={
                     deleteConfirmText === deletePendingSlug && !deleteBusy
@@ -1207,7 +1272,13 @@ const AdminPage: NextPage = () => {
                       : undefined
                   }
                 >
-                  {deleteBusy ? "Deleting…" : "Delete forever"}
+                  {deleteBusy
+                    ? pendingAction === "clear"
+                      ? "Clearing…"
+                      : "Deleting…"
+                    : pendingAction === "clear"
+                      ? "Clear room"
+                      : "Delete forever"}
                 </Button>
               </div>
             </Bevel>

@@ -23,6 +23,7 @@ import { JAMENDO_DIR, JamendoRoomState } from "./jamendo.js";
 import { MusicState } from "./music-state.js";
 import { NoteList } from "./notes.js";
 import { Participants } from "./participants.js";
+import { Pong } from "./pong.js";
 import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
 import { UIState } from "./ui-state.js";
@@ -241,6 +242,7 @@ export class Room {
   readonly browsers: BrowserRegistry;
   readonly desktop: DesktopState;
   readonly music = new MusicState();
+  readonly pong = new Pong();
   readonly research: ResearchState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
@@ -328,6 +330,7 @@ export class Room {
       this.broadcast({ type: "transcript_seg", seg });
     });
     this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
+    this.pong.subscribe(state => this.broadcast({ type: "pong_state", state }));
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
     );
@@ -384,6 +387,13 @@ export class Room {
     // peer's next live_caption_state will repopulate the entry.
     const speakerKey = liveCaptionKey(peer);
     if (speakerKey) this.liveCaptionAlive.delete(speakerKey);
+    // Free any pong seat held by the disconnecting peer so the lobby
+    // reopens instead of locking out the next joiner. Same key scheme
+    // the chess + cursors handlers use: address > handle > peerId.
+    if (peer) {
+      const peerOwnerKey = (peer.address ?? peer.handle ?? peer.id).toLowerCase();
+      this.pong.release(peerOwnerKey);
+    }
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
     // everyone, so the dashed rectangle disappears for surviving peers.

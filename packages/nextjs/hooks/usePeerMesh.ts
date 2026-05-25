@@ -609,6 +609,36 @@ export type QrState = {
 
 const DEFAULT_QR_STATE: QrState = { text: "", logoDataUrl: null };
 
+// --- Pong --------------------------------------------------------------
+// Two-seat multiplayer pong. Mirrors `packages/relay/src/pong.ts` —
+// server is authoritative for ball + score, clients send only paddle Y.
+export type PongSide = "left" | "right";
+export type PongSeat = { ownerKey: string; handle: string };
+export type PongStatus = "waiting" | "serving" | "playing" | "ended";
+export type PongState = {
+  seats: { left: PongSeat | null; right: PongSeat | null };
+  paddles: { left: number; right: number };
+  ball: { x: number; y: number; vx: number; vy: number };
+  score: { left: number; right: number };
+  status: PongStatus;
+  serveAt: number;
+  lastScorer: PongSide | null;
+  winner: PongSide | null;
+  field: { w: number; h: number; paddleH: number; paddleW: number; paddleInset: number; ballR: number };
+};
+
+const DEFAULT_PONG_STATE: PongState = {
+  seats: { left: null, right: null },
+  paddles: { left: 250, right: 250 },
+  ball: { x: 400, y: 250, vx: 0, vy: 0 },
+  score: { left: 0, right: 0 },
+  status: "waiting",
+  serveAt: 0,
+  lastScorer: null,
+  winner: null,
+  field: { w: 800, h: 500, paddleH: 90, paddleW: 12, paddleInset: 24, ballR: 8 },
+};
+
 // --- File-preview shared state ---------------------------------------------
 // Per-file preview UI state shared across the room, indexed by fileId.
 // Carries two independent kinds (a file is only ever one):
@@ -941,6 +971,25 @@ export type PeerMeshState = {
    *  Refused server-side while a job is in flight (avoids orphaning a
    *  running AI call). */
   researchReset: () => void;
+  /** Server-authoritative pong snapshot. Ball + scores update at 30Hz
+   *  when both seats are filled; paddle positions reflect the last
+   *  `pong_paddle` from each side. */
+  pongState: PongState;
+  /** Side this peer is sitting in, or null when not seated. Updated
+   *  optimistically on claim/release plus reconciled from `pong_seat`
+   *  replies + the seats map in pongState. */
+  myPongSeat: PongSide | null;
+  /** Auto-assign the first empty seat (or no-op if both are full /
+   *  caller already sits). The server replies with `pong_seat`. */
+  pongClaim: () => void;
+  /** Vacate my seat. */
+  pongRelease: () => void;
+  /** Send paddle Y to the server. Clamped server-side; ignored if not
+   *  seated. Call at ~20-30Hz from the input loop. */
+  pongPaddle: (y: number) => void;
+  /** Reset scores + restart the match. Server refuses if caller is not
+   *  seated. The "Play Again" button at end-of-match hits this. */
+  pongReset: () => void;
   /** Shared QR-window state (text + center logo). Every peer's QR
    *  renders this. Last-writer-wins. */
   qrState: QrState;
@@ -1132,6 +1181,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
+  const [pongState, setPongStateLocal] = useState<PongState>(DEFAULT_PONG_STATE);
+  const [myPongSeat, setMyPongSeat] = useState<PongSide | null>(null);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
   const [scrollSync, setScrollSyncLocal] = useState<Record<string, ScrollSnapshot>>({});
   const [uiState, setUIStateLocal] = useState<Record<string, unknown>>({});
@@ -1510,6 +1561,40 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   }, [send]);
   const chessCloseGame = useCallback(() => {
     send({ type: "chess_close_game" });
+  }, [send]);
+
+  // Reconcile myPongSeat against the authoritative seats map. Catches
+  // reconnects where the WS replies `pong_state` before we ever asked
+  // for our own seat, and the "I refreshed, seat already empty" case.
+  useEffect(() => {
+    const myKey = (self?.address ?? self?.handle ?? "").toLowerCase();
+    if (!myKey) {
+      if (myPongSeat !== null) setMyPongSeat(null);
+      return;
+    }
+    let detected: PongSide | null = null;
+    if (pongState.seats.left?.ownerKey === myKey) detected = "left";
+    else if (pongState.seats.right?.ownerKey === myKey) detected = "right";
+    if (detected !== myPongSeat) setMyPongSeat(detected);
+  }, [pongState.seats, self?.address, self?.handle, myPongSeat]);
+
+  const pongClaim = useCallback(() => {
+    send({ type: "pong_claim" });
+  }, [send]);
+  const pongRelease = useCallback(() => {
+    // Optimistic: clear local seat immediately. The server's `pong_seat`
+    // reply confirms; the next `pong_state` snapshot reconciles.
+    setMyPongSeat(null);
+    send({ type: "pong_release" });
+  }, [send]);
+  const pongPaddle = useCallback(
+    (y: number) => {
+      send({ type: "pong_paddle", y });
+    },
+    [send],
+  );
+  const pongReset = useCallback(() => {
+    send({ type: "pong_reset" });
   }, [send]);
 
   const sendClick = useCallback(
@@ -2222,6 +2307,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.qrState && typeof msg.qrState === "object") {
             setQrStateLocal(msg.qrState as QrState);
           }
+          if (msg.pongState && typeof msg.pongState === "object") {
+            setPongStateLocal(msg.pongState as PongState);
+          }
           if (msg.walletChat && typeof msg.walletChat === "object") {
             setWalletChatLocal(msg.walletChat as WalletChat);
           }
@@ -2472,6 +2560,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "qr_state" && msg.state && typeof msg.state === "object") {
           setQrStateLocal(msg.state as QrState);
+          return;
+        }
+
+        if (msg.type === "pong_state" && msg.state && typeof msg.state === "object") {
+          setPongStateLocal(msg.state as PongState);
+          return;
+        }
+        if (msg.type === "pong_seat") {
+          const side = msg.side === "left" || msg.side === "right" ? (msg.side as PongSide) : null;
+          setMyPongSeat(side);
           return;
         }
 
@@ -2951,6 +3049,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     researchReset,
     qrState,
     setQrPatch,
+    pongState,
+    myPongSeat,
+    pongClaim,
+    pongRelease,
+    pongPaddle,
+    pongReset,
     previewMedia,
     setPreviewMedia,
     scrollSync,

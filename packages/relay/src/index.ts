@@ -417,6 +417,7 @@ type AppEntry = {
     | "screen"
     | "music"
     | "chess"
+    | "pong"
     | "qr"
     | "todo"
     | "notes"
@@ -474,6 +475,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Chess",
     icon: "/icons/chess.png",
     kind: "chess",
+  },
+  {
+    id: "pong",
+    label: "Pong",
+    icon: "/icons/pong.png",
+    kind: "pong",
   },
   {
     id: "browser",
@@ -735,6 +742,7 @@ app.get("/v1/state", async (req, reply) => {
     cardTitle: readCardTitle(roomFromReq(req).id),
     researchState: roomFromReq(req).research.current().state,
     qrState: roomFromReq(req).qr.current().state,
+    pongState: roomFromReq(req).pong.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
     scrollSync: roomFromReq(req).scrollSync.all(),
     uiState: roomFromReq(req).uiState.all(),
@@ -2176,6 +2184,74 @@ app.post("/v1/chess/close", async (req, reply) => {
   const result = room.chess.clearGame();
   broadcastChessState(room, null);
   return { ok: true, aborted: result.aborted };
+});
+
+// =============================================================================
+// /v1/pong — two-seat multiplayer Pong (per room)
+// -----------------------------------------------------------------------------
+// Server-authoritative ball; clients send only paddle Y. REST mirrors the
+// WS messages for agent control: claim/release a seat, move the paddle,
+// reset the score. The seat is stable-keyed by ownerKey so a peer can
+// reconnect without losing their slot — but a disconnect frees it after
+// the WS close handler runs in room.ts.
+// =============================================================================
+
+function callerOwnerKeyFromReq(a: { session: { address: string | null; handle: string | null } }): string {
+  return (a.session.address ?? a.session.handle ?? "").toLowerCase();
+}
+
+function callerHandleFromReq(a: { session: { address: string | null; handle: string | null } }): string {
+  return a.session.handle ?? (a.session.address ? a.session.address.slice(0, 8) : "guest");
+}
+
+app.get("/v1/pong", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return roomFromReq(req).pong.current();
+});
+
+app.post("/v1/pong/claim", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const side = roomFromReq(req).pong.claim(callerKey, callerHandleFromReq(a));
+  if (!side) return reply.code(409).send({ error: "both-seats-full" });
+  return { ok: true, side };
+});
+
+app.post("/v1/pong/release", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const released = roomFromReq(req).pong.release(callerKey);
+  return { ok: true, released };
+});
+
+type PongPaddleBody = { y?: unknown };
+app.post<{ Body: PongPaddleBody }>("/v1/pong/paddle", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const b = (req.body ?? {}) as PongPaddleBody;
+  if (typeof b.y !== "number" || !Number.isFinite(b.y)) {
+    return reply.code(400).send({ error: "bad-y" });
+  }
+  roomFromReq(req).pong.setPaddle(callerKey, b.y);
+  return { ok: true };
+});
+
+app.post("/v1/pong/reset", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const ok = roomFromReq(req).pong.reset(callerKey);
+  if (!ok) return reply.code(403).send({ error: "not-seated" });
+  return { ok: true };
 });
 
 // =============================================================================
@@ -4097,6 +4173,49 @@ app.delete<{ Params: { slug: string }; Body: RoomDeleteBody }>(
   },
 );
 
+// Host-only: wipe a room's storage and let it respawn empty. Same kick +
+// hibernate + browser-host close + on-disk rm as DELETE /admin/rooms/:slug,
+// but does NOT refuse DEFAULT_SLUG or HOST_WHITELIST slugs — those rooms
+// auto-recreate on next access, which is exactly the point of "clear".
+app.post<{ Params: { slug: string }; Body: RoomDeleteBody }>(
+  "/admin/rooms/:slug/clear",
+  async (req, reply) => {
+    const auth = requireHost(req);
+    if (!auth.ok) return reply.code(401).send({ error: auth.error });
+    const slug = req.params.slug;
+    if (!isValidSlug(slug)) return reply.code(400).send({ error: "bad-slug" });
+    const body = (req.body ?? {}) as RoomDeleteBody;
+    const confirm = typeof body.confirm === "string" ? body.confirm : "";
+    if (confirm !== slug) {
+      return reply.code(400).send({ error: "confirm-must-match-slug" });
+    }
+    const room = getRoom(slug);
+    if (room) {
+      for (const peer of room.allPeers()) {
+        try {
+          send(peer.ws, { type: "kicked" });
+          peer.ws.close(4404, "room-cleared");
+        } catch {
+          /* ignore */
+        }
+      }
+      room.clearPeers();
+      hibernateRoom(slug);
+    }
+    void notifyBrowserHostHibernate(slug);
+    const fs = await import("node:fs");
+    const dir = `./.slop-data/rooms/${slug}`;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      app.log.warn({ slug, err: (err as Error).message }, "room dir rm failed");
+      return reply.code(500).send({ error: "rm-failed" });
+    }
+    app.log.info({ slug, host: auth.address }, "room cleared");
+    return { ok: true, slug };
+  },
+);
+
 // Host-only "nuke the session wallet" — wipes current + history + tx queue.
 // Same effect as `rm .slop-data/wallet.json` but doesn't require shell access.
 // Used by the admin page's "Reset session wallet" button so the host can
@@ -4375,6 +4494,7 @@ app.register(async function signalRoutes(fastify) {
       cardTitle: readCardTitle(room.id),
       researchState: room.research.current().state,
       qrState: room.qr.current().state,
+      pongState: room.pong.current().state,
       previewMedia: room.previewMedia.all(),
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
@@ -4872,6 +4992,41 @@ app.register(async function signalRoutes(fastify) {
           // as the rest of the singleton windows.
           room.chess.clearGame();
           broadcastChessState(room, null);
+          return;
+        }
+        case "pong_claim": {
+          // Auto-assign the first empty seat. Idempotent — if the caller
+          // already sits in a seat, returns that side. Returns null when
+          // both seats are full; clients show "game in progress" then.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const handle = info.handle ?? (info.address ? info.address.slice(0, 8) : "guest");
+          const side = room.pong.claim(callerKey, handle);
+          send(socket, { type: "pong_seat", side });
+          return;
+        }
+        case "pong_release": {
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          room.pong.release(callerKey);
+          send(socket, { type: "pong_seat", side: null });
+          return;
+        }
+        case "pong_paddle": {
+          // High-freq paddle position update. Server clamps to the field
+          // bounds and silently ignores non-seated callers.
+          if (typeof msg.y !== "number" || !Number.isFinite(msg.y)) {
+            return send(socket, { type: "error", error: "bad_pong_paddle" });
+          }
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          room.pong.setPaddle(callerKey, msg.y as number);
+          return;
+        }
+        case "pong_reset": {
+          // Only a seated player can reset (otherwise spectators could
+          // grief an active match). The "play again" button after a win
+          // hits this.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.pong.reset(callerKey);
+          if (!ok) return send(socket, { type: "error", error: "not-seated" });
           return;
         }
         case "tx_request": {
