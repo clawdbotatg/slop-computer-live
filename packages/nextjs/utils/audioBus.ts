@@ -68,15 +68,24 @@ const AUTO_TARGET_RMS = 0.3;
 // then explosively snaps down the moment real audio starts. Threshold
 // is roughly the floor of room noise on a half-decent mic.
 const AUTO_NOISE_FLOOR = 0.02;
-// Peak decay per tick (15Hz). 0.985 ≈ -1.3 dB/sec — slow enough that
-// a sentence with internal pauses keeps a stable peak, fast enough
-// that going from a loud source to a quiet one re-converges within a
-// few seconds.
-const AUTO_PEAK_DECAY = 0.985;
-// Smoothing for the gain ramp toward the auto-derived target. Lerp
-// factor at 15Hz; 0.04 settles in ~1.5s. Larger = snappier but
-// audibly "pumpy"; smaller = smoother but lags real changes.
-const AUTO_GAIN_LERP = 0.04;
+// Peak decay per tick (15Hz). 0.992 ≈ -0.7 dB/sec. We only decay when
+// the input is AUDIBLE but below the current peak — silent ticks hold
+// the peak in place. Without that hold, a few seconds of silence
+// would let the peak drift toward zero, sending `target/peak` to the
+// 4× cap and audibly cranking the user up.
+const AUTO_PEAK_DECAY = 0.992;
+// Asymmetric ramp toward the auto-derived target. Down = ducking a
+// hot signal; we want that fast so a loud burst doesn't blow past
+// 0dBFS. Up = restoring a quiet signal; we want that *slow* so a
+// pause between sentences doesn't audibly crank the gain. Numbers
+// are lerp factors per 66ms tick.
+//
+//   DOWN ≈ 0.12 → settles in ~0.4s
+//   UP   ≈ 0.008 → settles in ~7s
+//
+// Tweak in pairs — the asymmetry is the point.
+const AUTO_GAIN_LERP_DOWN = 0.12;
+const AUTO_GAIN_LERP_UP = 0.008;
 // Minimum change in desiredGain to bother emitting a snapshot. The
 // auto loop fires 15× a second; without this throttle the popup is
 // re-rendering for sub-percent gain wiggles. 0.02 ≈ 2 percentage
@@ -413,12 +422,24 @@ class AudioBusImpl {
     // RMS which leaves the gain pinned at its current value.
     const currentGain = Math.max(0.001, entry.gainNode.gain.value);
     const inputRms = postGainRms / currentGain;
-    entry.peakRms = Math.max(entry.peakRms * AUTO_PEAK_DECAY, inputRms);
+    // Peak tracking with a silence-hold. Three cases:
+    //  - input above peak: peak jumps up instantly (catch fast attacks)
+    //  - audible-but-below-peak: peak decays slowly toward input
+    //  - below noise floor (silence): peak HELD as-is
+    // That hold is the fix for "going quiet cranks the gain to the
+    // moon" — decaying peak during silence sends target/peak → cap.
+    if (inputRms > entry.peakRms) {
+      entry.peakRms = inputRms;
+    } else if (inputRms > AUTO_NOISE_FLOOR) {
+      entry.peakRms *= AUTO_PEAK_DECAY;
+    }
     if (entry.peakRms < AUTO_NOISE_FLOOR) return false;
     const targetGain = Math.max(0, Math.min(4, AUTO_TARGET_RMS / entry.peakRms));
-    // One-pole low-pass on the gain to avoid pumping. At 15Hz with
-    // AUTO_GAIN_LERP=0.04 this settles in roughly a second.
-    const newGain = entry.desiredGain + (targetGain - entry.desiredGain) * AUTO_GAIN_LERP;
+    // Asymmetric ramp: fast down (ducks hot signals), slow up
+    // (doesn't audibly hunt during pauses). See the const comments
+    // for the time-constants.
+    const lerp = targetGain < entry.desiredGain ? AUTO_GAIN_LERP_DOWN : AUTO_GAIN_LERP_UP;
+    const newGain = entry.desiredGain + (targetGain - entry.desiredGain) * lerp;
     this._setSourceGainInternal(entry.id, newGain);
     if (Math.abs(newGain - entry.lastEmittedGain) > AUTO_SNAPSHOT_EPSILON) {
       entry.lastEmittedGain = newGain;
