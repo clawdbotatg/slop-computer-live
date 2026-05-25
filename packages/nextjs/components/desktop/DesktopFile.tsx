@@ -91,6 +91,9 @@ export const DesktopFile = ({
   const [overTrash, setOverTrash] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const movedRef = useRef(false);
+  // iPad Safari doesn't reliably fire `dblclick` for touch double-taps,
+  // so we count two `click`s within 400ms ourselves.
+  const lastTapRef = useRef<number>(0);
 
   // Render an inline thumbnail when the file is a small image.
   useEffect(() => {
@@ -160,8 +163,15 @@ export const DesktopFile = ({
       onPointerCancel={endDrag}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => {
-        if (!movedRef.current) onPreview();
+      onClick={() => {
+        if (movedRef.current) return;
+        const now = Date.now();
+        if (now - lastTapRef.current < 400) {
+          lastTapRef.current = 0;
+          onPreview();
+        } else {
+          lastTapRef.current = now;
+        }
       }}
       data-grab="true"
       style={{

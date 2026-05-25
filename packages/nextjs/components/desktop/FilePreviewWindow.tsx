@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAudioBusElement } from "~~/hooks/useAudioBus";
 import type { FileEntry, PeerMeshState, PreviewMediaSnapshot } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
@@ -24,6 +25,9 @@ const MAX_INLINE_TEXT_BYTES = 1_000_000; // 1 MB cap for text fetch
 export type FilePreviewWindowProps = {
   file: FileEntry;
   mesh: PeerMeshState;
+  /** God-mode only: route preview audio/video through the shared
+   *  AudioBus so the EQ popup can mix it with peer voices + music. */
+  audioBusEnabled?: boolean;
 };
 
 // Drift tolerance: only force a seek when the local element has
@@ -56,15 +60,25 @@ const SyncedMedia = ({
   src,
   kind,
   mesh,
+  audioBusEnabled = false,
+  audioBusLabel = "file preview",
 }: {
   fileId: string;
   src: string;
   kind: "audio" | "video";
   mesh: PeerMeshState;
+  /** God-mode only: route this clip's audio through the bus. */
+  audioBusEnabled?: boolean;
+  audioBusLabel?: string;
 }) => {
   const elRef = useRef<HTMLMediaElement | null>(null);
   const applyingServerRef = useRef(false);
   const shared = mesh.previewMedia[fileId] ?? null;
+
+  // God-mode only — route this clip's playback through the shared
+  // AudioBus so the EQ popup can mix it. Applies to both <audio> and
+  // <video> elements (movies have audio too).
+  useAudioBusElement(elRef, `preview-${fileId}`, audioBusLabel, audioBusEnabled);
 
   // Push shared state → local element.
   useEffect(() => {
@@ -146,6 +160,12 @@ const SyncedMedia = ({
     };
   }, [fileId, mesh]);
 
+  // Web Audio's createMediaElementSource silently outputs zero for
+  // tainted (cross-origin without crossOrigin) elements, so we have to
+  // opt the element into CORS when routing through the bus. Only set
+  // it when we actually need it — non-god-mode sessions stick with the
+  // current no-crossOrigin path (works even if a gateway lacks CORS).
+  const crossOriginAttr = audioBusEnabled ? "anonymous" : undefined;
   if (kind === "video") {
     return (
       <video
@@ -154,6 +174,7 @@ const SyncedMedia = ({
         }}
         src={src}
         controls
+        crossOrigin={crossOriginAttr}
         style={{ maxWidth: "100%", maxHeight: "100%", display: "block", margin: "auto" }}
       />
     );
@@ -165,6 +186,7 @@ const SyncedMedia = ({
       }}
       src={src}
       controls
+      crossOrigin={crossOriginAttr}
       style={{ width: "100%", maxWidth: 360 }}
     />
   );
@@ -392,7 +414,7 @@ const TextPreview = ({
   );
 };
 
-export const FilePreviewWindow = ({ file, mesh }: FilePreviewWindowProps) => {
+export const FilePreviewWindow = ({ file, mesh, audioBusEnabled = false }: FilePreviewWindowProps) => {
   const slug = useRoomSlug();
   const downloadUrl = withSlug(`${RELAY_HTTP}/files/${file.id}`, slug);
   const kind = previewKindFor(file);
@@ -489,7 +511,14 @@ export const FilePreviewWindow = ({ file, mesh }: FilePreviewWindowProps) => {
             }}
           />
         ) : kind === "video" ? (
-          <SyncedMedia fileId={file.id} src={downloadUrl} kind="video" mesh={mesh} />
+          <SyncedMedia
+            fileId={file.id}
+            src={downloadUrl}
+            kind="video"
+            mesh={mesh}
+            audioBusEnabled={audioBusEnabled}
+            audioBusLabel={`video · ${file.name}`}
+          />
         ) : kind === "audio" ? (
           <div
             style={{
@@ -502,7 +531,14 @@ export const FilePreviewWindow = ({ file, mesh }: FilePreviewWindowProps) => {
             }}
           >
             <div>🎵</div>
-            <SyncedMedia fileId={file.id} src={downloadUrl} kind="audio" mesh={mesh} />
+            <SyncedMedia
+              fileId={file.id}
+              src={downloadUrl}
+              kind="audio"
+              mesh={mesh}
+              audioBusEnabled={audioBusEnabled}
+              audioBusLabel={`audio · ${file.name}`}
+            />
           </div>
         ) : kind === "pdf" ? (
           <iframe

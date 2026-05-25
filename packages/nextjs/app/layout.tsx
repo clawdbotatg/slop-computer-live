@@ -1,6 +1,7 @@
 import { Silkscreen } from "next/font/google";
 import "@rainbow-me/rainbowkit/styles.css";
 import "@scaffold-ui/components/styles.css";
+import type { Viewport } from "next";
 import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
 import { ThemeProvider } from "~~/components/ThemeProvider";
 import "~~/styles/globals.css";
@@ -16,6 +17,14 @@ export const metadata = getMetadata({
   title: "Slop Computer",
   description: "Live, interactive desktop podcast at live.slop.computer",
 });
+
+// Mobile/tablet browsers (notably iPad Safari) zoom out ~10% so more
+// of the desktop fits on-screen. Desktop browsers ignore the viewport
+// meta, so this is naturally tablet/phone-only.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 0.9,
+};
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   return (

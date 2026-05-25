@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
+import { useAudioBusElement } from "~~/hooks/useAudioBus";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
@@ -71,7 +72,15 @@ const livePosition = (state: MusicState | null): number => {
   return state.position + elapsed;
 };
 
-export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
+export const MusicPlayerWindow = ({
+  mesh,
+  audioBusEnabled = false,
+}: {
+  mesh: PeerMeshState;
+  /** God-mode only: route the player's `<audio>` through the shared
+   *  AudioBus so the EQ popup can mix it with peer voices. */
+  audioBusEnabled?: boolean;
+}) => {
   const slug = useRoomSlug();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playlistRef = useRef<HTMLDivElement>(null);
@@ -114,6 +123,10 @@ export const MusicPlayerWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     total: number;
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // God-mode only: route the music player's playback through the
+  // shared AudioBus so the broadcaster's EQ popup can mix it.
+  useAudioBusElement(audioRef, "music", "music player", audioBusEnabled);
 
   // Derived: current track + play state come straight from the mesh.
   const ms = mesh.musicState;

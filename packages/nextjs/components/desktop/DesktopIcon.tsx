@@ -38,12 +38,24 @@ export const DesktopIcon = ({
   // unchanged coords and we save a slot update for nothing.
   const dragMovedRef = useRef(false);
 
+  // iPad Safari doesn't reliably fire `dblclick` for touch double-taps,
+  // so we count two `click`s within 400ms ourselves. Native `onClick` is
+  // reliable on both mouse and touch.
+  const lastTapRef = useRef<number>(0);
+  const handleClick = () => {
+    if (dragMovedRef.current) return;
+    const now = Date.now();
+    if (now - lastTapRef.current < 400) {
+      lastTapRef.current = 0;
+      onDoubleClick?.();
+    } else {
+      lastTapRef.current = now;
+    }
+  };
+
   const body = (
     <div
-      onDoubleClick={() => {
-        if (dragMovedRef.current) return;
-        onDoubleClick?.();
-      }}
+      onClick={handleClick}
       style={{
         width: size,
         height: size + LABEL_HEIGHT,

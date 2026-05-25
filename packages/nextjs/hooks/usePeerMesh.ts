@@ -54,6 +54,14 @@ const CURSOR_THROTTLE_MS = 50; // 20Hz — was 30Hz; imperceptible at slop tile 
 const CURSOR_MIN_DELTA_PX = 4; // skip the broadcast for sub-jitter movement
 const RECONNECT_DELAY_MS = 2000;
 
+// Stream watchdog — catches the "waiting for stream…" hang where a
+// publication is live on the relay but no MediaStream has arrived via
+// WebRTC (reload, spotty network, ICE giving up). Without this, the tile
+// stays dark forever because nothing tries to re-establish the pc.
+const STREAM_WATCHDOG_INTERVAL_MS = 2000;
+const STREAM_WAIT_TIMEOUT_MS = 6000; // grace before we declare a pub stuck
+const STREAM_RECONNECT_BACKOFF_MS = 10_000; // min interval between retries per peer
+
 // Per-kind outgoing-encoder caps applied via RTCRtpSender.setParameters
 // after every addTrack. Full mesh means one encoder per peer-connection,
 // so capping bitrate/framerate/resolution here is the single biggest
@@ -1215,6 +1223,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     slotsRef.current = slots;
   }, [slots]);
 
+  // Mirrors for the stream watchdog (below). A single long-lived
+  // setInterval reads these synchronously so we don't tear down and
+  // rebuild the interval (resetting its accumulated "missing since"
+  // timestamps) every time a publication or remote stream changes.
+  const publicationsRef = useRef<Publication[]>(publications);
+  publicationsRef.current = publications;
+  const remoteStreamsRef = useRef<Map<string, MediaStream>>(remoteStreams);
+  remoteStreamsRef.current = remoteStreams;
+  const peersRef = useRef<Peer[]>(peers);
+  peersRef.current = peers;
+
   const wsRef = useRef<WebSocket | null>(null);
   const myIdRef = useRef<string | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -1314,11 +1333,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       };
 
       pc.onconnectionstatechange = () => {
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "disconnected" ||
-          pc.connectionState === "closed"
-        ) {
+        // "disconnected" is transient per the WebRTC spec — ICE often
+        // re-converges within ~30s without intervention. Closing here was
+        // preemptive and made spotty-network blips permanent. We only
+        // tear down on terminal states; the stream watchdog below kicks
+        // a rebuild if the pc never recovers.
+        if (pc.connectionState === "failed" || pc.connectionState === "closed") {
           closePeerConnection(peerId);
         }
       };
@@ -1336,6 +1356,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const handleOffer = useCallback(
     async (from: string, payload: RTCSessionDescriptionInit) => {
       let pc = peerConnectionsRef.current.get(from);
+      // If the other side is recovering from a broken pc, the offer they
+      // send us may land on our own dead pc — setRemoteDescription would
+      // throw on closed, and renegotiating over a failed/disconnected pc
+      // tends not to recover. Rebuild so the recovery offer takes effect.
+      if (
+        pc &&
+        (pc.connectionState === "failed" || pc.connectionState === "closed" || pc.connectionState === "disconnected")
+      ) {
+        closePeerConnection(from);
+        pc = undefined;
+      }
       if (!pc) pc = createPeerConnection(from);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(payload));
@@ -1346,7 +1377,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         console.warn("[mesh] handleOffer failed", err);
       }
     },
-    [createPeerConnection, send],
+    [createPeerConnection, closePeerConnection, send],
   );
 
   const handleAnswer = useCallback(async (from: string, payload: RTCSessionDescriptionInit) => {
@@ -2926,6 +2957,68 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       teardownConnections();
     };
   }, [enabled, slug, createPeerConnection, closePeerConnection, handleOffer, handleAnswer, handleIce, initiateOffer]);
+
+  // ---- Stream watchdog ---------------------------------------------------
+  // Brings video/audio back when a peer connection silently dies after a
+  // reload or spotty network. Symptoms: the relay still lists the
+  // publication (other peers see "X is sharing camera"), but no
+  // MediaStream ever arrives over WebRTC, leaving the tile stuck on
+  // "waiting for stream…". The watchdog scans publications every
+  // ${STREAM_WATCHDOG_INTERVAL_MS}ms; for any remote pub that's been
+  // missing its stream for >${STREAM_WAIT_TIMEOUT_MS}ms, we rebuild the pc
+  // to that publisher and re-issue an offer ourselves, with
+  // ${STREAM_RECONNECT_BACKOFF_MS}ms backoff per peer so we don't spam.
+  useEffect(() => {
+    if (!enabled) return;
+    const missingSince = new Map<string, number>();
+    const lastAttempt = new Map<string, number>();
+    const tick = () => {
+      const meId = myIdRef.current;
+      if (!meId) return;
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+      const now = performance.now();
+      const liveStreamIds = new Set<string>();
+      for (const pub of publicationsRef.current) {
+        if (pub.peerId === meId) continue;
+        liveStreamIds.add(pub.streamId);
+        if (remoteStreamsRef.current.has(pub.streamId)) {
+          missingSince.delete(pub.streamId);
+          continue;
+        }
+        // Publisher already gone — the relay will reap the pub shortly.
+        if (!peersRef.current.some(p => p.id === pub.peerId)) {
+          missingSince.delete(pub.streamId);
+          continue;
+        }
+        let firstSeen = missingSince.get(pub.streamId);
+        if (firstSeen == null) {
+          firstSeen = now;
+          missingSince.set(pub.streamId, firstSeen);
+        }
+        if (now - firstSeen < STREAM_WAIT_TIMEOUT_MS) continue;
+        const lastTry = lastAttempt.get(pub.peerId) ?? 0;
+        if (now - lastTry < STREAM_RECONNECT_BACKOFF_MS) continue;
+        lastAttempt.set(pub.peerId, now);
+        console.warn(
+          "[mesh] stream watchdog: pub",
+          pub.streamId,
+          "from",
+          pub.peerId,
+          `missing for ${Math.round(now - firstSeen)}ms — rebuilding pc`,
+        );
+        closePeerConnection(pub.peerId);
+        createPeerConnection(pub.peerId);
+        void initiateOffer(pub.peerId);
+      }
+      // GC entries for pubs that no longer exist (publisher unpublished
+      // or left); otherwise the map grows unbounded over a long session.
+      for (const sid of missingSince.keys()) {
+        if (!liveStreamIds.has(sid)) missingSince.delete(sid);
+      }
+    };
+    const handle = setInterval(tick, STREAM_WATCHDOG_INTERVAL_MS);
+    return () => clearInterval(handle);
+  }, [enabled, closePeerConnection, createPeerConnection, initiateOffer]);
 
   // Cursor broadcast at ~30 Hz. Spectator (god-mode) sessions skip the
   // broadcast entirely — they still render their own local slop cursor

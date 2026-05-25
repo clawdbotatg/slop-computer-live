@@ -65,6 +65,10 @@ interface MenuBarProps {
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
   walletAddress?: string | null;
   onWalletClick?: () => void;
+  /** God-mode only: when provided, render a 🔊 button on the far
+   *  right that pops the audio-mixer / EQ panel in a separate window.
+   *  null/undefined hides it. */
+  onEqClick?: (() => void) | null;
   /** Room slug — surfaced in the SlopMenu dropdown as a clickable
    *  link to slop.computer/<slug> (not live.slop.computer). */
   slug?: string;
@@ -85,6 +89,7 @@ export const MenuBar = ({
   localSttResultTick = 0,
   walletAddress,
   onWalletClick,
+  onEqClick = null,
   slug,
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
@@ -156,6 +161,32 @@ export const MenuBar = ({
             </button>
           ) : null}
           {authNode}
+          {onEqClick ? (
+            <button
+              type="button"
+              onClick={onEqClick}
+              className="slop-menubar__item"
+              title="Open audio mixer + EQ in a new window"
+              aria-label="audio mixer"
+              style={{
+                cursor: "pointer",
+                fontSize: 14,
+                padding: "0 6px",
+                background: "transparent",
+                border: 0,
+                color: "inherit",
+                font: "inherit",
+                letterSpacing: "inherit",
+                textTransform: "inherit",
+                margin: 0,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              🔊
+            </button>
+          ) : null}
           {godActive ? (
             <span
               className="slop-menubar__item"

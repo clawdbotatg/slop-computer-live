@@ -55,6 +55,7 @@ import {
   Window,
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
+import { useAudioBusOwner } from "~~/hooks/useAudioBus";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useGodModeStt } from "~~/hooks/useGodModeStt";
@@ -442,6 +443,12 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const episode = useEpisodeState(RELAY_HTTP, slug);
   const isGodMode = session.authenticated && session.spectator === true;
+  // Wake the shared AudioBus on the spectator/streaming box. Every
+  // audio element on the page that registers via useAudioBusElement
+  // gates on its own god-mode flag too, but the bus itself needs to
+  // be activated once so its AudioContext is built + resumed on the
+  // first user gesture (otherwise registers race the context init).
+  useAudioBusOwner(isGodMode);
   // God-mode server-side STT. Only the streaming box runs this. It
   // walks every other peer's audio track in the mesh, VAD-gates,
   // captures Opus segments, and POSTs them to /v1/transcript/relay
@@ -1872,6 +1879,24 @@ function DesktopInner({ slug }: { slug: string }) {
         localSttResultTick={liveStt.resultTick}
         walletAddress={mesh.wallet?.address ?? null}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
+        // God-mode only: pop the audio mixer + EQ in a separate OS
+        // window. Kept off-tab on purpose so the controls themselves
+        // don't get captured into the broadcast.
+        onEqClick={
+          isGodMode
+            ? () => {
+                const target = `/eq?slug=${encodeURIComponent(slug)}`;
+                const features = "popup=yes,width=380,height=560,menubar=no,toolbar=no,location=no,status=no";
+                // `noopener` would null out the opener — we need the
+                // reference for the popup to find the right
+                // BroadcastChannel name. Channels are scoped by the
+                // shared constant in audioBus.ts, so opener-less is
+                // fine in practice, but keeping the reference is
+                // cheap and lets us focus() it on re-click.
+                window.open(target, "slop-eq", features);
+              }
+            : null
+        }
         slug={slug}
       />
       {session.authenticated ? <CommandPalette actions={paletteActions} /> : null}
@@ -2210,6 +2235,12 @@ function DesktopInner({ slug }: { slug: string }) {
                         hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
                         onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
                         persistMute={pub.peerId === mesh.myId}
+                        // God-mode only: route this peer's audio
+                        // through the bus so the EQ popup can mix it.
+                        // Self-published audio is locally muted to
+                        // prevent feedback so we skip it.
+                        audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                        audioBusLabel={badgeLabel}
                       />
                     </AudioDropZone>
                   ) : pub.kind === "camera" ? (
@@ -2432,7 +2463,7 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={300}
               minHeight={300}
             >
-              <MusicPlayerWindow mesh={mesh} />
+              <MusicPlayerWindow mesh={mesh} audioBusEnabled={isGodMode} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
@@ -2647,7 +2678,7 @@ function DesktopInner({ slug }: { slug: string }) {
             minWidth={320}
             minHeight={240}
           >
-            <FilePreviewWindow file={file} mesh={mesh} />
+            <FilePreviewWindow file={file} mesh={mesh} audioBusEnabled={isGodMode} />
           </SharedAppWindow>
         ))}
       </div>

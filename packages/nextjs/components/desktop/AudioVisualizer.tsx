@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useAudioBusElement } from "~~/hooks/useAudioBus";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -41,6 +42,14 @@ export type AudioVisualizerProps = {
    *  preserves it. Only set for the publisher's own audio publication;
    *  remote views use ephemeral local-only state. */
   persistMute?: boolean;
+  /** When set, register the inner `<audio>` element with the shared
+   *  AudioBus under this id so the god-mode EQ popup can see it. Only
+   *  set on the spectator/streaming session — non-god viewers leave
+   *  this null and the element plays directly to default output. */
+  audioBusId?: string | null;
+  /** Human-readable label shown in the /eq popup row. Usually the
+   *  peer's name or wallet short-address. */
+  audioBusLabel?: string;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -61,6 +70,8 @@ export const AudioVisualizer = ({
   isMine = false,
   onSettings,
   persistMute = false,
+  audioBusId = null,
+  audioBusLabel = "audio",
 }: AudioVisualizerProps) => {
   const slug = useRoomSlug();
   const storageKey = audioMutedKey(slug);
@@ -117,6 +128,11 @@ export const AudioVisualizer = ({
       audioRef.current.srcObject = stream;
     }
   }, [stream]);
+
+  // God-mode only — route this peer's playback through the shared
+  // AudioBus so the broadcaster can mix + EQ it before tab capture.
+  // No-op when audioBusId is null (non-spectator sessions).
+  useAudioBusElement(audioRef, audioBusId ?? "", audioBusLabel, !!audioBusId);
 
   useEffect(() => {
     type AudioContextCtor = new () => AudioContext;
