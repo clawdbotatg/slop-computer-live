@@ -10,17 +10,18 @@
 // `__slopTxRequest` so the host can broadcast the calldata to all peers
 // and reject the request from the dapp's perspective.
 //
-// Wallet identity (EIP-6963 rdns + `isSafe`): we advertise as Safe Wallet
-// because dapps like Uniswap branch on smart-contract-wallet detection to
-// decide whether to use Permit2 (gasless approval — requires off-chain
-// EIP-712 signature) vs legacy on-chain approve+swap. A multisig
-// CAN'T sign EIP-712 typed data, so Permit2 always fails for us.
-// The Safe rdns is the strongest signal Uniswap recognizes; combined
-// with eth_getCode(account) returning non-empty bytecode (which our
-// deployed multisig naturally does), it routes the swap through the
-// legacy approve path that fires two clean eth_sendTransactions our
-// multisig can queue. Dropping `isMetaMask: true` matters too — some
-// Uniswap code paths assume MetaMask supports Permit2 unconditionally.
+// Wallet identity: we used to set `isMetaMask: true` so dapps gating on
+// it would treat us as a recognized wallet. We dropped that flag because
+// some Uniswap code paths assume MetaMask supports Permit2 (gasless
+// EIP-712 approval) unconditionally — a multisig can't sign typed data,
+// so we want to *not* be MetaMask. We also DO NOT claim Safe identity
+// (rdns=app.safe.global) — Uniswap responds to that by booting its Safe
+// Apps SDK path which expects parent-iframe postMessage and breaks the
+// connection entirely. We identify as our own provider via EIP-6963 and
+// let Uniswap discover Permit2 doesn't work the hard way (it will retry
+// the signature, fail, and the user has to click "approve manually" or
+// hit Swap again — second attempt always succeeds because the dapp
+// caches the rejection and skips the permit path).
 
 export const PROVIDER_INJECT_SCRIPT = (
   impersonatedAddress: string,
@@ -181,12 +182,12 @@ export const PROVIDER_INJECT_SCRIPT = (
   }
 
   const provider = {
-    // Identity flags — chosen to make Uniswap's Permit2 detection skip
-    // us in favor of legacy approve+swap. isSafe is the load-bearing
-    // signal; dropping isMetaMask avoids MetaMask-specific code paths
-    // that assume off-chain signing works.
-    isSafe: true,
-    isSmartContractWallet: true,
+    // Identity flags. We DON'T claim isSafe/rdns=app.safe.global —
+    // Uniswap responds by booting up its Safe Apps SDK path, which
+    // expects parent-iframe postMessage communication (we're not a
+    // Safe iframe) and just fails to connect. Dropping isMetaMask is
+    // still worth doing — it avoids MetaMask-specific Permit2
+    // assumptions — but we identify as our own provider.
     isSlopImpersonator: true,
     chainId: CHAIN_ID_HEX,
     networkVersion: String(parseInt(CHAIN_ID_HEX, 16)),
@@ -262,18 +263,15 @@ export const PROVIDER_INJECT_SCRIPT = (
   });
 
   // EIP-6963 — modern wallet discovery. Dapps that don't poll
-  // window.ethereum listen for these.
-  //
-  // We announce with Safe's rdns deliberately: Uniswap (and other
-  // major dapps) match against \`app.safe.global\` to detect a smart
-  // contract wallet and route around Permit2. Without this we'd be
-  // listed as a generic injected provider and Uniswap would assume
-  // EIP-712 signing works — which it doesn't for a multisig.
+  // window.ethereum listen for these. Identify as ourselves —
+  // claiming Safe's rdns triggers Uniswap's Safe Apps SDK path which
+  // breaks the connection entirely (it expects an iframe parent that
+  // doesn't exist here).
   const info = {
     uuid: "00000000-0000-4000-8000-000000000001",
-    name: "Safe",
+    name: "Slop Impersonator",
     icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23ff3ec9'/></svg>",
-    rdns: "app.safe.global",
+    rdns: "computer.slop.impersonator",
   };
   const announce = () => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", {
     detail: Object.freeze({ info, provider }),
