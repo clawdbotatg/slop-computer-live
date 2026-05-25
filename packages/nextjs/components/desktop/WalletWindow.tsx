@@ -399,11 +399,30 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
             </p>
           </div>
 
+          {!isHost ? (
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--slop-text-muted)",
+                padding: "6px 10px",
+                background: "rgba(255,62,201,0.06)",
+                border: "1px dashed rgba(255,62,201,0.25)",
+                borderRadius: 4,
+                lineHeight: 1.5,
+              }}
+            >
+              Only the host can change the label, signers, and threshold — you&apos;re seeing what they&apos;re
+              building.
+            </div>
+          ) : null}
+
           <Field label="Episode label">
             <TextField
               value={draftOrDefault.label}
               onChange={e => updateDraft({ label: e.target.value })}
               placeholder={slug}
+              disabled={!isHost}
+              title={!isHost ? "Only the host can change this." : undefined}
             />
           </Field>
 
@@ -427,11 +446,14 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                       background: "rgba(255,255,255,0.03)",
                       border: "1px solid rgba(255,62,201,0.18)",
                       borderRadius: 4,
+                      opacity: isHost ? 1 : 0.85,
                     }}
                   >
                     <input
                       type="checkbox"
                       checked={!!draftOrDefault.selected[s.address]}
+                      disabled={!isHost}
+                      title={!isHost ? "Only the host can change signers." : undefined}
                       onChange={e =>
                         updateDraft({
                           selected: { ...draftOrDefault.selected, [s.address]: e.target.checked },
@@ -454,7 +476,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                         <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>· added</span>
                       ) : null}
                     </span>
-                    {s.source === "custom" ? (
+                    {s.source === "custom" && isHost ? (
                       <button
                         type="button"
                         aria-label="remove"
@@ -486,7 +508,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
               </ul>
             )}
             <AddSignerRow
-              disabled={false}
+              disabled={!isHost}
               existing={new Set(candidateSigners.map(s => s.address))}
               onAdd={addr => {
                 const lower = addr.toLowerCase();
@@ -507,7 +529,8 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
               min={1}
               max={Math.max(1, selectedSigners.length)}
               value={draftOrDefault.threshold}
-              disabled={selectedSigners.length === 0}
+              disabled={!isHost || selectedSigners.length === 0}
+              title={!isHost ? "Only the host can change the threshold." : undefined}
               onChange={e => updateDraft({ threshold: parseInt(e.target.value, 10) })}
               style={{ width: "100%" }}
             />
@@ -1196,6 +1219,157 @@ const ChainPicker = ({
 };
 
 // ----------------------------------------------------------------------------
+// SignerCollectionBar — under every tx card. Shows a progress bar of
+// signatures collected (out of threshold) and a guest-list-style row
+// per signer with an emoji for their state:
+//   ✅ signed   👋 here (in the room, no sig yet)   💤 away (not present)
+// Compact mode (recent/executed txs) renders just the bar.
+// ----------------------------------------------------------------------------
+
+const SignerCollectionBar = ({
+  wallet,
+  tx,
+  peers,
+  customNames,
+  myAddress,
+  compact,
+}: {
+  wallet: WalletRecord;
+  tx: WalletTx;
+  peers: Peer[];
+  customNames: Record<string, string>;
+  myAddress: string | null;
+  compact?: boolean;
+}) => {
+  const signedSet = useMemo(() => new Set(tx.signatures.map(s => s.signer.toLowerCase())), [tx.signatures]);
+  const onlineAddrs = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of peers) if (p.address) s.add(p.address.toLowerCase());
+    return s;
+  }, [peers]);
+
+  const signedCount = tx.signatures.length;
+  const threshold = wallet.threshold;
+  const pct = Math.min(100, (signedCount / Math.max(1, threshold)) * 100);
+  const complete = signedCount >= threshold;
+  const myLower = (myAddress ?? "").toLowerCase();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--slop-text-muted)",
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+          }}
+        >
+          Signatures
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            color: complete ? "#7be88a" : "var(--slop-text)",
+            fontWeight: 700,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.08em",
+          }}
+        >
+          {signedCount} / {threshold}
+        </span>
+      </div>
+      <div
+        style={{
+          height: 10,
+          background: "rgba(255,255,255,0.06)",
+          border: "1px solid rgba(255,62,201,0.25)",
+          borderRadius: 5,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            background: complete
+              ? "linear-gradient(90deg, #7be88a 0%, #3fcfff 100%)"
+              : "linear-gradient(90deg, var(--slop-magenta, #ff3ec9) 0%, var(--slop-cyan, #3fcfff) 100%)",
+            boxShadow: complete ? "0 0 10px rgba(123,232,138,0.55)" : "0 0 10px rgba(255,62,201,0.5)",
+            transition: "width 220ms ease-out",
+          }}
+        />
+      </div>
+      {!compact ? (
+        <ul
+          style={{
+            listStyle: "none",
+            margin: "2px 0 0",
+            padding: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+          }}
+        >
+          {wallet.signers.map(signer => {
+            const lower = signer.address.toLowerCase();
+            const signed = signedSet.has(lower);
+            const here = onlineAddrs.has(lower);
+            const isMe = !!myLower && lower === myLower;
+            const emoji = signed ? "✅" : here ? "👋" : "💤";
+            const status = signed ? "signed" : here ? "in the room, hasn't signed" : "not present";
+            return (
+              <li
+                key={signer.address}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "5px 8px",
+                  borderRadius: 4,
+                  background: signed
+                    ? "rgba(123,232,138,0.08)"
+                    : isMe
+                      ? "rgba(255,62,201,0.12)"
+                      : "rgba(255,255,255,0.025)",
+                  border: `1px solid ${signed ? "rgba(123,232,138,0.28)" : isMe ? "rgba(255,62,201,0.28)" : "rgba(255,255,255,0.06)"}`,
+                  opacity: !signed && !here ? 0.7 : 1,
+                  fontSize: 11,
+                }}
+              >
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    overflow: "hidden",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <SlopAddress address={signer.address} customNames={customNames} />
+                  {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                </span>
+                <span
+                  title={status}
+                  aria-label={status}
+                  style={{ fontSize: 14, lineHeight: 1, flexShrink: 0, cursor: "help" }}
+                >
+                  {emoji}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
 // Tx card — sign + execute. Chain comes from the tx itself, not the wallet.
 // ----------------------------------------------------------------------------
 
@@ -1416,31 +1590,14 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </details>
       ) : null}
 
-      <div style={{ fontSize: 11 }}>
-        <span style={{ color: "var(--slop-text-muted)" }}>
-          {tx.signatures.length} of {wallet.threshold} signatures
-        </span>
-        {tx.signatures.length > 0 ? (
-          <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-            {tx.signatures.map(s => (
-              <span
-                key={s.signer}
-                style={{
-                  fontSize: 10,
-                  padding: "2px 6px",
-                  background: "rgba(123,232,138,0.12)",
-                  border: "1px solid rgba(123,232,138,0.3)",
-                  borderRadius: 3,
-                  color: "#7be88a",
-                }}
-                title={s.signer}
-              >
-                ✓ {short(s.signer)}
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      <SignerCollectionBar
+        wallet={wallet}
+        tx={tx}
+        peers={mesh.peers as Peer[]}
+        customNames={mesh.customNames}
+        myAddress={myLowerAddress || null}
+        compact={compact}
+      />
 
       {err ? (
         <div
