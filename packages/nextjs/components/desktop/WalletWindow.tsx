@@ -1594,6 +1594,211 @@ const SignerCollectionBar = ({
 };
 
 // ----------------------------------------------------------------------------
+// TxProgressBar — under SignerCollectionBar once a tx has been submitted
+// on-chain (i.e. tx.txHash is set OR the local execHash is set). Shows:
+//   - 3-stage progress: submitted → confirming → confirmed
+//   - hash + copy + explorer link as soon as we have it
+//   - elapsed seconds since submit (so a long wait doesn't look frozen)
+//   - any wagmi/RPC error from the receipt poll
+//   - a "Check now" button that does a direct getTransactionReceipt
+// Renders nothing for "pending" (no hash yet) and for finalized states
+// (executed/failed/expired/cancelled — TxCard already handles those).
+// ----------------------------------------------------------------------------
+
+const TxProgressBar = ({
+  tx,
+  watchedHash,
+  isWaiting,
+  isError,
+  errorText,
+  onCheckNow,
+  checking,
+  manualErr,
+}: {
+  tx: WalletTx;
+  watchedHash: `0x${string}` | undefined;
+  isWaiting: boolean;
+  isError: boolean;
+  errorText: string | null;
+  onCheckNow: () => void;
+  checking: boolean;
+  manualErr: string | null;
+}) => {
+  const explorer = chainMeta(tx.chainId).explorer;
+  // Tick once a second so the elapsed counter advances visibly even
+  // when no other state changes. Cheap — only mounts while a tx is
+  // executing.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (tx.status !== "executing") return;
+    const t = setInterval(() => setTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [tx.status]);
+  // `updatedAt` was bumped by the relay when status flipped to
+  // "executing" — close enough to "submitted at" for a counter.
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - tx.updatedAt) / 1000));
+  // tick is purely for the visual refresh — silence the unused warning.
+  void tick;
+
+  // Three stages:
+  //   0 = no hash yet (writeContract not back) — should be rare since
+  //       writeContract returns quickly, but cover it for completeness
+  //   1 = have hash, waiting for receipt
+  //   2 = confirmed (executed or failed) — but in that case TxCard's
+  //       parent branch hides this bar, so we won't render here
+  const stage = !watchedHash ? 0 : tx.status === "executing" ? 1 : 2;
+  const pct = stage === 0 ? 15 : stage === 1 ? 60 : 100;
+  const stageLabel = stage === 0 ? "submitting…" : stage === 1 ? "confirming on chain…" : "confirmed";
+
+  const [copied, setCopied] = useState(false);
+  const onCopyHash = useCallback(() => {
+    if (!watchedHash) return;
+    void navigator.clipboard.writeText(watchedHash);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }, [watchedHash]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--slop-text-muted)",
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+          }}
+        >
+          Transaction
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            color: stage === 2 ? "#7be88a" : "var(--slop-text)",
+            fontWeight: 700,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.08em",
+          }}
+        >
+          {stageLabel} · {elapsedSec}s
+        </span>
+      </div>
+      <div
+        style={{
+          height: 10,
+          background: "rgba(255,255,255,0.06)",
+          border: "1px solid rgba(63,207,255,0.25)",
+          borderRadius: 5,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            background:
+              stage === 2
+                ? "linear-gradient(90deg, #7be88a 0%, #3fcfff 100%)"
+                : "linear-gradient(90deg, var(--slop-cyan, #3fcfff) 0%, var(--slop-magenta, #ff3ec9) 100%)",
+            boxShadow: stage === 2 ? "0 0 10px rgba(123,232,138,0.55)" : "0 0 10px rgba(63,207,255,0.5)",
+            transition: "width 220ms ease-out",
+          }}
+        />
+      </div>
+      {watchedHash ? (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            fontSize: 11,
+            fontFamily: "monospace",
+            color: "var(--slop-text-muted)",
+          }}
+        >
+          <span>hash</span>
+          <a
+            href={`${explorer}/tx/${watchedHash}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "var(--slop-cyan, #3fcfff)", textDecoration: "underline" }}
+            title={watchedHash}
+          >
+            {watchedHash.slice(0, 10)}…{watchedHash.slice(-6)}
+          </a>
+          <button
+            type="button"
+            onClick={onCopyHash}
+            title="Copy hash"
+            style={{
+              background: "transparent",
+              border: "1px solid rgba(255,255,255,0.15)",
+              color: "var(--slop-text-muted)",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontSize: 10,
+              padding: "1px 6px",
+            }}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+          {isWaiting || stage === 1 ? (
+            <button
+              type="button"
+              onClick={onCheckNow}
+              disabled={checking}
+              title="Hit the RPC directly and ask if the receipt is ready yet."
+              style={{
+                background: "transparent",
+                border: "1px solid rgba(63,207,255,0.35)",
+                color: "var(--slop-cyan, #3fcfff)",
+                borderRadius: 3,
+                cursor: checking ? "wait" : "pointer",
+                fontSize: 10,
+                padding: "1px 6px",
+                opacity: checking ? 0.6 : 1,
+              }}
+            >
+              {checking ? "checking…" : "check now"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {isError && errorText ? (
+        <div
+          style={{
+            fontSize: 10,
+            color: "#ffb96b",
+            padding: 4,
+            background: "rgba(255,185,107,0.08)",
+            borderRadius: 3,
+          }}
+          title="The receipt poll hit an error. The transaction may still confirm — try 'check now' or watch the explorer."
+        >
+          receipt poll error: {errorText.slice(0, 160)}
+        </div>
+      ) : null}
+      {manualErr ? (
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--slop-text-muted)",
+            padding: 4,
+            background: "rgba(255,255,255,0.025)",
+            borderRadius: 3,
+          }}
+        >
+          {manualErr}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
 // Tx card — sign + execute. Chain comes from the tx itself, not the wallet.
 // ----------------------------------------------------------------------------
 
@@ -1743,14 +1948,65 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { writeContractAsync, isPending: writing } = useWriteContract();
   const txPublicClient = usePublicClient({ chainId: tx.chainId });
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
-  const { isLoading: execWaiting, data: execReceipt } = useWaitForTransactionReceipt({
-    hash: execHash ?? undefined,
+  // Watch whichever hash we have — the locally-submitted one (this tab
+  // sent it) OR the one broadcast on the relay by another peer's exec.
+  // Every peer pollers in parallel; first to see a receipt updates relay
+  // state. Idempotent because `walletSetTxStatus` just overwrites.
+  const watchedHash = execHash ?? (tx.txHash as `0x${string}` | null) ?? undefined;
+  const {
+    isLoading: execWaiting,
+    data: execReceipt,
+    isError: execIsError,
+    error: execError,
+    refetch: refetchReceipt,
+  } = useWaitForTransactionReceipt({
+    hash: watchedHash,
     chainId: tx.chainId,
     // Same reason as the deploy receipt: app-wide pollingInterval is 30s
     // for ambient state, but once we have a hash the user just wants to
     // see it confirm. 2s feels live.
     pollingInterval: 2000,
   });
+  // Backgrounded tabs get setTimeout throttled to ~1Hz by the browser,
+  // which silently stalls wagmi's 2s polling. When the tab comes back
+  // to foreground, kick a manual refetch so we don't sit on a stale
+  // "loading" forever just because the user tabbed away.
+  useEffect(() => {
+    if (!watchedHash) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refetchReceipt();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [watchedHash, refetchReceipt]);
+  // Manual receipt check — direct viem call instead of wagmi's hook.
+  // Used by the "Check now" button in TxProgressBar when the user
+  // suspects wagmi's poller is wedged. Catches errors loudly.
+  const [manualErr, setManualErr] = useState<string | null>(null);
+  const [manualChecking, setManualChecking] = useState(false);
+  const onManualCheck = useCallback(async () => {
+    if (!watchedHash || !txPublicClient) return;
+    setManualErr(null);
+    setManualChecking(true);
+    try {
+      const r = await txPublicClient.getTransactionReceipt({ hash: watchedHash });
+      // viem throws if not found; if we got here we have one.
+      mesh.walletSetTxStatus(tx.id, r.status === "success" ? "executed" : "failed", r.transactionHash);
+      setExecHash(null);
+    } catch (e) {
+      const msg = String((e as { shortMessage?: string; message?: string }).shortMessage ?? e);
+      // "could not be found" / "TransactionReceiptNotFoundError" → still pending, not an error.
+      if (/not.*found|TransactionReceiptNotFoundError/i.test(msg)) {
+        setManualErr("tx still pending on chain — not yet mined");
+      } else {
+        setManualErr(msg.slice(0, 200));
+      }
+      // Also nudge wagmi to retry.
+      refetchReceipt();
+    } finally {
+      setManualChecking(false);
+    }
+  }, [watchedHash, txPublicClient, mesh, tx.id, refetchReceipt]);
   const [err, setErr] = useState<string | null>(null);
   // True while the WebAuthn passkey prompt is open. wagmi's
   // useSignMessage.isPending only covers the EOA path; we track this
@@ -1924,6 +2180,12 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         gas: gasLimit,
       });
       setExecHash(hash);
+      // Broadcast the hash NOW so every peer's TxProgressBar can show
+      // it (with explorer link) and every peer's poller can race to
+      // resolve the receipt. Previously the hash was only broadcast
+      // on receipt — meaning if the submitter's tab stalled, nobody
+      // else had the hash to recover from.
+      mesh.walletSetTxStatus(tx.id, "executing", hash);
     } catch (e) {
       mesh.walletSetTxStatus(tx.id, "pending");
       setErr(String(e).slice(0, 200));
@@ -2157,6 +2419,23 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         myAddress={myLowerAddress || null}
         compact={compact}
       />
+
+      {tx.status === "executing" || (tx.status === "pending" && execHash) ? (
+        <TxProgressBar
+          tx={tx}
+          watchedHash={watchedHash}
+          isWaiting={execWaiting}
+          isError={execIsError}
+          errorText={
+            execError
+              ? String((execError as { shortMessage?: string; message?: string }).shortMessage ?? execError)
+              : null
+          }
+          onCheckNow={onManualCheck}
+          checking={manualChecking}
+          manualErr={manualErr}
+        />
+      ) : null}
 
       {err ? (
         <div

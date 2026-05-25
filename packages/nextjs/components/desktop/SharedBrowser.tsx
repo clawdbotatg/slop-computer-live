@@ -183,7 +183,6 @@ export const SharedBrowser = ({
   const [hostTxRequests, setHostTxRequests] = useState<TxRequest[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const publicClient = usePublicClient();
   // Latest wallet + propose-tx fn lives in a ref so the WS message
   // handler (which is captured by browser.id only — see the effect
   // dep array below) always sees the current values without
@@ -233,6 +232,18 @@ export const SharedBrowser = ({
   useEffect(() => {
     hostChainIdRef.current = chainId;
   }, [chainId]);
+
+  // Pin the publicClient to the BROWSER's chain — not wagmi's. The
+  // captured tx is for the chain the impersonator is on, so the multisig
+  // nonce read has to happen there too. Without the explicit chainId
+  // this returns wagmi's currently-selected client; if no wallet is
+  // connected, that defaults to the first chain in wagmiConfig, which
+  // may not match the impersonator. Symptom: readContract throws (no
+  // contract at the multisig address on that chain) → catch → propose()
+  // never fires → the wallet's pending-tx counter stays at 0. After the
+  // first attempt, wagmi/state settle into something that happens to
+  // match — and the second attempt lands instantly.
+  const publicClient = usePublicClient({ chainId });
 
   // ---- Impersonator picker --------------------------------------------------
   // Dropdown lets you act as: the deployed session wallet, any other

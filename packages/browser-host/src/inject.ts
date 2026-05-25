@@ -26,9 +26,24 @@ export const PROVIDER_INJECT_SCRIPT = (
   // are fire-and-forget, so the page can't await a host validation.
   const SUPPORTED_CHAIN_IDS_HEX = ${JSON.stringify(supportedChainIds.map(c => "0x" + c.toString(16).toLowerCase()))};
 
-  // Methods we never sign for; we capture and emit calldata instead.
-  const WRITE_METHODS = new Set([
+  // Transactions: capture calldata, then "user rejected" (4001) so the
+  // dapp surfaces gracefully. The captured tx goes into the multisig's
+  // pending queue, where the real signers ratify and broadcast it.
+  const TX_METHODS = new Set([
     "eth_sendTransaction",
+  ]);
+  // Signing methods: a multisig contract has no private key — it can't
+  // sign anything off-chain. If we reject with 4001 (user rejected),
+  // dapps like Uniswap interpret that as "user clicked cancel" and
+  // retry the Permit2 signature several times before eventually
+  // falling back to legacy approve+swap. 4200 (Unsupported Method, per
+  // EIP-1193) tells the dapp "this provider literally cannot do this"
+  // so it falls back on the FIRST attempt — turning the Permit2 dance
+  // into two clean eth_sendTransactions that the multisig CAN queue.
+  // We still emitTxRequest so the local tx panel shows what was
+  // attempted (useful for debugging and so peers can see signature
+  // attempts even though we won't sign them).
+  const SIGN_METHODS = new Set([
     "eth_signTransaction",
     "personal_sign",
     "eth_sign",
@@ -155,12 +170,23 @@ export const PROVIDER_INJECT_SCRIPT = (
 
     request: async ({ method, params }) => {
       if (LOCAL_METHODS[method]) return LOCAL_METHODS[method](params);
-      if (WRITE_METHODS.has(method)) {
+      if (TX_METHODS.has(method)) {
         emitTxRequest({ method, params });
-        // Mimic a user rejection — the dapp will surface this gracefully
-        // rather than hang waiting for a signature.
+        // Mimic a user rejection (4001) — the dapp surfaces "tx cancelled"
+        // gracefully. The captured calldata is already on its way to the
+        // multisig queue via the host.
         const err = new Error("Impersonator: tx captured, not signed");
         err.code = 4001;
+        throw err;
+      }
+      if (SIGN_METHODS.has(method)) {
+        emitTxRequest({ method, params });
+        // 4200 Unsupported Method (EIP-1193). Tells the dapp the provider
+        // doesn't support off-chain signing AT ALL, so it falls back to
+        // legacy on-chain approve flows on the first try instead of
+        // retrying the same signature N times before giving up.
+        const err = new Error("Impersonator: this wallet cannot sign off-chain (multisig contract)");
+        err.code = 4200;
         throw err;
       }
       // Reads — forward to the upstream RPC.
