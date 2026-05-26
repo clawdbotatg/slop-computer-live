@@ -153,11 +153,9 @@ export const PROVIDER_INJECT_SCRIPT = (
     // queue as a single execBatchTransaction propose. We MUST
     // resolve successfully (not throw) — Uniswap fails the whole
     // swap if sendCalls rejects. The batch id is a random 32-byte
-    // hex; wallet_getCallsStatus answers PENDING for any id we don't
-    // know about, which is fine since signers ratify off-page in
-    // the wallet UI.
+    // hex shared with the host through the emit payload so it can
+    // bookkeep status against it (see wallet_getCallsStatus below).
     wallet_sendCalls: (params) => {
-      emitTxRequest({ method: "wallet_sendCalls", params: params });
       // Stable-ish random id — crypto.getRandomValues is available
       // in every Chromium context the host launches. Falls back to
       // Math.random for old browsers / SES locked-down realms.
@@ -169,6 +167,9 @@ export const PROVIDER_INJECT_SCRIPT = (
       } catch (e) {
         for (var j = 0; j < 64; j++) id += Math.floor(Math.random() * 16).toString(16);
       }
+      // Emit WITH the batchId so SharedBrowser can wire its eventual
+      // receipt back into the host's per-batch status map.
+      emitTxRequest({ method: "wallet_sendCalls", params: params, batchId: id });
       // v1.0 callers expect a bare id string; v2.0.0 expects {id}.
       // Default to v2 since that's what modern dapps (Uniswap
       // included) use.
@@ -176,22 +177,35 @@ export const PROVIDER_INJECT_SCRIPT = (
       if (reqVersion === "1.0") return id;
       return { id: id };
     },
-    // EIP-5792 wallet_getCallsStatus — poll endpoint. We don't track
-    // the per-id mapping because our flow is async (multisig signers
-    // ratify in their own UI on their own timeline); returning a
-    // generic PENDING tells the dapp "still in flight" without
-    // promising completion. Uniswap surfaces this as "transaction
-    // submitted, waiting for confirmation" which is the right
-    // mental model.
-    wallet_getCallsStatus: (params) => {
-      var id = (params && params[0]) || "0x";
+    // EIP-5792 wallet_getCallsStatus. Uniswap polls this until the
+    // batch resolves; we ask the host (which knows the
+    // multisig-execution outcome via SharedBrowser) for the current
+    // status and forward it. The host responds with PENDING (100)
+    // until the multisig signers ratify + the on-chain
+    // execBatchTransaction lands; then it flips to SUCCESS (200)
+    // with a receipt or FAILED (500).
+    //
+    // This is async — request() awaits it.
+    wallet_getCallsStatus: async (params) => {
+      var id = params && params[0];
+      if (typeof id !== "string") {
+        return {
+          version: "2.0.0", id: "0x", chainId: CHAIN_ID_HEX,
+          atomic: true, status: 100, receipts: [],
+        };
+      }
+      try {
+        var res = await fetch("/__slop_batch_status?id=" + encodeURIComponent(id));
+        if (res.ok) {
+          var json = await res.json();
+          if (json && typeof json === "object") return json;
+        }
+      } catch (e) {
+        /* fall through to PENDING */
+      }
       return {
-        version: "2.0.0",
-        id: id,
-        chainId: CHAIN_ID_HEX,
-        atomic: true,
-        status: 100, // 100 = PENDING, 200 = SUCCESS, 400+ = ERROR
-        receipts: [],
+        version: "2.0.0", id: id, chainId: CHAIN_ID_HEX,
+        atomic: true, status: 100, receipts: [],
       };
     },
     // EIP-5792 wallet_showCallsStatus — a UX nudge: "open the
