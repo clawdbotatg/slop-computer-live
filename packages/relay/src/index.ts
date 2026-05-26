@@ -7,6 +7,7 @@ import { encodeAbiParameters, keccak256, parseAbiParameters } from "viem";
 import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
@@ -462,6 +463,12 @@ type AppEntry = {
     | "news"
     | "transcript"
     | "card";
+  // Window chrome for browser/iframe apps. "app" presents the shared
+  // browser window as a clean titled app: the title bar shows the app's
+  // label and the URL/nav bar is hidden (so it doesn't look like a
+  // browser and users can't navigate away). Omitted/"browser" = full
+  // browser chrome with the live URL. Only meaningful for url apps.
+  chrome?: "app" | "browser";
 };
 
 const DEFAULT_APPS: AppEntry[] = [
@@ -526,12 +533,14 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "ABINinja",
     icon: "/icons/ninja.png",
     url: "https://abi.ninja",
+    chrome: "app",
   },
   {
     id: "nifty-ink",
     label: "NiftyINK",
     icon: "/icons/paint.png",
     url: "https://nifty.ink/",
+    chrome: "app",
   },
   {
     id: "qr",
@@ -613,8 +622,14 @@ function readHotApps(): AppEntry[] {
 }
 
 async function writeHotApps(apps: AppEntry[]): Promise<void> {
-  await _mkdir(_dirname(HOT_APPS_PATH), { recursive: true });
-  await _writeFile(HOT_APPS_PATH, JSON.stringify({ apps }, null, 2));
+  // Atomic write (temp file + rename) rather than an in-place overwrite.
+  // Besides crash-safety, rename() only needs write permission on the
+  // *directory* (owned by the relay's service user), not on the existing
+  // file — so a stale root-owned hot-apps.json (left by an earlier
+  // root-run process or a provisioning step) gets transparently replaced
+  // instead of throwing EACCES. This keeps the documented POST /v1/apps
+  // path working without any manual chown.
+  writeFileAtomic(HOT_APPS_PATH, JSON.stringify({ apps }, null, 2));
 }
 
 // Resolved catalog: DEFAULT_APPS as the base, then for each hot entry
@@ -810,7 +825,7 @@ app.get("/v1/icons", async (req, reply) => {
 
 // --- Apps: host-only mutators -----------------------------------------------
 
-type AppBody = { id?: unknown; label?: unknown; icon?: unknown; url?: unknown };
+type AppBody = { id?: unknown; label?: unknown; icon?: unknown; url?: unknown; chrome?: unknown };
 
 app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   const a = v1AuthFromReq(req);
@@ -821,6 +836,9 @@ app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   const label = typeof body.label === "string" ? body.label : "";
   const icon = typeof body.icon === "string" ? body.icon : "";
   const url = typeof body.url === "string" ? body.url : "";
+  // "app" → clean titled window (label in title bar, URL bar hidden).
+  // Anything else (incl. omitted) → normal browser chrome.
+  const chrome = body.chrome === "app" ? "app" : undefined;
   if (!id || !label || !icon || !url) {
     return reply.code(400).send({ error: "missing-fields", required: ["id", "label", "icon", "url"] });
   }
@@ -831,7 +849,7 @@ app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   // an override (same id) that wins at read time.
   const hot = readHotApps();
   const idx = hot.findIndex(a => a.id === id);
-  const next: AppEntry = { id, label, icon, url };
+  const next: AppEntry = { id, label, icon, url, ...(chrome ? { chrome } : {}) };
   if (idx >= 0) hot[idx] = next;
   else hot.push(next);
   await writeHotApps(hot);

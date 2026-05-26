@@ -109,6 +109,9 @@ type AppEntry = {
     | "news"
     | "transcript"
     | "card";
+  // "app" → shared-browser window renders as a clean titled app (label in
+  // the title bar, URL/nav bar hidden). Omitted/"browser" = full chrome.
+  chrome?: "app" | "browser";
 };
 
 // App ids whose SharedBrowser window is pinned to a single dapp — URL
@@ -2392,8 +2395,18 @@ function DesktopInner({ slug }: { slug: string }) {
           const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
           // Apps that pin the window to a fixed dapp hide the URL bar
           // so users can't navigate away; the title swaps to the app's
-          // label instead of echoing the current URL.
-          const lockedAppTitle = browser.appId ? LOCKED_APP_TITLES[browser.appId] : undefined;
+          // label instead of echoing the current URL. This is driven by
+          // the app catalog entry's `chrome: "app"` flag (so any app —
+          // including third-party ones added via POST /v1/apps — can opt
+          // in), with the legacy hardcoded LOCKED_APP_TITLES map kept as
+          // a fallback for built-ins that predate the flag.
+          const lockApp = browser.appId ? apps.find(a => a.id === browser.appId) : undefined;
+          const lockedAppTitle =
+            lockApp?.chrome === "app"
+              ? lockApp.label.toUpperCase()
+              : browser.appId
+                ? LOCKED_APP_TITLES[browser.appId]
+                : undefined;
           const lockedToApp = lockedAppTitle !== undefined;
           const windowTitle = lockedAppTitle ?? `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
           return (
