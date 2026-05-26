@@ -1960,17 +1960,19 @@ const LabeledSummaryBlock = ({
   const card = raw ? parseSummaryCard(raw) : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: accent,
-          fontFamily: "var(--slop-font-display)",
-        }}
-      >
-        {label}
-      </div>
+      {label ? (
+        <div
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: accent,
+            fontFamily: "var(--slop-font-display)",
+          }}
+        >
+          {label}
+        </div>
+      ) : null}
       {raw ? (
         card ? (
           <TxSummaryCardView card={card} />
@@ -2500,7 +2502,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
 
       {tx.aiAnalysis ? (
         <LabeledSummaryBlock
-          label="AI says"
+          label=""
           raw={tx.aiAnalysis}
           accent="var(--slop-cyan, #3fcfff)"
           pendingHint="analyzing…"
