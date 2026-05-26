@@ -1908,6 +1908,80 @@ const AssetPill = ({ asset, direction }: { asset: TxSummaryAsset; direction: "in
   );
 };
 
+// One labeled rendering of a tx summary blob. Used twice per tx card to
+// surface both the proposer's claim and the independent AI second
+// opinion side-by-side, so a signer can spot when the two disagree. The
+// `accent` colors the header so the two blocks stay visually distinct
+// (proposer = magenta, AI verifier = cyan).
+const LabeledSummaryBlock = ({
+  label,
+  raw,
+  accent,
+  pendingHint,
+  onRetry,
+}: {
+  label: string;
+  raw: string | null;
+  accent: string;
+  pendingHint: string;
+  onRetry?: () => void;
+}) => {
+  const card = raw ? parseSummaryCard(raw) : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div
+        style={{
+          fontSize: 10,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: accent,
+          fontFamily: "var(--slop-font-display)",
+        }}
+      >
+        {label}
+      </div>
+      {raw ? (
+        card ? (
+          <TxSummaryCardView card={card} />
+        ) : (
+          <div
+            style={{
+              fontSize: 12,
+              lineHeight: 1.5,
+              padding: 8,
+              background: "rgba(255,62,201,0.06)",
+              borderRadius: 4,
+            }}
+          >
+            {raw}
+          </div>
+        )
+      ) : (
+        <div style={{ fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
+          {pendingHint}
+          {onRetry ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "var(--slop-magenta, #ff3ec9)",
+                cursor: "pointer",
+                marginLeft: 6,
+                fontSize: 10,
+                textDecoration: "underline",
+              }}
+            >
+              retry
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const TxSummaryCardView = ({ card }: { card: TxSummaryCard }) => {
   const hasFlow = card.inputs.length > 0 || card.outputs.length > 0;
   return (
@@ -2393,45 +2467,20 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       )}
 
-      {tx.summary ? (
-        (() => {
-          const card = parseSummaryCard(tx.summary);
-          return card ? (
-            <TxSummaryCardView card={card} />
-          ) : (
-            <div
-              style={{
-                fontSize: 12,
-                lineHeight: 1.5,
-                padding: 8,
-                background: "rgba(255,62,201,0.06)",
-                borderRadius: 4,
-              }}
-            >
-              {tx.summary}
-            </div>
-          );
-        })()
-      ) : (
-        <div style={{ fontSize: 11, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
-          summarizing…
-          <button
-            type="button"
-            onClick={onResummarize}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--slop-magenta, #ff3ec9)",
-              cursor: "pointer",
-              marginLeft: 6,
-              fontSize: 10,
-              textDecoration: "underline",
-            }}
-          >
-            retry
-          </button>
-        </div>
-      )}
+      <LabeledSummaryBlock
+        label="Proposed as"
+        raw={tx.summary}
+        accent="var(--slop-magenta, #ff3ec9)"
+        pendingHint="summarizing…"
+        onRetry={onResummarize}
+      />
+      <LabeledSummaryBlock
+        label="AI says"
+        raw={tx.aiAnalysis}
+        accent="var(--slop-cyan, #3fcfff)"
+        pendingHint="analyzing…"
+        onRetry={onResummarize}
+      />
 
       {!compact && !isBatchTx ? (
         <details style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>

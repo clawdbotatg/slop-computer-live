@@ -188,6 +188,38 @@ function broadcastToAllRooms(msg: unknown): void {
   for (const r of listRooms()) r.broadcast(msg);
 }
 
+// Fire-and-forget. Runs the AI tx analyzer on a proposed wallet tx and
+// writes the result into `tx.aiAnalysis` (the proposer-blind "second
+// opinion" — its job is to catch a lying proposer). The same call also
+// mirrors the result into `tx.summary` when summary is still empty, so a
+// browser-source tx (which has no proposer claim) gets its existing
+// signer-dialog fallback for free without a second Claude call.
+// `overwriteSummary` is for `wallet_tx_resummarize` — the "retry" path
+// that intentionally clobbers a stale summary.
+function fireWalletAi(
+  room: Room,
+  tx: WalletTx,
+  cur: WalletRecord,
+  opts: { overwriteSummary?: boolean } = {},
+): void {
+  void summarizeTransaction({
+    chainId: tx.chainId,
+    multisigAddress: cur.address,
+    target: tx.target,
+    value: tx.value,
+    data: tx.data,
+    calls: tx.calls,
+  }).then(result => {
+    room.wallet.setTxAiAnalysis(tx.id, result);
+    if (opts.overwriteSummary) {
+      room.wallet.setTxSummary(tx.id, result);
+      return;
+    }
+    const latest = room.wallet.findTx(tx.id);
+    if (latest && !latest.summary) room.wallet.setTxSummary(tx.id, result);
+  });
+}
+
 // --- Hot/cold lifecycle ---------------------------------------------------
 // Rooms with no peers and no recent mutations get hibernated after
 // IDLE_HIBERNATE_MS. Hibernation drops the in-memory slice from `rooms`
@@ -3012,21 +3044,14 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
     nonce,
     execHash,
   });
-  // Agent-provided summary wins; if absent, fire the AI summarizer the
-  // same way the WS path does so the queue UI doesn't sit summary-less.
+  // Agent-provided summary becomes the proposer claim. Either way fire
+  // the independent AI analyzer — that's the whole point of having a
+  // second opinion: if the agent lied in `summary`, `aiAnalysis` is what
+  // catches it. When no claim was supplied, the AI result mirrors into
+  // `summary` for free (one Claude call covers both fields).
   const summary = typeof body.summary === "string" ? body.summary.slice(0, 1000) : "";
-  if (summary) {
-    if (!tx.summary) room.wallet.setTxSummary(tx.id, summary);
-  } else if (!tx.summary) {
-    void summarizeTransaction({
-      chainId,
-      multisigAddress: cur.address,
-      target: tx.target,
-      value: tx.value,
-      data: tx.data,
-      calls: tx.calls,
-    }).then(s => room.wallet.setTxSummary(tx.id, s));
-  }
+  if (summary && !tx.summary) room.wallet.setTxSummary(tx.id, summary);
+  if (!tx.aiAnalysis) fireWalletAi(room, tx, cur);
   room.broadcast({ type: "wallet_tx_attention", txId: tx.id, source: tx.source, at: Date.now() });
   return { ok: true, id: tx.id };
 });
@@ -5372,19 +5397,13 @@ app.register(async function signalRoutes(fastify) {
             execHash: msg.execHash,
             ...(batchCalls ? { calls: batchCalls } : {}),
           });
-          // Fire-and-forget AI summary — broadcasts when it lands.
-          // Skip when proposeTx returned an existing pending tx
-          // (double-click dedup) that already has a summary; the
-          // in-flight summary for the first propose still wins.
-          if (!tx.summary) {
-            void summarizeTransaction({
-              chainId,
-              multisigAddress: cur.address,
-              target: tx.target,
-              value: tx.value,
-              data: tx.data,
-              calls: tx.calls,
-            }).then(summary => room.wallet.setTxSummary(tx.id, summary));
+          // Fire-and-forget AI analysis — broadcasts when it lands.
+          // Fills `aiAnalysis` (proposer-blind second opinion) and
+          // mirrors into `summary` since browser proposals carry no
+          // proposer claim. Guard on `aiAnalysis` (the always-set field)
+          // so a deduped second propose doesn't re-fire the model.
+          if (!tx.aiAnalysis) {
+            fireWalletAi(room, tx, cur);
           }
           // Every propose attempt — including the deduped second click
           // — pings the room so all peers' wallet windows surface to
@@ -5435,14 +5454,10 @@ app.register(async function signalRoutes(fastify) {
           const tx = room.wallet.findTx(msg.id);
           const cur = room.wallet.getCurrent();
           if (!tx || !cur) return;
-          void summarizeTransaction({
-            chainId: tx.chainId,
-            multisigAddress: cur.address,
-            target: tx.target,
-            value: tx.value,
-            data: tx.data,
-            calls: tx.calls,
-          }).then(summary => room.wallet.setTxSummary(tx.id, summary));
+          // "retry" overwrites both summary and aiAnalysis with a fresh
+          // AI run — including a possibly-stale proposer claim. That
+          // matches the prior behavior (where retry overwrote summary).
+          fireWalletAi(room, tx, cur, { overwriteSummary: true });
           return;
         }
         default:

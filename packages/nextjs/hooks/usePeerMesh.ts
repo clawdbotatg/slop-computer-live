@@ -317,7 +317,12 @@ export type WalletTx = {
   deadline: string;
   nonce: string;
   execHash: string;
+  /** Proposer's claim — agent-supplied via REST, or AI fallback when no
+   *  human/agent claim was provided. May be a lie. */
   summary: string | null;
+  /** Independent AI second opinion. Always re-derived from raw calldata
+   *  with no knowledge of `summary`. Same JSON-card shape as `summary`. */
+  aiAnalysis: string | null;
   signatures: WalletTxSignature[];
   status: WalletTxStatus;
   txHash: string | null;

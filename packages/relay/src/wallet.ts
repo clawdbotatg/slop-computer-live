@@ -86,7 +86,15 @@ export type WalletTx = {
   deadline: string; // decimal string of bigint
   nonce: string; // decimal string at proposal time (matches multisig.nonce())
   execHash: string; // 0x-prefixed (single: getExecHash, batch: getBatchExecHash)
-  summary: string | null; // AI-generated plain-English summary
+  // Proposer's claim about what the tx does (agent-supplied via REST,
+  // otherwise filled lazily by the AI summarizer as a fallback so the
+  // signer dialog still has something to render).
+  summary: string | null;
+  // Independent AI second opinion. Always re-derived from raw
+  // calldata/target/value with no knowledge of `summary` — the point is
+  // that if the proposer's claim is a lie, this field is what catches it.
+  // Same JSON-card shape as `summary` so the UI can render it identically.
+  aiAnalysis: string | null;
   signatures: WalletTxSignature[];
   status: WalletTxStatus;
   txHash: string | null; // execution tx hash
@@ -216,7 +224,11 @@ export class WalletState {
         history: Array.isArray(parsed.history)
           ? (parsed.history.slice(0, MAX_HISTORY).map(migrateRecord).filter(Boolean) as WalletRecord[])
           : [],
-        txs: Array.isArray(parsed.txs) ? parsed.txs.slice(0, MAX_TXS) : [],
+        // Backfill `aiAnalysis: null` for txs persisted before the second-
+        // opinion field existed, so downstream code never sees `undefined`.
+        txs: Array.isArray(parsed.txs)
+          ? parsed.txs.slice(0, MAX_TXS).map(t => ({ ...t, aiAnalysis: t.aiAnalysis ?? null }))
+          : [],
         draft: parsed.draft && typeof parsed.draft === "object" ? (parsed.draft as WalletDraft) : null,
       };
       return true;
@@ -382,6 +394,7 @@ export class WalletState {
       nonce: input.nonce,
       execHash: input.execHash.toLowerCase(),
       summary: null,
+      aiAnalysis: null,
       signatures: [],
       status: "pending",
       txHash: null,
@@ -427,6 +440,17 @@ export class WalletState {
     const tx = this.state.txs.find(t => t.id === id);
     if (!tx) return null;
     tx.summary = summary;
+    tx.updatedAt = Date.now();
+    this.persist();
+    this.emit();
+    return tx;
+  }
+
+  setTxAiAnalysis(id: string, aiAnalysis: string): WalletTx | null {
+    this.load();
+    const tx = this.state.txs.find(t => t.id === id);
+    if (!tx) return null;
+    tx.aiAnalysis = aiAnalysis;
     tx.updatedAt = Date.now();
     this.persist();
     this.emit();

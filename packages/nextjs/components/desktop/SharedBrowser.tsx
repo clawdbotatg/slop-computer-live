@@ -629,6 +629,92 @@ export const SharedBrowser = ({
           })();
         }
 
+        // wallet_sendCalls (EIP-5792 atomic batch) — Uniswap uses this
+        // when we advertise atomic.status=supported in
+        // wallet_getCapabilities, bundling approve + Permit2.permit +
+        // swap into one call so it doesn't have to ask for the
+        // off-chain Permit2 signature we can't produce. Map the batch
+        // 1:1 onto a multisig execBatchTransaction propose. The
+        // sentinel target = the multisig itself, value="0", data="0x"
+        // (matches the WalletHeader SendAll batch shape); the real
+        // calls live in the `calls` field.
+        if (
+          method === "wallet_sendCalls" &&
+          params[0] &&
+          typeof params[0] === "object" &&
+          w &&
+          propose &&
+          txClient &&
+          impMatchesWallet &&
+          walletDeployedHere
+        ) {
+          const batch = params[0] as { calls?: unknown };
+          const rawCalls = Array.isArray(batch.calls) ? batch.calls : [];
+          const calls: { target: string; value: string; data: string }[] = [];
+          for (const c of rawCalls) {
+            if (!c || typeof c !== "object") continue;
+            const rc = c as { to?: unknown; value?: unknown; data?: unknown };
+            if (typeof rc.to !== "string") continue;
+            calls.push({
+              target: rc.to.toLowerCase(),
+              value: typeof rc.value === "string" && rc.value !== "0x" ? rc.value : "0",
+              data: typeof rc.data === "string" ? rc.data : "0x",
+            });
+          }
+          console.warn("[SLOP-TX-DEBUG] wallet_sendCalls batch received", {
+            count: calls.length,
+            chain: browserChainId,
+          });
+          if (calls.length > 0) {
+            void (async () => {
+              try {
+                const nonce = (await txClient.readContract({
+                  address: w.address as AddressType,
+                  abi: MultisigAbi,
+                  functionName: "nonce",
+                })) as bigint;
+                const deadline = defaultDeadline();
+                const execHash = (await txClient.readContract({
+                  address: w.address as AddressType,
+                  abi: MultisigAbi,
+                  functionName: "getBatchExecHash",
+                  args: [
+                    calls.map(c => ({
+                      target: c.target as AddressType,
+                      value: BigInt(c.value),
+                      data: c.data as Hex,
+                    })),
+                    deadline,
+                  ],
+                })) as Hex;
+                console.warn("[SLOP-TX-DEBUG] calling walletProposeTx (BATCH)", {
+                  chainId: browserChainId,
+                  callCount: calls.length,
+                  execHash,
+                });
+                propose({
+                  chainId: browserChainId,
+                  // Sentinel target/value/data — execBatchTransaction
+                  // ignores the top-level fields and uses the calls
+                  // array instead. Point at the multisig itself so
+                  // explorers show a self-call.
+                  target: w.address,
+                  value: "0",
+                  data: "0x",
+                  deadline: deadline.toString(),
+                  nonce: nonce.toString(),
+                  execHash,
+                  source: "browser",
+                  browserId: browser.id,
+                  calls,
+                });
+              } catch (err) {
+                console.warn("[SLOP-TX-DEBUG] wallet_sendCalls propose threw", err);
+              }
+            })();
+          }
+        }
+
         // Also: if the impersonator address belongs to a connected peer's
         // real wagmi wallet (or our own), forward the captured tx to that
         // peer so they can sign+broadcast it. Only eth_sendTransaction is

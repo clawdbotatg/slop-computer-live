@@ -128,17 +128,77 @@ export const PROVIDER_INJECT_SCRIPT = (
     // the dapp's follow-up switch will hit the unsupported path.
     wallet_addEthereumChain: requestChainSwitch,
     wallet_revokePermissions: () => null,
-    // EIP-5792 capability discovery. Return an empty per-chain
-    // capability map: we explicitly DON'T claim atomic batching
-    // (wallet_sendCalls), DON'T claim paymaster support, etc. Uniswap
-    // (and other modern dapps) consult this before assuming Permit2 /
-    // gasless flows are available; an empty response says "I'm a
-    // simple wallet, take the conservative path."
+    // EIP-5792 capability discovery. Advertise atomic batching as
+    // SUPPORTED per chain — that's the single signal Uniswap's swap
+    // saga (apps/web/src/state/sagas/transactions/swapSaga.ts) reads
+    // to decide whether to bundle approve + Permit2.permit + swap
+    // into one wallet_sendCalls batch instead of asking for the
+    // off-chain EIP-712 Permit2 signature we can't produce. Without
+    // this Uniswap's TransactionStepType.Permit2Signature branch
+    // runs, fails on our multisig, and shows "Permit approval
+    // failed." With this, the whole flow becomes a single batched tx
+    // that maps 1:1 onto the multisig's execBatchTransaction.
     wallet_getCapabilities: () => {
       const out = {};
-      for (const hex of SUPPORTED_CHAIN_IDS_HEX) out[hex] = {};
+      for (const hex of SUPPORTED_CHAIN_IDS_HEX) {
+        out[hex] = { atomic: { status: "supported" } };
+      }
       return out;
     },
+    // EIP-5792 wallet_sendCalls. params[0] = {
+    //   version, chainId, from, calls: [{to, value, data}], capabilities?
+    // }
+    // Capture the batch through the same __slopTxRequest binding as
+    // eth_sendTransaction — SharedBrowser routes it into the multisig
+    // queue as a single execBatchTransaction propose. We MUST
+    // resolve successfully (not throw) — Uniswap fails the whole
+    // swap if sendCalls rejects. The batch id is a random 32-byte
+    // hex; wallet_getCallsStatus answers PENDING for any id we don't
+    // know about, which is fine since signers ratify off-page in
+    // the wallet UI.
+    wallet_sendCalls: (params) => {
+      emitTxRequest({ method: "wallet_sendCalls", params: params });
+      // Stable-ish random id — crypto.getRandomValues is available
+      // in every Chromium context the host launches. Falls back to
+      // Math.random for old browsers / SES locked-down realms.
+      var id = "0x";
+      try {
+        var bytes = new Uint8Array(32);
+        (globalThis.crypto || globalThis.msCrypto).getRandomValues(bytes);
+        for (var i = 0; i < bytes.length; i++) id += bytes[i].toString(16).padStart(2, "0");
+      } catch (e) {
+        for (var j = 0; j < 64; j++) id += Math.floor(Math.random() * 16).toString(16);
+      }
+      // v1.0 callers expect a bare id string; v2.0.0 expects {id}.
+      // Default to v2 since that's what modern dapps (Uniswap
+      // included) use.
+      var reqVersion = params && params[0] && params[0].version;
+      if (reqVersion === "1.0") return id;
+      return { id: id };
+    },
+    // EIP-5792 wallet_getCallsStatus — poll endpoint. We don't track
+    // the per-id mapping because our flow is async (multisig signers
+    // ratify in their own UI on their own timeline); returning a
+    // generic PENDING tells the dapp "still in flight" without
+    // promising completion. Uniswap surfaces this as "transaction
+    // submitted, waiting for confirmation" which is the right
+    // mental model.
+    wallet_getCallsStatus: (params) => {
+      var id = (params && params[0]) || "0x";
+      return {
+        version: "2.0.0",
+        id: id,
+        chainId: CHAIN_ID_HEX,
+        atomic: true,
+        status: 100, // 100 = PENDING, 200 = SUCCESS, 400+ = ERROR
+        receipts: [],
+      };
+    },
+    // EIP-5792 wallet_showCallsStatus — a UX nudge: "open the
+    // wallet's batch-status UI". We don't have a separate UI for
+    // batch txs (they live in the same Transactions tab as single
+    // txs), so this is a no-op.
+    wallet_showCallsStatus: () => null,
   };
 
   let nextId = 1;
