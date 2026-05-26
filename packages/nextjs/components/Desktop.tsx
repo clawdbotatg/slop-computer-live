@@ -2374,6 +2374,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 forwardTxToPeer={mesh.forwardTxToPeer}
                 hideUrlBar={lockedToApp}
                 customNames={mesh.customNames}
+                walletTxs={mesh.walletTxs}
               />
             </Window>
           );

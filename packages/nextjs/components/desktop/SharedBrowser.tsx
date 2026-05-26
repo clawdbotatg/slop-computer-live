@@ -6,7 +6,7 @@ import { type Address as AddressType, type Hex } from "viem";
 import { usePublicClient } from "wagmi";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
-import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord } from "~~/hooks/usePeerMesh";
+import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
@@ -154,6 +154,13 @@ export type SharedBrowserProps = {
   /** Custom display names keyed by lowercased address — wins over the
    *  peer's handle when labeling impersonator options. */
   customNames?: Record<string, string>;
+  /** Current multisig pending+executed tx list (mesh.walletTxs). We
+   *  watch these for browser-proposed batches we tracked from a
+   *  wallet_sendCalls capture — when the matching tx flips to
+   *  executed/failed we push the resulting receipt back to the
+   *  browser-host so wallet_getCallsStatus can answer the dapp's
+   *  poll with SUCCESS + a real on-chain txHash. */
+  walletTxs?: WalletTx[];
 };
 
 export const SharedBrowser = ({
@@ -170,6 +177,7 @@ export const SharedBrowser = ({
   forwardTxToPeer,
   hideUrlBar,
   customNames,
+  walletTxs,
 }: SharedBrowserProps) => {
   const slug = useRoomSlug();
   const [draft, setDraft] = useState(browser.url);
@@ -181,6 +189,13 @@ export const SharedBrowser = ({
   // the cross-peer txRequests prop which arrives via the relay. We merge
   // both for display so peers without a host subscription still see them.
   const [hostTxRequests, setHostTxRequests] = useState<TxRequest[]>([]);
+  // EIP-5792 batch tracking. Keyed by the lowercased execHash we
+  // computed when proposing the batch (since that's what survives
+  // round-tripping through the relay and lets us recognize the same
+  // tx in walletTxs). Value = { batchId, sent }, where `sent` flips
+  // true after we push the executed/failed receipt back to the host
+  // so the WS message only fires once per terminal status.
+  const pendingBatchesRef = useRef<Map<string, { batchId: string; sent: boolean }>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   // Latest wallet + propose-tx fn lives in a ref so the WS message
@@ -232,6 +247,47 @@ export const SharedBrowser = ({
   useEffect(() => {
     hostChainIdRef.current = chainId;
   }, [chainId]);
+
+  // Watch walletTxs for browser-proposed batches we're tracking via
+  // pendingBatchesRef. When a tracked tx flips to executed/failed
+  // we push the receipt back through the browser-host WS — the
+  // host caches it, and the next /__slop_batch_status poll from
+  // wallet_getCallsStatus inside the dapp returns SUCCESS/FAILED
+  // with the on-chain txHash so Uniswap can flip its UI from
+  // "transaction submitted" to "swap complete." This is the
+  // closing-the-loop step of the EIP-5792 flow.
+  useEffect(() => {
+    if (!walletTxs || walletTxs.length === 0) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const pending = pendingBatchesRef.current;
+    if (pending.size === 0) return;
+    for (const tx of walletTxs) {
+      const entry = pending.get(tx.execHash.toLowerCase());
+      if (!entry || entry.sent) continue;
+      // Map WalletTx terminal status → EIP-5792 v2 status code.
+      // 100 = pending (don't ship yet), 200 = success, 500 = error.
+      // "expired" / "cancelled" / "failed" all collapse to 500.
+      let status: number;
+      if (tx.status === "executed") status = 200;
+      else if (tx.status === "failed" || tx.status === "expired" || tx.status === "cancelled") status = 500;
+      else continue;
+      ws.send(
+        JSON.stringify({
+          type: "batch_status",
+          batchId: entry.batchId,
+          status,
+          txHash: tx.txHash ?? null,
+        }),
+      );
+      entry.sent = true;
+      console.warn("[SLOP-TX-DEBUG] pushed batch_status to host", {
+        batchId: entry.batchId,
+        status,
+        txHash: tx.txHash,
+      });
+    }
+  }, [walletTxs]);
 
   // One publicClient per chain the multisig factory deploys to.
   // The captured tx might be for a different chain than the SharedBrowser
@@ -650,6 +706,11 @@ export const SharedBrowser = ({
         ) {
           const batch = params[0] as { calls?: unknown };
           const rawCalls = Array.isArray(batch.calls) ? batch.calls : [];
+          // batchId rides alongside method/params on the WS frame
+          // (browser-host parses it out of the inject's emit payload).
+          // We hold onto it so the receipt-tracking effect below can
+          // post the eventual on-chain outcome back through the host.
+          const batchId = typeof msg.batchId === "string" ? msg.batchId : null;
           const calls: { target: string; value: string; data: string }[] = [];
           for (const c of rawCalls) {
             if (!c || typeof c !== "object") continue;
@@ -691,7 +752,16 @@ export const SharedBrowser = ({
                   chainId: browserChainId,
                   callCount: calls.length,
                   execHash,
+                  batchId,
                 });
+                // Remember the batchId keyed by execHash BEFORE
+                // proposing — that way the walletTxs effect below
+                // can recognize the relay's echo of this tx the
+                // instant it arrives, even if execution happens
+                // faster than the next render cycle.
+                if (batchId) {
+                  pendingBatchesRef.current.set(execHash.toLowerCase(), { batchId, sent: false });
+                }
                 propose({
                   chainId: browserChainId,
                   // Sentinel target/value/data — execBatchTransaction

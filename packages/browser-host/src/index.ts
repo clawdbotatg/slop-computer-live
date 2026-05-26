@@ -243,7 +243,35 @@ type Tab = {
   /** Soft-paused: screencast stopped because the user hasn't interacted
    *  in a while. Next input resumes the screencast. */
   paused: boolean;
+  /** EIP-5792 batch status map. Keyed by the batchId we returned from
+   *  wallet_sendCalls; value is the v2-shaped response wallet_getCallsStatus
+   *  should return when the dapp polls. Initialized PENDING on the
+   *  wallet_sendCalls capture; flipped to SUCCESS / FAILED when
+   *  SharedBrowser sends a `batch_status` WS message after the
+   *  multisig executed the batch on-chain.
+   *  Capped at MAX_BATCH_STATUSES per tab — oldest evicted first. */
+  batchStatuses: Map<string, BatchStatusV2>;
 };
+
+// EIP-5792 v2 wallet_getCallsStatus response shape. status codes:
+//   100 = pending, 200 = confirmed, 400 = chain reverted, 500 = error.
+type BatchStatusV2 = {
+  version: "2.0.0";
+  id: string;
+  chainId: string;       // hex, e.g. "0x2105"
+  atomic: boolean;
+  status: number;
+  receipts: Array<{
+    transactionHash: string;
+    status: string;      // "0x1" success, "0x0" reverted
+    blockHash?: string;
+    blockNumber?: string;
+    gasUsed?: string;
+    logs?: unknown[];
+  }>;
+};
+
+const MAX_BATCH_STATUSES = 32;
 
 type RoomBrowser = {
   slug: string;
@@ -521,6 +549,36 @@ async function createTab(
   await page.setRequestInterception(true);
   page.on("request", req => {
     const reqUrl = req.url();
+    // EIP-5792 batch-status poll. inject's wallet_getCallsStatus
+    // fetches this with ?id=<batchId>; we look the id up in the
+    // tab's batchStatuses map and return the current v2 status.
+    // Unknown ids → generic PENDING so polling doesn't error.
+    if (reqUrl.includes("/__slop_batch_status")) {
+      let batchId = "";
+      try {
+        const u = new URL(reqUrl);
+        batchId = u.searchParams.get("id") ?? "";
+      } catch {
+        /* keep empty — falls through to PENDING below */
+      }
+      const t = getTab(slug, id);
+      const tabChain = t?.chainId ?? chainId;
+      const known = t?.batchStatuses.get(batchId);
+      const body: BatchStatusV2 = known ?? {
+        version: "2.0.0",
+        id: batchId,
+        chainId: "0x" + tabChain.toString(16),
+        atomic: true,
+        status: 100,
+        receipts: [],
+      };
+      void req.respond({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+      return;
+    }
     if (reqUrl.endsWith("/__slop_rpc")) {
       const post = req.postData() ?? "{}";
       // Tab may have switched chains since this listener captured `id` —
@@ -594,7 +652,7 @@ async function createTab(
   await cdp.send("Runtime.addBinding", { name: "__slopChainSwitch" });
   cdp.on("Runtime.bindingCalled", evt => {
     if (evt.name === "__slopTxRequest") {
-      let parsed: { method?: string; params?: unknown } = {};
+      let parsed: { method?: string; params?: unknown; batchId?: unknown } = {};
       try {
         parsed = JSON.parse(evt.payload);
       } catch {
@@ -603,10 +661,28 @@ async function createTab(
       const tab = getTab(slug, id);
       if (!tab) return;
       app.log.info(
-        { slug, id, method: parsed.method, subscribers: tab.subscribers.size, impersonator: tab.impersonatedAddress, chainId: tab.chainId },
+        { slug, id, method: parsed.method, subscribers: tab.subscribers.size, impersonator: tab.impersonatedAddress, chainId: tab.chainId, batchId: parsed.batchId },
         "[SLOP-TX-DEBUG] tx_request captured",
       );
-      broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params });
+      // Seed PENDING for wallet_sendCalls so subsequent
+      // wallet_getCallsStatus polls (which can race the SharedBrowser
+      // route) get a coherent response immediately. Eviction is FIFO
+      // by insertion order once we exceed the cap.
+      if (parsed.method === "wallet_sendCalls" && typeof parsed.batchId === "string") {
+        if (tab.batchStatuses.size >= MAX_BATCH_STATUSES) {
+          const oldest = tab.batchStatuses.keys().next().value;
+          if (oldest !== undefined) tab.batchStatuses.delete(oldest);
+        }
+        tab.batchStatuses.set(parsed.batchId, {
+          version: "2.0.0",
+          id: parsed.batchId,
+          chainId: "0x" + tab.chainId.toString(16),
+          atomic: true,
+          status: 100,
+          receipts: [],
+        });
+      }
+      broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params, batchId: parsed.batchId });
       void forwardTxToRelay(tab, parsed);
       return;
     }
@@ -704,6 +780,7 @@ async function createTab(
     lastInputAt: 0,
     crashed: false,
     paused: false,
+    batchStatuses: new Map(),
   };
   rb.tabs.set(id, tab);
 
@@ -1198,6 +1275,29 @@ app.register(async function (fastify) {
                 app.log.error({ slug: t.slug, id: t.id, err: (err as Error).message }, "chain recreate failed");
               }
             })();
+            return;
+          }
+          case "batch_status": {
+            // SharedBrowser tells us the on-chain outcome of a
+            // wallet_sendCalls batch (the multisig executed it /
+            // it reverted / it expired). Cache it so the next
+            // /__slop_batch_status poll the dapp makes returns
+            // the real status + receipt.
+            if (typeof msg.batchId !== "string") return;
+            const batchId = msg.batchId;
+            const prior = tab.batchStatuses.get(batchId);
+            const status =
+              typeof msg.status === "number" ? msg.status : prior?.status ?? 100;
+            const txHash = typeof msg.txHash === "string" ? msg.txHash : null;
+            const receiptStatus = status === 200 ? "0x1" : status >= 400 ? "0x0" : "0x1";
+            tab.batchStatuses.set(batchId, {
+              version: "2.0.0",
+              id: batchId,
+              chainId: prior?.chainId ?? "0x" + tab.chainId.toString(16),
+              atomic: true,
+              status,
+              receipts: txHash ? [{ transactionHash: txHash, status: receiptStatus }] : [],
+            });
             return;
           }
           case "mouse": {
