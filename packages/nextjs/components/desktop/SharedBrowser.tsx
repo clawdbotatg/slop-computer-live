@@ -1291,13 +1291,11 @@ export const SharedBrowser = ({
         >
           ↻
         </button>
-        <span title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain.">
-          Network
-        </span>
         <select
           value={chainId}
           onChange={e => setChainId(Number(e.target.value))}
           disabled={!canControl}
+          title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain."
           style={{
             background: "rgba(0,0,0,0.4)",
             color: "var(--slop-text)",
@@ -1335,14 +1333,10 @@ export const SharedBrowser = ({
             cursor: canControl ? "pointer" : "not-allowed",
           }}
         >
-          {wallet ? (
-            <option value="wallet">
-              wallet — {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
-            </option>
-          ) : null}
+          {wallet ? <option value="wallet">wallet</option> : null}
           {participants.map(p => (
             <option key={p.address.toLowerCase()} value={`peer:${p.address}`}>
-              {p.label} — {p.address.slice(0, 6)}…{p.address.slice(-4)}
+              {p.label}
             </option>
           ))}
           <option value="custom">custom…</option>
