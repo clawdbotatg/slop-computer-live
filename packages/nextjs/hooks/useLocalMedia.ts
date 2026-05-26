@@ -11,6 +11,11 @@ export type UseLocalMedia = {
   stop: (kind: StreamKind) => void;
   stopById: (id: string) => void;
   hasScreen: (id: string) => boolean;
+  // Stream id of the most recently launched screen share, or null. Used
+  // by the Screen-icon double-click to focus-then-new: the first
+  // double-click pulls this share forward, a subsequent click (once it's
+  // already frontmost) opens a second picker.
+  lastScreenId: string | null;
   activeCamera: boolean;
   activeScreen: boolean;
   activeAudio: boolean;
@@ -275,6 +280,8 @@ export function useLocalMedia(
     stop,
     stopById,
     hasScreen,
+    // Insertion-ordered, so the last element is the most recent share.
+    lastScreenId: activeIds.screen.length > 0 ? activeIds.screen[activeIds.screen.length - 1] : null,
     activeCamera: !!activeIds.camera,
     activeScreen: activeIds.screen.length > 0,
     activeAudio: !!activeIds.audio,

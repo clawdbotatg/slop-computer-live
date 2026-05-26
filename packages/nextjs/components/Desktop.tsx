@@ -1554,18 +1554,51 @@ function DesktopInner({ slug }: { slug: string }) {
           return;
         case "screen":
           dismissHint();
-          // While already sharing, double-clicking the Screen icon opens a
-          // SECOND picker — multiple concurrent screen shares are supported.
-          // The resume-from-reload placeholder still steals focus when present
-          // (and no live screen yet) so the user can resume the prior share.
-          if (wantScreenResume && !media.activeScreen) focusPub("screen");
-          else void media.startScreen();
+          // Resume placeholder wins when present (no live screen yet) so a
+          // returning user can recover their prior share.
+          if (wantScreenResume && !media.activeScreen) {
+            focusPub("screen");
+            return;
+          }
+          // Focus-then-new: if there's already at least one screen share
+          // going and the most recent one isn't currently frontmost, the
+          // first double-click pulls it forward (matching the normal
+          // "double-click an app to surface it" behavior). Only once it's
+          // already on top does the next double-click open a second picker.
+          if (media.activeScreen && media.lastScreenId) {
+            const lastPub = mesh.publications.find(
+              p => p.peerId === mesh.myId && p.kind === "screen" && p.streamId === media.lastScreenId,
+            );
+            if (lastPub) {
+              const slotId = slotIdFor(lastPub);
+              const slot = mesh.slots[slotId];
+              const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z));
+              if (slot && slot.z < maxZ) {
+                focusSlot(slotId);
+                return;
+              }
+            }
+          }
+          void media.startScreen();
           return;
         default:
           if (app.url) spawnBrowser(app.url, app.id);
       }
     },
-    [focusApp, focusPub, dismissHint, media, wantScreenResume, setAudioDialog, setVideoDialog, spawnBrowser],
+    [
+      focusApp,
+      focusPub,
+      focusSlot,
+      dismissHint,
+      media,
+      mesh.publications,
+      mesh.myId,
+      mesh.slots,
+      wantScreenResume,
+      setAudioDialog,
+      setVideoDialog,
+      spawnBrowser,
+    ],
   );
 
   // Flatten apps + every actionable menu item into the launcher's action

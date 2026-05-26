@@ -54,17 +54,29 @@ const SendButton = ({
   const [error, setError] = useState<string | null>(null);
 
   const onSend = useCallback(async () => {
+    const t0 = performance.now();
+    console.log("[wallet] WalletTxCard SendButton clicked", {
+      to: tx.to,
+      chainId: tx.chainId,
+      value: tx.value,
+      dataLen: tx.data?.length,
+      multisig: wallet.address,
+      deployedChains: Object.keys(wallet.deployments),
+    });
     setError(null);
     if (!(tx.chainId in wallet.deployments)) {
+      console.warn("[wallet] SendButton abort: multisig not deployed on chain", tx.chainId);
       setError(`multisig isn't deployed on chain ${tx.chainId}`);
       return;
     }
     if (!publicClient) {
+      console.warn("[wallet] SendButton abort: no public client for chain", tx.chainId);
       setError(`no RPC client for chain ${tx.chainId}`);
       return;
     }
     setState("sending");
     try {
+      console.log("[wallet] SendButton reading nonce…");
       const nonce = (await publicClient.readContract({
         address: wallet.address as AddressType,
         abi: MultisigAbi,
@@ -83,6 +95,12 @@ const SendButton = ({
         value: valueWei,
         data,
       });
+      console.log("[wallet] SendButton proposing tx", {
+        ms: Math.round(performance.now() - t0),
+        nonce: nonce.toString(),
+        deadline: deadline.toString(),
+        execHash,
+      });
       mesh.walletProposeTx({
         chainId: tx.chainId,
         target,
@@ -96,6 +114,7 @@ const SendButton = ({
       });
       setState("sent");
     } catch (err) {
+      console.error("[wallet] SendButton FAILED", err);
       setState("idle");
       setError(String(err).slice(0, 160));
     }

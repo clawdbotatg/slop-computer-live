@@ -656,8 +656,17 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
                 (e.currentTarget as HTMLAnchorElement).style.color = "var(--slop-cyan, #3fcfff)";
               }}
             >
-              [ {slug} ]
+              {slug}
             </a>
+          ) : null}
+          {slug ? (
+            <div
+              style={{
+                height: 1,
+                margin: "4px 8px",
+                background: "rgba(255,62,201,0.3)",
+              }}
+            />
           ) : null}
           <button
             type="button"
@@ -676,12 +685,12 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
             }}
           >
             {status === "copying"
-              ? "[ copying… ]"
+              ? "copying…"
               : status === "copied"
-                ? "[ copied! ]"
+                ? "copied!"
                 : status === "failed"
-                  ? "[ failed — see console ]"
-                  : "[ copy skill ]"}
+                  ? "failed — see console"
+                  : "copy skill"}
           </button>
           <button
             type="button"
@@ -700,7 +709,7 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
               (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
             }}
           >
-            <span style={{ whiteSpace: "nowrap" }}>[ command palette ]</span>
+            <span style={{ whiteSpace: "nowrap" }}>command palette</span>
             <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>⌃⇧Space</span>
           </button>
           <a
@@ -719,7 +728,7 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
               (e.currentTarget as HTMLAnchorElement).style.color = "var(--slop-text)";
             }}
           >
-            [ source code ]
+            source code
           </a>
         </div>
       ) : null}

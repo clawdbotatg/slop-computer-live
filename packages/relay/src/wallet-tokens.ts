@@ -193,10 +193,20 @@ async function fetchZerionTokenByAddress(
   if (!auth) return null;
   const chainSlug = ZERION_CHAIN_SLUG[chainId] ?? null;
   try {
-    const res = await fetch(
-      `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(lower)}&currency=usd&page[size]=10`,
-      { headers: { Authorization: auth, accept: "application/json" } },
-    );
+    // Zerion's `search_query` indexes names/symbols, NOT contract
+    // addresses — passing an address there returns zero results, which
+    // silently broke every address resolve. `implementation_address`
+    // (scoped to the chain) is the filter that actually matches a token
+    // by its on-chain contract.
+    const params = new URLSearchParams({
+      "filter[implementation_address]": lower,
+      currency: "usd",
+      "page[size]": "10",
+    });
+    if (chainSlug) params.set("filter[implementation_chain_id]", chainSlug);
+    const res = await fetch(`https://api.zerion.io/v1/fungibles/?${params.toString()}`, {
+      headers: { Authorization: auth, accept: "application/json" },
+    });
     if (!res.ok) return null;
     const json = (await res.json()) as {
       data?: Array<{

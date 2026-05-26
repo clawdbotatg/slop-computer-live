@@ -238,6 +238,18 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
     };
   }, []);
 
+  // Periodic background refresh while the wallet window is open. Skipped
+  // when the browser tab is hidden so we don't burn Zerion quota on
+  // backgrounded clients. 30s is a guess at a sane default — tune up if
+  // Zerion complains, tune down if balances feel laggy.
+  useEffect(() => {
+    if (!walletAddress) return;
+    const handle = setInterval(() => {
+      if (document.visibilityState === "visible") void refreshPortfolio();
+    }, 30_000);
+    return () => clearInterval(handle);
+  }, [walletAddress, refreshPortfolio]);
+
   return (
     <div
       style={{
@@ -2084,6 +2096,22 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { writeContractAsync, isPending: writing } = useWriteContract();
   const txPublicClient = usePublicClient({ chainId: tx.chainId });
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
+  // [wallet/log] Verbose debug logs while we iterate on the sign/execute
+  // flow — every render dumps the bits that gate the buttons so we can
+  // see in console exactly why a click did/didn't fire. Strip later.
+  console.log("[wallet] TxCard render", {
+    txId: tx.id,
+    status: tx.status,
+    chainId: tx.chainId,
+    isBatch: !!tx.calls && tx.calls.length > 0,
+    sigs: tx.signatures.length,
+    threshold: wallet.threshold,
+    txHash: tx.txHash,
+    connectedAddress,
+    writing,
+    signing,
+    hasPublicClient: !!txPublicClient,
+  });
   // Watch whichever hash we have — the locally-submitted one (this tab
   // sent it) OR the one broadcast on the relay by another peer's exec.
   // Every peer pollers in parallel; first to see a receipt updates relay
@@ -2164,6 +2192,13 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
 
   useEffect(() => {
     if (execReceipt) {
+      console.log("[wallet] receipt landed", {
+        txId: tx.id,
+        status: execReceipt.status,
+        hash: execReceipt.transactionHash,
+        blockNumber: execReceipt.blockNumber?.toString(),
+        gasUsed: execReceipt.gasUsed?.toString(),
+      });
       mesh.walletSetTxStatus(
         tx.id,
         execReceipt.status === "success" ? "executed" : "failed",
@@ -2172,6 +2207,21 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       setExecHash(null);
     }
   }, [execReceipt, mesh, tx.id]);
+
+  // [wallet/log] Surface the receipt watcher's loading/error state — the
+  // hook is silent otherwise so a wedged poller is invisible.
+  useEffect(() => {
+    if (!watchedHash) return;
+    console.log("[wallet] receipt watcher", {
+      txId: tx.id,
+      hash: watchedHash,
+      execWaiting,
+      execIsError,
+      execError: execError
+        ? String((execError as { shortMessage?: string; message?: string }).shortMessage ?? execError)
+        : null,
+    });
+  }, [watchedHash, execWaiting, execIsError, execError, tx.id]);
 
   // The "executing" status is set on relay state when someone clicks
   // Execute, but the receipt watcher is local to that signer's tab.
@@ -2200,8 +2250,16 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   }, [mesh, tx.id]);
 
   const onSign = useCallback(async () => {
+    console.log("[wallet] onSign clicked", {
+      txId: tx.id,
+      execHash: tx.execHash,
+      mySignerEntry,
+      isPasskey: mySignerEntry?.signerType === "passkey",
+      connectedAddress,
+    });
     setErr(null);
     if (!mySignerEntry) {
+      console.warn("[wallet] onSign abort: not a signer on this multisig");
       setErr("you're not a signer on this multisig");
       return;
     }
@@ -2218,14 +2276,17 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       }
       setPasskeySigning(true);
       try {
+        console.log("[wallet] onSign passkey: prompting authenticator…");
         const data = await signMultisigExecWithPasskey({
           credentialIdBase64Url,
           execHash: tx.execHash as `0x${string}`,
           qx,
           qy,
         });
+        console.log("[wallet] onSign passkey: got signature", { len: data?.length });
         mesh.walletSignTx(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
       } catch (e) {
+        console.error("[wallet] onSign passkey error", e);
         setErr(String(e).slice(0, 200));
       } finally {
         setPasskeySigning(false);
@@ -2234,13 +2295,17 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     }
     // EOA path — needs the wagmi wallet.
     if (!connectedAddress) {
+      console.warn("[wallet] onSign abort: no connected EOA");
       setErr("connect your wallet to sign");
       return;
     }
     try {
+      console.log("[wallet] onSign EOA: calling signMessageAsync…");
       const sig = await signMessageAsync({ message: { raw: tx.execHash as Hex } });
+      console.log("[wallet] onSign EOA: got signature", { len: sig?.length });
       mesh.walletSignTx(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
     } catch (e) {
+      console.error("[wallet] onSign EOA error", e);
       setErr(String(e).slice(0, 200));
     }
   }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
@@ -2251,8 +2316,23 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const isBatchTx = !!tx.calls && tx.calls.length > 0;
 
   const onExecute = useCallback(async () => {
+    const t0 = performance.now();
+    console.log("[wallet] onExecute clicked", {
+      txId: tx.id,
+      status: tx.status,
+      chainId: tx.chainId,
+      isBatchTx,
+      callsCount: tx.calls?.length ?? 0,
+      sigs: tx.signatures.length,
+      threshold: wallet.threshold,
+      connectedAddress,
+      multisig: wallet.address,
+      deadline: tx.deadline,
+      hasPublicClient: !!txPublicClient,
+    });
     setErr(null);
     if (!connectedAddress) {
+      console.warn("[wallet] onExecute abort: no connected wallet");
       setErr("connect your wallet to execute");
       return;
     }
@@ -2264,6 +2344,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
           data: s.data as `0x${string}`,
         })),
       );
+      console.log("[wallet] onExecute sorted signatures", {
+        sorted: sorted.map(s => ({ signer: s.signer, sigType: s.sigType, dataLen: s.data.length })),
+      });
       mesh.walletSetTxStatus(tx.id, "executing");
       // Estimate gas with a 50% buffer. eth_estimateGas returns the minimum
       // viable amount, but the 63/64 forwarding rule plus heavy inner calls
@@ -2283,9 +2366,18 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
             sorted,
           ] as const)
         : ([tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted] as const);
+      console.log("[wallet] onExecute prepared args", {
+        functionName,
+        argShapeLen: args.length,
+        batchCalls: isBatchTx ? tx.calls : undefined,
+        singleTarget: !isBatchTx ? tx.target : undefined,
+        singleValue: !isBatchTx ? tx.value : undefined,
+      });
       let gasLimit: bigint | undefined;
       if (txPublicClient && connectedAddress) {
+        const tEst = performance.now();
         try {
+          console.log("[wallet] onExecute estimateContractGas: START");
           const estimate = await txPublicClient.estimateContractGas({
             address: wallet.address as AddressType,
             abi: MultisigAbi,
@@ -2301,12 +2393,32 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
           const minFloor = isBatchTx ? 1_500_000n : 800_000n;
           const buffered = (estimate * 3n) / 2n;
           gasLimit = buffered < minFloor ? minFloor : buffered;
-        } catch {
+          console.log("[wallet] onExecute estimateContractGas: OK", {
+            ms: Math.round(performance.now() - tEst),
+            estimate: estimate.toString(),
+            buffered: buffered.toString(),
+            gasLimit: gasLimit.toString(),
+          });
+        } catch (estErr) {
           // If estimate fails (sometimes happens with revert-prone calldata),
           // fall back to a high fixed limit so the signer can still try.
           gasLimit = isBatchTx ? 3_000_000n : 1_500_000n;
+          console.warn("[wallet] onExecute estimateContractGas FAILED — using fallback gas", {
+            ms: Math.round(performance.now() - tEst),
+            gasLimit: gasLimit.toString(),
+            err: estErr,
+          });
         }
+      } else {
+        console.warn("[wallet] onExecute: no public client for gas estimate — wallet will pick a default", {
+          chainId: tx.chainId,
+        });
       }
+      console.log("[wallet] onExecute writeContractAsync: START (expect wallet popup now)", {
+        gasLimit: gasLimit?.toString(),
+        chainId: tx.chainId,
+      });
+      const tWrite = performance.now();
       const hash = await writeContractAsync({
         address: wallet.address as AddressType,
         abi: MultisigAbi,
@@ -2314,6 +2426,11 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         chainId: tx.chainId,
         args: args as never,
         gas: gasLimit,
+      });
+      console.log("[wallet] onExecute writeContractAsync: OK", {
+        ms: Math.round(performance.now() - tWrite),
+        totalMs: Math.round(performance.now() - t0),
+        hash,
       });
       setExecHash(hash);
       // Broadcast the hash NOW so every peer's TxProgressBar can show
@@ -2323,12 +2440,19 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       // else had the hash to recover from.
       mesh.walletSetTxStatus(tx.id, "executing", hash);
     } catch (e) {
+      console.error("[wallet] onExecute FAILED", {
+        totalMs: Math.round(performance.now() - t0),
+        err: e,
+        shortMessage: (e as { shortMessage?: string })?.shortMessage,
+        message: (e as { message?: string })?.message,
+      });
       mesh.walletSetTxStatus(tx.id, "pending");
       setErr(String(e).slice(0, 200));
     }
   }, [
     connectedAddress,
     tx.signatures,
+    tx.status,
     tx.target,
     tx.value,
     tx.data,
@@ -2337,6 +2461,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     tx.id,
     tx.chainId,
     wallet.address,
+    wallet.threshold,
     writeContractAsync,
     mesh,
     txPublicClient,

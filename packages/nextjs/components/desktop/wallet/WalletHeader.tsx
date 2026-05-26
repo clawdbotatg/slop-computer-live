@@ -20,8 +20,8 @@ const NATIVE_TOKEN_PLACEHOLDER = "0x0000000000000000000000000000000000000000";
 
 const fmtUsd = (v: string | number) => {
   const n = typeof v === "string" ? parseFloat(v) : v;
-  if (!Number.isFinite(n)) return "$0";
-  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  if (!Number.isFinite(n)) return "$0.00";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const isNativeAsset = (a: PortfolioAsset): boolean =>

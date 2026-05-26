@@ -78,8 +78,8 @@ type AssetDetail = {
 
 const fmtUsd = (v: string | number) => {
   const n = typeof v === "string" ? parseFloat(v) : v;
-  if (!Number.isFinite(n)) return "$0";
-  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  if (!Number.isFinite(n)) return "$0.00";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 // Compact formatter for big USD numbers (market cap / volume).
