@@ -182,9 +182,21 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
   // first walletTxs pass after wallet load just seeds the baseline —
   // we only refresh on genuinely new executions, not historical ones
   // that were already in the list at mount time.
+  //
+  // Timing: portfolio data comes from Zerion, which crawls chain
+  // state with a ~5-15s lag. An immediate refresh after `executed`
+  // almost always returns pre-tx balances and looks like nothing
+  // happened. We schedule TWO passes — 5s (catches Base/Mainnet
+  // fast cases) and 15s (catches slower indexer paths) — so the
+  // user sees the new state without manually pulling refresh.
   const executedTxIdsRef = useRef<Set<string> | null>(null);
+  const pendingRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   useEffect(() => {
     executedTxIdsRef.current = null;
+    // Drop any timers from the previous wallet — they'd refresh
+    // against the new wallet's address with stale baseline state.
+    for (const t of pendingRefreshTimersRef.current) clearTimeout(t);
+    pendingRefreshTimersRef.current.clear();
   }, [walletAddress]);
   useEffect(() => {
     if (!walletAddress) return;
@@ -204,8 +216,27 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       }
     }
     executedTxIdsRef.current = current;
-    if (hasNew) void refreshPortfolio();
+    if (hasNew) {
+      const schedule = (delayMs: number) => {
+        const handle = setTimeout(() => {
+          pendingRefreshTimersRef.current.delete(handle);
+          void refreshPortfolio();
+        }, delayMs);
+        pendingRefreshTimersRef.current.add(handle);
+      };
+      schedule(5_000);
+      schedule(15_000);
+    }
   }, [mesh.walletTxs, walletAddress, refreshPortfolio]);
+  // Cancel any in-flight refresh timers when the window unmounts so
+  // we don't fire setState into a torn-down component.
+  useEffect(() => {
+    const timers = pendingRefreshTimersRef.current;
+    return () => {
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
 
   return (
     <div
