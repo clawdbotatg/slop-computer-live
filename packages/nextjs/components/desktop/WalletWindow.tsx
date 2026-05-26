@@ -2467,20 +2467,23 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       )}
 
-      <LabeledSummaryBlock
-        label="Proposed as"
-        raw={tx.summary}
-        accent="var(--slop-magenta, #ff3ec9)"
-        pendingHint="summarizing…"
-        onRetry={onResummarize}
-      />
-      <LabeledSummaryBlock
-        label="AI says"
-        raw={tx.aiAnalysis}
-        accent="var(--slop-cyan, #3fcfff)"
-        pendingHint="analyzing…"
-        onRetry={onResummarize}
-      />
+      {tx.aiAnalysis ? (
+        <LabeledSummaryBlock
+          label="AI says"
+          raw={tx.aiAnalysis}
+          accent="var(--slop-cyan, #3fcfff)"
+          pendingHint="analyzing…"
+          onRetry={onResummarize}
+        />
+      ) : (
+        <LabeledSummaryBlock
+          label="Proposed as"
+          raw={tx.summary}
+          accent="var(--slop-magenta, #ff3ec9)"
+          pendingHint="summarizing…"
+          onRetry={onResummarize}
+        />
+      )}
 
       {!compact && !isBatchTx ? (
         <details style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
