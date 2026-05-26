@@ -189,6 +189,11 @@ export const SharedBrowser = ({
   // the cross-peer txRequests prop which arrives via the relay. We merge
   // both for display so peers without a host subscription still see them.
   const [hostTxRequests, setHostTxRequests] = useState<TxRequest[]>([]);
+  // Content keys (`calldata|to`) the user has dismissed from the debug tx
+  // panel. The panel merges a local stream we own (hostTxRequests) and a
+  // prop stream we don't (txRequests), so "clear" filters by key here AND
+  // empties the local array — newly-captured tx (new keys) still appear.
+  const [hiddenTxKeys, setHiddenTxKeys] = useState<Set<string>>(new Set());
   // EIP-5792 batch tracking. Keyed by the lowercased execHash we
   // computed when proposing the batch (since that's what survives
   // round-tripping through the relay and lets us recognize the same
@@ -1141,13 +1146,22 @@ export const SharedBrowser = ({
     const out: TxRequest[] = [];
     for (const tx of [...hostTxRequests, ...txRequests]) {
       const key = `${tx.calldata}|${tx.to}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key) || hiddenTxKeys.has(key)) continue;
       seen.add(key);
       out.push(tx);
       if (out.length >= 10) break;
     }
     return out;
-  }, [txRequests, hostTxRequests]);
+  }, [txRequests, hostTxRequests, hiddenTxKeys]);
+
+  const clearTxPanel = useCallback(() => {
+    setHiddenTxKeys(prev => {
+      const next = new Set(prev);
+      for (const tx of [...hostTxRequests, ...txRequests]) next.add(`${tx.calldata}|${tx.to}`);
+      return next;
+    });
+    setHostTxRequests([]);
+  }, [hostTxRequests, txRequests]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0a0612" }}>
@@ -1244,8 +1258,69 @@ export const SharedBrowser = ({
         }}
         title="The injected window.ethereum reports this address as the connected wallet. Pick the deployed multisig, any participant, or a custom address."
       >
-        <span style={{ color: connState === "open" ? "var(--slop-magenta, #ff3ec9)" : "#888" }}>◉</span>
-        <span>Impersonating</span>
+        <button
+          type="button"
+          onClick={() => setShowTxPanel(v => !v)}
+          style={{
+            background: "transparent",
+            border: 0,
+            color: "inherit",
+            cursor: "pointer",
+            font: "inherit",
+            padding: 0,
+          }}
+        >
+          {txList.length} tx {showTxPanel ? "▾" : "▸"}
+        </button>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={reload}
+          disabled={!canControl}
+          title="Reload the page (force-refresh after a chain switch, or just unstick a frozen dapp)"
+          aria-label="Reload"
+          style={{
+            background: "transparent",
+            border: "1px solid rgba(255,62,201,0.3)",
+            color: "var(--slop-text)",
+            borderRadius: 3,
+            font: "inherit",
+            padding: "1px 6px",
+            cursor: canControl ? "pointer" : "not-allowed",
+          }}
+        >
+          ↻
+        </button>
+        <span title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain.">
+          Network
+        </span>
+        <select
+          value={chainId}
+          onChange={e => setChainId(Number(e.target.value))}
+          disabled={!canControl}
+          style={{
+            background: "rgba(0,0,0,0.4)",
+            color: "var(--slop-text)",
+            border: "1px solid rgba(255,62,201,0.3)",
+            borderRadius: 3,
+            font: "inherit",
+            padding: "1px 4px",
+            cursor: canControl ? "pointer" : "not-allowed",
+          }}
+        >
+          {SUPPORTED_NETWORKS.map(n => (
+            <option key={n.chainId} value={n.chainId}>
+              {n.label}
+            </option>
+          ))}
+          {SUPPORTED_NETWORKS.some(n => n.chainId === chainId) ? null : (
+            // Cover the edge case where the host comes back with a chain
+            // not in our local list (e.g. dapp added a custom one we
+            // don't have a label for yet) — show the bare id so the
+            // selector still reflects reality.
+            <option value={chainId}>chain {chainId}</option>
+          )}
+        </select>
         <select
           value={impMode}
           onChange={e => setImpMode(e.target.value as ImpersonatorMode)}
@@ -1284,73 +1359,6 @@ export const SharedBrowser = ({
         ) : (
           <SlopAddress address={effectiveImpersonator} customNames={customNames} />
         )}
-        <span style={{ width: 12 }} />
-        <span title="Chain reported by the injected window.ethereum, and target for /__slop_rpc proxy. Pick from the dropdown, or let the dapp request a switch via wallet_switchEthereumChain.">
-          Network
-        </span>
-        <select
-          value={chainId}
-          onChange={e => setChainId(Number(e.target.value))}
-          disabled={!canControl}
-          style={{
-            background: "rgba(0,0,0,0.4)",
-            color: "var(--slop-text)",
-            border: "1px solid rgba(255,62,201,0.3)",
-            borderRadius: 3,
-            font: "inherit",
-            padding: "1px 4px",
-            cursor: canControl ? "pointer" : "not-allowed",
-          }}
-        >
-          {SUPPORTED_NETWORKS.map(n => (
-            <option key={n.chainId} value={n.chainId}>
-              {n.label}
-            </option>
-          ))}
-          {SUPPORTED_NETWORKS.some(n => n.chainId === chainId) ? null : (
-            // Cover the edge case where the host comes back with a chain
-            // not in our local list (e.g. dapp added a custom one we
-            // don't have a label for yet) — show the bare id so the
-            // selector still reflects reality.
-            <option value={chainId}>chain {chainId}</option>
-          )}
-        </select>
-        <button
-          type="button"
-          onClick={reload}
-          disabled={!canControl}
-          title="Reload the page (force-refresh after a chain switch, or just unstick a frozen dapp)"
-          aria-label="Reload"
-          style={{
-            background: "transparent",
-            border: "1px solid rgba(255,62,201,0.3)",
-            color: "var(--slop-text)",
-            borderRadius: 3,
-            font: "inherit",
-            padding: "1px 6px",
-            cursor: canControl ? "pointer" : "not-allowed",
-            marginLeft: 4,
-          }}
-        >
-          ↻
-        </button>
-        <span style={{ flex: 1 }} />
-        <span style={{ color: "var(--slop-text-muted)" }}>{connState}</span>
-        <button
-          type="button"
-          onClick={() => setShowTxPanel(v => !v)}
-          style={{
-            background: "transparent",
-            border: 0,
-            color: "inherit",
-            cursor: "pointer",
-            font: "inherit",
-            padding: 0,
-            marginLeft: 8,
-          }}
-        >
-          {txList.length} tx {showTxPanel ? "▾" : "▸"}
-        </button>
       </div>
 
       {showTxPanel ? (
@@ -1365,6 +1373,38 @@ export const SharedBrowser = ({
             color: "var(--slop-text)",
           }}
         >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "4px 8px",
+              position: "sticky",
+              top: 0,
+              background: "#06030d",
+              borderBottom: "1px dashed rgba(255,62,201,0.2)",
+              color: "var(--slop-text-muted)",
+            }}
+          >
+            <span>captured tx (debug)</span>
+            <button
+              type="button"
+              onClick={clearTxPanel}
+              disabled={txList.length === 0}
+              title="Clear the captured tx list — these are debug-only; real tx go to the wallet"
+              style={{
+                background: "transparent",
+                border: "1px solid rgba(255,62,201,0.3)",
+                color: txList.length === 0 ? "var(--slop-text-muted)" : "var(--slop-text)",
+                borderRadius: 3,
+                font: "inherit",
+                padding: "1px 6px",
+                cursor: txList.length === 0 ? "not-allowed" : "pointer",
+              }}
+            >
+              clear
+            </button>
+          </div>
           {txList.length === 0 ? (
             <div style={{ padding: 8, color: "var(--slop-text-muted)" }}>
               no tx captured yet — interact with the dapp to see calldata here
