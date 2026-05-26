@@ -168,7 +168,12 @@ function defaultIconPosition(appId: string, i: number): { x: number; y: number }
 // Slot id keyed by stable owner identity (wallet address or handle) so the
 // layout survives a reload — peerIds are ephemeral and would otherwise reset
 // the position every time the user reconnects.
+//
+// Screens additionally include the streamId so a user sharing multiple
+// screens gets one window per share. The bare `owner-{key}-screen` slot id
+// is still used by the resume-from-reload placeholder (see screenResumeSlotId).
 function slotIdFor(pub: Publication): string {
+  if (pub.kind === "screen") return `owner-${pub.ownerKey}-screen-${pub.streamId}`;
   return `owner-${pub.ownerKey}-${pub.kind}`;
 }
 
@@ -433,10 +438,16 @@ function DesktopInner({ slug }: { slug: string }) {
       target.dispose?.();
       target.stream.getTracks().forEach(t => t.stop());
       setStreams(prev => prev.filter(s => s.id !== id));
-      const r = readResume(slug);
-      delete r[target.kind];
-      writeResume(slug, r);
-      clearKindPersistedState(slug, target.kind);
+      // Multi-screen: only drop the kind's resume flag once the LAST stream
+      // of that kind is gone. Closing one of two screens shouldn't tell the
+      // next reload "we weren't screen-sharing".
+      const stillHasKind = streamsRef.current.some(s => s.id !== id && s.kind === target.kind);
+      if (!stillHasKind) {
+        const r = readResume(slug);
+        delete r[target.kind];
+        writeResume(slug, r);
+        clearKindPersistedState(slug, target.kind);
+      }
     },
     [mesh, slug],
   );
@@ -1210,12 +1221,16 @@ function DesktopInner({ slug }: { slug: string }) {
       // Share menu keeps saying "Stop audio" after the user closed
       // the window. Fall back to direct cleanup for publications that
       // exist outside media's tracking (ghost pubs after reload).
+      //
+      // Screens use stopById so that closing one screen window only stops
+      // that specific share — the user's other concurrent screens stay live.
       const tracked =
         (pub.kind === "audio" && media.activeAudio) ||
         (pub.kind === "camera" && media.activeCamera) ||
-        (pub.kind === "screen" && media.activeScreen);
+        (pub.kind === "screen" && media.hasScreen(pub.streamId));
       if (tracked) {
-        media.stop(pub.kind);
+        if (pub.kind === "screen") media.stopById(pub.streamId);
+        else media.stop(pub.kind);
       } else {
         const local = streams.find(s => s.id === pub.streamId);
         if (local) stopStream(local.id);
@@ -1255,9 +1270,11 @@ function DesktopInner({ slug }: { slug: string }) {
       const tracked =
         (s.kind === "audio" && media.activeAudio) ||
         (s.kind === "camera" && media.activeCamera) ||
-        (s.kind === "screen" && media.activeScreen);
-      if (tracked) media.stop(s.kind);
-      else stopStream(s.id);
+        (s.kind === "screen" && media.hasScreen(s.id));
+      if (tracked) {
+        if (s.kind === "screen") media.stopById(s.id);
+        else media.stop(s.kind);
+      } else stopStream(s.id);
       const r = readResume(slug);
       delete r[s.kind];
       writeResume(slug, r);
@@ -1537,7 +1554,11 @@ function DesktopInner({ slug }: { slug: string }) {
           return;
         case "screen":
           dismissHint();
-          if (media.activeScreen || wantScreenResume) focusPub("screen");
+          // While already sharing, double-clicking the Screen icon opens a
+          // SECOND picker — multiple concurrent screen shares are supported.
+          // The resume-from-reload placeholder still steals focus when present
+          // (and no live screen yet) so the user can resume the prior share.
+          if (wantScreenResume && !media.activeScreen) focusPub("screen");
           else void media.startScreen();
           return;
         default:

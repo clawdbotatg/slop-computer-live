@@ -9,11 +9,24 @@ export type UseLocalMedia = {
   startScreen: () => Promise<void>;
   startAudio: () => Promise<void>;
   stop: (kind: StreamKind) => void;
+  stopById: (id: string) => void;
+  hasScreen: (id: string) => boolean;
   activeCamera: boolean;
   activeScreen: boolean;
   activeAudio: boolean;
   busy: StreamKind | null;
   error: string;
+};
+
+// Internal state shape. Screen is a list because the user can launch
+// multiple concurrent getDisplayMedia captures (double-clicking the
+// Screen icon while already sharing brings up a second picker). Camera
+// and audio remain single-slot — multiple cameras don't make sense and
+// multiple mics would just mix the same user's voice with itself.
+type ActiveState = {
+  camera: string | null;
+  screen: string[];
+  audio: string | null;
 };
 
 export type CameraResolution = "auto" | "480p" | "720p" | "1080p";
@@ -113,9 +126,9 @@ export function useLocalMedia(
   addStream: (h: LocalStreamHandle) => void,
   stopStream: (id: string) => void,
 ): UseLocalMedia {
-  const [activeIds, setActiveIds] = useState<Record<StreamKind, string | null>>({
+  const [activeIds, setActiveIds] = useState<ActiveState>({
     camera: null,
-    screen: null,
+    screen: [],
     audio: null,
   });
   const [busy, setBusy] = useState<StreamKind | null>(null);
@@ -123,7 +136,9 @@ export function useLocalMedia(
 
   const acquire = useCallback(
     async (kind: StreamKind, getStream: () => Promise<MediaStream>) => {
-      if (activeIds[kind]) return;
+      // Camera/audio are single-slot: bail if one is already running.
+      // Screen is multi-slot — every call opens a fresh picker.
+      if (kind !== "screen" && activeIds[kind]) return;
       setError("");
       setBusy(kind);
       try {
@@ -142,7 +157,9 @@ export function useLocalMedia(
           }
         }
         const handle: LocalStreamHandle = { id: stream.id, kind, stream, dispose };
-        setActiveIds(s => ({ ...s, [kind]: handle.id }));
+        setActiveIds(s =>
+          kind === "screen" ? { ...s, screen: [...s.screen, handle.id] } : { ...s, [kind]: handle.id },
+        );
         addStream(handle);
         // If the user kills the stream from the browser UI (e.g. closes the
         // screen-share picker, revokes mic), drop the publication.
@@ -163,7 +180,9 @@ export function useLocalMedia(
             const cleanedDone = stream.getTracks().every(x => x.readyState === "ended");
             const rawAudioDone = stream === raw || raw.getAudioTracks().every(x => x.readyState === "ended");
             if (cleanedDone && rawAudioDone) {
-              setActiveIds(s => ({ ...s, [kind]: null }));
+              setActiveIds(s =>
+                kind === "screen" ? { ...s, screen: s.screen.filter(x => x !== handle.id) } : { ...s, [kind]: null },
+              );
               stopStream(handle.id);
             }
           }),
@@ -210,6 +229,13 @@ export function useLocalMedia(
 
   const stop = useCallback(
     (kind: StreamKind) => {
+      if (kind === "screen") {
+        const ids = activeIds.screen;
+        if (ids.length === 0) return;
+        setActiveIds(s => ({ ...s, screen: [] }));
+        for (const id of ids) stopStream(id);
+        return;
+      }
       const id = activeIds[kind];
       if (!id) return;
       setActiveIds(s => ({ ...s, [kind]: null }));
@@ -218,13 +244,39 @@ export function useLocalMedia(
     [activeIds, stopStream],
   );
 
+  // Stop one specific stream by id. Used by closeWindow for screens
+  // (so closing one screen window doesn't kill the user's other screens).
+  const stopById = useCallback(
+    (id: string) => {
+      if (activeIds.screen.includes(id)) {
+        setActiveIds(s => ({ ...s, screen: s.screen.filter(x => x !== id) }));
+        stopStream(id);
+        return;
+      }
+      if (activeIds.camera === id) {
+        setActiveIds(s => ({ ...s, camera: null }));
+        stopStream(id);
+        return;
+      }
+      if (activeIds.audio === id) {
+        setActiveIds(s => ({ ...s, audio: null }));
+        stopStream(id);
+      }
+    },
+    [activeIds, stopStream],
+  );
+
+  const hasScreen = useCallback((id: string) => activeIds.screen.includes(id), [activeIds.screen]);
+
   return {
     startCamera,
     startScreen,
     startAudio,
     stop,
+    stopById,
+    hasScreen,
     activeCamera: !!activeIds.camera,
-    activeScreen: !!activeIds.screen,
+    activeScreen: activeIds.screen.length > 0,
     activeAudio: !!activeIds.audio,
     busy,
     error,
