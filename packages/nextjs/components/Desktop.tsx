@@ -45,6 +45,7 @@ import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
+import { WormWindow } from "~~/components/desktop/WormWindow";
 import {
   BandFlag,
   Button,
@@ -100,6 +101,7 @@ type AppEntry = {
     | "music"
     | "chess"
     | "pong"
+    | "worm"
     | "qr"
     | "todo"
     | "notes"
@@ -149,7 +151,7 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
   ["browser", "wallet", "ens", "music"],
-  ["pong", "chess"],
+  ["pong", "chess", "worm"],
 ];
 
 function defaultIconPosition(appId: string, i: number): { x: number; y: number } {
@@ -837,6 +839,13 @@ function DesktopInner({ slug }: { slug: string }) {
   const meshGodViewportRef = useRef(mesh.godViewport);
   meshGodViewportRef.current = mesh.godViewport;
 
+  // Live window-set refs for Auto Arrange — read synchronously inside the
+  // callback so it doesn't re-create every time a window opens or closes.
+  const meshOpenWindowIdsRef = useRef(mesh.openWindowIds);
+  meshOpenWindowIdsRef.current = mesh.openWindowIds;
+  const meshBrowsersRefForArrange = useRef(mesh.browsers);
+  meshBrowsersRefForArrange.current = mesh.browsers;
+
   const arrangeForScreenShare = useCallback(() => {
     if (typeof window === "undefined") return;
     const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
@@ -947,69 +956,42 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, [meshPublications, meshUpdateSlotForArrange]);
 
-  // Put the guest card up top as the hero, with a smaller music window +
-  // countdown clock side by side beneath it, then start a 10-minute
-  // countdown so everyone sees the same timer tick down. Wall-clock-
-  // anchored via endAt so peers stay in lockstep without per-tick sync.
+  // "Starting soon" scene: music tall on the left, the guest card as the
+  // big hero in the center, chat down the right edge, and the countdown
+  // clock tucked into the lower-right. Then start a 10-minute countdown so
+  // everyone sees the same timer tick down. Wall-clock-anchored via endAt
+  // so peers stay in lockstep without per-tick sync.
   const meshSetClockStateForArrange = mesh.setClockState;
   const meshOpenWindowForArrange = mesh.openWindow;
   const arrangeForCountdown = useCallback(() => {
     if (typeof window === "undefined") return;
     const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
-    const TOP_INSET = 38;
-    const PAD = 16;
 
-    meshOpenWindowForArrange("card");
     meshOpenWindowForArrange("music");
+    meshOpenWindowForArrange("card");
+    meshOpenWindowForArrange("chat");
     meshOpenWindowForArrange("clock");
 
-    const TITLEBAR = 36;
-    const areaW = vw - PAD * 2;
-    const areaH = vh - TOP_INSET - PAD * 2;
-
-    // Card is the hero up top — landscape (~3:2, matching the 1536×1024
-    // template so it doesn't letterbox), capped so it stays a tidy size
-    // on a big OBS canvas instead of spanning the whole stage.
-    const cardW = Math.max(480, Math.min(720, areaW));
-    const cardH = Math.round(cardW / 1.5) + TITLEBAR;
-
-    // Music + countdown sit smaller, side by side, directly beneath the
-    // card and aligned to its width.
-    const lowerW = Math.floor((cardW - PAD) / 2);
-    const lowerH = Math.max(240, Math.min(320, areaH - cardH - PAD));
-
-    // Center the whole card-over-pair block in the stage.
-    const blockH = cardH + PAD + lowerH;
-    const originX = Math.max(PAD, Math.floor((vw - cardW) / 2));
-    const originY = TOP_INSET + Math.max(PAD, Math.floor((vh - TOP_INSET - blockH) / 2));
-    const lowerY = originY + cardH + PAD;
-
+    // Hand-tuned proportional layout, expressed as viewport fractions so
+    // it holds its shape on any OBS canvas size. The slight overlaps
+    // (clock over the card's + chat's corners) are intentional — see the
+    // View ▸ Arrange for Countdown reference. Pushed in back-to-front
+    // order: card under everything, clock on top.
     let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
-    meshUpdateSlotForArrange({
-      id: "app-music",
-      x: originX,
-      y: lowerY,
-      width: lowerW,
-      height: lowerH,
-      z: z++,
-    });
-    meshUpdateSlotForArrange({
-      id: "app-clock",
-      x: originX + lowerW + PAD,
-      y: lowerY,
-      width: lowerW,
-      height: lowerH,
-      z: z++,
-    });
-    // Card last so it sits on top of the stack.
-    meshUpdateSlotForArrange({
-      id: "app-card",
-      x: originX,
-      y: originY,
-      width: cardW,
-      height: cardH,
-      z: z++,
-    });
+    const place = (id: string, fx: number, fy: number, fw: number, fh: number) =>
+      meshUpdateSlotForArrange({
+        id,
+        x: Math.round(fx * vw),
+        y: Math.round(fy * vh),
+        width: Math.round(fw * vw),
+        height: Math.round(fh * vh),
+        z: z++,
+      });
+
+    place("app-card", 0.236, 0.123, 0.478, 0.61); // big hero, center
+    place("app-music", 0.006, 0.368, 0.236, 0.5); // tall, left edge
+    place("app-chat", 0.8, 0.14, 0.198, 0.45); // right edge
+    place("app-clock", 0.637, 0.565, 0.336, 0.362); // lower-right, on top
 
     // Flip the clock to countdown tab + start a 10-minute timer
     // anchored to Date.now() so every peer's UI computes the same
@@ -1023,6 +1005,119 @@ function DesktopInner({ slug }: { slug: string }) {
       },
     });
   }, [meshOpenWindowForArrange, meshUpdateSlotForArrange, meshSetClockStateForArrange]);
+
+  // "Auto Arrange" — tidy every open window into a fresh layout. Each
+  // invocation advances through a ring of distinct strategies, so the
+  // host can keep clicking it until a layout looks right. Re-snaps the
+  // desktop icons every time too, just for fun. Operates on the god-mode
+  // frame so the arrangement broadcasts identically to every peer.
+  const autoArrangeCycleRef = useRef(0);
+  const autoArrange = useCallback(() => {
+    if (typeof window === "undefined") return;
+    autoArrangeIcons();
+
+    const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
+    const TOP_INSET = 38;
+    const PAD = 14;
+
+    // Every open window that has a live slot — apps + publications +
+    // browsers — newest-focused first (highest z), so the window the host
+    // last raised becomes the "master" in layouts that have one.
+    const slots = meshSlotsRefForArrange.current;
+    const ids: string[] = [];
+    for (const id of meshOpenWindowIdsRef.current) ids.push(`app-${id}`);
+    for (const pub of meshPublications) ids.push(slotIdFor(pub));
+    for (const b of Object.values(meshBrowsersRefForArrange.current)) ids.push(`browser-${b.id}`);
+    const open = ids.filter(id => slots[id]).sort((a, b) => (slots[b]!.z ?? 0) - (slots[a]!.z ?? 0));
+    if (open.length === 0) return;
+
+    const n = open.length;
+    const areaX = PAD;
+    const areaY = TOP_INSET + PAD;
+    const areaW = vw - PAD * 2;
+    const areaH = vh - TOP_INSET - PAD * 2;
+
+    let z = Math.max(0, ...Object.values(slots).map(s => s.z), 5) + 1;
+    const set = (id: string, x: number, y: number, w: number, h: number) =>
+      meshUpdateSlotForArrange({
+        id,
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.max(180, Math.round(w)),
+        height: Math.max(120, Math.round(h)),
+        z: z++,
+      });
+
+    const strategies = ["grid", "cascade", "master", "columns", "spotlight"] as const;
+    const strategy = strategies[autoArrangeCycleRef.current % strategies.length]!;
+    autoArrangeCycleRef.current += 1;
+
+    if (strategy === "grid") {
+      // Near-square grid filling the whole stage.
+      const cols = Math.ceil(Math.sqrt(n));
+      const rows = Math.ceil(n / cols);
+      const cellW = (areaW - (cols - 1) * PAD) / cols;
+      const cellH = (areaH - (rows - 1) * PAD) / rows;
+      open.forEach((id, i) => {
+        const r = Math.floor(i / cols);
+        const c = i % cols;
+        set(id, areaX + c * (cellW + PAD), areaY + r * (cellH + PAD), cellW, cellH);
+      });
+    } else if (strategy === "cascade") {
+      // Classic diagonal cascade — uniform mid-size tiles stepping down
+      // and right, shifting a column over each time they'd run off-screen.
+      const w = Math.min(560, areaW * 0.55);
+      const h = Math.min(420, areaH * 0.62);
+      const step = 36;
+      const perRun = Math.max(1, Math.floor((areaH - h) / step) + 1);
+      open.forEach((id, i) => {
+        const k = i % perRun;
+        const run = Math.floor(i / perRun);
+        const x = Math.min(areaX + k * step + run * step * 2, areaX + areaW - w);
+        set(id, x, areaY + k * step, w, h);
+      });
+    } else if (strategy === "master") {
+      // Focused window large on the left; the rest stack down a right rail.
+      if (n === 1) {
+        set(open[0]!, areaX, areaY, areaW, areaH);
+      } else {
+        const railW = Math.min(360, areaW * 0.3);
+        const masterW = areaW - railW - PAD;
+        set(open[0]!, areaX, areaY, masterW, areaH);
+        const rest = open.slice(1);
+        const rh = (areaH - (rest.length - 1) * PAD) / rest.length;
+        rest.forEach((id, i) => set(id, areaX + masterW + PAD, areaY + i * (rh + PAD), railW, rh));
+      }
+    } else if (strategy === "columns") {
+      // Equal vertical columns (3 once it gets crowded), stacked within.
+      const cols = n > 6 ? 3 : 2;
+      const colW = (areaW - (cols - 1) * PAD) / cols;
+      const perCol = Math.ceil(n / cols);
+      open.forEach((id, i) => {
+        const c = Math.floor(i / perCol);
+        const r = i % perCol;
+        const count = Math.min(perCol, n - c * perCol);
+        const ch = (areaH - (count - 1) * PAD) / count;
+        set(id, areaX + c * (colW + PAD), areaY + r * (ch + PAD), colW, ch);
+      });
+    } else {
+      // Spotlight — one big centered hero with the rest as a filmstrip
+      // along the bottom.
+      if (n === 1) {
+        const w = areaW * 0.6;
+        const h = areaH * 0.7;
+        set(open[0]!, areaX + (areaW - w) / 2, areaY + (areaH - h) / 2, w, h);
+      } else {
+        const stripH = Math.min(200, areaH * 0.26);
+        const heroH = areaH - stripH - PAD;
+        const heroW = areaW * 0.66;
+        set(open[0]!, areaX + (areaW - heroW) / 2, areaY, heroW, heroH);
+        const rest = open.slice(1);
+        const sw = (areaW - (rest.length - 1) * PAD) / rest.length;
+        rest.forEach((id, i) => set(id, areaX + i * (sw + PAD), areaY + heroH + PAD, sw, stripH));
+      }
+    }
+  }, [autoArrangeIcons, meshPublications, meshUpdateSlotForArrange]);
 
   // Refs into the close/minimize callbacks defined far below this point
   // in the file. We need the menu items here to invoke them, but the
@@ -1041,6 +1136,7 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Minimize Window", shortcut: "⇧⌘M", onClick: () => minimizeTopWindowRef.current() },
         { label: "Close Window", shortcut: "⇧⌘W", onClick: () => closeTopWindowRef.current() },
         { divider: true, label: "" },
+        { label: "Auto Arrange", onClick: autoArrange },
         { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
         { label: "Arrange for Screen Share", onClick: arrangeForScreenShare },
         { label: "Arrange for Video", onClick: arrangeForVideo },
@@ -1056,7 +1152,7 @@ function DesktopInner({ slug }: { slug: string }) {
         },
       ],
     }),
-    [autoArrangeIcons, arrangeForScreenShare, arrangeForVideo, arrangeForCountdown],
+    [autoArrange, autoArrangeIcons, arrangeForScreenShare, arrangeForVideo, arrangeForCountdown],
   );
 
   // ---- Slot clamp on viewport resize ------------------------------------
@@ -1584,6 +1680,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "music":
         case "chess":
         case "pong":
+        case "worm":
         case "qr":
         case "todo":
         case "notes":
@@ -2667,6 +2764,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={320}
             >
               <PongWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="worm"
+              title="WORM"
+              defaultSlot={{ x: 200, y: 110, width: 600, height: 500 }}
+              minWidth={420}
+              minHeight={380}
+            >
+              <WormWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

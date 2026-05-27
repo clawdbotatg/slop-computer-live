@@ -482,8 +482,8 @@ export type TranscriptSegment = {
   text: string;
   source: "live" | "spectator" | "agent";
   /** Absent ⇒ a spoken line. Set ⇒ a relay-narrated in-room action
-   *  (music/file/wallet/chess/pong) — archive + poll only, never a caption. */
-  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+   *  (music/file/wallet/chess/pong/worm) — archive + poll only, never a caption. */
+  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm";
   /** Structured action metadata; only set on action rows. */
   meta?: Record<string, string | number | boolean | null>;
 };
@@ -709,6 +709,43 @@ const DEFAULT_PONG_STATE: PongState = {
   lastScorer: null,
   winner: null,
   field: { w: 800, h: 500, paddleH: 90, paddleW: 12, paddleInset: 24, ballR: 8 },
+};
+
+// --- Worm --------------------------------------------------------------
+// Up-to-4-player multiplayer snake. Mirrors `packages/relay/src/worm.ts` —
+// the relay owns the whole grid simulation (movement, food, collisions);
+// clients only send their own desired direction.
+export type WormDir = "up" | "down" | "left" | "right";
+export type WormColor = "cyan" | "magenta" | "lime" | "purple";
+export type WormCell = { x: number; y: number };
+export type WormStatus = "waiting" | "playing" | "ended";
+export type WormPlayer = {
+  slot: number;
+  ownerKey: string;
+  handle: string;
+  color: WormColor;
+  body: WormCell[];
+  dir: WormDir;
+  alive: boolean;
+  respawnAt: number;
+  len: number;
+};
+export type WormState = {
+  players: (WormPlayer | null)[];
+  food: WormCell[];
+  status: WormStatus;
+  winner: number | null;
+  tick: number;
+  field: { cols: number; rows: number; cell: number; moveMs: number; winLen: number; startLen: number };
+};
+
+const DEFAULT_WORM_STATE: WormState = {
+  players: [null, null, null, null],
+  food: [],
+  status: "waiting",
+  winner: null,
+  tick: 0,
+  field: { cols: 40, rows: 30, cell: 16, moveMs: 125, winLen: 16, startLen: 3 },
 };
 
 // --- File-preview shared state ---------------------------------------------
@@ -1067,6 +1104,25 @@ export type PeerMeshState = {
   /** Reset scores + restart the match. Server refuses if caller is not
    *  seated. The "Play Again" button at end-of-match hits this. */
   pongReset: () => void;
+  /** Server-authoritative worm (multiplayer snake) snapshot. The relay
+   *  advances every worm one grid cell per move tick and broadcasts the
+   *  whole board; clients render it (with light interpolation between
+   *  ticks) and never simulate locally. */
+  wormState: WormState;
+  /** Seat slot (0..3) this peer occupies, or null when not seated.
+   *  Reconciled from `worm_slot` replies + the players map in wormState. */
+  myWormSlot: number | null;
+  /** Take the first open seat (or no-op if full / already seated). The
+   *  server replies with `worm_slot`. */
+  wormClaim: () => void;
+  /** Vacate my seat. */
+  wormRelease: () => void;
+  /** Queue my next direction. Sent immediately on each turn; the relay
+   *  applies it on its next move tick and rejects 180° reversals. */
+  wormSetDir: (dir: WormDir) => void;
+  /** Reset the round (respawn everyone). Seated players only — the
+   *  "Play Again" button after a round ends hits this. */
+  wormReset: () => void;
   /** Shared QR-window state (text + center logo). Every peer's QR
    *  renders this. Last-writer-wins. */
   qrState: QrState;
@@ -1275,6 +1331,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [pongState, setPongStateLocal] = useState<PongState>(DEFAULT_PONG_STATE);
   const [myPongSeat, setMyPongSeat] = useState<PongSide | null>(null);
+  const [wormState, setWormStateLocal] = useState<WormState>(DEFAULT_WORM_STATE);
+  const [myWormSlot, setMyWormSlot] = useState<number | null>(null);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
   const [scrollSync, setScrollSyncLocal] = useState<Record<string, ScrollSnapshot>>({});
   const [uiState, setUIStateLocal] = useState<Record<string, unknown>>({});
@@ -1734,6 +1792,42 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
   const pongReset = useCallback(() => {
     send({ type: "pong_reset" });
+  }, [send]);
+
+  // Reconcile myWormSlot against the authoritative players map — mirrors
+  // the pong-seat reconcile (reconnects, refresh-with-seat-gone, etc.).
+  useEffect(() => {
+    const myKey = (self?.address ?? self?.handle ?? "").toLowerCase();
+    if (!myKey) {
+      if (myWormSlot !== null) setMyWormSlot(null);
+      return;
+    }
+    let detected: number | null = null;
+    for (const p of wormState.players) {
+      if (p && p.ownerKey === myKey) {
+        detected = p.slot;
+        break;
+      }
+    }
+    if (detected !== myWormSlot) setMyWormSlot(detected);
+  }, [wormState.players, self?.address, self?.handle, myWormSlot]);
+
+  const wormClaim = useCallback(() => {
+    send({ type: "worm_claim" });
+  }, [send]);
+  const wormRelease = useCallback(() => {
+    // Optimistic: clear local slot immediately; `worm_slot` confirms.
+    setMyWormSlot(null);
+    send({ type: "worm_release" });
+  }, [send]);
+  const wormSetDir = useCallback(
+    (dir: WormDir) => {
+      send({ type: "worm_dir", dir });
+    },
+    [send],
+  );
+  const wormReset = useCallback(() => {
+    send({ type: "worm_reset" });
   }, [send]);
 
   const sendClick = useCallback(
@@ -2475,6 +2569,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.pongState && typeof msg.pongState === "object") {
             setPongStateLocal(msg.pongState as PongState);
           }
+          if (msg.wormState && typeof msg.wormState === "object") {
+            setWormStateLocal(msg.wormState as WormState);
+          }
           if (msg.walletChat && typeof msg.walletChat === "object") {
             setWalletChatLocal(msg.walletChat as WalletChat);
           }
@@ -2735,6 +2832,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         if (msg.type === "pong_seat") {
           const side = msg.side === "left" || msg.side === "right" ? (msg.side as PongSide) : null;
           setMyPongSeat(side);
+          return;
+        }
+
+        if (msg.type === "worm_state" && msg.state && typeof msg.state === "object") {
+          setWormStateLocal(msg.state as WormState);
+          return;
+        }
+        if (msg.type === "worm_slot") {
+          setMyWormSlot(typeof msg.slot === "number" ? msg.slot : null);
           return;
         }
 
@@ -3289,6 +3395,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     pongRelease,
     pongPaddle,
     pongReset,
+    wormState,
+    myWormSlot,
+    wormClaim,
+    wormRelease,
+    wormSetDir,
+    wormReset,
     previewMedia,
     setPreviewMedia,
     scrollSync,

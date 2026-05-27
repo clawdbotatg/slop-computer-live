@@ -249,6 +249,10 @@
     {
       "name": "escrow",
       "prompt": "A chunky retro 3D vault door with two glowing coins locked together — a blue ethereum diamond and a teal dollar coin — bound by a neon padlock, cyberdelic Mac OS 9 style."
+    },
+    {
+      "name": "worm",
+      "prompt": "A chunky segmented arcade worm coiled in an S-shape, made of glowing rounded cube segments alternating hot magenta and cyan, with two big friendly cartoon eyes on the head, reaching toward a single bright glowing yellow food orb."
     }
   ],
   "sheet": {

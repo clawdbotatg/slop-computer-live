@@ -25,7 +25,7 @@ const MAX_HISTORY = 500;
 // track, uploaded a file, proposed a tx, made a notable chess move, won at
 // pong). Action rows are archive/poll-only — see room.ts, they're kept out
 // of the live `transcript_seg` caption broadcast.
-export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm";
 
 // Structured bits for an action row (track index, filename, tx target, SAN,
 // pong score, …). The rendered one-liner lives in `text`; this is the raw

@@ -63,6 +63,7 @@ function slugNote(slug: string | null): string {
 export const SKILL_TOPICS = [
   "chess",
   "pong",
+  "worm",
   "music",
   "browser",
   "windows",
@@ -206,6 +207,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`researchState\` | \`ResearchSnapshot\` | Per-room shared guest-research dossier + phase machine (see \`/v1/skill/research\`) |
 | \`qrState\` | \`{ text, logoDataUrl } \\| null\` | Room-shared QR code content (see \`/v1/skill/windows\`) |
 | \`pongState\` | \`PongSnapshot\` | Live pong match for this room (see \`/v1/skill/pong\`) |
+| \`wormState\` | \`WormSnapshot\` | Live worm (multiplayer snake) match for this room (see \`/v1/skill/worm\`) |
 | \`walletChat\` | \`WalletChatState\` | Per-room AI-wallet conversation thread (see \`/v1/skill/wallet\`) |
 | \`chyronState\` | \`{ text, updatedAt }\` | Host's lower-third banner text (see \`/v1/skill/feeds\`) |
 | \`previewMedia\` / \`scrollSync\` / \`uiState\` | internal | Per-room UI-sync scratch (file-preview playhead, scroll position, misc shared UI). Rarely needed by agents. |
@@ -292,6 +294,7 @@ rules and recommended loops that aren't repeated here.
 | --- | --- | --- |
 | **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` | long-poll loop |
 | **Pong** (2-player real-time game) | \`GET ${BASE}/v1/skill/pong\` | seats + reset; real-time |
+| **Worm** (up-to-4-player real-time snake) | \`GET ${BASE}/v1/skill/worm\` | seats + dir + reset; real-time |
 | **Music** (shared SLOPAMP + Jamendo genres + custom playlist) | \`GET ${BASE}/v1/skill/music\` | long-poll loop |
 | **Browser** (shared iframes + impersonator + tx capture + ENS resolve) | \`GET ${BASE}/v1/skill/browser\` |  |
 | **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |  |
@@ -564,6 +567,100 @@ stale match is parked in \`ended\`, then tell the two humans to open the
 Pong window and double-click to take a seat (or \`claim\` on their behalf
 if you hold their tokens). Watch \`score\` / \`winner\` via \`/v1/pong\` and
 call the game in chat when someone reaches 11.
+`;
+}
+
+// =============================================================================
+// Worm
+// =============================================================================
+
+export function skillWorm(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Worm sub-skill
+
+${slugNote(slug)}
+
+Server-authoritative **multiplayer snake**, up to 4 worms **per room**.
+The relay owns the whole grid: it runs a fixed-step move tick (~8 Hz)
+while at least one worm is seated, advances every worm one cell per step
+(all simultaneously), resolves food + collisions, and broadcasts a fresh
+snapshot every step. Clients only ever send a **direction** — the relay
+queues it per \`ownerKey\` and applies it on the next tick (rejecting
+180° reversals), so you can only steer your own worm. Each seat is one
+of four classic colors (cyan / magenta / lime / purple); food orbs are
+amber. Not persisted — matches die on relay restart, by design.
+
+**Rules:** walls kill. Crashing into a wall, yourself, or another worm
+(head-on kills both) drops your worm; it **respawns** small after a beat
+and you keep playing — respawn arena, not elimination. Eat a food orb to
+grow by one. First worm to reach \`field.winLen\` wins the round;
+\`reset\` ("play again") respawns everyone.
+
+> ⚠ **Real-time twitch game.** Like pong, winning means steering at tick
+> speed — fine for a human, rough for an HTTP agent eating a round-trip
+> per turn. Your useful verbs are **claim a seat**, **reset**, and **read
+> the board** — not out-slithering a human.
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/worm?slug=${slugStr(slug)}
+# → { state: {
+#       players: [ { slot, ownerKey, handle, color, body:[{x,y}...],
+#                    dir, alive, respawnAt, len } | null, ... ],  # length 4, index = slot
+#       food:    [ { x, y }, ... ],
+#       status:  "waiting" | "playing" | "ended",
+#       winner:  <slot> | null,
+#       tick:    <move-step counter>,
+#       field:   { cols, rows, cell, moveMs, winLen, startLen }
+#     } }
+\`\`\`
+
+Also embedded in \`GET /v1/state?slug=${slugStr(slug)}\` under \`wormState\`.
+\`body[0]\` is the head; coords are grid cells (0..cols-1, 0..rows-1).
+There's no long-poll — the live snapshot fans out over WS each tick, so
+HTTP agents just poll \`/v1/worm\` (it's cheap).
+
+### Claim / release a seat
+
+\`\`\`
+POST ${BASE}/v1/worm/claim?slug=${slugStr(slug)}     # → { ok, slot: 0..3 }
+POST ${BASE}/v1/worm/release?slug=${slugStr(slug)}   # → { ok, released: boolean }
+\`\`\`
+
+\`claim\` takes the first open seat (idempotent — re-claiming returns your
+existing slot); \`409 all-seats-full\` when none is free. Play starts the
+moment the first worm is seated; seats also release automatically when a
+peer's WS disconnects.
+
+### Steer
+
+\`\`\`
+POST ${BASE}/v1/worm/dir?slug=${slugStr(slug)}    { "dir": "up" }   # up|down|left|right
+\`\`\`
+
+Queues your next direction (applied on the next tick, 180° reversals
+rejected). No-ops silently if you hold no seat. Humans fire one per
+keypress over WS; an agent *can* poke single turns via REST but will lag.
+
+### Reset / play again
+
+\`\`\`
+POST ${BASE}/v1/worm/reset?slug=${slugStr(slug)}     # → { ok }   403 if you're not seated
+\`\`\`
+
+Respawns every seated worm small and clears the winner. From
+\`status: "ended"\` this is the "play again" button. Seated players only.
+
+### Agent recipe
+
+**"Start a worm game for the guests":** \`POST /v1/worm/reset\` if a stale
+round is parked in \`ended\`, then tell the humans to open the Worm window
+and click Join (or \`claim\` on their behalf if you hold their tokens).
+Watch \`status\` / \`winner\` via \`/v1/worm\` and call the round in chat when
+someone wins.
 `;
 }
 
@@ -924,6 +1021,7 @@ Known ids and their interactive surfaces:
 | \`music\` | SLOPAMP player | \`GET /v1/skill/music\` |
 | \`chess\` | Chess game | \`GET /v1/skill/chess\` |
 | \`pong\` | 2-player real-time pong | \`GET /v1/skill/pong\` |
+| \`worm\` | up-to-4-player real-time snake | \`GET /v1/skill/worm\` |
 | \`todo\` | Shared todo list | \`GET /v1/skill/todo\` |
 | \`notes\` | Shared notes | \`GET /v1/skill/notes\` |
 | \`glossary\` | Shared glossary with AI TLDRs | \`GET /v1/skill/glossary\` |
@@ -1090,6 +1188,7 @@ are singleton windows shipped in the relay code. Anything you POST is a
 | \`"music"\` | opens the slopamp singleton window |
 | \`"chess"\` | opens the chess singleton window |
 | \`"pong"\` | opens the 2-player real-time pong game |
+| \`"worm"\` | opens the up-to-4-player real-time worm (snake) game |
 | \`"audio"\` | opens the audio share dialog (peer-only) |
 | \`"video"\` | opens the camera share dialog (peer-only) |
 | \`"screen"\` | starts a screen-share (peer-only) |
@@ -2587,9 +2686,11 @@ Match existing patterns:
 - **Low-frequency state** (turn-based, chat-like, edit-then-broadcast):
   \`research-state.ts\` + \`ResearchWindow.tsx\`, \`clock.ts\` + \`ClockWindow.tsx\`.
 - **High-frequency state** (real-time physics, held-key input,
-  per-frame updates): \`pong.ts\` + \`PongWindow.tsx\`. Read **L2.5**
-  below before you write a single line of physics — there are three
-  traps that look fine in dev and break with a remote peer.
+  per-frame updates): \`pong.ts\` + \`PongWindow.tsx\`, or a relay-driven
+  grid sim with up-to-N seats + client interpolation: \`worm.ts\` +
+  \`WormWindow.tsx\`. Read **L2.5** below before you write a single line
+  of physics — there are three traps that look fine in dev and break
+  with a remote peer.
 
 ### L2.5 — real-time input / physics (extra rules on top of L2)
 
@@ -2685,8 +2786,8 @@ Briefly:
 
 - omitted / \`"browser"\` — your URL in a shared iframe (impersonator
   on). The L0 + L1 + L3 paths above all land here.
-- \`"chat" / "music" / "chess" / "pong" / "todo" / "notes" / "glossary"
-  / "gas" / "clock" / "wallet" / "ens" / "research" / "news" /
+- \`"chat" / "music" / "chess" / "pong" / "worm" / "todo" / "notes" /
+  "glossary" / "gas" / "clock" / "wallet" / "ens" / "research" / "news" /
   "transcript" / "card"\` — each spawns a built-in singleton window with
   its own per-room shared state. To make your own equivalent, take the
   L2 path.
@@ -2790,6 +2891,8 @@ export function skillForTopic(
       return skillChess(token, isHost, slug);
     case "pong":
       return skillPong(token, isHost, slug);
+    case "worm":
+      return skillWorm(token, isHost, slug);
     case "music":
       return skillMusic(token, isHost, slug);
     case "browser":

@@ -25,6 +25,7 @@ import { MusicState } from "./music-state.js";
 import { NoteList } from "./notes.js";
 import { Participants } from "./participants.js";
 import { Pong } from "./pong.js";
+import { Worm } from "./worm.js";
 import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
 import { UIState } from "./ui-state.js";
@@ -263,6 +264,7 @@ export class Room {
   readonly desktop: DesktopState;
   readonly music = new MusicState();
   readonly pong = new Pong();
+  readonly worm = new Worm();
   readonly research: ResearchState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
@@ -380,6 +382,27 @@ export class Room {
         lastPongWinner = null;
       }
     });
+    // Narrate a worm-round win once, on the null→winner edge — same edge
+    // dance as pong, since the move tick re-broadcasts the same winner
+    // until someone resets.
+    let lastWormWinner: number | null = null;
+    this.worm.subscribe(state => {
+      this.broadcast({ type: "worm_state", state });
+      if (state.winner !== null && state.winner !== lastWormWinner) {
+        lastWormWinner = state.winner;
+        const p = state.players[state.winner];
+        if (p) {
+          this.transcript.appendAction({
+            kind: "worm",
+            ...ownerKeyActor(p.ownerKey, p.handle),
+            text: `🐛 ${p.handle} won worm — grew to ${p.len}`,
+            meta: { winner: p.handle, len: p.len, color: p.color },
+          });
+        }
+      } else if (state.winner === null) {
+        lastWormWinner = null;
+      }
+    });
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
     );
@@ -454,6 +477,7 @@ export class Room {
     if (peer) {
       const peerOwnerKey = (peer.address ?? peer.handle ?? peer.id).toLowerCase();
       this.pong.release(peerOwnerKey);
+      this.worm.release(peerOwnerKey);
     }
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
@@ -572,6 +596,11 @@ export function hibernateRoom(slug: string): boolean {
   if (!room) return false;
   if (room.peerCount() > 0) return false; // refuse to hibernate a room with live peers
   room.meta.flush();
+  // Tear down the real-time game tickers. They already self-stop when the
+  // last seat frees (which happens before peerCount hits 0), so this is
+  // belt-and-suspenders against a future regression in that invariant.
+  room.pong.dispose();
+  room.worm.dispose();
   rooms.delete(slug);
   return true;
 }

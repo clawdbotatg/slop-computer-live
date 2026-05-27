@@ -584,6 +584,7 @@ type AppEntry = {
     | "music"
     | "chess"
     | "pong"
+    | "worm"
     | "qr"
     | "todo"
     | "notes"
@@ -654,6 +655,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Pong",
     icon: "/icons/pong.png",
     kind: "pong",
+  },
+  {
+    id: "worm",
+    label: "Worm",
+    icon: "/icons/worm.png",
+    kind: "worm",
   },
   {
     id: "browser",
@@ -976,6 +983,7 @@ app.get("/v1/state", async (req, reply) => {
     researchState: roomFromReq(req).research.current().state,
     qrState: roomFromReq(req).qr.current().state,
     pongState: roomFromReq(req).pong.current().state,
+    wormState: roomFromReq(req).worm.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
     scrollSync: roomFromReq(req).scrollSync.all(),
     uiState: roomFromReq(req).uiState.all(),
@@ -2643,6 +2651,66 @@ app.post("/v1/pong/reset", async (req, reply) => {
   const callerKey = callerOwnerKeyFromReq(a);
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
   const ok = roomFromReq(req).pong.reset(callerKey);
+  if (!ok) return reply.code(403).send({ error: "not-seated" });
+  return { ok: true };
+});
+
+// =============================================================================
+// /v1/worm — up-to-4-player multiplayer snake (per room)
+// -----------------------------------------------------------------------------
+// Server-authoritative grid simulation; clients send only a direction.
+// REST mirrors the WS messages for agent control: claim/release a seat,
+// steer, reset the round. Seats are stable-keyed by ownerKey and free on
+// WS disconnect, same as pong. Walls kill; crash → respawn; first worm to
+// the win length takes the round.
+// =============================================================================
+
+app.get("/v1/worm", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return roomFromReq(req).worm.current();
+});
+
+app.post("/v1/worm/claim", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const slot = roomFromReq(req).worm.claim(callerKey, callerHandleFromReq(a));
+  if (slot === null) return reply.code(409).send({ error: "all-seats-full" });
+  return { ok: true, slot };
+});
+
+app.post("/v1/worm/release", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const released = roomFromReq(req).worm.release(callerKey);
+  return { ok: true, released };
+});
+
+type WormDirBody = { dir?: unknown };
+app.post<{ Body: WormDirBody }>("/v1/worm/dir", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const dir = (req.body ?? {}).dir;
+  if (dir !== "up" && dir !== "down" && dir !== "left" && dir !== "right") {
+    return reply.code(400).send({ error: "bad-dir" });
+  }
+  roomFromReq(req).worm.setDir(callerKey, dir);
+  return { ok: true };
+});
+
+app.post("/v1/worm/reset", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const ok = roomFromReq(req).worm.reset(callerKey);
   if (!ok) return reply.code(403).send({ error: "not-seated" });
   return { ok: true };
 });
@@ -5002,6 +5070,7 @@ app.register(async function signalRoutes(fastify) {
       researchState: room.research.current().state,
       qrState: room.qr.current().state,
       pongState: room.pong.current().state,
+      wormState: room.worm.current().state,
       previewMedia: room.previewMedia.all(),
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
@@ -5550,6 +5619,39 @@ app.register(async function signalRoutes(fastify) {
           // hits this.
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
           const ok = room.pong.reset(callerKey);
+          if (!ok) return send(socket, { type: "error", error: "not-seated" });
+          return;
+        }
+        case "worm_claim": {
+          // Auto-assign the first open seat (0..3). Idempotent; returns
+          // null over `worm_slot` when all four are taken.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const handle = info.handle ?? (info.address ? info.address.slice(0, 8) : "guest");
+          const slot = room.worm.claim(callerKey, handle);
+          send(socket, { type: "worm_slot", slot });
+          return;
+        }
+        case "worm_release": {
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          room.worm.release(callerKey);
+          send(socket, { type: "worm_slot", slot: null });
+          return;
+        }
+        case "worm_dir": {
+          // Queue this peer's next direction. Applied (and reversal-checked)
+          // on the relay's next move tick; ignored for non-seated callers.
+          const dir = msg.dir;
+          if (dir !== "up" && dir !== "down" && dir !== "left" && dir !== "right") {
+            return send(socket, { type: "error", error: "bad_worm_dir" });
+          }
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          room.worm.setDir(callerKey, dir);
+          return;
+        }
+        case "worm_reset": {
+          // Seated players only — "play again" after a round ends.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.worm.reset(callerKey);
           if (!ok) return send(socket, { type: "error", error: "not-seated" });
           return;
         }

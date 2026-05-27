@@ -1,7 +1,7 @@
 // Formatters for the in-room action lines the relay narrates into the
 // transcript (see Transcript.appendAction). Kept in one place because the
 // capture points are split across index.ts (music/chess/wallet, where the
-// actor comes from the live WS session `info`) and room.ts (file/pong,
+// actor comes from the live WS session `info`) and room.ts (file/pong/worm,
 // where the actor comes from a stored ownerKey). The actor's name is baked
 // into the rendered `text` so the JSONL archive reads on its own.
 
