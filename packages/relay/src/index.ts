@@ -646,10 +646,31 @@ function readApps(): AppEntry[] {
   return out;
 }
 
-app.get("/apps", async (_req, reply) => {
+// Per-room resolved catalog: the two global layers (DEFAULT_APPS +
+// hot-apps.json) plus this room's own apps. Precedence on id collision is
+// room > global > built-in. Grid order stays stable: built-ins first,
+// then global extras, then room-only extras.
+function resolveAppsForRoom(roomApps: AppEntry[]): AppEntry[] {
+  const hot = readHotApps();
+  const builtInIds = new Set(DEFAULT_APPS.map(a => a.id));
+  const globalIds = new Set(hot.map(a => a.id));
+  const hotById = new Map(hot.map(a => [a.id, a]));
+  const roomById = new Map(roomApps.map(a => [a.id, a]));
+  const out: AppEntry[] = DEFAULT_APPS.map(a => roomById.get(a.id) ?? hotById.get(a.id) ?? a);
+  for (const a of hot) if (!builtInIds.has(a.id)) out.push(roomById.get(a.id) ?? a);
+  for (const a of roomApps) if (!builtInIds.has(a.id) && !globalIds.has(a.id)) out.push(a);
+  return out;
+}
+
+app.get<{ Querystring: { slug?: string } }>("/apps", async (req, reply) => {
   // Re-read on every request so editing the file on the host is instant.
   reply.header("cache-control", "no-store");
-  return { apps: readApps() };
+  const raw = typeof req.query.slug === "string" ? req.query.slug : "";
+  const slug = isValidSlug(raw) ? raw : null;
+  // No slug → global catalog only (back-compat). With a slug → global +
+  // that room's own apps, so ephemeral/third-party apps stay scoped.
+  if (!slug) return { apps: readApps() };
+  return { apps: resolveAppsForRoom(getOrCreateRoom(slug).apps.list()) };
 });
 
 // =============================================================================
@@ -787,7 +808,7 @@ app.get("/v1/state", async (req, reply) => {
     publications: roomFromReq(req).desktop.listPublications(),
     slots: roomFromReq(req).desktop.getSlots(),
     browsers: roomFromReq(req).browsers.list(),
-    apps: readApps(),
+    apps: resolveAppsForRoom(roomFromReq(req).apps.list()),
     avatars: listAvatarsSync(),
     hiddenAvatars: listHiddenOwnersSync(),
     openWindowIds: roomFromReq(req).windows.list(),
@@ -967,7 +988,7 @@ app.get<{ Params: { name: string } }>("/v1/app-icons/:name", async (req, reply) 
 
 // --- Apps: host-only mutators -----------------------------------------------
 
-type AppBody = { id?: unknown; label?: unknown; icon?: unknown; url?: unknown; chrome?: unknown };
+type AppBody = { id?: unknown; label?: unknown; icon?: unknown; url?: unknown; chrome?: unknown; scope?: unknown };
 
 app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   const a = v1AuthFromReq(req);
@@ -981,41 +1002,82 @@ app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
   // "app" → clean titled window (label in title bar, URL bar hidden).
   // Anything else (incl. omitted) → normal browser chrome.
   const chrome = body.chrome === "app" ? "app" : undefined;
+  // Default scope is the caller's room: ephemeral / third-party apps stay
+  // scoped to the room they were added in. `scope:"global"` (still
+  // host-only) writes the always-everywhere hot-apps overlay instead.
+  const scope = body.scope === "global" ? "global" : "room";
   if (!id || !label || !icon || !url) {
     return reply.code(400).send({ error: "missing-fields", required: ["id", "label", "icon", "url"] });
   }
   if (!/^[a-z0-9-]{1,40}$/.test(id)) {
     return reply.code(400).send({ error: "bad-id", note: "lowercase letters, digits, dashes, 1-40 chars" });
   }
-  // Only mutate hot-apps. Built-ins are code; submitting one here creates
-  // an override (same id) that wins at read time.
-  const hot = readHotApps();
-  const idx = hot.findIndex(a => a.id === id);
   const next: AppEntry = { id, label, icon, url, ...(chrome ? { chrome } : {}) };
-  if (idx >= 0) hot[idx] = next;
-  else hot.push(next);
-  await writeHotApps(hot);
-  const total = readApps().length;
-  return { ok: true, app: next, total };
+  if (scope === "global") {
+    // Global overlay. Same id as a built-in = an override that wins at
+    // read time; otherwise appended. Shows in every room.
+    const hot = readHotApps();
+    const idx = hot.findIndex(h => h.id === id);
+    if (idx >= 0) hot[idx] = next;
+    else hot.push(next);
+    await writeHotApps(hot);
+    return { ok: true, app: next, scope, total: readApps().length };
+  }
+  const slug = a.session.roomSlug ?? DEFAULT_SLUG;
+  const room = getOrCreateRoom(slug);
+  room.apps.upsert(next);
+  return { ok: true, app: next, scope, slug, total: resolveAppsForRoom(room.apps.list()).length };
 });
 
-app.delete<{ Params: { id: string } }>("/v1/apps/:id", async (req, reply) => {
+app.delete<{ Params: { id: string }; Querystring: { scope?: string } }>("/v1/apps/:id", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!a.isHost) return reply.code(403).send({ error: "host-only" });
   const id = req.params.id;
-  // We can only remove from hot-apps. If id is purely a built-in (no hot
-  // override), there's nothing to delete — say so explicitly.
-  const hot = readHotApps();
-  const filtered = hot.filter(a => a.id !== id);
-  if (filtered.length === hot.length) {
-    const isBuiltIn = DEFAULT_APPS.some(a => a.id === id);
-    return reply
-      .code(isBuiltIn ? 409 : 404)
-      .send({ error: isBuiltIn ? "built-in-app-not-removable" : "no-such-app", id });
+  const scope = req.query.scope === "global" ? "global" : "room";
+  if (scope === "global") {
+    // Remove from the global overlay. A bare built-in (no override) is
+    // code — there's nothing to delete, so say so explicitly.
+    const hot = readHotApps();
+    const filtered = hot.filter(h => h.id !== id);
+    if (filtered.length === hot.length) {
+      const isBuiltIn = DEFAULT_APPS.some(h => h.id === id);
+      return reply
+        .code(isBuiltIn ? 409 : 404)
+        .send({ error: isBuiltIn ? "built-in-app-not-removable" : "no-such-app", id });
+    }
+    await writeHotApps(filtered);
+    return { ok: true, removed: id, scope, total: readApps().length };
   }
-  await writeHotApps(filtered);
-  return { ok: true, removed: id, total: readApps().length };
+  const slug = a.session.roomSlug ?? DEFAULT_SLUG;
+  const room = getOrCreateRoom(slug);
+  if (!room.apps.remove(id)) {
+    return reply.code(404).send({ error: "no-such-room-app", id, slug });
+  }
+  return { ok: true, removed: id, scope, slug, total: resolveAppsForRoom(room.apps.list()).length };
+});
+
+// Promote a room-scoped app into the global overlay (host-only): copy it
+// into hot-apps.json, then drop the room copy (it now shows in every
+// room, including this one, via the global layer). The step beyond this —
+// baking it into DEFAULT_APPS — is a manual repo edit + deploy.
+app.post<{ Params: { id: string } }>("/v1/apps/:id/promote", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const id = req.params.id;
+  const slug = a.session.roomSlug ?? DEFAULT_SLUG;
+  const room = getOrCreateRoom(slug);
+  const app = room.apps.get(id);
+  if (!app) return reply.code(404).send({ error: "no-such-room-app", id, slug });
+  const entry: AppEntry = { ...app };
+  const hot = readHotApps();
+  const idx = hot.findIndex(h => h.id === id);
+  if (idx >= 0) hot[idx] = entry;
+  else hot.push(entry);
+  await writeHotApps(hot);
+  room.apps.remove(id);
+  return { ok: true, promoted: id, fromRoom: slug, app: entry, total: readApps().length };
 });
 
 // --- Slots: any authenticated peer can rearrange the shared layout ----------

@@ -10,6 +10,7 @@
 
 import type { Peer, PeerInfo } from "./peers.js";
 import { AIMover } from "./ai-mover.js";
+import { RoomApps } from "./apps.js";
 import { BrowserRegistry } from "./browsers.js";
 import { ChatHistory } from "./chat.js";
 import { ChessState } from "./chess.js";
@@ -108,6 +109,7 @@ function roomPaths(id: string): {
   auth: { path: string };
   meta: { path: string };
   chyron: { path: string };
+  apps: { path: string };
 } {
   const dir = `./.slop-data/rooms/${id}`;
   const legacy = id === DEFAULT_SLUG;
@@ -194,6 +196,12 @@ function roomPaths(id: string): {
       // there's nothing global to inherit. Cold start = empty string.
       path: `${dir}/chyron.json`,
     },
+    apps: {
+      // No legacy path — per-room apps are a new concept; the global
+      // catalog (DEFAULT_APPS + hot-apps.json) is unaffected and stays
+      // global. Cold start = no room-scoped apps.
+      path: `${dir}/apps.json`,
+    },
   };
 }
 
@@ -254,6 +262,7 @@ export class Room {
   readonly walletChat: WalletChatState;
   readonly auth: RoomAuth;
   readonly chyron: Chyron;
+  readonly apps: RoomApps;
 
   constructor(id: string) {
     if (!isValidSlug(id)) {
@@ -296,6 +305,7 @@ export class Room {
     this.research = new ResearchState(paths.research.path);
     this.auth = new RoomAuth(paths.auth.path);
     this.chyron = new Chyron(paths.chyron.path);
+    this.apps = new RoomApps(paths.apps.path);
 
     // Wire subsystem mutation events into this room's broadcast.
     // Windows has no subscriber — its callers broadcast inline because

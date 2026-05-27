@@ -944,18 +944,31 @@ export function skillApps(token: string, isHost: boolean, slug: string | null = 
 
 ## Apps catalog sub-skill
 
-The set of desktop icons users see on \`live.slop.computer\` is a
-JSON catalog on the relay. The catalog is **global** — same apps in
-every room. Host can add/remove entries; new page loads pick them up.
+The set of desktop icons users see on \`live.slop.computer\` resolves
+from **three layers**:
+
+1. **Built-ins** — \`DEFAULT_APPS\`, shipped in the relay code. Global
+   (every room), only changed by a repo edit + deploy.
+2. **Global overlay** — \`hot-apps.json\` on the box. Global, runtime,
+   no deploy. The escape hatch for an app you want *everywhere*.
+3. **Per-room apps** — scoped to a single room. This is where an
+   ephemeral / third-party app lands by default, so it only shows up in
+   the room it was added to.
+
+Precedence on id collision is room > global > built-in. **A new app you
+POST is per-room by default** — it does NOT appear in other rooms until
+a host \`promote\`s it (layer 3 → 2), and going fully permanent (→ layer
+1) is a manual repo edit + deploy.
 
 ### Read the catalog
 
 \`\`\`
-GET ${BASE}/v1/state?slug=${slugStr(slug)}        # → state.apps
+GET ${BASE}/v1/state?slug=${slugStr(slug)}        # → state.apps (this room's resolved set)
+GET ${BASE}/apps?slug=${slugStr(slug)}            # same list, standalone (no slug = global only)
 \`\`\`
 
-There is no standalone \`GET /v1/apps\` route — read the catalog from
-the full state snapshot.
+\`state.apps\` is the room-resolved catalog (built-ins + global + this
+room's own apps) — the exact set the desktop renders.
 
 ### Add (or update) an app — host-only
 
@@ -965,13 +978,19 @@ POST ${BASE}/v1/apps {
   "label":  "My Dapp",                # shown under the icon (and in the title bar if chrome:"app")
   "icon":   "/v1/app-icons/my-dapp",  # a built-in /icons/<f>.png OR an uploaded /v1/app-icons/<id>
   "url":    "https://<cid>.ipfs.community.bgipfs.com/",
-  "chrome": "app"                     # optional — see table
+  "chrome": "app",                    # optional — see table
+  "scope":  "room"                    # optional — "room" (default) or "global"
 }
 \`\`\`
 
-Upsert keyed on \`id\`: re-POST the same \`id\` to re-point an app (eg
-after you redeploy a dapp to a new IPFS CID). \`id/label/icon/url\` are
-required; \`chrome\` is optional and controls the window frame:
+**Lands in the caller's room by default** (the bearer token already
+carries its room), so it only shows there. Pass \`"scope":"global"\` to
+write the always-everywhere overlay instead — reserve that for apps you
+truly want in every room.
+
+Upsert keyed on \`id\`: re-POST the same \`id\` (same scope) to re-point an
+app — eg after you redeploy a dapp to a new IPFS CID. \`id/label/icon/url\`
+are required; \`chrome\` is optional and controls the window frame:
 
 | \`chrome\` | Window |
 | --- | --- |
@@ -1003,14 +1022,28 @@ are singleton windows shipped in the relay code. Anything you POST is a
 | \`"transcript"\` | opens the live transcript window |
 | \`"card"\` | opens the title-card window |
 
+### Promote a room app to global — host-only
+
+\`\`\`
+POST ${BASE}/v1/apps/:id/promote
+\`\`\`
+
+Found an app you like in a room and want it everywhere? Promote moves
+the room's \`:id\` app into the global overlay and drops the room copy —
+it now shows in every room (including this one) via the global layer.
+To make it permanent across deploys, bake the entry into \`DEFAULT_APPS\`
+in the repo and ship it.
+
 ### Delete an app — host-only
 
 \`\`\`
-DELETE ${BASE}/v1/apps/:id
+DELETE ${BASE}/v1/apps/:id                 # default: removes this room's copy
+DELETE ${BASE}/v1/apps/:id?scope=global    # removes the global overlay entry
 \`\`\`
 
-Built-in apps (those shipped in \`DEFAULT_APPS\`) can't be deleted —
-returns 409. Only hot-loaded overrides / additions can be removed.
+Default scope is the caller's room. \`?scope=global\` removes from the
+global overlay. Built-in apps (shipped in \`DEFAULT_APPS\`) can't be
+deleted via the API — returns 409; remove them in the repo.
 
 ### Adding a new icon image (no repo access, no redeploy)
 
@@ -1065,7 +1098,9 @@ fetch each and follow it:
 3. REGISTER — the Apps catalog above.
    - Make an icon: POST /v1/icons/generate (or upload one) → get its \`url\`.
    - POST /v1/apps { id, label, icon, url: "<subdomain url>", chrome: "app" }.
-   - Redeploy later? Re-POST the same \`id\` with the new CID's url.
+     This lands in YOUR room only (the default scope) — it won't clutter
+     other rooms. Redeploy later? Re-POST the same \`id\` with the new url.
+   - Like it enough to want it everywhere? POST /v1/apps/:id/promote.
 
 ### Transactions in the room — the impersonator
 

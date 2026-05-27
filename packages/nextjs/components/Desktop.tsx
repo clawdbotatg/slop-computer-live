@@ -77,9 +77,10 @@ const DEFAULT_BASE_X = 80;
 const DEFAULT_BASE_Y = 280;
 const DEFAULT_STEP = 30;
 
-// Apps catalog comes from the relay's /apps endpoint, which reads
-// /var/lib/slop-relay/apps.json on every request. To add a new app, edit
-// that JSON on the box — no rebuild needed.
+// Apps catalog comes from the relay's /apps?slug= endpoint on every
+// request: built-in DEFAULT_APPS + the global hot-apps overlay + any apps
+// scoped to this room. Add a global app by editing hot-apps.json (or POST
+// /v1/apps scope:"global"); add a room-only app via POST /v1/apps.
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 // `kind` selects which window type the icon spawns. Defaults to "browser"
 // for backwards compatibility with apps.json files written before
@@ -730,13 +731,14 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, []);
 
-  // Fetch the apps catalog from the relay. Re-fetched on auth so anyone
-  // who lands on the page (signed in or not) eventually sees the right
-  // set; positions of each icon are still slot-synced like before.
+  // Fetch the apps catalog from the relay, scoped to this room: the
+  // global layers (DEFAULT_APPS + hot-apps) PLUS any apps added just to
+  // this room. Without ?slug the relay returns the global set only.
+  // Positions of each icon are still slot-synced like before.
   const [apps, setApps] = useState<AppEntry[]>([]);
   useEffect(() => {
     let cancelled = false;
-    fetch(`${RELAY_HTTP}/apps`, { cache: "no-store" })
+    fetch(`${RELAY_HTTP}/apps?slug=${encodeURIComponent(slug)}`, { cache: "no-store" })
       .then(r => r.json())
       .then((data: { apps?: AppEntry[] }) => {
         if (!cancelled && Array.isArray(data.apps)) setApps(data.apps);
@@ -747,7 +749,7 @@ function DesktopInner({ slug }: { slug: string }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [slug]);
 
   const fileMenu = useMemo<Menu>(
     () => ({
@@ -821,10 +823,21 @@ function DesktopInner({ slug }: { slug: string }) {
   meshSlotsRefForArrange.current = mesh.slots;
   const meshUpdateSlotForArrange = mesh.updateSlot;
 
+  // "Arrange for X" layouts target the live-stream frame — the dashed
+  // god-mode boundary every peer can see — instead of the acting peer's
+  // own viewport. Without this, a host on a high-res display arranges
+  // windows out past the streamed frame and viewers see them half-off or
+  // gone entirely. On the god-mode machine itself this is a no-op (its
+  // godViewport *is* its window size), so only the off-frame peers get
+  // fixed. Read through a ref so the arrange callbacks don't re-create
+  // every time the spectator resizes. Falls back to the same 1920×1080
+  // OBS target the dashed guide draws when no spectator is live.
+  const meshGodViewportRef = useRef(mesh.godViewport);
+  meshGodViewportRef.current = mesh.godViewport;
+
   const arrangeForScreenShare = useCallback(() => {
     if (typeof window === "undefined") return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
     const TOP_INSET = 38; // menubar
     const PAD = 12;
     const RIGHT_STRIP = 280;
@@ -869,8 +882,7 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const arrangeForVideo = useCallback(() => {
     if (typeof window === "undefined") return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
     const TOP_INSET = 38;
     const PAD = 12;
 
@@ -927,8 +939,7 @@ function DesktopInner({ slug }: { slug: string }) {
   const meshOpenWindowForArrange = mesh.openWindow;
   const arrangeForCountdown = useCallback(() => {
     if (typeof window === "undefined") return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const { width: vw, height: vh } = meshGodViewportRef.current ?? { width: 1920, height: 1080 };
     const TOP_INSET = 38;
     const PAD = 16;
 
