@@ -2094,6 +2094,11 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { address: connectedAddress } = useAccount();
   const { signMessageAsync, isPending: signing } = useSignMessage();
   const { writeContractAsync, isPending: writing } = useWriteContract();
+  // The connected wallet's ACTIVE network (what MetaMask is pointed at) —
+  // independent of the slop UI's chain selectors. Execute is an on-chain tx
+  // that must run on tx.chainId, so we switch the wallet there first.
+  const connectedChainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
   const txPublicClient = usePublicClient({ chainId: tx.chainId });
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
   // [wallet/log] Verbose debug logs while we iterate on the sign/execute
@@ -2414,6 +2419,19 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
           chainId: tx.chainId,
         });
       }
+      // Make sure the wallet is actually ON the tx's chain before writing.
+      // wagmi's writeContract throws "current chain (id: X) does not match
+      // the target chain" if they differ — it does NOT auto-switch. The
+      // slop UI's network selectors are app-level and don't move the wallet,
+      // so a signer whose MetaMask sits on another chain (e.g. Gnosis) would
+      // otherwise hit that error even with "Base" selected everywhere.
+      if (connectedChainId !== tx.chainId) {
+        console.log("[wallet] onExecute switching wallet chain", {
+          from: connectedChainId,
+          to: tx.chainId,
+        });
+        await switchChainAsync({ chainId: tx.chainId });
+      }
       console.log("[wallet] onExecute writeContractAsync: START (expect wallet popup now)", {
         gasLimit: gasLimit?.toString(),
         chainId: tx.chainId,
@@ -2463,6 +2481,8 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     wallet.address,
     wallet.threshold,
     writeContractAsync,
+    connectedChainId,
+    switchChainAsync,
     mesh,
     txPublicClient,
     isBatchTx,
