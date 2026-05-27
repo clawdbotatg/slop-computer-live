@@ -172,8 +172,12 @@ function Cell({ item, onOpenUrl }: { item: TickerItem; onOpenUrl: (url: string) 
 
 // Live CLAWD price + 24h change, rendered as the ticker bar's left-edge
 // badge. Uses the DEX subscript-zeros convention for sub-cent prices
-// (e.g. $0.00002012 → $0.0₍4₎20). Clickable when the relay has
-// populated `item.url` (the DexScreener page for CLAWD on Base).
+// (e.g. $0.00002012 → $0.0₍4₎20). The badge is a "Built by @ClawdBotAtg"
+// builder credit that links to ClawdBotAtg's ENS homepage (the live
+// price stays in the tile, but the click goes to the homepage, not the
+// DexScreener pair).
+const CLAWD_HOME_URL = "https://clawdbotatg.eth.limo/";
+
 function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (url: string) => void }) {
   // Always render the badge shell, even while item is null, so the
   // ticker's left-edge always has the right width and doesn't reflow
@@ -185,20 +189,21 @@ function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (
   const isDown = change < -0.005;
   const changeColorVal = isUp ? "var(--slop-lime)" : isDown ? "var(--slop-red)" : "var(--slop-text-muted)";
 
-  const badgeUrl = item?.url;
-  const Tag = (badgeUrl ? "a" : "span") as "a" | "span";
-  const linkProps = badgeUrl
-    ? ({
-        href: badgeUrl,
-        target: "_blank",
-        rel: "noopener noreferrer",
-        onClick: (e: React.MouseEvent) => {
-          if (!shouldInterceptClick(e)) return;
-          e.preventDefault();
-          onOpenUrl(badgeUrl);
-        },
-      } as const)
-    : {};
+  // Always link to ClawdBotAtg's homepage (independent of whether the
+  // price poll has landed yet) — the DexScreener `item.url` is no longer
+  // the click target, just the source of the price/change shown below.
+  const badgeUrl = CLAWD_HOME_URL;
+  const Tag = "a" as const;
+  const linkProps = {
+    href: badgeUrl,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    onClick: (e: React.MouseEvent) => {
+      if (!shouldInterceptClick(e)) return;
+      e.preventDefault();
+      onOpenUrl(badgeUrl);
+    },
+  } as const;
   return (
     <Tag
       {...linkProps}
@@ -216,9 +221,9 @@ function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (
         color: "#fff",
         textDecoration: "none",
         // Outer bar is pointer-events: none — re-enable on the badge
-        // itself so the click reaches the DexScreener link.
-        pointerEvents: item?.url ? "auto" : "none",
-        cursor: item?.url ? "pointer" : "default",
+        // itself so the click reaches the homepage link.
+        pointerEvents: "auto",
+        cursor: "pointer",
         zIndex: 2,
         textShadow: "0 1px 0 rgba(0,0,0,0.45)",
         width: 320,
@@ -231,14 +236,22 @@ function ClawdBadge({ item, onOpenUrl }: { item: TickerItem | null; onOpenUrl: (
         style={{
           flexShrink: 0,
           fontFamily: "var(--slop-font-display)",
-          textTransform: "uppercase",
           whiteSpace: "nowrap",
-          letterSpacing: "0.16em",
           fontSize: 11,
         }}
       >
-        <span style={{ fontSize: 8, opacity: 0.75, marginRight: 4 }}>Built by</span>
-        $CLAWD
+        <span
+          style={{
+            fontSize: 8,
+            opacity: 0.75,
+            marginRight: 4,
+            textTransform: "uppercase",
+            letterSpacing: "0.16em",
+          }}
+        >
+          Built by
+        </span>
+        <span style={{ letterSpacing: "0.04em" }}>@ClawdBotAtg</span>
       </span>
       {price === null ? (
         <span
