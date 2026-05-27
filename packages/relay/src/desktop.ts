@@ -30,6 +30,11 @@ export type Publication = {
   ownerKey: string;   // stable across reconnects (wallet address or handle)
   kind: SlotKind;
   label: string;
+  /** Camera publications only. When the publisher flips to audio-only,
+   *  they stop sending video but keep the mic; this flag tells every
+   *  peer (and the late-joiner snapshot) to render the avatar in place
+   *  of the now-black video. Undefined === false. */
+  cameraOff?: boolean;
 };
 
 export type SlotPosition = {
@@ -149,6 +154,19 @@ export class DesktopState {
     if (next.length === 0) this.publicationsByPeer.delete(peerId);
     else this.publicationsByPeer.set(peerId, next);
     return true;
+  }
+
+  /** Flip a camera publication's audio-only flag. Returns the mutated
+   *  publication (so the caller can rebroadcast it via `published`) or
+   *  null if this peer owns no such stream. Mutated in place so the
+   *  hello snapshot's `listPublications()` carries it for late joiners. */
+  setCameraOff(peerId: string, streamId: string, off: boolean): Publication | null {
+    const list = this.publicationsByPeer.get(peerId);
+    if (!list) return null;
+    const pub = list.find(p => p.streamId === streamId);
+    if (!pub) return null;
+    pub.cameraOff = off;
+    return pub;
   }
 
   /** Find which peer owns this publication. Used by close-anyone — any

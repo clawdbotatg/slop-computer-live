@@ -18,6 +18,7 @@ import { ChyronBar } from "~~/components/desktop/ChyronBar";
 import { ClockWindow } from "~~/components/desktop/ClockWindow";
 import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
+import { EnsWindow } from "~~/components/desktop/EnsWindow";
 import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
@@ -42,7 +43,7 @@ import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
-import { VideoView, videoPausedKey } from "~~/components/desktop/VideoView";
+import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import {
   BandFlag,
@@ -109,7 +110,8 @@ type AppEntry = {
     | "research"
     | "news"
     | "transcript"
-    | "card";
+    | "card"
+    | "ens";
   // "app" → shared-browser window renders as a clean titled app (label in
   // the title bar, URL/nav bar hidden). Omitted/"browser" = full chrome.
   chrome?: "app" | "browser";
@@ -146,7 +148,7 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["clock", "card", "research", "transcript"],
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
-  ["browser", "wallet", "music", "chess"],
+  ["browser", "wallet", "ens", "music", "chess"],
   ["pong"],
 ];
 
@@ -216,7 +218,7 @@ const writeResume = (slug: string, state: ResumeState) => {
 // cleanup), the corresponding flag is meaningless and must clear so a
 // fresh share starts in the default state.
 const perKindPersistedKey = (slug: string, kind: StreamKind): string | null => {
-  if (kind === "camera") return videoPausedKey(slug);
+  if (kind === "camera") return cameraMicMutedKey(slug);
   if (kind === "audio") return audioMutedKey(slug);
   return null;
 };
@@ -1550,6 +1552,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "gas":
         case "clock":
         case "wallet":
+        case "ens":
         case "research":
         case "news":
         case "transcript":
@@ -1810,6 +1813,32 @@ function DesktopInner({ slug }: { slug: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [closeTopWindow, minimizeTopWindow]);
+
+  // Spacebar = mute / unmute my own mic. A quick "mute me" that doesn't
+  // require hunting for the button on the camera/audio window. We only
+  // hijack the key while the user is actually sharing a mic (camera or
+  // audio publication) and focus isn't somewhere that needs the space —
+  // text fields, buttons, links — so we don't break typing or
+  // button-activation. The VideoView / AudioVisualizer that owns the mic
+  // listens for `slop-toggle-mic` and flips its own state.
+  const sharingMic = media.activeCamera || media.activeAudio;
+  useEffect(() => {
+    if (!sharingMic) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t instanceof HTMLElement) {
+        if (t.isContentEditable) return;
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") return;
+        if (t.getAttribute("role") === "button") return;
+      }
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent("slop-toggle-mic"));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sharingMic]);
 
   // File previews — opened on double-click of a desktop file. SHARED
   // across the mesh exactly like every other singleton window: the
@@ -2326,7 +2355,20 @@ function DesktopInner({ slug }: { slug: string }) {
                       muted={pub.peerId === mesh.myId}
                       isMine={pub.peerId === mesh.myId}
                       onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
-                      persistPause={pub.peerId === mesh.myId}
+                      // Audio-only toggle. State is the relay-broadcast
+                      // `cameraOff` flag so every viewer (and the
+                      // spectator box) renders the avatar in lockstep;
+                      // only the owner gets the toggle handler.
+                      cameraOff={pub.cameraOff ?? false}
+                      onToggleCameraOff={
+                        pub.peerId === mesh.myId ? off => mesh.setCameraOff(pub.streamId, off) : undefined
+                      }
+                      // Avatar backdrop shown when in audio-only mode —
+                      // resolved the same way the audio-share window does.
+                      bands={pubBands}
+                      avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                      address={peer?.address ?? null}
+                      hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
                       // God-mode only: camera publications bundle the
                       // publisher's mic on the same stream, so the
                       // video element is where that audio plays —
@@ -2656,6 +2698,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={460}
             >
               <WalletWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="ens"
+              title="ENS"
+              defaultSlot={{ x: 420, y: 120, width: 460, height: 560 }}
+              minWidth={360}
+              minHeight={420}
+            >
+              <EnsWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

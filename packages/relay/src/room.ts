@@ -35,6 +35,7 @@ import { WalletChatState } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
 import { TodoList } from "./todos.js";
 import { Transcript } from "./transcript.js";
+import { formatBytes, ownerKeyActor } from "./transcript-actions.js";
 import { WalletState } from "./wallet.js";
 import { WindowSet } from "./windows.js";
 import { send } from "./ws-send.js";
@@ -237,6 +238,17 @@ export class Room {
    *  rejoin re-evaluates. */
   private liveCaptionAlive = new Map<string, boolean>();
 
+  // Cursors for chess→transcript narration (driven from broadcastChessState
+  // in index.ts, the one chokepoint all chess state changes pass through —
+  // human moves, AI moves, resigns, aborts). `narratedMoves` is how many of
+  // the game's SAN moves we've already considered; `narratedEnd` guards the
+  // single game-over line against the recursive AI broadcast cycle.
+  chessNarratedMoves = 0;
+  chessNarratedEnd = false;
+  // Tx ids already narrated, so a double-click (proposeTx collapses onto the
+  // same execHash and returns the existing tx) doesn't log twice.
+  readonly narratedTxIds = new Set<string>();
+
   readonly todos: TodoList;
   readonly notes: NoteList;
   readonly windows: WindowSet;
@@ -335,12 +347,39 @@ export class Room {
     // TranscriptWindow re-read the archive via /v1/transcript, so no
     // viewer feature breaks from the suppression.
     this.transcript.subscribe(seg => {
+      // Action rows (music/file/wallet/chess/pong) live in the archive and
+      // the polled TranscriptWindow only — never flash them as an on-screen
+      // subtitle caption; that overlay stays reserved for actual speech.
+      if (seg.kind && seg.kind !== "speech") return;
       const speakerKey = seg.address ?? seg.anonId ?? null;
       if (speakerKey && this.liveCaptionAlive.get(speakerKey) === true) return;
       this.broadcast({ type: "transcript_seg", seg });
     });
     this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
-    this.pong.subscribe(state => this.broadcast({ type: "pong_state", state }));
+    // Narrate a pong win once, on the null→winner edge. `lastPongWinner`
+    // resets when the snapshot goes back to no-winner (reset / new match) so
+    // the next decisive game logs again. The 30Hz physics ticks re-broadcast
+    // the same `winner` until reset — the edge check keeps it to one line.
+    let lastPongWinner: "left" | "right" | null = null;
+    this.pong.subscribe(state => {
+      this.broadcast({ type: "pong_state", state });
+      if (state.winner && state.winner !== lastPongWinner) {
+        lastPongWinner = state.winner;
+        const seat = state.seats[state.winner];
+        const winScore = state.winner === "left" ? state.score.left : state.score.right;
+        const loseScore = state.winner === "left" ? state.score.right : state.score.left;
+        if (seat) {
+          this.transcript.appendAction({
+            kind: "pong",
+            ...ownerKeyActor(seat.ownerKey, seat.handle),
+            text: `🏓 ${seat.handle} won pong ${winScore}–${loseScore}`,
+            meta: { winner: seat.handle, scoreLeft: state.score.left, scoreRight: state.score.right },
+          });
+        }
+      } else if (!state.winner) {
+        lastPongWinner = null;
+      }
+    });
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
     );
@@ -351,8 +390,20 @@ export class Room {
       this.broadcast({ type: "ui_state", key: event.key, state: event.state }),
     );
     this.files.subscribe(event => {
-      if (event.type === "added") this.broadcast({ type: "file_added", item: event.item });
-      else if (event.type === "removed") this.broadcast({ type: "file_removed", id: event.id });
+      if (event.type === "added") {
+        this.broadcast({ type: "file_added", item: event.item });
+        // `added` fires twice per upload: once on add, again when the
+        // background IPFS pin stamps `cid`. Narrate only the first.
+        if (!event.item.cid) {
+          const it = event.item;
+          this.transcript.appendAction({
+            kind: "file",
+            ...ownerKeyActor(it.ownerKey, it.uploaderLabel),
+            text: `📎 ${it.uploaderLabel} uploaded ${it.name} (${formatBytes(it.size)})`,
+            meta: { name: it.name, mime: it.mime, size: it.size },
+          });
+        }
+      } else if (event.type === "removed") this.broadcast({ type: "file_removed", id: event.id });
       else this.broadcast({ type: "files", items: event.items });
     });
     this.wallet.subscribe(state => {

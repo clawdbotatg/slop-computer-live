@@ -175,7 +175,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`publications\` | \`Publication[]\` | Active camera/screen/mic streams — read-only for agents |
 | \`slots\` | \`Record<id, {x,y,width,height,z}>\` | Every window/icon's position |
 | \`browsers\` | \`Record<id, Browser>\` | Open shared browsers in this room |
-| \`apps\` | \`AppEntry[]\` | Desktop icon catalog (global) |
+| \`apps\` | \`AppEntry[]\` | Desktop icon catalog **resolved for this room** (built-ins + global overlay + room apps) |
 | \`avatars\` | \`Record<ownerKey, url>\` | Uploaded PFPs (global, address-keyed) |
 | \`hiddenAvatars\` | \`ownerKey[]\` | Owners who opted out of any PFP |
 | \`openWindowIds\` | \`string[]\` | Singleton windows currently open in this room |
@@ -2306,8 +2306,9 @@ what you need.
 ### L0 — iframe app via REST (no code, no deploy)
 
 Easiest path. Host scope POSTs a URL into the apps catalog and the
-icon shows up on every peer's desktop immediately. Double-clicking
-it opens a shared browser pointed at your URL.
+icon shows up on **this room's** desktop immediately (per-room by
+default — pass \`"scope":"global"\` to put it in every room). Double-
+clicking it opens a shared browser pointed at your URL.
 
 \`\`\`
 POST ${BASE}/v1/apps {
@@ -2337,8 +2338,10 @@ looking like a browser — the right look for a dApp that bubbles txs to
 the room multisig. Omit it for a normal browser window.
 
 That's it. No \`kind\` field → defaults to iframe in a shared browser.
-Survives relay restarts (persisted to \`hot-apps.json\` on disk) but
-not a full \`.slop-data\` wipe. \`DELETE /v1/apps/:id\` to remove.
+Survives relay restarts: a room app persists to
+\`.slop-data/rooms/<slug>/apps.json\`, a global one (\`scope:"global"\`) to
+\`hot-apps.json\` — both survive restart but not a full \`.slop-data\`
+wipe. \`DELETE /v1/apps/:id\` to remove (defaults to this room's copy).
 
 Host-only — POST returns 403 for peer scope. Full catalog mechanics
 in \`GET /v1/skill/apps\`.
@@ -2541,7 +2544,8 @@ Briefly:
 | --- | --- | --- | --- |
 | **Per-peer ephemeral** | camera / mic / screen | mesh peer record | exists while the peer is connected; vanishes on disconnect |
 | **Per-room shared** | chat, music, chess, todos, notes, clock, wallet, research, card, transcript, qr, file-preview playhead | \`Room.<feature>\` on the relay | last-writer-wins broadcast to every peer in the room |
-| **Global** | gas, ticker, headlines, timeline, news digest, apps catalog, avatars, glossary | module-level on the relay | one snapshot for every room, polled or written centrally |
+| **Global** | gas, ticker, headlines, timeline, news digest, avatars, glossary | module-level on the relay | one snapshot for every room, polled or written centrally |
+| **Layered (per-room over global)** | apps catalog | room layer over a global overlay over built-ins | room apps shadow global, global shadows built-ins; \`promote\` lifts a room app to global |
 
 When designing L2: most apps want **per-room shared**. Only reach
 for **global** if the data genuinely has no per-room dimension (gas
@@ -2591,8 +2595,9 @@ curl -s -X POST -H "Authorization: Bearer ${token}" -H "content-type: applicatio
   -d '{"id":"my-dapp","label":"My DApp","icon":"/v1/app-icons/my-dapp","url":"https://my-dapp.vercel.app","chrome":"app"}'
 \`\`\`
 
-That's the whole thing — the icon shows on every desktop, double-click
-opens your dApp in the shared browser. Because the shared browser
+That's the whole thing — the icon shows on **this room's** desktop
+(per-room by default; \`POST /v1/apps/:id/promote\` later if you want it
+everywhere), double-click opens your dApp in the shared browser. Because the shared browser
 injects the impersonator (set to the room's deployed multisig when one
 exists), your dApp's \`eth_sendTransaction\` is captured and proposed to
 that multisig — the room's signers ratify it N-of-M and it executes

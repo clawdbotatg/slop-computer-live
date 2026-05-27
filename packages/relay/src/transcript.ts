@@ -20,6 +20,18 @@ import { dirname } from "node:path";
 
 const MAX_HISTORY = 500;
 
+// What produced a segment. Absent ⇒ a spoken line (the original behaviour);
+// the rest are in-room *actions* narrated by the relay (someone played a
+// track, uploaded a file, proposed a tx, made a notable chess move, won at
+// pong). Action rows are archive/poll-only — see room.ts, they're kept out
+// of the live `transcript_seg` caption broadcast.
+export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+
+// Structured bits for an action row (track index, filename, tx target, SAN,
+// pong score, …). The rendered one-liner lives in `text`; this is the raw
+// data alongside it for any future richer rendering / archive parsing.
+export type TranscriptMeta = Record<string, string | number | boolean | null>;
+
 export type TranscriptSegment = {
   id: string;
   // Server-stamped — ms epoch when the segment was received.
@@ -31,12 +43,17 @@ export type TranscriptSegment = {
   // Stable anon id for anon speakers — lets SlopAddress look up the
   // current display name + keep flag colors stable across renames.
   anonId?: string | null;
-  // Final-result text from the speaker's STT engine. Interim results MUST
-  // NOT be sent here — they're noisy and self-correct.
+  // Final-result text from the speaker's STT engine, OR the rendered
+  // one-liner for an action row (which bakes in the actor's name so the
+  // archive reads on its own). Interim STT results MUST NOT be sent here.
   text: string;
   // Same classification as chat: "live" inside the desktop session,
   // "spectator" from slop.computer SIWE, "agent" via bearer token.
   source: "live" | "spectator" | "agent";
+  // Absent ⇒ speech (every legacy row). Set ⇒ an action row.
+  kind?: TranscriptKind;
+  // Structured action metadata; only set on action rows.
+  meta?: TranscriptMeta;
 };
 
 // Larger than typed chat: STT can pop several finals per second across
@@ -150,6 +167,49 @@ export class Transcript {
       anonId,
       text,
       source: input.source,
+    };
+    this.buffer.push(seg);
+    if (this.buffer.length > MAX_HISTORY) this.buffer = this.buffer.slice(-MAX_HISTORY);
+    this.persist(seg);
+    for (const fn of this.subscribers) {
+      try {
+        fn(seg);
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
+    }
+    return seg;
+  }
+
+  // Narrate an in-room action (music/file/wallet/chess/pong). Shares the
+  // ring + persist + subscriber path with `append`, but intentionally
+  // SKIPS the content-dedupe and per-speaker rate limit: actions are
+  // discrete, deliberate events (two identical txs, the same pawn move in
+  // two games) and must never collapse the way racing STT finals do. The
+  // relay-side capture points already diff their own state so this never
+  // becomes a firehose.
+  appendAction(input: {
+    kind: TranscriptKind;
+    address: string | null;
+    handle: string | null;
+    anonId?: string | null;
+    text: string;
+    meta?: TranscriptMeta;
+    source?: TranscriptSegment["source"];
+  }): TranscriptSegment | null {
+    this.load();
+    const text = input.text.trim().slice(0, MAX_TEXT_LEN);
+    if (!text) return null;
+    const seg: TranscriptSegment = {
+      id: randomBytes(8).toString("hex"),
+      ts: Date.now(),
+      address: input.address ? input.address.toLowerCase() : null,
+      handle: input.handle ?? null,
+      anonId: input.anonId ?? null,
+      text,
+      source: input.source ?? "live",
+      kind: input.kind,
+      ...(input.meta ? { meta: input.meta } : {}),
     };
     this.buffer.push(seg);
     if (this.buffer.length > MAX_HISTORY) this.buffer = this.buffer.slice(-MAX_HISTORY);

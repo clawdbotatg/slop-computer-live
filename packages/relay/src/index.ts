@@ -40,6 +40,8 @@ import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
   type TranscriptSegment,
 } from "./transcript.js";
+import { actorName, chainLabel, formatEth, musicTrackLabel, ownerKeyActor, shortHex } from "./transcript-actions.js";
+import type { MusicSnapshot } from "./music-state.js";
 import { isSttConfigured, transcribeAudio } from "./stt.js";
 import {
   SESSION_COOKIE,
@@ -337,6 +339,7 @@ setInterval(() => {
 function broadcastChessState(room: Room, game: ChessGame | null): void {
   room.broadcast({ type: "chess_state", game });
   room.chess.bumpVersion();
+  noteChessTranscript(room, game);
   setImmediate(() => {
     room.aiMover.tick(room.chess.getVersion(), () => {
       const next = room.chess.getCurrentGame();
@@ -345,6 +348,134 @@ function broadcastChessState(room: Room, game: ChessGame | null): void {
         room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
       }
     }).catch(err => console.error("[ai-mover] tick failed:", err));
+  });
+}
+
+// Narrate chess into the transcript: notable moves (captures, checks,
+// castling) while the game runs, plus a single game-over line. Driven from
+// broadcastChessState so it covers human AND AI moves uniformly. Quiet
+// positional moves are intentionally skipped to keep the transcript
+// readable (the user asked for "captures + endings").
+function noteChessTranscript(room: Room, game: ChessGame | null): void {
+  if (!game) {
+    // Game cleared/aborted — reset cursors so the next game narrates fresh.
+    room.chessNarratedMoves = 0;
+    room.chessNarratedEnd = false;
+    return;
+  }
+  // A new game reuses the slot with a shorter move list → reset cursors.
+  if (game.moves.length < room.chessNarratedMoves) {
+    room.chessNarratedMoves = 0;
+    room.chessNarratedEnd = false;
+  }
+
+  if (game.status !== "active") {
+    // Game over: emit ONE result line (covers the deciding move too — we
+    // don't separately narrate the final mating move) and stop.
+    room.chessNarratedMoves = game.moves.length;
+    if (!room.chessNarratedEnd) {
+      room.chessNarratedEnd = true;
+      const line = chessEndingLine(game);
+      if (line) {
+        room.transcript.appendAction({
+          kind: "chess",
+          ...ownerKeyActor(line.key, line.who),
+          text: line.text,
+          meta: { status: game.status, moves: game.moves.length },
+        });
+      }
+    }
+    return;
+  }
+
+  // Active game: narrate any newly applied notable moves.
+  for (let i = room.chessNarratedMoves; i < game.moves.length; i++) {
+    const san = game.moves[i];
+    if (!san) continue;
+    const isWhite = i % 2 === 0;
+    const who = isWhite ? game.whiteLabel : game.blackLabel;
+    const key = isWhite ? game.whiteKey : game.blackKey;
+    const text = chessMoveLine(san, who);
+    if (text) {
+      room.transcript.appendAction({
+        kind: "chess",
+        ...ownerKeyActor(key, who),
+        text,
+        meta: { san },
+      });
+    }
+  }
+  room.chessNarratedMoves = game.moves.length;
+}
+
+// Quiet moves return null. Castling / captures / checks get a line.
+function chessMoveLine(san: string, who: string): string | null {
+  if (san.startsWith("O-O-O")) return `♟ ${who} castled queenside`;
+  if (san.startsWith("O-O")) return `♟ ${who} castled`;
+  const capture = san.includes("x");
+  const check = san.includes("+") || san.includes("#");
+  if (capture && check) return `♟ ${who} captured with check (${san})`;
+  if (capture) return `♟ ${who} captured (${san})`;
+  if (check) return `♟ ${who} checked (${san})`;
+  return null;
+}
+
+// One line for a finished game, attributed to a relevant player so it
+// colours by them in the transcript.
+function chessEndingLine(game: ChessGame): { text: string; who: string; key: string } | null {
+  switch (game.status) {
+    case "white_won":
+      return { text: `♟ ${game.whiteLabel} won by checkmate`, who: game.whiteLabel, key: game.whiteKey };
+    case "black_won":
+      return { text: `♟ ${game.blackLabel} won by checkmate`, who: game.blackLabel, key: game.blackKey };
+    case "white_resigned":
+      return {
+        text: `🏳️ ${game.whiteLabel} resigned — ${game.blackLabel} wins`,
+        who: game.whiteLabel,
+        key: game.whiteKey,
+      };
+    case "black_resigned":
+      return {
+        text: `🏳️ ${game.blackLabel} resigned — ${game.whiteLabel} wins`,
+        who: game.blackLabel,
+        key: game.blackKey,
+      };
+    case "draw_stalemate":
+    case "draw_threefold":
+    case "draw_insufficient":
+    case "draw_other":
+      return { text: `♟ ${game.whiteLabel} vs ${game.blackLabel} — drawn`, who: game.whiteLabel, key: game.whiteKey };
+    default:
+      return null;
+  }
+}
+
+// Narrate music into the transcript on meaningful transitions only — a new
+// track starting, or play↔pause. Position/volume/drift ticks (the bulk of
+// music_state traffic) produce no line. Diffs prev vs the just-applied
+// snapshot, so a retransmit of the same state is a no-op.
+function noteMusicTranscript(
+  room: Room,
+  prev: MusicSnapshot | null,
+  next: MusicSnapshot,
+  actor: { address: string | null; handle: string | null; anonId: string | null },
+): void {
+  const trackChanged = !prev || prev.src !== next.src || prev.index !== next.index;
+  const playToggled = !!prev && prev.playing !== next.playing;
+  let text: string | null = null;
+  if (trackChanged && next.playing) {
+    text = `🎵 ${actorName(actor)} played ${musicTrackLabel(next)}`;
+  } else if (playToggled) {
+    text = next.playing ? `▶️ ${actorName(actor)} resumed the music` : `⏸️ ${actorName(actor)} paused the music`;
+  }
+  if (!text) return;
+  room.transcript.appendAction({
+    kind: "music",
+    address: actor.address,
+    handle: actor.handle,
+    anonId: actor.anonId,
+    text,
+    meta: { src: next.src, index: next.index, playing: next.playing },
   });
 }
 
@@ -463,7 +594,8 @@ type AppEntry = {
     | "research"
     | "news"
     | "transcript"
-    | "card";
+    | "card"
+    | "ens";
   // Window chrome for browser/iframe apps. "app" presents the shared
   // browser window as a clean titled app: the title bar shows the app's
   // label and the URL/nav bar is hidden (so it doesn't look like a
@@ -584,6 +716,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Wallet",
     icon: "/icons/wallet.png",
     kind: "wallet",
+  },
+  {
+    id: "ens",
+    label: "ENS",
+    icon: "/icons/ens.png",
+    kind: "ens",
   },
   {
     id: "research",
@@ -3869,6 +4007,33 @@ app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/auth", async (req, reply)
   };
 });
 
+// Public room metadata snapshot. A curated, safe-to-expose subset of room
+// state — deliberately NO billing (paidUntil), peer identities, or wallet
+// internals (signers / draft / pending txs). The deployed session wallet's
+// *address* IS included because it's public on-chain info anyway (a CREATE2
+// multisig address that gets published on-chain via the episode contract).
+// Cookieless on purpose — same rationale as GET /v1/transcript — so crawlers
+// and cross-origin pages (slop.computer's finalize flow reads `wallet` to
+// auto-fill the episode contract; the frontpage can use `live` for an
+// on-air badge) can read it without a session or room-password cookie.
+app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/meta", async (req, reply) => {
+  reply.header("cache-control", "no-store");
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const room = getOrCreateRoom(req.params.slug);
+  const w = room.wallet.getCurrent();
+  return {
+    slug: req.params.slug,
+    name: room.meta.getName(),
+    createdAt: room.meta.getCreatedAt(),
+    live: room.peerCount() > 0,
+    stt: room.episode.getState().sttOn,
+    card: { published: _existsSync(cardPublishedFilePath(req.params.slug)) },
+    wallet: w
+      ? { address: w.address, label: w.label, chains: Object.keys(w.deployments).map(Number) }
+      : null,
+  };
+});
+
 // Hot/cold revive: the frontend POSTs payment proof here when a WS
 // connect fails with `payment-required`. Phase 7 stub trusts the
 // PAYMENTS_DISABLED env var; Phase 8 swaps in the real on-chain check
@@ -5124,6 +5289,21 @@ app.register(async function signalRoutes(fastify) {
           if (ok) room.broadcast({ type: "unpublished", peerId: ownerId, streamId: msg.streamId });
           return;
         }
+        case "set_camera_off": {
+          // Publisher toggling their camera to audio-only (or back). Only
+          // the owning peer flips its own stream, so we key off this
+          // socket's peerId — no close-anyone semantics here. We rebroadcast
+          // the mutated publication via `published`; the existing client
+          // handler replaces the pub in place (same peerId+streamId → same
+          // window/slot), so no new receive-side code or hello field is
+          // needed and late joiners get the flag from listPublications().
+          if (typeof msg.streamId !== "string" || typeof msg.off !== "boolean") {
+            return send(socket, { type: "error", error: "bad_camera_off" });
+          }
+          const pub = room.desktop.setCameraOff(peerId, msg.streamId, msg.off);
+          if (pub) room.broadcast({ type: "published", publication: pub });
+          return;
+        }
         case "slot_update": {
           // Any authenticated peer may rearrange the shared layout — same
           // model as a collaborative whiteboard. Last write wins.
@@ -5270,6 +5450,7 @@ app.register(async function signalRoutes(fastify) {
           // sensible default — never leave it undefined, peers expect a
           // number.
           const incomingVolume = typeof msg.volume === "number" ? Math.max(0, Math.min(1, msg.volume)) : null;
+          const prevMusic = room.music.current().state;
           const next = room.music.set({
             src: typeof msg.src === "string" ? msg.src : null,
             index: msg.index,
@@ -5279,6 +5460,7 @@ app.register(async function signalRoutes(fastify) {
             volume: incomingVolume ?? room.music.cachedVolume() ?? 0.7,
           });
           room.broadcast({ type: "music_state", state: next });
+          noteMusicTranscript(room, prevMusic, next, info);
           return;
         }
         case "chess_create_game": {
@@ -5638,6 +5820,30 @@ app.register(async function signalRoutes(fastify) {
             source: tx.source,
             at: Date.now(),
           });
+          // Narrate the proposal once. proposeTx collapses a double-click
+          // onto the same execHash and returns the existing tx, so a fresh
+          // id is the signal that this is a genuinely new proposal.
+          if (!room.narratedTxIds.has(tx.id)) {
+            room.narratedTxIds.add(tx.id);
+            const detail = batchCalls
+              ? `a batch of ${batchCalls.length} transactions`
+              : `a transaction → ${shortHex(msg.target)} (${formatEth(msg.value)} ETH)`;
+            room.transcript.appendAction({
+              kind: "wallet",
+              address: info.address,
+              handle: info.handle,
+              anonId: info.anonId,
+              text: `💸 ${actorName(info)} proposed ${detail} on ${chainLabel(chainId)}`,
+              meta: {
+                txId: tx.id,
+                target: msg.target,
+                value: msg.value,
+                chainId,
+                source: tx.source,
+                batch: batchCalls?.length ?? 0,
+              },
+            });
+          }
           return;
         }
         case "wallet_tx_sign": {

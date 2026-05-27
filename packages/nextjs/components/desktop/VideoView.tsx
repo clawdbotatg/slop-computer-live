@@ -1,66 +1,92 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { useAudioBusStream } from "~~/hooks/useAudioBus";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
+import type { Bands } from "~~/utils/blockieBands";
 
-// Persisted alongside the resume flags so reload preserves the pause
+// Persisted alongside the resume flags so reload preserves the mic-mute
 // state. **Scoped to the current room slug** — switching from /main to
-// /ep0 shouldn't auto-restore a paused state from a different room.
-// Cleared by Desktop.tsx when the camera publication is fully stopped
-// (not when it's merely re-acquired by auto-resume).
-const VIDEO_PAUSED_KEY_BASE = "slop-video-paused-v1";
-export const videoPausedKey = (slug: string) => `${VIDEO_PAUSED_KEY_BASE}:${slug}`;
+// /ep0 shouldn't auto-restore a mute from a different room. Cleared by
+// Desktop.tsx when the camera publication is fully stopped (not when
+// it's merely re-acquired by auto-resume). The audio-only (cameraOff)
+// state is NOT persisted: a reload re-acquires the camera and a fresh
+// share should start showing video.
+const CAMERA_MIC_MUTED_KEY_BASE = "slop-camera-mic-mute-v1";
+export const cameraMicMutedKey = (slug: string) => `${CAMERA_MIC_MUTED_KEY_BASE}:${slug}`;
 
 export type VideoViewProps = {
   stream: MediaStream;
-  /** Mute local playback on self streams (audio rides on a separate audio
-   *  publication, but defensive against future bundling). */
+  /** Mute local playback on self streams (echo prevention — a camera
+   *  publication bundles the publisher's own mic). */
   muted?: boolean;
-  /** When true, render the pause-video toggle overlay. Only the publisher
-   *  controls their own camera state. */
+  /** When true, render the publisher controls (mic mute, audio-only
+   *  toggle, settings). Only the publisher controls their own camera. */
   isMine?: boolean;
-  /** Optional. When provided, render a gear (settings) button next to the
-   *  pause toggle. Click handler should re-open the share dialog in edit
-   *  mode so the user can hot-swap camera without dropping the publication. */
+  /** Optional. When provided, render a gear (settings) button. Click
+   *  handler should re-open the share dialog in edit mode so the user
+   *  can hot-swap camera without dropping the publication. */
   onSettings?: () => void;
-  /** When true, hydrate the pause toggle from VIDEO_PAUSED_STORAGE_KEY on
-   *  mount and write changes back so reload preserves the paused state.
-   *  Only set for the publisher's own camera. Screen-share and remote
-   *  views keep ephemeral local-only state. */
-  persistPause?: boolean;
-  /** When set, register the inner `<video>` element with the shared
-   *  AudioBus under this id. Camera publications carry the publisher's
-   *  mic (see lockstep enable above) and screen shares can carry
-   *  system audio — both need to ride the bus in god-mode so the EQ
-   *  popup sees them. null on non-spectator sessions. */
+  /** Audio-only mode: video stopped, mic kept. Driven by the shared
+   *  publication state (relay-broadcast), so it's the single source of
+   *  truth for both the publisher and every viewer. When true we render
+   *  the avatar over the (now-black) video and keep the audio flowing. */
+  cameraOff?: boolean;
+  /** Publisher-only. Flip audio-only mode on/off. The parent routes this
+   *  through the mesh so every peer's `cameraOff` updates in lockstep. */
+  onToggleCameraOff?: (off: boolean) => void;
+  /** Identity palette for the audio-only avatar/visualizer backdrop. */
+  bands?: Bands;
+  /** Uploaded avatar URL for the audio-only backdrop (falls back to the
+   *  publisher's ENS avatar resolved from `address`). */
+  avatarUrl?: string | null;
+  /** Publisher wallet address — ENS avatar source for the audio-only
+   *  backdrop when no avatar has been uploaded. */
+  address?: string | null;
+  /** Publisher opted out of any avatar — suppress the backdrop image. */
+  hidden?: boolean;
+  /** When set, register the inner `<video>` element's stream with the
+   *  shared AudioBus under this id. Camera publications carry the
+   *  publisher's mic and screen shares can carry system audio — both
+   *  need to ride the bus in god-mode so the EQ popup sees them. null
+   *  on non-spectator sessions. */
   audioBusId?: string | null;
   /** Human-readable label for the /eq popup row. */
   audioBusLabel?: string;
 };
 
-// Camera / screen-share renderer with a publisher-only pause toggle in the
-// top-right. Pausing flips track.enabled = false on every video track —
-// peers see the last frame freeze and the publisher's preview goes black.
-// Doesn't unpublish, so unpause is instant (no permission re-prompt).
+// Camera / screen-share renderer with publisher-only controls in the
+// top-right:
+//   - Mic mute — flips the audio track's enabled flag so the room hears
+//     silence (not just a local-side mute). Persisted across reload.
+//   - Audio-only — stops sending video but keeps the mic; the avatar
+//     renders over the black video for everyone (relay-broadcast state).
+// Neither unpublishes, so toggling back is instant (no permission
+// re-prompt, no reconnect).
 export const VideoView = ({
   stream,
   muted = false,
   isMine = false,
   onSettings,
-  persistPause = false,
+  cameraOff = false,
+  onToggleCameraOff,
+  bands,
+  avatarUrl = null,
+  address = null,
+  hidden = false,
   audioBusId = null,
   audioBusLabel = "video",
 }: VideoViewProps) => {
   const slug = useRoomSlug();
-  const storageKey = videoPausedKey(slug);
+  const storageKey = cameraMicMutedKey(slug);
   const videoRef = useRef<HTMLVideoElement>(null);
-  // Lazy init from localStorage when persistence is on, so the initial
-  // track.enabled effect below sees the resumed paused=true and freezes
-  // the just-re-acquired camera immediately — no one-frame flash.
-  const [paused, setPaused] = useState<boolean>(() => {
-    if (!persistPause || typeof window === "undefined") return false;
+  // Lazy init from localStorage when this is my own publication, so the
+  // initial track.enabled effect below sees the resumed micMuted=true
+  // and silences the just-re-acquired mic before peers hear a sample.
+  const [micMuted, setMicMuted] = useState<boolean>(() => {
+    if (!isMine || typeof window === "undefined") return false;
     try {
       return window.localStorage.getItem(storageKey) === "1";
     } catch {
@@ -68,39 +94,51 @@ export const VideoView = ({
     }
   });
   useEffect(() => {
-    if (!persistPause || typeof window === "undefined") return;
+    if (!isMine || typeof window === "undefined") return;
     try {
-      if (paused) window.localStorage.setItem(storageKey, "1");
+      if (micMuted) window.localStorage.setItem(storageKey, "1");
       else window.localStorage.removeItem(storageKey);
     } catch {
       /* quota / private mode */
     }
-  }, [paused, persistPause, storageKey]);
+  }, [micMuted, isMine, storageKey]);
   // Per-user "mute on my side" for remote streams. Doesn't touch the
   // upstream — only my local <video> element goes silent. Same model
   // as the music player + AudioVisualizer.
   const [selfMuted, setSelfMuted] = useState(false);
 
+  // My own mic: flip track.enabled so the *room* hears silence. Separate
+  // from the audio-only toggle below — you can be muted with video on,
+  // or talking with video off.
   useEffect(() => {
     if (!isMine) return;
-    // Camera publications bundle audio (the mic rides on the same stream
-    // as the camera — useLocalMedia.startCamera requests both); screen
-    // share can carry system audio. "Pause my video" reads as "I'm
-    // off" — flipping only video would freeze the frame but leave my
-    // bundled mic broadcasting, which is exactly the leak users
-    // complain about. Disable both track kinds in lockstep so paused
-    // means silent + frozen, full stop. A standalone Share-Audio
-    // publication (separate stream) is independent and unaffected.
-    for (const t of stream.getVideoTracks()) t.enabled = !paused;
-    for (const t of stream.getAudioTracks()) t.enabled = !paused;
-  }, [stream, paused, isMine]);
+    for (const t of stream.getAudioTracks()) t.enabled = !micMuted;
+  }, [stream, micMuted, isMine]);
+
+  // Audio-only: stop sending video frames but keep the mic. Disabling
+  // (vs. unpublishing) means flipping back is instant and the audio
+  // never drops. Only the publisher touches the local track — viewers
+  // render the avatar purely from the broadcast `cameraOff` flag.
+  useEffect(() => {
+    if (!isMine) return;
+    for (const t of stream.getVideoTracks()) t.enabled = !cameraOff;
+  }, [stream, cameraOff, isMine]);
+
+  // Spacebar mute toggle (dispatched by Desktop's global key handler).
+  useEffect(() => {
+    if (!isMine) return;
+    const onToggle = () => setMicMuted(m => !m);
+    window.addEventListener("slop-toggle-mic", onToggle);
+    return () => window.removeEventListener("slop-toggle-mic", onToggle);
+  }, [isMine]);
 
   // God-mode only — route this video's audio through the shared
   // AudioBus. Camera streams bundle mic audio; screen shares may
   // carry system audio. We tap the MediaStream directly because
   // createMediaElementSource gives silent output on srcObject-bound
   // elements in Chromium. The <video> below is force-muted while the
-  // bus is active so we don't double-play.
+  // bus is active so we don't double-play. This stays wired even in
+  // audio-only mode — the video element is still the audio sink.
   const busActive = !!audioBusId;
   useAudioBusStream(stream, audioBusId ?? "", audioBusLabel, busActive);
 
@@ -136,6 +174,27 @@ export const VideoView = ({
         muted={muted || (!isMine && selfMuted) || busActive}
         style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
       />
+      {/* Audio-only backdrop, shown whenever the publisher is in
+          audio-only mode (needs the identity palette; screen shares
+          never set cameraOff and don't pass bands, so this stays
+          camera-only in practice). The <video> above keeps carrying the
+          audio (and the AudioBus tap); this is a visuals-only layer —
+          muted, isMine=false so it never touches tracks, and no bus id
+          so it doesn't double-register. */}
+      {cameraOff && bands ? (
+        <div style={{ position: "absolute", inset: 0 }}>
+          <AudioVisualizer
+            stream={stream}
+            bands={bands}
+            muted
+            isMine={false}
+            controls={false}
+            avatarUrl={avatarUrl}
+            address={address}
+            hidden={hidden}
+          />
+        </div>
+      ) : null}
       {!isMine ? (
         <div
           style={{
@@ -171,13 +230,24 @@ export const VideoView = ({
         >
           <button
             type="button"
-            onClick={() => setPaused(p => !p)}
-            aria-label={paused ? "resume video" : "pause video"}
-            title={paused ? "resume video" : "pause video"}
-            style={overlayBtnStyle(paused)}
+            onClick={() => setMicMuted(m => !m)}
+            aria-label={micMuted ? "unmute microphone" : "mute microphone"}
+            title={micMuted ? "unmute microphone (spacebar)" : "mute microphone (spacebar)"}
+            style={overlayBtnStyle(micMuted)}
           >
-            {paused ? <VideoOffIcon /> : <VideoOnIcon />}
+            {micMuted ? <MicOffIcon /> : <MicIcon />}
           </button>
+          {onToggleCameraOff ? (
+            <button
+              type="button"
+              onClick={() => onToggleCameraOff(!cameraOff)}
+              aria-label={cameraOff ? "turn camera on" : "switch to audio only"}
+              title={cameraOff ? "turn camera back on" : "switch to audio only (show avatar)"}
+              style={overlayBtnStyle(cameraOff)}
+            >
+              {cameraOff ? <VideoOffIcon /> : <VideoOnIcon />}
+            </button>
+          ) : null}
           {onSettings ? (
             <button
               type="button"
@@ -189,27 +259,6 @@ export const VideoView = ({
               <GearIcon />
             </button>
           ) : null}
-        </div>
-      ) : null}
-      {paused && isMine ? (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(0,0,0,0.55)",
-            color: "#fff",
-            fontFamily: "var(--slop-font-display)",
-            fontSize: 14,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            pointerEvents: "none",
-          }}
-        >
-          video paused
         </div>
       ) : null}
     </div>
@@ -260,6 +309,46 @@ const VideoOffIcon = () => (
   >
     <rect x="2" y="4.5" width="8.5" height="7" rx="1" fill="currentColor" stroke="none" />
     <path d="M10.5 7 L 14 5 V 11 L 10.5 9 Z" fill="currentColor" stroke="none" />
+    <line x1="2" y1="2" x2="14" y2="14" stroke="#000" strokeWidth="2.6" />
+    <line x1="2" y1="2" x2="14" y2="14" />
+  </svg>
+);
+
+// Microphone — solid capsule + stand. Slash variant for the muted state.
+const MicIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <rect x="6" y="2" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
+    <path d="M3.5 7.5 A 4.5 4.5 0 0 0 12.5 7.5" />
+    <line x1="8" y1="12" x2="8" y2="14.5" />
+    <line x1="5.5" y1="14.5" x2="10.5" y2="14.5" />
+  </svg>
+);
+
+const MicOffIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <rect x="6" y="2" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
+    <path d="M3.5 7.5 A 4.5 4.5 0 0 0 12.5 7.5" />
+    <line x1="8" y1="12" x2="8" y2="14.5" />
+    <line x1="5.5" y1="14.5" x2="10.5" y2="14.5" />
+    {/* slash */}
     <line x1="2" y1="2" x2="14" y2="14" stroke="#000" strokeWidth="2.6" />
     <line x1="2" y1="2" x2="14" y2="14" />
   </svg>

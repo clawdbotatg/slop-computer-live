@@ -50,6 +50,12 @@ export type AudioVisualizerProps = {
   /** Human-readable label shown in the /eq popup row. Usually the
    *  peer's name or wallet short-address. */
   audioBusLabel?: string;
+  /** When false, render no overlay buttons at all — pure avatar +
+   *  waveform visuals. Used when VideoView embeds this as the
+   *  audio-only backdrop for a camera publication (the camera window
+   *  owns the mute / mode controls, so a second set here would
+   *  duplicate them). Defaults to true. */
+  controls?: boolean;
 };
 
 // Layered visualizer using all three blockie palette colors so the window
@@ -72,6 +78,7 @@ export const AudioVisualizer = ({
   persistMute = false,
   audioBusId = null,
   audioBusLabel = "audio",
+  controls = true,
 }: AudioVisualizerProps) => {
   const slug = useRoomSlug();
   const storageKey = audioMutedKey(slug);
@@ -122,6 +129,17 @@ export const AudioVisualizer = ({
       /* quota / private mode */
     }
   }, [selfMuted, persistMute, storageKey]);
+
+  // Spacebar mute toggle (dispatched by Desktop's global key handler).
+  // Only my own publication responds, and only when it owns its
+  // controls — an embedded-for-visuals instance leaves the mic to the
+  // camera window. The track.enabled effect above does the actual mute.
+  useEffect(() => {
+    if (!isMine || !controls) return;
+    const onToggle = () => setSelfMuted(m => !m);
+    window.addEventListener("slop-toggle-mic", onToggle);
+    return () => window.removeEventListener("slop-toggle-mic", onToggle);
+  }, [isMine, controls]);
 
   useEffect(() => {
     if (audioRef.current && audioRef.current.srcObject !== stream) {
@@ -349,7 +367,7 @@ export const AudioVisualizer = ({
           affordance the music player uses, applied to other peers'
           mics so a single user can step out without making everyone
           else go silent. */}
-      {!isMine ? (
+      {controls && !isMine ? (
         <div
           style={{
             position: "absolute",
@@ -372,7 +390,7 @@ export const AudioVisualizer = ({
         </div>
       ) : null}
 
-      {isMine ? (
+      {controls && isMine ? (
         <div
           style={{
             position: "absolute",

@@ -34,6 +34,11 @@ type TranscriptSegment = {
   anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
+  // Set ⇒ a relay-narrated in-room action (music/file/wallet/chess/pong).
+  // The actor's name is baked into `text`, so action rows render as a
+  // single accent-coloured line instead of the speech name+body layout.
+  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+  meta?: Record<string, string | number | boolean | null>;
 };
 
 // SharedAppWindow only mounts this component while the window is open,
@@ -209,6 +214,42 @@ const SegmentRow = ({ seg, customNames }: { seg: TranscriptSegment; customNames:
     [seg.address, seg.anonId, seg.handle, seg.id],
   );
   const sourceTag = seg.source === "agent" ? "AGENT" : seg.source === "spectator" ? "SPECTATOR" : null;
+
+  // Action row: the actor's name is already inside `text`, so render one
+  // compact italic line accent-coloured by the actor — no name chip, no
+  // source tag. Visually reads as a "something happened" event vs speech.
+  if (seg.kind && seg.kind !== "speech") {
+    return (
+      <div style={{ display: "flex", gap: 8, opacity: 0.9 }}>
+        <div
+          aria-hidden
+          style={{
+            width: 3,
+            minWidth: 3,
+            alignSelf: "stretch",
+            background: bands.band1,
+            boxShadow: `0 0 6px ${bands.band1}`,
+            borderRadius: 1,
+          }}
+        />
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 12.5,
+            lineHeight: 1.4,
+            fontStyle: "italic",
+            color: "var(--slop-text-muted)",
+            wordBreak: "break-word",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {seg.text}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{

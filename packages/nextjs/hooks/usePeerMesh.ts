@@ -168,6 +168,10 @@ export type Publication = {
   ownerKey: string; // stable across reconnects (wallet address or handle)
   kind: SlotKind;
   label: string;
+  /** Camera publications only. True === publisher switched to audio-only
+   *  (video stopped, mic still live) and peers should render the avatar
+   *  instead of the black video. Broadcast via `set_camera_off`. */
+  cameraOff?: boolean;
 };
 
 export type SlotPosition = {
@@ -477,6 +481,11 @@ export type TranscriptSegment = {
   anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
+  /** Absent ⇒ a spoken line. Set ⇒ a relay-narrated in-room action
+   *  (music/file/wallet/chess/pong) — archive + poll only, never a caption. */
+  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+  /** Structured action metadata; only set on action rows. */
+  meta?: Record<string, string | number | boolean | null>;
 };
 
 /** In-browser STT result — interim or final — broadcast on the room WS
@@ -885,6 +894,11 @@ export type PeerMeshState = {
   sendChat: (text: string) => void;
   publish: (stream: MediaStream, kind: SlotKind, label: string) => void;
   unpublish: (streamId: string) => void;
+  /** Flip a camera publication to audio-only (video off, mic kept) or
+   *  back. Server is source of truth — the relay rebroadcasts the
+   *  publication with `cameraOff` set, which the `published` handler
+   *  applies, so every peer (and the snapshot) stays in sync. */
+  setCameraOff: (streamId: string, off: boolean) => void;
   /** Hot-swap a single track on an already-published stream. Calls
    *  RTCRtpSender.replaceTrack on every peer connection so the remote
    *  side never loses the publication — the streamId (the map key)
@@ -2215,6 +2229,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const setCameraOff = useCallback(
+    (streamId: string, off: boolean) => {
+      // Server is source of truth — the relay rebroadcasts the updated
+      // publication via `published`, which the handler above applies. No
+      // optimistic local write, same model as setCustomName.
+      send({ type: "set_camera_off", streamId, off });
+    },
+    [send],
+  );
+
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
       // HARD RULE: every brand-new window comes to the front. If no slot
@@ -3294,6 +3318,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletResummarize,
     customNames,
     setCustomName,
+    setCameraOff,
     peerPings,
   };
 }
