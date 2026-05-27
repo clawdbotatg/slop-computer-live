@@ -357,6 +357,11 @@ export const MusicPlayerWindow = ({
   // built our own graph OR borrowed the bus's analyser. Separate from
   // audioCtxRef because in god-mode we don't own a context.
   const graphReadyRef = useRef(false);
+  // Live mirror of audioBusEnabled for the RAF loop's self-heal below —
+  // that effect binds once (empty deps) so it can't read the prop
+  // directly without it going stale when god mode flips on after mount.
+  const audioBusEnabledRef = useRef(audioBusEnabled);
+  audioBusEnabledRef.current = audioBusEnabled;
 
   const setupGraph = useCallback(() => {
     const a = audioRef.current;
@@ -374,9 +379,12 @@ export const MusicPlayerWindow = ({
         analyserRef.current = busAnalyser;
         graphReadyRef.current = true;
       }
-      // If the bus hasn't registered the source yet (rare race), we
-      // just no-op and try again next tick — visualizer stays dark
-      // until the bus catches up.
+      // If the bus hasn't registered the source yet (the spectator-
+      // session trade can land after this one-shot fires), no-op here —
+      // the RAF spectrum loop re-grabs getAnalyser("music") every frame
+      // until it's available, so a box that came up into already-playing
+      // audio lights up as soon as the bus catches up, with no second
+      // setupGraph() trigger needed.
       return;
     }
     type Ctor = new () => AudioContext;
@@ -689,6 +697,16 @@ export const MusicPlayerWindow = ({
   useEffect(() => {
     let raf = 0;
     const loop = () => {
+      // God-mode self-heal: the AudioBus registers the "music" source
+      // asynchronously (after the spectator-session trade flips god mode
+      // on), which can land AFTER the one-shot setupGraph() call. Re-grab
+      // the bus analyser here until it's available so a box that came up
+      // into already-playing audio — no transport press to re-trigger
+      // setupGraph — still gets a live spectrum. Borrowing the node never
+      // creates/resumes a context, so this needs no user gesture.
+      if (!analyserRef.current && audioBusEnabledRef.current) {
+        analyserRef.current = audioBus().getAnalyser("music");
+      }
       const analyser = analyserRef.current;
       const canvas = canvasRef.current;
       if (analyser && canvas) {
