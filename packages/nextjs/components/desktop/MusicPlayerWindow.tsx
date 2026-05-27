@@ -409,6 +409,22 @@ export const MusicPlayerWindow = ({
     }
   }, [audioBusEnabled]);
 
+  // Wire the analyser whenever playback is live — the close→reopen fix.
+  // Closing SLOPAMP fully unmounts this window (SharedAppWindow returns
+  // null when the id isn't open), so reopening mounts a fresh instance
+  // with a null analyserRef. The music resumes (the sync effect calls
+  // play() under the page's sticky activation), but neither a transport
+  // press (broadcast → setupGraph) nor the one-shot slop:activated
+  // gesture fires again — so without this the spectrum stays dead even
+  // though audio is playing. setupGraph is idempotent (graphReadyRef);
+  // post-interaction sticky activation lets the fresh AudioContext start
+  // running with no new gesture, and the god-mode borrow path needs none.
+  useEffect(() => {
+    if (!playing) return;
+    setupGraph();
+    audioCtxRef.current?.resume().catch(() => undefined);
+  }, [playing, setupGraph]);
+
   // The slider's displayed value: while the user is mid-drag, that's
   // their in-flight draft; otherwise it's whatever the mesh says
   // everyone is currently listening at, falling back to the draft when
