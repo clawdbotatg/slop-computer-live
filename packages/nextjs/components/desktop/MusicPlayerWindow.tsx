@@ -142,7 +142,10 @@ export const MusicPlayerWindow = ({
       const raw = window.localStorage.getItem(VOLUME_KEY);
       if (raw) {
         const parsed = parseFloat(raw);
-        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) setVolumeDraft(parsed);
+        // Floor at 0.1: a stale near-silent value would otherwise put the
+        // god-mode auto-leveler into crush-mode (see setSourceTargetScale
+        // below) the moment music starts, killing playback after ~1s.
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) setVolumeDraft(Math.max(0.1, parsed));
       }
       if (window.localStorage.getItem(MUTE_KEY) === "1") setSelfMuted(true);
     } catch {
@@ -422,7 +425,12 @@ export const MusicPlayerWindow = ({
       audioRef.current.volume = audioBusEnabled ? 1 : shownVolume;
     }
     if (audioBusEnabled) {
-      audioBus().setSourceTargetScale("music", shownVolume);
+      // Floor the target scale at 0.1 so the auto-leveler never aims for
+      // near-silence. A low shownVolume (e.g. a stale 0.08 from
+      // localStorage) would otherwise set the target RMS so low that the
+      // gain lerps to ~zero within ~1s and the music dies on the
+      // god-mode box despite Slopamp still reading "playing".
+      audioBus().setSourceTargetScale("music", Math.max(0.1, shownVolume));
     }
     try {
       window.localStorage.setItem(VOLUME_KEY, String(shownVolume));
