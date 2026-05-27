@@ -10,14 +10,19 @@
 // plain-text string when ANTHROPIC_API_KEY is unset or the request
 // fails — so local dev without a key still surfaces something useful.
 //
-// Token resolution: before the Claude call, every 40-hex address in
-// the calldata + the top-level target is resolved against the
-// in-memory `TOKEN_ADDRESSES` registry and Zerion. The resolved table
-// is (a) injected into the prompt so the model stops hallucinating
-// symbols for long-tail tokens, and (b) used to *overwrite* the
-// model's symbol/thumbnail/decimals fields for any input/output whose
-// `address` was resolved — defense in depth against further drift.
+// Token flow is GROUND TRUTH from on-chain simulation, not an AI guess.
+// We `eth_simulateV1` the call(s) as the multisig (from=multisig), decode
+// the synthesized Transfer logs into net asset changes, and build the
+// card's input/output chips from those — real contract addresses, exact
+// amounts, real icons. The AI only writes the headline / kind / contract
+// label / recipient. When simulation is unavailable (revert, an `approve`
+// that moves nothing, or a non-Alchemy chain like Gnosis) we fall back to
+// the AI-decoded chips, which are themselves hardened by resolving every
+// address in the calldata against TOKEN_ADDRESSES + Zerion and a
+// symbol-match backstop.
 
+import { formatUnits } from "viem";
+import { simulateTransfers, type SimTransfer } from "./wallet-data.js";
 import { NATIVE_ADDRESS, resolveTokenByAddress, type ResolvedToken } from "./wallet-tokens.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
@@ -216,6 +221,85 @@ function looksLikeSummaryCard(card: unknown): boolean {
   return typeof o.headline === "string" && Array.isArray(o.inputs) && Array.isArray(o.outputs);
 }
 
+// Drop trailing zeros from a formatUnits result ("1.500000" → "1.5",
+// "2.0" → "2") so chips read cleanly.
+function trimAmount(s: string): string {
+  if (!s.includes(".")) return s;
+  return s.replace(/\.?0+$/, "");
+}
+
+type SimChips = { inputs: AssetFromAI[]; outputs: AssetFromAI[] };
+
+// Turn raw simulated Transfer logs into the card's input/output chips,
+// netting per token relative to the multisig (out = left the wallet,
+// in = arrived). Each chip's symbol/decimals/icon comes from the token
+// resolver keyed on the REAL contract address that moved — so there's no
+// AI guess anywhere in the token flow. Returns null when nothing the
+// multisig owns actually moved (e.g. an approve), so the caller can fall
+// back to the AI-decoded chips.
+async function buildSimChips(
+  transfers: SimTransfer[],
+  multisig: string,
+  chainId: number,
+): Promise<SimChips | null> {
+  const ms = multisig.toLowerCase();
+  const net = new Map<string, bigint>(); // token → net raw units (positive = into multisig)
+  const nftIn = new Map<string, number>();
+  const nftOut = new Map<string, number>();
+  for (const t of transfers) {
+    const isOut = t.from === ms;
+    const isIn = t.to === ms;
+    if (!isOut && !isIn) continue; // routing hop that doesn't touch the multisig
+    if (t.isNft) {
+      if (isIn) nftIn.set(t.token, (nftIn.get(t.token) ?? 0) + 1);
+      if (isOut) nftOut.set(t.token, (nftOut.get(t.token) ?? 0) + 1);
+      continue;
+    }
+    let cur = net.get(t.token) ?? 0n;
+    if (isIn) cur += t.rawAmount;
+    if (isOut) cur -= t.rawAmount;
+    net.set(t.token, cur);
+  }
+
+  const chainSlug = CHAIN_SLUG_BY_ID[chainId] ?? null;
+  const inputs: AssetFromAI[] = [];
+  const outputs: AssetFromAI[] = [];
+
+  for (const [token, n] of net.entries()) {
+    if (n === 0n) continue;
+    const isNative = token === "native";
+    const addr = isNative ? NATIVE_ADDRESS : token;
+    const r = await resolveTokenByAddress(chainId, addr);
+    const decimals = r?.decimals ?? 18;
+    const magnitude = n < 0n ? -n : n;
+    const chip: AssetFromAI = {
+      symbol: r?.symbol ?? `Token ${addr.slice(-4)}`,
+      amount: trimAmount(formatUnits(magnitude, decimals)),
+      address: isNative ? null : addr,
+      chain: chainSlug,
+      thumbnail: r?.thumbnail ?? null,
+      decimals,
+    };
+    (n < 0n ? inputs : outputs).push(chip);
+  }
+
+  const pushNft = async (token: string, count: number, into: AssetFromAI[]) => {
+    const r = await resolveTokenByAddress(chainId, token);
+    into.push({
+      symbol: r?.symbol ?? `NFT ${token.slice(-4)}`,
+      amount: String(count),
+      address: token,
+      chain: chainSlug,
+      thumbnail: r?.thumbnail ?? null,
+    });
+  };
+  for (const [token, count] of nftOut.entries()) await pushNft(token, count, inputs);
+  for (const [token, count] of nftIn.entries()) await pushNft(token, count, outputs);
+
+  if (inputs.length === 0 && outputs.length === 0) return null;
+  return { inputs, outputs };
+}
+
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
   if (!ANTHROPIC_API_KEY) return fallbackSummary(args);
 
@@ -235,6 +319,30 @@ export async function summarizeTransaction(args: SummarizeArgs): Promise<string>
       if (r) resolved.set(addr, r);
     }),
   );
+
+  // ── Ground truth: simulate the call(s) as the multisig and read the
+  //    REAL transfers. These become the card's chips; the AI only writes
+  //    prose. Empty/reverted/unsupported-chain → simChips stays null and
+  //    we fall back to the AI-decoded chips below.
+  const simCalls =
+    args.calls && args.calls.length > 0
+      ? args.calls.map(c => ({ to: c.target, data: c.data, value: c.value }))
+      : [{ to: args.target, data: args.data, value: args.value }];
+  let simChips: SimChips | null = null;
+  try {
+    const sim = await simulateTransfers({ from: args.multisigAddress, calls: simCalls, chainId: args.chainId });
+    if (sim.transfers.length > 0) {
+      simChips = await buildSimChips(sim.transfers, args.multisigAddress, args.chainId);
+    }
+  } catch {
+    simChips = null;
+  }
+
+  const simBlock = simChips
+    ? `\nSimulated asset changes (GROUND TRUTH — these tokens actually move when this tx executes; your headline MUST match this flow):
+  leaving:  ${simChips.inputs.map(a => `${a.amount} ${a.symbol}`).join(", ") || "(nothing)"}
+  arriving: ${simChips.outputs.map(a => `${a.amount} ${a.symbol}`).join(", ") || "(nothing)"}\n`
+    : "";
 
   const knownTokensBlock =
     resolved.size > 0
@@ -262,7 +370,7 @@ The signer is a caveman — explain it in as few words as possible.
 Multisig: ${args.multisigAddress}
 
 ${txBlock}
-${knownTokensBlock}
+${simBlock}${knownTokensBlock}
 Decode the calldata. Recognize common selectors: ERC-20 (transfer / transferFrom / approve),
 ERC-721 / ERC-1155, Uniswap V2/V3/V4 (incl. UniversalRouter \`execute\` with commands 0x10/0x00 = V4_SWAP),
 Seaport, ENS, Safe, LI.FI, common bridges.
@@ -324,6 +432,13 @@ Rules:
     }
     if (parsed && looksLikeSummaryCard(parsed)) {
       const fixed = applyResolvedTokensToCard(parsed, resolved, args.chainId);
+      // Ground-truth override: when simulation produced real chips, they
+      // win over whatever the AI emitted. The AI's headline / kind /
+      // contract / to are kept — only the token flow is replaced.
+      if (simChips) {
+        fixed.inputs = simChips.inputs;
+        fixed.outputs = simChips.outputs;
+      }
       return JSON.stringify(fixed);
     }
     // Model returned prose despite instructions — ship it raw; the

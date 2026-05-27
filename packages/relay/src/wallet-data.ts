@@ -297,6 +297,136 @@ export async function fetchPrices(): Promise<{ symbol: string; price: number | n
   }
 }
 
+// ─── eth_simulateV1 transfer simulation (ground truth for tx cards) ─────────
+//
+// The older `alchemy_simulateAssetChanges` path (see simulateCalldata
+// below) returns nicely-decoded asset deltas BUT is currently throwing an
+// internal `bigInt is not defined` error on our key across all chains.
+// `eth_simulateV1` is the EIP-standard method, works on Base/ETH/Arb/OP,
+// and with `traceTransfers: true` synthesizes Transfer logs for every
+// ERC-20 + native move. We decode those logs ourselves and resolve token
+// metadata via wallet-tokens, which makes the wallet's tx-summary chips
+// ground truth instead of an AI guess. Gnosis (no Alchemy Transact) falls
+// through to the AI-decode path until we add Tenderly.
+
+// keccak256("Transfer(address,address,uint256)")
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+// eth_simulateV1 emits native-ETH moves under this pseudo-token address.
+const NATIVE_LOG_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+// Chains where Alchemy serves eth_simulateV1. Gnosis (100) is intentionally
+// absent — we don't route it through Alchemy, so sim there returns
+// chain-unsupported and the caller falls back to the AI-decode card.
+const SIMULATABLE_CHAINS = new Set([1, 8453, 42161, 10, 137]);
+
+export type SimTransfer = {
+  // lowercase contract address, or the literal "native" for ETH/native gas token
+  token: string;
+  from: string;
+  to: string;
+  rawAmount: bigint;
+  isNft: boolean;
+  tokenId?: string;
+};
+
+export type SimTransfersResult = {
+  ok: boolean; // true only when every call succeeded (status 0x1)
+  reverted: boolean;
+  transfers: SimTransfer[];
+  error?: string;
+};
+
+const topicToAddress = (topic: string): string => `0x${topic.slice(-40).toLowerCase()}`;
+
+const decimalWeiToHex = (wei: string): string => {
+  try {
+    return `0x${BigInt(wei || "0").toString(16)}`;
+  } catch {
+    return "0x0";
+  }
+};
+
+// Simulate one or more calls executed sequentially by `from` (the multisig)
+// in a single block, and return every Transfer that moved value. For a
+// single tx pass one call; for a batch pass all inner calls (they execute
+// with chained state, exactly like execBatchTransaction).
+export async function simulateTransfers(args: {
+  from: string;
+  calls: { to: string; data: string; value: string }[]; // value = decimal wei
+  chainId: number;
+}): Promise<SimTransfersResult> {
+  if (!ALCHEMY_KEY) return { ok: false, reverted: false, transfers: [], error: "no-alchemy-key" };
+  if (!SIMULATABLE_CHAINS.has(args.chainId)) {
+    return { ok: false, reverted: false, transfers: [], error: `chain-${args.chainId}-unsupported` };
+  }
+
+  const calls = args.calls.map(c => ({
+    from: args.from,
+    to: c.to,
+    value: decimalWeiToHex(c.value),
+    data: c.data && c.data !== "0x" ? c.data : "0x",
+  }));
+
+  const body = {
+    id: 1,
+    jsonrpc: "2.0",
+    method: "eth_simulateV1",
+    params: [{ blockStateCalls: [{ calls }], traceTransfers: true, validation: false }, "latest"],
+  };
+
+  try {
+    const res = await fetch(alchemyUrl(args.chainId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as {
+      error?: { message?: string };
+      result?: Array<{ calls?: Array<{ status?: string; logs?: Array<{ address?: string; topics?: string[]; data?: string }> }> }>;
+    };
+    if (json.error) return { ok: false, reverted: false, transfers: [], error: json.error.message ?? "rpc-error" };
+    const block = json.result?.[0];
+    if (!block) return { ok: false, reverted: false, transfers: [], error: "no-result" };
+
+    const transfers: SimTransfer[] = [];
+    let reverted = false;
+    for (const call of block.calls ?? []) {
+      if (call.status !== undefined && call.status !== "0x1") reverted = true;
+      for (const log of call.logs ?? []) {
+        const topics = log.topics ?? [];
+        const [topic0, fromTopic, toTopic, tokenIdTopic] = topics;
+        if ((topic0 ?? "").toLowerCase() !== TRANSFER_TOPIC) continue;
+        if (!fromTopic || !toTopic) continue; // not a standard Transfer
+        const addr = (log.address ?? "").toLowerCase();
+        const isNative = addr === NATIVE_LOG_SENTINEL;
+        const token = isNative ? "native" : addr;
+        const from = topicToAddress(fromTopic);
+        const to = topicToAddress(toTopic);
+        if (tokenIdTopic) {
+          // ERC-721: tokenId is the (indexed) 4th topic; one unit moves.
+          let tokenId = "0";
+          try {
+            tokenId = BigInt(tokenIdTopic).toString();
+          } catch {
+            /* leave default */
+          }
+          transfers.push({ token, from, to, rawAmount: 1n, isNft: true, tokenId });
+        } else {
+          let rawAmount = 0n;
+          try {
+            rawAmount = BigInt(log.data && log.data !== "0x" ? log.data : "0x0");
+          } catch {
+            /* leave 0 */
+          }
+          transfers.push({ token, from, to, rawAmount, isNft: false });
+        }
+      }
+    }
+    return { ok: !reverted, reverted, transfers };
+  } catch (e) {
+    return { ok: false, reverted: false, transfers: [], error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // ─── Transaction simulation (api/security) ──────────────────────────────────
 
 export type SimulationResult = {
