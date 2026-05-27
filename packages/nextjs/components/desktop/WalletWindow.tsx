@@ -2117,7 +2117,15 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   // sent it) OR the one broadcast on the relay by another peer's exec.
   // Every peer pollers in parallel; first to see a receipt updates relay
   // state. Idempotent because `walletSetTxStatus` just overwrites.
-  const watchedHash = execHash ?? (tx.txHash as `0x${string}` | null) ?? undefined;
+  //
+  // Only chase the relay hash while the tx is actually "executing". The
+  // relay now clears txHash when a tx is reset to "pending", but a tx that
+  // was reset under the OLD code is still persisted as pending-with-a-stale-
+  // hash; gating here un-sticks those too (otherwise the watcher pins
+  // execWaiting=true and re-disables Execute). The local execHash is always
+  // watched — it covers the gap between submitting and the relay echoing
+  // back "executing".
+  const watchedHash = execHash ?? (tx.status === "executing" ? (tx.txHash as `0x${string}` | null) : null) ?? undefined;
   const {
     isLoading: execWaiting,
     data: execReceipt,
