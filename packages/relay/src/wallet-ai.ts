@@ -371,19 +371,27 @@ Multisig: ${args.multisigAddress}
 
 ${txBlock}
 ${simBlock}${knownTokensBlock}
-Decode the calldata. Recognize common selectors: ERC-20 (transfer / transferFrom / approve),
-ERC-721 / ERC-1155, Uniswap V2/V3/V4 (incl. UniversalRouter \`execute\` with commands 0x10/0x00 = V4_SWAP),
-Seaport, ENS, Safe, LI.FI, common bridges.
+Decode the calldata to identify the function being called. You may recognize standard selectors:
+ERC-20 (transfer / transferFrom / approve), ERC-721 / ERC-1155, Uniswap V2/V3/V4 (incl. UniversalRouter
+\`execute\` with commands 0x10/0x00 = V4_SWAP), Seaport, ENS, Safe.
+
+CRITICAL — do NOT guess the contract's protocol, product, or category (bridge, DEX, staking, lending,
+"Across", "Uniswap", "SpokePool", etc.) from a function NAME alone. Functions like depositETH / deposit /
+stake / send are generic and used by countless unrelated contracts. ONLY name a protocol if the contract
+ADDRESS appears in the "Known tokens" block above. For an UNFAMILIAR contract address, describe the
+LITERAL action only — the decoded function plus the simulated asset flow — e.g. "Deposit 0.00025 ETH" or
+"Call depositETH", NEVER "Bridge ETH". Set its contract label to the bare function name (e.g. "depositETH()")
+or null. Inventing a protocol identity is the single worst thing you can do here.
 
 Respond with ONE JSON object — no prose, no markdown fences, no preamble. Schema:
 
 {
-  "headline": "Swap ETH for CLAWD",                                                          // 2–6 words, plain English. NO selectors, NO hex, NO wei.
+  "headline": "Swap ETH for CLAWD",                                                          // 2–6 words, plain English. NO selectors, NO hex, NO wei. Examples: "Swap ETH for USDC", "Send 100 USDC", "Deposit 0.5 ETH", "Approve Uniswap to spend USDC", "Call depositETH".
   "kind": "swap" | "send" | "approve" | "mint" | "deploy" | "call",
   "inputs":  [{ "symbol": "ETH",   "amount": "0.00005", "address": null }],                  // tokens leaving the multisig. Use "ETH" for native. amount is human-readable.
   "outputs": [{ "symbol": "CLAWD", "amount": "~1.68",   "address": "0x...full 40 hex..." }], // tokens arriving. "~" prefix = slippage-tolerant min-out.
   "to": null,                                                                                 // recipient address for a plain send/transfer; null otherwise.
-  "contract": { "address": "0x...", "label": "Uniswap Universal Router" }                     // the target contract + a friendly label, or null if unknown.
+  "contract": { "address": "0x...", "label": "Uniswap Universal Router" }                     // target contract + label. Label a protocol ONLY for a KNOWN address; for an unknown contract use the bare function name (e.g. "depositETH()") or null.
 }
 
 Rules:
@@ -394,7 +402,8 @@ Rules:
 - For a plain transfer/send, "inputs" is what leaves; "outputs" is empty; "to" is the recipient.
 - For an approve, "inputs" and "outputs" are empty; "contract" is the token; the headline says e.g. "Approve Uniswap to spend USDC".
 - If a token address is unfamiliar AND not in the Known tokens block, use \`"symbol": "Token ABCD"\` where ABCD is the last 4 hex of the address — never guess.
-- If you can't decode the call at all: headline "Unknown call", kind "call", empty inputs/outputs, contract set to the target with label "Unknown".
+- For a call to an UNFAMILIAR contract (target not in the Known tokens block): headline = the literal decoded action sized by the simulated flow (e.g. "Deposit 0.00025 ETH", "Call depositETH"), kind "call", contract label = the bare function name or null. Do NOT describe it as a bridge/swap/stake/deposit-into-<protocol> — you do not know what the contract does.
+- If you can't decode the calldata at all: headline "Unknown call", kind "call", empty inputs/outputs, contract set to the target with label "Unknown".
 - Addresses MUST be the full 0x-prefixed 40-char hex (no truncation, no ellipsis).
 - Output the JSON object and nothing else. No code fences. No leading or trailing text.`;
 
