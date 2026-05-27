@@ -8,6 +8,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
+import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
@@ -717,6 +718,31 @@ function v1AuthFromReq(
 }
 
 const ICONS_DIR = process.env.ICONS_DIR ?? _resolve(process.cwd(), "../nextjs/public/icons");
+// Runtime-uploaded app icons live in the relay's data dir (NOT the repo's
+// public/icons, which only ships built-in icons and gets clobbered on every
+// deploy). Stored as `<id>.<ext>` and served at GET /v1/app-icons/:id, which
+// Caddy already proxies to the relay under /v1/* — so a third party can add
+// an app AND its icon entirely at runtime, no repo commit, no redeploy.
+const APP_ICONS_DIR = process.env.APP_ICONS_DIR ?? "/var/lib/slop-relay/app-icons";
+const APP_ICON_EXTS = ["png", "webp", "jpg"] as const;
+// 512KB — a chunky desktop icon PNG is ~30KB; this leaves generous headroom
+// while refusing anything that's clearly not an icon.
+const APP_ICON_MAX_BYTES = 512 * 1024;
+
+// Resolve the on-disk filename for an uploaded app icon id (scans for any
+// supported extension). Returns null if none uploaded.
+function findAppIconFile(id: string): string | null {
+  try {
+    const files = _readdirSyncRaw(APP_ICONS_DIR);
+    for (const ext of APP_ICON_EXTS) {
+      const name = `${id}.${ext}`;
+      if (files.includes(name)) return name;
+    }
+  } catch {
+    /* dir may not exist yet */
+  }
+  return null;
+}
 
 // --- Auth: mint agent token + skill file ------------------------------------
 
@@ -812,15 +838,131 @@ app.get("/v1/ai-players", async (req, reply) => {
 app.get("/v1/icons", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const icons: { name: string; url: string }[] = [];
+  // Built-in icons shipped in the repo (served by Next at /icons/*).
   try {
     const entries = _readdirSync(ICONS_DIR, { withFileTypes: true });
-    const icons = entries
-      .filter(e => e.isFile() && /\.(png|svg|jpg|jpeg|webp)$/i.test(e.name))
-      .map(e => ({ name: e.name, url: `/icons/${e.name}` }));
-    return { icons };
+    for (const e of entries) {
+      if (e.isFile() && /\.(png|svg|jpg|jpeg|webp)$/i.test(e.name)) {
+        icons.push({ name: e.name, url: `/icons/${e.name}` });
+      }
+    }
   } catch (err) {
     return reply.code(500).send({ error: "icons-dir-unreadable", path: ICONS_DIR });
   }
+  // Runtime-uploaded app icons (served by the relay at /v1/app-icons/*).
+  try {
+    const entries = _readdirSyncRaw(APP_ICONS_DIR);
+    for (const name of entries) {
+      const m = /^(.+)\.(png|webp|jpg)$/i.exec(name);
+      if (m) icons.push({ name, url: `/v1/app-icons/${m[1]}` });
+    }
+  } catch {
+    /* dir may not exist yet — fine */
+  }
+  return { icons };
+});
+
+// Upload an app icon at runtime (host-only). Raw image bytes in the body
+// (image/png|webp|jpeg), app id on the `?id=` query. Stored in the relay's
+// data dir and served from GET /v1/app-icons/:id — NO redeploy needed. This
+// is the icon half of the no-deploy "add an app" path: upload the icon here,
+// then POST /v1/apps with `"icon": "/v1/app-icons/<id>"`.
+app.post<{ Querystring: { id?: string } }>("/v1/icons", { bodyLimit: APP_ICON_MAX_BYTES }, async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const id = typeof req.query.id === "string" ? req.query.id.trim() : "";
+  if (!/^[a-z0-9-]{1,40}$/.test(id)) {
+    return reply.code(400).send({ error: "bad-id", note: "lowercase letters, digits, dashes, 1-40 chars; pass as ?id=" });
+  }
+  const body = req.body;
+  if (!Buffer.isBuffer(body) || body.length === 0) {
+    return reply
+      .code(400)
+      .send({ error: "empty-body", note: "send raw image bytes with content-type image/png, image/webp, or image/jpeg" });
+  }
+  if (body.length > APP_ICON_MAX_BYTES) return reply.code(413).send({ error: "too-large", maxBytes: APP_ICON_MAX_BYTES });
+  const ct = String(req.headers["content-type"] ?? "");
+  const ext: (typeof APP_ICON_EXTS)[number] = ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
+  await _mkdir(APP_ICONS_DIR, { recursive: true });
+  // Wipe any prior icon for this id (possibly a different extension).
+  const prior = findAppIconFile(id);
+  if (prior) {
+    try {
+      _unlinkSync(`${APP_ICONS_DIR}/${prior}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  writeFileAtomic(`${APP_ICONS_DIR}/${id}.${ext}`, body);
+  return { ok: true, id, url: `/v1/app-icons/${id}` };
+});
+
+// Generate an app icon server-side from a text prompt (host-only). The
+// relay calls gpt-image-1 with the house style reference so the result
+// matches the desktop's look, stores it, and returns the same
+// /v1/app-icons/<id> URL as the upload path. This is the "I don't even
+// have an icon" path for third parties with no repo access: POST a prompt,
+// get a style-matched icon, then POST /v1/apps with the returned url.
+// Synchronous + slow (~15-25s, gpt-image-1) — fine for a one-shot host action.
+app.post<{ Body: { id?: unknown; prompt?: unknown } }>("/v1/icons/generate", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  if (!appIconGenAvailable()) {
+    return reply.code(503).send({ error: "icon-gen-unavailable", note: "relay missing OPENAI_API_KEY or style ref" });
+  }
+  const body = (req.body ?? {}) as { id?: unknown; prompt?: unknown };
+  const id = typeof body.id === "string" ? body.id.trim() : "";
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!/^[a-z0-9-]{1,40}$/.test(id)) {
+    return reply.code(400).send({ error: "bad-id", note: "lowercase letters, digits, dashes, 1-40 chars" });
+  }
+  if (prompt.length < 3 || prompt.length > 1000) {
+    return reply.code(400).send({ error: "bad-prompt", note: "3-1000 chars describing the icon" });
+  }
+  let png: Buffer;
+  try {
+    png = await generateAppIcon(prompt);
+  } catch (err) {
+    req.log.error({ err }, "app-icon generation failed");
+    return reply.code(502).send({ error: "generation-failed", note: String(err).slice(0, 200) });
+  }
+  await _mkdir(APP_ICONS_DIR, { recursive: true });
+  const prior = findAppIconFile(id);
+  if (prior) {
+    try {
+      _unlinkSync(`${APP_ICONS_DIR}/${prior}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  writeFileAtomic(`${APP_ICONS_DIR}/${id}.png`, png);
+  return { ok: true, id, url: `/v1/app-icons/${id}`, bytes: png.length };
+});
+
+// Serve a runtime-uploaded app icon. Reachable at
+// https://live.slop.computer/v1/app-icons/<id> via the existing /v1/* proxy.
+app.get<{ Params: { name: string } }>("/v1/app-icons/:name", async (req, reply) => {
+  const raw = req.params.name;
+  // Allow an optional extension in the request; we look up by bare id.
+  const id = raw.replace(/\.(png|webp|jpg|jpeg)$/i, "");
+  if (!/^[a-z0-9-]{1,40}$/.test(id)) return reply.code(400).send({ error: "bad-id" });
+  const file = findAppIconFile(id);
+  if (!file) return reply.code(404).send({ error: "not-found" });
+  let buf: Buffer;
+  try {
+    const fs = await import("node:fs/promises");
+    buf = await fs.readFile(`${APP_ICONS_DIR}/${file}`);
+  } catch {
+    return reply.code(404).send({ error: "not-found" });
+  }
+  const ext = file.split(".").pop()!.toLowerCase();
+  const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+  reply.header("content-type", mime);
+  reply.header("cache-control", "public, max-age=300");
+  return reply.send(buf);
 });
 
 // --- Apps: host-only mutators -----------------------------------------------
