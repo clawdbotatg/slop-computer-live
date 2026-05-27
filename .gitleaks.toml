@@ -75,6 +75,10 @@ keywords = ["0x"]
     '''ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
     # anvil default account #1
     '''59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+    # keccak256("Transfer(address,address,uint256)") — the ERC-20 Transfer
+    # event topic. A universal public constant, not a key. Used by the
+    # wallet tx-simulation decoder.
+    '''ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef''',
   ]
 
 # ---------------------------------------------------------------------------
