@@ -682,7 +682,20 @@ async function createTab(
           receipts: [],
         });
       }
-      broadcastTab(tab, { type: "tx_request", method: parsed.method, params: parsed.params, batchId: parsed.batchId });
+      // Stable per-capture id. Every client watching this shared tab
+      // independently forwards the captured tx to the impersonated peer;
+      // without a shared id the relay tags each forward with a fresh
+      // `${peerId}-${Date.now()}` and the receiver surfaces one modal per
+      // watcher (2 watchers → 2 modals; approve+swap → 4). Generated once
+      // here at the single capture point so the receiver can dedup them.
+      const requestId = globalThis.crypto.randomUUID();
+      broadcastTab(tab, {
+        type: "tx_request",
+        requestId,
+        method: parsed.method,
+        params: parsed.params,
+        batchId: parsed.batchId,
+      });
       void forwardTxToRelay(tab, parsed);
       return;
     }

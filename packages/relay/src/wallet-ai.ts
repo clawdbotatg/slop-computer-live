@@ -331,11 +331,19 @@ export async function summarizeTransaction(args: SummarizeArgs): Promise<string>
   let simChips: SimChips | null = null;
   try {
     const sim = await simulateTransfers({ from: args.multisigAddress, calls: simCalls, chainId: args.chainId });
-    if (sim.transfers.length > 0) {
+    if (sim.reverted) {
+      // A reverting call — or a batch where a later call reverts (sim runs
+      // them non-atomically, so earlier transfers survive) — would render
+      // confident "ground truth" chips for a tx that won't actually
+      // execute. Drop them and let the AI-decoded chips stand instead.
+      console.warn(`[wallet-ai] simulation reverted on chain ${args.chainId}; using AI-decoded chips`);
+    } else if (sim.transfers.length > 0) {
       simChips = await buildSimChips(sim.transfers, args.multisigAddress, args.chainId);
+    } else if (sim.error) {
+      console.warn(`[wallet-ai] simulation unavailable on chain ${args.chainId} (${sim.error}); using AI-decoded chips`);
     }
-  } catch {
-    simChips = null;
+  } catch (e) {
+    console.warn(`[wallet-ai] simulation threw on chain ${args.chainId}: ${e instanceof Error ? e.message : String(e)}; using AI-decoded chips`);
   }
 
   const simBlock = simChips

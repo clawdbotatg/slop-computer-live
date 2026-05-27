@@ -317,6 +317,14 @@ const NATIVE_LOG_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 // absent — we don't route it through Alchemy, so sim there returns
 // chain-unsupported and the caller falls back to the AI-decode card.
 const SIMULATABLE_CHAINS = new Set([1, 8453, 42161, 10, 137]);
+// Native balance we override onto the sender before simulating. NOTE:
+// `validation:false` does NOT skip the balance check — Alchemy auto-funds
+// only ~0.003 of the gas token, so a swap/send whose value exceeds the
+// multisig's current on-chain balance would otherwise fail with
+// "insufficient funds" and silently drop us back to the AI-decode chips.
+// The amounts we read come from the emitted Transfer logs, not from any
+// balance delta, so over-funding never distorts the chips. 1e27 wei.
+const SIM_BALANCE_OVERRIDE = `0x${(10n ** 27n).toString(16)}`;
 
 export type SimTransfer = {
   // lowercase contract address, or the literal "native" for ETH/native gas token
@@ -370,7 +378,20 @@ export async function simulateTransfers(args: {
     id: 1,
     jsonrpc: "2.0",
     method: "eth_simulateV1",
-    params: [{ blockStateCalls: [{ calls }], traceTransfers: true, validation: false }, "latest"],
+    params: [
+      {
+        blockStateCalls: [
+          {
+            // Fund the multisig so a value > its current balance still sims.
+            stateOverrides: { [args.from.toLowerCase()]: { balance: SIM_BALANCE_OVERRIDE } },
+            calls,
+          },
+        ],
+        traceTransfers: true,
+        validation: false,
+      },
+      "latest",
+    ],
   };
 
   try {

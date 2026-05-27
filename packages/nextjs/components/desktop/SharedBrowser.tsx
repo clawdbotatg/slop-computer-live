@@ -828,7 +828,11 @@ export const SharedBrowser = ({
               if (typeof cid === "string" && cid.startsWith("0x")) chainId = parseInt(cid, 16);
               else if (typeof cid === "number") chainId = cid;
             }
-            forward(targetPeerId, { browserId: browser.id, method, params, chainId });
+            // Carry the host's stable per-capture requestId so the receiver
+            // collapses the copies every other watcher of this shared tab
+            // forwards for the same tx into a single modal.
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+            forward(targetPeerId, { browserId: browser.id, method, params, chainId, requestId });
           }
         }
         return;

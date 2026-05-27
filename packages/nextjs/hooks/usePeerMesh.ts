@@ -1129,7 +1129,16 @@ export type PeerMeshState = {
    *  mesh hook surfaces it through `incomingForwards`. */
   forwardTxToPeer: (
     peerId: string,
-    payload: { browserId: string; method: string; params: unknown[]; chainId: number | null },
+    payload: {
+      browserId: string;
+      method: string;
+      params: unknown[];
+      chainId: number | null;
+      /** Stable per-capture id from the host. Every watcher of a shared
+       *  tab forwards the same captured tx; passing the host's id lets the
+       *  receiver dedup the copies into one modal instead of N. */
+      requestId?: string;
+    },
   ) => void;
   /** Remove an entry from `incomingForwards` once it's been handled
    *  (sent, rejected, or otherwise resolved). Local-only. */
@@ -2090,10 +2099,24 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
 
   const forwardTxToPeer = useCallback(
-    (peerId: string, payload: { browserId: string; method: string; params: unknown[]; chainId: number | null }) => {
+    (
+      peerId: string,
+      payload: {
+        browserId: string;
+        method: string;
+        params: unknown[];
+        chainId: number | null;
+        requestId?: string;
+      },
+    ) => {
       send({
         type: "tx_forward",
         to: peerId,
+        // The relay uses this as the forward's id (falling back to a fresh
+        // per-message id only when absent). Sending the host's stable
+        // requestId is what lets the receiver collapse the duplicate
+        // forwards from every watcher of the shared tab into one modal.
+        ...(payload.requestId ? { id: payload.requestId } : {}),
         browserId: payload.browserId,
         method: payload.method,
         params: payload.params,

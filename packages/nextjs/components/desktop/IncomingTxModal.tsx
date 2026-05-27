@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex, formatEther } from "viem";
 import {
@@ -93,13 +93,6 @@ const IncomingTxCard = ({ forward, onResolve }: CardProps) => {
     }
   };
 
-  useEffect(() => {
-    if (!receipt) return;
-    // Auto-close on confirmation.
-    const id = setTimeout(onResolve, 1500);
-    return () => clearTimeout(id);
-  }, [receipt, onResolve]);
-
   const onSend = async () => {
     setErr(null);
     if (!parsed?.to) {
@@ -167,16 +160,39 @@ const IncomingTxCard = ({ forward, onResolve }: CardProps) => {
           boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
         }}
       >
-        <div
-          style={{
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            fontSize: 11,
-            color: "var(--slop-text-muted)",
-          }}
-        >
-          Incoming transaction
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div
+            style={{
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              fontSize: 11,
+              color: "var(--slop-text-muted)",
+            }}
+          >
+            Incoming transaction
+          </div>
+          {/* Hard close — always available so a pending send or a stuck
+              "waiting for inclusion" can never trap the dialog. Dismissing
+              doesn't cancel an in-flight wallet prompt (we can't), it just
+              clears this surface; the tx, if signed, still broadcasts. */}
+          <button
+            type="button"
+            onClick={onResolve}
+            aria-label="Close"
+            title="Close"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--slop-text-muted)",
+              cursor: "pointer",
+              fontSize: 18,
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            ✕
+          </button>
         </div>
 
         <div style={{ fontSize: 13, lineHeight: 1.4 }}>
@@ -300,19 +316,30 @@ const IncomingTxCard = ({ forward, onResolve }: CardProps) => {
         ) : null}
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-          <Button onClick={onReject} disabled={sending || waiting}>
-            {receipt ? "Close" : "Reject"}
-          </Button>
-          {supported && !receipt ? (
-            <Button
-              variant="primary"
-              onClick={onSend}
-              disabled={sending || waiting || !parsed?.to || !connectedAddress || chainMismatch}
-              title={chainMismatch ? "Switch your wallet to the target network first." : undefined}
-            >
-              {sending ? "Confirm in wallet…" : waiting ? "Waiting…" : chainMismatch ? "Wrong network" : "Send"}
+          {txHash ? (
+            // Already submitted (waiting for inclusion or confirmed). The
+            // only action left is to dismiss — "Finish" closes the dialog
+            // and never re-opens the wallet. No stuck "Waiting…" button.
+            <Button variant="primary" onClick={onResolve}>
+              Finish
             </Button>
-          ) : null}
+          ) : (
+            <>
+              {/* Reject is always enabled — it just clears the dialog, so it
+                  works even while a wallet prompt is open. */}
+              <Button onClick={onReject}>Reject</Button>
+              {supported ? (
+                <Button
+                  variant="primary"
+                  onClick={onSend}
+                  disabled={sending || !parsed?.to || !connectedAddress || chainMismatch}
+                  title={chainMismatch ? "Switch your wallet to the target network first." : undefined}
+                >
+                  {sending ? "Confirm in wallet…" : chainMismatch ? "Wrong network" : "Send"}
+                </Button>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     </div>
