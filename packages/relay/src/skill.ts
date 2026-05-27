@@ -1002,11 +1002,31 @@ DELETE ${BASE}/v1/apps/:id
 Built-in apps (those shipped in \`DEFAULT_APPS\`) can't be deleted —
 returns 409. Only hot-loaded overrides / additions can be removed.
 
-### Adding a new icon image
+### Adding a new icon image (no repo access, no redeploy)
 
-\`GET ${BASE}/v1/icons\` lists available PNGs. To add a new icon
-image, drop it in \`packages/nextjs/public/icons/\` in the repo and
-redeploy — there's no runtime upload endpoint.
+\`GET ${BASE}/v1/icons\` lists available icons (built-in + uploaded).
+You do NOT need the repo to add one — two runtime, host-only paths:
+
+Generate one from a prompt (relay renders it in the house
+Mac-OS-9/cyberdelic style via gpt-image-1, ~15-25s):
+
+  POST ${BASE}/v1/icons/generate
+  Content-Type: application/json
+  { "id": "my-dapp", "prompt": "A retro 3D piggy bank with neon bolts." }
+  → { ok: true, id, url: "/v1/app-icons/my-dapp" }
+
+Or upload your own image (raw bytes, image/png|webp|jpeg, <=512KB):
+
+  curl -X POST -H "Authorization: Bearer <token>" \\
+    -H "content-type: image/png" --data-binary @icon.png \\
+    "${BASE}/v1/icons?id=my-dapp"
+  → { ok: true, id, url: "/v1/app-icons/my-dapp" }
+
+Either way you get back a \`url\` — pass it straight to
+\`POST ${BASE}/v1/apps\` as \`"icon"\`. Uploaded icons live in the relay
+(served at \`/v1/app-icons/<id>\`), persist, and need no deploy. The
+repo's \`public/icons/\` + \`yarn icon:add\` path still exists but is
+only for built-in apps shipped in DEFAULT_APPS.
 `;
 }
 
@@ -2204,11 +2224,29 @@ it opens a shared browser pointed at your URL.
 \`\`\`
 POST ${BASE}/v1/apps {
   "id":    "my-dapp",                       # kebab-case, 1-40 chars
-  "label": "My DApp",                       # what appears under the icon
-  "icon":  "/icons/browser.png",            # pick from GET /v1/icons (or generate one, see below)
-  "url":   "https://my-dapp.vercel.app"
+  "label": "My DApp",                       # title bar + under the icon
+  "icon":  "/v1/app-icons/my-dapp",         # from /v1/icons/generate or upload (see below)
+  "url":   "https://my-dapp.vercel.app",
+  "chrome": "app"                           # optional: clean titled window, no URL bar
 }
 \`\`\`
+
+Need an icon? You don't need the repo. Generate one in the house style
+from a prompt, or upload your own — both return a \`url\` to drop in
+\`icon\` above:
+
+\`\`\`
+# generate (gpt-image-1, ~15-25s)
+POST ${BASE}/v1/icons/generate  { "id": "my-dapp", "prompt": "<describe it>" }
+# or upload raw bytes (image/png|webp|jpeg, <=512KB)
+curl -X POST -H "content-type: image/png" --data-binary @icon.png "${BASE}/v1/icons?id=my-dapp"
+# both → { ok, url: "/v1/app-icons/my-dapp" }
+\`\`\`
+
+\`chrome: "app"\` makes the shared-browser window present as a clean
+titled app (label in the title bar, URL/nav bar hidden) instead of
+looking like a browser — the right look for a dApp that bubbles txs to
+the room multisig. Omit it for a normal browser window.
 
 That's it. No \`kind\` field → defaults to iframe in a shared browser.
 Survives relay restarts (persisted to \`hot-apps.json\` on disk) but
