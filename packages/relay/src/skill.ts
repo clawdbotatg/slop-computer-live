@@ -62,6 +62,7 @@ function slugNote(slug: string | null): string {
  *  is how they're listed in the directory. */
 export const SKILL_TOPICS = [
   "chess",
+  "pong",
   "music",
   "browser",
   "windows",
@@ -203,6 +204,11 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`cardJob\` | \`CardJob \\| null\` | In-flight card-generation job (this room) |
 | \`cardTitle\` | \`CardTitle \\| null\` | Shared title overlay text + position |
 | \`researchState\` | \`ResearchSnapshot\` | Per-room shared guest-research dossier + phase machine (see \`/v1/skill/research\`) |
+| \`qrState\` | \`{ text, logoDataUrl } \\| null\` | Room-shared QR code content (see \`/v1/skill/windows\`) |
+| \`pongState\` | \`PongSnapshot\` | Live pong match for this room (see \`/v1/skill/pong\`) |
+| \`walletChat\` | \`WalletChatState\` | Per-room AI-wallet conversation thread (see \`/v1/skill/wallet\`) |
+| \`chyronState\` | \`{ text, updatedAt }\` | Host's lower-third banner text (see \`/v1/skill/feeds\`) |
+| \`previewMedia\` / \`scrollSync\` / \`uiState\` | internal | Per-room UI-sync scratch (file-preview playhead, scroll position, misc shared UI). Rarely needed by agents. |
 
 Don't poll \`/v1/state\` faster than 1 Hz. For fast reactions to a
 specific app (e.g. "wake me when it's my chess turn"), use that
@@ -285,6 +291,7 @@ rules and recommended loops that aren't repeated here.
 | App | Get the sub-skill | Notes |
 | --- | --- | --- |
 | **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` | long-poll loop |
+| **Pong** (2-player real-time game) | \`GET ${BASE}/v1/skill/pong\` | seats + reset; real-time |
 | **Music** (shared SLOPAMP + Jamendo genres + custom playlist) | \`GET ${BASE}/v1/skill/music\` | long-poll loop |
 | **Browser** (shared iframes + impersonator + tx capture + ENS resolve) | \`GET ${BASE}/v1/skill/browser\` |  |
 | **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |  |
@@ -307,8 +314,9 @@ rules and recommended loops that aren't repeated here.
 | **Rooms** (create / auth / list — multi-room) | \`GET ${BASE}/v1/skill/rooms\` | host-only for create |
 | **Build** (add a new app — iframe, kind, web3 dapp) | \`GET ${BASE}/v1/skill/build\` | for app authors |
 
-Each sub-skill is small (< 150 lines). Cache them; only re-fetch on
-unexpected 4xx from an endpoint they documented.
+Each sub-skill is self-contained — most are ~100-200 lines (music and
+build are the largest). Cache them; only re-fetch on unexpected 4xx
+from an endpoint they documented.
 
 ## Common AI agent recipes
 
@@ -469,6 +477,97 @@ re-read \`/v1/chess\` and replan from the fresh \`version\`.
 }
 
 // =============================================================================
+// Pong
+// =============================================================================
+
+export function skillPong(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Pong sub-skill
+
+${slugNote(slug)}
+
+Server-authoritative two-player Pong **per room**. The relay owns the
+physics: it runs a 30 Hz tick while **both seats are filled**, bounces
+the ball, keeps score, and broadcasts a fresh snapshot every tick.
+Clients only ever send their own paddle Y — the relay clamps it and
+assigns by \`ownerKey\`, so you can't move a paddle you don't sit in.
+First to 11 wins. The match is **not persisted** — it dies on relay
+restart, by design (pong is a live moment, not durable state).
+
+> ⚠ **This is a real-time twitch game.** Winning means streaming paddle
+> positions to chase a moving ball at 30 Hz — fine for a human, rough
+> for an HTTP agent eating a round-trip per move. Your useful verbs here
+> are **claim a seat**, **reset / play-again**, and **read the score** —
+> not out-rallying a human. Don't promise the user you'll "win at pong."
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/pong?slug=${slugStr(slug)}
+# → { state: {
+#       seats:   { left: { ownerKey, handle } | null, right: ... | null },
+#       paddles: { left: <y>, right: <y> },     # paddle centers, field coords
+#       ball:    { x, y, vx, vy },
+#       score:   { left, right },
+#       status:  "waiting" | "serving" | "playing" | "ended",
+#       serveAt: <ms epoch>,        # when the next serve fires (status "serving")
+#       lastScorer: "left" | "right" | null,
+#       winner:  "left" | "right" | null,
+#       field:   { w, h, paddleH, paddleW, paddleInset, ballR }
+#     } }
+\`\`\`
+
+Also embedded in \`GET /v1/state?slug=${slugStr(slug)}\` under \`pongState\`.
+\`field\` ships the board geometry so you don't hard-code it — paddle Y
+is clamped to \`[paddleH/2, h - paddleH/2]\`. There's **no
+\`/v1/pong/wait\` long-poll**; the live snapshot fans out over WS at 30 Hz,
+so HTTP agents just poll \`/v1/pong\` (it's cheap).
+
+### Claim / release a seat
+
+\`\`\`
+POST ${BASE}/v1/pong/claim?slug=${slugStr(slug)}     # → { ok, side: "left" | "right" }
+POST ${BASE}/v1/pong/release?slug=${slugStr(slug)}   # → { ok, released: boolean }
+\`\`\`
+
+\`claim\` takes the first empty seat (idempotent — re-claiming returns
+your existing side); \`409 both-seats-full\` when none is free. The match
+auto-starts (\`status → "serving"\`) the moment both seats fill, and
+freezes back to \`"waiting"\` (scores preserved) if a seat empties. Seats
+also release automatically when a peer's WS disconnects.
+
+### Move your paddle
+
+\`\`\`
+POST ${BASE}/v1/pong/paddle?slug=${slugStr(slug)}    { "y": 250 }
+\`\`\`
+
+Sets your paddle center to \`y\` (field coords, clamped). No-ops silently
+if you hold no seat. Humans stream these over WS at ~30 Hz; an agent
+*can* poke single \`y\` values via REST but will lag the ball badly.
+
+### Reset / play again
+
+\`\`\`
+POST ${BASE}/v1/pong/reset?slug=${slugStr(slug)}     # → { ok }   403 if you're not seated
+\`\`\`
+
+Zeroes the score + recenters. From \`status: "ended"\` this is the "play
+again" button; from any state it cleanly restarts. Seated players only.
+
+### Agent recipe
+
+**"Set up a pong match for two guests":** \`POST /v1/pong/reset\` if a
+stale match is parked in \`ended\`, then tell the two humans to open the
+Pong window and double-click to take a seat (or \`claim\` on their behalf
+if you hold their tokens). Watch \`score\` / \`winner\` via \`/v1/pong\` and
+call the game in chat when someone reaches 11.
+`;
+}
+
+// =============================================================================
 // Music
 // =============================================================================
 
@@ -480,40 +579,29 @@ export function skillMusic(token: string, isHost: boolean, slug: string | null =
 
 ${slugNote(slug)}
 
-> ⚠ **\`musicState.playing === true\` IS NOT THE SAME AS "music is
-> audible".** Read this twice. The relay stores a snapshot; only **a
-> peer browser with the slopamp window mounted** actually emits sound.
-> The agent has no speakers and neither does the relay. A room can
-> sit for hours with \`playing: true\` in state and produce *exactly
-> zero* audio — because nobody opened the window, or every peer
-> disconnected, or Chrome's autoplay gate is unclicked.
+> ⚠ **\`musicState.playing === true\` IS NOT "music is audible".** The
+> relay stores a snapshot; only **a peer browser with the slopamp
+> window mounted** emits sound — the relay and you have no speakers. A
+> room can sit for hours with \`playing: true\` and produce *zero* audio
+> (no window open, every peer gone, or Chrome's autoplay gate unclicked).
 >
-> **Before you tell the user "music is already playing" or
-> "I started the music":** re-read \`GET /v1/state?slug=${slugStr(slug)}\`
-> and verify ALL THREE:
+> **Before telling the user "music is playing" / "I started it",**
+> re-read \`GET /v1/state?slug=${slugStr(slug)}\` and verify ALL THREE:
 >
-> 1. \`"music" ∈ state.openWindowIds\`. **If not, sound is impossible —
->    period.** No window means no \`<audio>\` element means no
->    playback, regardless of what \`musicState.playing\` says. Open it
->    with \`POST ${BASE}/v1/windows?slug=${slugStr(slug)} { "id": "music" }\`
->    *before* claiming anything is playing.
-> 2. \`state.peers.length > 0\`. With zero peers there is literally no
->    browser in the room to play the file. \`/v1/music/state\` POSTs
->    return \`ok:true\` while silently writing to a snapshot no one is
->    reading. Same trap on the read side: \`playing: true\` with 0
->    peers = 0 audible bytes.
-> 3. The peer has clicked once in the slopamp tab (Chrome's autoplay
->    gate). Not checkable server-side; if state shows \`playing: true\`
->    and a connected user reports silence, ask them to click in the
->    tab and re-fire \`/v1/music/state\` with a fresh \`at\`.
+> 1. \`"music" ∈ state.openWindowIds\` — no window = no \`<audio>\` element
+>    = sound impossible, regardless of \`playing\`. Open it first:
+>    \`POST ${BASE}/v1/windows?slug=${slugStr(slug)} { "id": "music" }\`.
+> 2. \`state.peers.length > 0\` — zero peers = no browser to play the
+>    file. POSTs still return \`ok:true\` while writing to a snapshot
+>    nobody reads.
+> 3. A peer has clicked once in the slopamp tab (Chrome autoplay gate;
+>    not checkable server-side).
 >
-> **Reporting rule.** Report back what you **verified**, not what the
-> snapshot field said. Wrong: "music is already playing." Right:
-> "musicState shows playing: true (track X), but the music window is
-> closed and there are N peers — nobody is actually hearing audio.
-> Want me to open the window?" The user knows the difference between
-> a stored boolean and audible sound, and will be furious if you
-> conflate them.
+> **Reporting rule:** report what you **verified**, not the snapshot
+> field. Not "music is already playing" — rather "playing:true (track
+> X) but the window's closed / N peers, so nothing is audible; want me
+> to open it?" The user knows the difference between a stored boolean
+> and real sound, and will be furious if you conflate them.
 
 Playback is one shared snapshot **per room** — track src + index,
 playing/paused, position-at-timestamp, and master volume. Anyone in
@@ -644,12 +732,9 @@ also unlinks the file from disk, freeing room quota.
 
 #### End-to-end recipe: upload → play
 
-Four POSTs, in order. The upload alone won't make sound — it
-only adds the track to the playlist. You also have to flip the
-genre to Custom (so the playlist UI matches what's playing),
-make sure the Music window is open (no window → no \`<audio>\`
-element → no playback), and broadcast a music-state snapshot
-with \`playing: true\`.
+Four POSTs, in order — uploading alone only adds the track; the same
+"make sound" preconditions from the ⚠ block above still apply (window
+open + a peer present + autoplay gate clicked).
 
 \`\`\`
 # 1. Upload the MP3 bytes
@@ -682,21 +767,16 @@ POST ${BASE}/v1/music/state?slug=${slugStr(slug)}
   }
 \`\`\`
 
-The relay just stores the snapshot — actual sound requires the
-host's browser tab to be live AND at least one peer with audio
-routed in the room (same set of preconditions called out at the
-top of "Set state" below). If nothing is audible after step 4,
-re-read \`/v1/state\` and check: is \`peers\` non-empty? Is
-\`musicState.src\` what you set? Is \`musicState.playing === true\`?
+If nothing's audible after step 4, re-read \`/v1/state\` and check the
+⚠-block preconditions: \`peers\` non-empty, \`"music" ∈ openWindowIds\`,
+\`musicState.src\` is what you set, \`musicState.playing === true\`.
 
 #### Can't get .mp3 bytes? Pick a different channel
 
-This endpoint only takes raw MP3. For anything else — DRM'd or
-streaming audio (Spotify, Apple Music, YouTube, Twitch, Netflix,
-live radio), arbitrary files for the desktop, screenshots,
-movies — see the **"Share this media in the room"** recipe at
-the top of \`/v1/skill\`. It maps each kind of media to the right
-channel (file upload, screen+tab-audio share, or this upload).
+This endpoint only takes raw MP3. For DRM'd / streaming audio
+(Spotify, YouTube, etc.), arbitrary files, or screenshots, see the
+**"Share this media in the room"** recipe at the top of \`/v1/skill\` —
+it maps each media type to the right channel.
 
 ### Legacy playlist
 
@@ -843,17 +923,19 @@ Known ids and their interactive surfaces:
 | \`chat\` | Shared chat panel | \`POST /v1/chat\` (see index) |
 | \`music\` | SLOPAMP player | \`GET /v1/skill/music\` |
 | \`chess\` | Chess game | \`GET /v1/skill/chess\` |
+| \`pong\` | 2-player real-time pong | \`GET /v1/skill/pong\` |
 | \`todo\` | Shared todo list | \`GET /v1/skill/todo\` |
 | \`notes\` | Shared notes | \`GET /v1/skill/notes\` |
 | \`glossary\` | Shared glossary with AI TLDRs | \`GET /v1/skill/glossary\` |
 | \`gas\` | Gas tracker | \`GET /v1/skill/gas\` (read-only) |
 | \`clock\` | Clock + timer + countdown | \`GET /v1/skill/clock\` (per-room shared) |
 | \`wallet\` | Per-room multisig | \`GET /v1/skill/wallet\` |
+| \`ens\` | ENS lookup app | no sub-skill; see \`GET /v1/ens/resolve\` in the browser sub-skill |
 | \`research\` | Guest research dossier | \`GET /v1/skill/research\` |
 | \`news\` | Curated news digest | \`GET /v1/skill/news\` |
 | \`transcript\` | Live STT feed | \`GET /v1/skill/transcript\` |
 | \`card\` | Title card overlay | \`GET /v1/skill/card\` |
-| \`qr\` | QR generator | **per-peer local state** — window shared but input + center logo private to each viewer. No agent mutate surface. |
+| \`qr\` | QR generator | **room-shared** — \`POST /v1/qr { text, logoDataUrl?, clearLogo? }\` sets the code for everyone; read \`qrState\` in \`/v1/state\`. |
 
 The corresponding apps must exist in the catalog (\`GET /v1/state\`'s
 \`apps\` array, matched by \`kind\`); use \`GET /v1/skill/apps\` to add
@@ -1007,6 +1089,7 @@ are singleton windows shipped in the relay code. Anything you POST is a
 | \`"chat"\` | opens the chat singleton window |
 | \`"music"\` | opens the slopamp singleton window |
 | \`"chess"\` | opens the chess singleton window |
+| \`"pong"\` | opens the 2-player real-time pong game |
 | \`"audio"\` | opens the audio share dialog (peer-only) |
 | \`"video"\` | opens the camera share dialog (peer-only) |
 | \`"screen"\` | starts a screen-share (peer-only) |
@@ -1017,6 +1100,7 @@ are singleton windows shipped in the relay code. Anything you POST is a
 | \`"gas"\` | opens the Ethereum gas tracker |
 | \`"clock"\` | opens the shared clock / countdown timer |
 | \`"wallet"\` | opens the multisig wallet window |
+| \`"ens"\` | opens the ENS lookup app |
 | \`"research"\` | opens the guest-research window |
 | \`"news"\` | opens the news digest window |
 | \`"transcript"\` | opens the live transcript window |
@@ -1839,7 +1923,20 @@ These are intended for the host clicking the bottom-marquee badges
 before a show — agents that want fresher data should just read the
 snapshot rather than trigger a refresh.
 
-### Agent recipes
+### Chyron — the host's lower-third banner
+
+A single short line pinned above the timeline marquee on every peer's
+desktop (broadcast-TV "chyron"). Distinct from the scrolling headlines:
+this is the host's one hand-written sentence ("LIVE: agent payments
+with @guest"). Read it at \`chyronState\` in \`/v1/state\`.
+
+\`\`\`
+POST ${BASE}/v1/chyron?slug=${slugStr(slug)} { "text": "LIVE: ..." }   # host-only
+# → { ok: true, state: { text, updatedAt } }   POST "" to clear
+\`\`\`
+
+Host-only (peer tokens 403). Whitespace is collapsed and the text is
+capped at 280 chars; empty text collapses the banner to zero height.
 
 **"How much would this tx cost right now?":** read \`gasState\`,
 multiply by your gas limit, multiply by \`ethUsd\`. See gas sub-skill
@@ -1952,6 +2049,51 @@ POST ${BASE}/admin/wallet/reset?slug=${slugStr(slug)}
 
 Nukes the room's wallet record (current + history + tx queue). Used
 to recycle the deploy flow during a show.
+
+### Read-only data lookups (any address, not room-scoped)
+
+The wallet window is also a mini block explorer. These GETs take a
+query param (no \`?slug=\` — they're generic on-chain lookups, gated only
+by a valid token) and proxy live data so you don't need your own
+indexer:
+
+\`\`\`
+GET ${BASE}/v1/wallet/portfolio?address=0x..      # token balances + DeFi positions
+GET ${BASE}/v1/wallet/activity?address=0x..&page=1 # recent on-chain activity (paged)
+GET ${BASE}/v1/wallet/transaction?hash=0x..&chain=ethereum  # one tx, decoded
+GET ${BASE}/v1/wallet/asset?symbol=ETH            # asset detail (price, links)
+GET ${BASE}/v1/wallet/network?chain=base          # chain detail
+GET ${BASE}/v1/wallet/address?address=0x..        # address summary
+GET ${BASE}/v1/wallet/prices                      # current token prices
+\`\`\`
+
+\`400\` on a malformed address / missing param. Handy for grounding a
+"what's in this wallet / what did this tx do" answer in real data
+rather than guessing.
+
+### Simulate calldata before proposing
+
+\`\`\`
+POST ${BASE}/v1/wallet/simulate
+{ "address": "0x..", "calldata": { "to": "0x..", "data": "0x..", "value": "0" }, "chainId": 8453 }
+\`\`\`
+
+Dry-runs the call (balance/state changes) so you can sanity-check what
+a tx will do before you \`POST /v1/wallet/propose\` it to the multisig.
+
+### Conversational AI wallet
+
+\`\`\`
+POST ${BASE}/v1/wallet-chat?slug=${slugStr(slug)}
+{ "message": "what's my biggest position?", "address": "0x..", "chainId": 1 }
+# → { ok: true, ... }   409 already-processing (one turn at a time)
+\`\`\`
+
+Per-room chat thread where the relay's agentic intent engine answers
+with fresh portfolio/activity context. Read the thread at
+\`state.walletChat\` in \`/v1/state\`; the AI's reply lands via a
+\`wallet_chat\` WS broadcast, not the HTTP response (poll \`/v1/state\` or
+watch the socket). A second send while a turn is in flight gets a 409.
 
 ### Agent recipes
 
@@ -2143,22 +2285,25 @@ that can.
 
 export function skillEpisode(token: string, isHost: boolean, slug: string | null = null): string {
   const scope = isHost ? "host" : "peer";
-  const hostNote = isHost ? "" : "\n\n> ⚠ The mutate endpoint (`/admin/episode/stt`) is **host-only** — peer tokens return 403. Reads (`/v1/episode`, `/v1/episode/stream`) are open.";
+  const hostNote = isHost ? "" : "\n\n> ⚠ `/admin/episode/stt` (the STT gate) is **host-only** — peer tokens return 403. `/v1/episode/captions` (the caption-overlay toggle) and all reads are open to anyone in the room.";
   return `${header(token, scope, hostNote)}
 
 ## Episode flags sub-skill
 
 ${slugNote(slug)}
 
-Per-room flags the host flips during an episode. Currently just
-\`sttOn\` (whether peers are running speech-to-text into the
-transcript) but designed as an extensible key-value bag.
+Per-room flags flipped during an episode, designed as an extensible
+key-value bag. Two flags today:
+- \`sttOn\` — **host-only** gate on whether the god-mode box generates
+  transcripts at all.
+- \`captionsOn\` — **anyone-in-the-room** toggle on whether the on-screen
+  subtitle overlay paints (separate from whether STT is running).
 
 ### Read
 
 \`\`\`
 GET ${BASE}/v1/episode?slug=${slugStr(slug)}
-# → { sttOn: boolean }
+# → { sttOn: boolean, captionsOn: boolean }
 \`\`\`
 
 ### SSE stream
@@ -2181,6 +2326,17 @@ POST ${BASE}/admin/episode/stt { "on": true }    # or false
 When \`sttOn === false\`, peer browsers stop running Web Speech and
 stop posting to \`/v1/transcript\`. Use for pre-show / off-the-record
 chatter that shouldn't enter the archive.
+
+### Toggle captions — anyone in the room
+
+\`\`\`
+POST ${BASE}/v1/episode/captions?slug=${slugStr(slug)} { "on": true }    # or false
+# → { ok: true, state: { sttOn, captionsOn } }
+\`\`\`
+
+Purely cosmetic: hides/shows the live subtitle overlay on screen
+without touching whether STT runs or the transcript records. Not
+host-gated — any participant (or agent) can flip it.
 `;
 }
 
@@ -2529,10 +2685,11 @@ Briefly:
 
 - omitted / \`"browser"\` — your URL in a shared iframe (impersonator
   on). The L0 + L1 + L3 paths above all land here.
-- \`"chat" / "music" / "chess" / "todo" / "notes" / "glossary" / "gas"
-  / "clock" / "wallet" / "research" / "news" / "transcript" / "card"\`
-  — each spawns a built-in singleton window with its own per-room
-  shared state. To make your own equivalent, take the L2 path.
+- \`"chat" / "music" / "chess" / "pong" / "todo" / "notes" / "glossary"
+  / "gas" / "clock" / "wallet" / "ens" / "research" / "news" /
+  "transcript" / "card"\` — each spawns a built-in singleton window with
+  its own per-room shared state. To make your own equivalent, take the
+  L2 path.
 - \`"audio" / "video" / "screen"\` — peer publication (camera / mic /
   screen share). Per-peer ephemeral; closed when the peer disconnects.
 - \`"qr"\` — per-peer-controlled, room-shared window (text + center
@@ -2606,22 +2763,14 @@ on-chain. Build a normal viem/wagmi dApp; treat every tx as advisory
 impersonator via EIP-6963 \`rdns: "computer.slop.impersonator"\` (or
 \`window.ethereum.isSlopImpersonator\`) and fire txs straight at it.
 
-## Quick recipe — drop an iframe app right now
+### Verify it landed / clean up
 
 \`\`\`bash
-# requires host scope on this token
-curl -s -X POST -H "Authorization: Bearer ${token}" \\
-  -H "content-type: application/json" \\
-  "${BASE}/v1/apps" \\
-  -d '{"id":"my-dapp","label":"My DApp","icon":"/icons/browser.png","url":"https://my-dapp.vercel.app"}'
-
-# verify it landed in the catalog
+# confirm it's in THIS room's resolved catalog
 curl -s -H "Authorization: Bearer ${token}" \\
   "${BASE}/v1/state?slug=${S}" | jq '.apps[] | select(.id == "my-dapp")'
-
-# delete when you're done
-curl -s -X DELETE -H "Authorization: Bearer ${token}" \\
-  "${BASE}/v1/apps/my-dapp"
+# remove this room's copy when you're done
+curl -s -X DELETE -H "Authorization: Bearer ${token}" "${BASE}/v1/apps/my-dapp"
 \`\`\`
 `;
 }
@@ -2639,6 +2788,8 @@ export function skillForTopic(
   switch (topic) {
     case "chess":
       return skillChess(token, isHost, slug);
+    case "pong":
+      return skillPong(token, isHost, slug);
     case "music":
       return skillMusic(token, isHost, slug);
     case "browser":
