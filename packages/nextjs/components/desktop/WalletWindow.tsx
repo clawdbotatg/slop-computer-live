@@ -2202,6 +2202,14 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     }
   }, [execReceipt, mesh, tx.id]);
 
+  // Whenever the tx flips back to "pending" — whoever pressed Try again, on
+  // whatever tab — stop watching the abandoned attempt. Keyed on tx.status so
+  // it only fires on the transition INTO pending, never wiping the fresh hash
+  // we set while heading into "executing".
+  useEffect(() => {
+    if (tx.status === "pending") setExecHash(null);
+  }, [tx.status]);
+
   // The "executing" status is set on relay state when someone clicks
   // Execute, but the receipt watcher is local to that signer's tab.
   // If they close the tab, lose RPC, or hit an unmined tx, the relay
@@ -2222,6 +2230,11 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const isStuckExecuting = tx.status === "executing" && now - tx.updatedAt >= STUCK_MS;
 
   const onResetToPending = useCallback(() => {
+    // Drop the abandoned hash locally too. The relay clears its copy on the
+    // pending transition, but this tab's `execHash` also feeds `watchedHash`
+    // — leave it set and the receipt watcher keeps `execWaiting` true, which
+    // re-disables the Execute button we just tried to free up.
+    setExecHash(null);
     mesh.walletSetTxStatus(tx.id, "pending");
   }, [mesh, tx.id]);
   const onRemoveTx = useCallback(() => {

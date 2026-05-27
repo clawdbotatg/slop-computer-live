@@ -428,7 +428,11 @@ export class WalletState {
     const tx = this.state.txs.find(t => t.id === id);
     if (!tx) return null;
     tx.status = status;
-    if (txHash) tx.txHash = txHash;
+    // Resetting to "pending" abandons whatever attempt was in flight, so
+    // drop its hash — otherwise every peer keeps polling a receipt that
+    // will never resolve, which pins the Execute button at "Waiting…".
+    if (status === "pending") tx.txHash = null;
+    else if (txHash) tx.txHash = txHash;
     tx.updatedAt = Date.now();
     this.persist();
     this.emit();
