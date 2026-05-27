@@ -2101,22 +2101,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const { switchChainAsync } = useSwitchChain();
   const txPublicClient = usePublicClient({ chainId: tx.chainId });
   const [execHash, setExecHash] = useState<`0x${string}` | null>(null);
-  // [wallet/log] Verbose debug logs while we iterate on the sign/execute
-  // flow — every render dumps the bits that gate the buttons so we can
-  // see in console exactly why a click did/didn't fire. Strip later.
-  console.log("[wallet] TxCard render", {
-    txId: tx.id,
-    status: tx.status,
-    chainId: tx.chainId,
-    isBatch: !!tx.calls && tx.calls.length > 0,
-    sigs: tx.signatures.length,
-    threshold: wallet.threshold,
-    txHash: tx.txHash,
-    connectedAddress,
-    writing,
-    signing,
-    hasPublicClient: !!txPublicClient,
-  });
   // Watch whichever hash we have — the locally-submitted one (this tab
   // sent it) OR the one broadcast on the relay by another peer's exec.
   // Every peer pollers in parallel; first to see a receipt updates relay
@@ -2197,13 +2181,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
 
   useEffect(() => {
     if (execReceipt) {
-      console.log("[wallet] receipt landed", {
-        txId: tx.id,
-        status: execReceipt.status,
-        hash: execReceipt.transactionHash,
-        blockNumber: execReceipt.blockNumber?.toString(),
-        gasUsed: execReceipt.gasUsed?.toString(),
-      });
       mesh.walletSetTxStatus(
         tx.id,
         execReceipt.status === "success" ? "executed" : "failed",
@@ -2212,21 +2189,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       setExecHash(null);
     }
   }, [execReceipt, mesh, tx.id]);
-
-  // [wallet/log] Surface the receipt watcher's loading/error state — the
-  // hook is silent otherwise so a wedged poller is invisible.
-  useEffect(() => {
-    if (!watchedHash) return;
-    console.log("[wallet] receipt watcher", {
-      txId: tx.id,
-      hash: watchedHash,
-      execWaiting,
-      execIsError,
-      execError: execError
-        ? String((execError as { shortMessage?: string; message?: string }).shortMessage ?? execError)
-        : null,
-    });
-  }, [watchedHash, execWaiting, execIsError, execError, tx.id]);
 
   // The "executing" status is set on relay state when someone clicks
   // Execute, but the receipt watcher is local to that signer's tab.
