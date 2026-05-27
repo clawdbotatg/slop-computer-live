@@ -23,6 +23,7 @@ import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
 import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
+import { useSyncedUIState } from "~~/hooks/useSyncedUIState";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
@@ -80,15 +81,19 @@ type WalletTab = "deploy" | "chat" | "assets" | "transactions";
 
 export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
   const wallet = mesh.wallet;
-  // If the window is opening fresh because a tx just landed in the
-  // queue (browser dapp, AI wallet, etc.), land directly on the
-  // transactions tab so the signing UI is right there. Otherwise chat
-  // is the headline.
-  const [tab, setTab] = useState<WalletTab>(() => {
-    if (!wallet) return "deploy";
-    if (mesh.walletTxs.some(t => t.status === "pending")) return "transactions";
-    return "chat";
-  });
+  // Which tab is showing is multiplayer: pick a tab and every peer's
+  // wallet follows (last-writer-wins via the relay's ui_state channel).
+  // `fallback` is what everyone sees until anyone picks — derived from
+  // synced room state so peers agree before the first click: deploy if
+  // there's no wallet yet, transactions if a tx just landed in the
+  // queue (browser dapp, AI wallet, etc.) so the signing UI is right
+  // there, else chat (the headline conversation).
+  const tabFallback: WalletTab = !wallet
+    ? "deploy"
+    : mesh.walletTxs.some(t => t.status === "pending")
+      ? "transactions"
+      : "chat";
+  const [tab, setTab] = useSyncedUIState<WalletTab>(mesh, "wallet:tab", tabFallback);
 
   // Auto-switch to Chat the first time a wallet shows up (initial
   // deploy) — the conversation is the headline. Don't yank the user
@@ -99,7 +104,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       if (justDeployed) setTab("chat");
     }
     if (!wallet && tab !== "deploy") setTab("deploy");
-  }, [wallet, tab]);
+  }, [wallet, tab, setTab]);
 
   // Auto-jump to the Transactions tab whenever a new pending signature
   // appears — this is the spot where the user *acts*, so don't make
@@ -121,7 +126,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       setTab("transactions");
     }
     lastPendingCountRef.current = pendingCount;
-  }, [pendingCount, wallet, tab]);
+  }, [pendingCount, wallet, tab, setTab]);
 
   // Server pings `walletAttention` on every propose, including the
   // deduped second-click case where pendingCount didn't change. Mirror
@@ -135,7 +140,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       setTab("transactions");
     }
     lastAttentionRef.current = at;
-  }, [walletAttention, wallet, tab]);
+  }, [walletAttention, wallet, tab, setTab]);
 
   // Portfolio state is hoisted up here from WalletAssetsPanel so the
   // sticky header above the tabs can show the balance + drive a
@@ -1394,11 +1399,18 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
         .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt),
     [wallet.deployments],
   );
-  const [activeChain, setActiveChain] = useState<number>(deployedChainIds[0] ?? mainnet.id);
+  // The selected chain is multiplayer too: switch the network and every
+  // peer's queue follows. Fallback is the most-recently-deployed chain
+  // (the same derived value on every peer) until anyone picks.
+  const [activeChain, setActiveChain] = useSyncedUIState<number>(
+    mesh,
+    "wallet:activeChain",
+    deployedChainIds[0] ?? mainnet.id,
+  );
   useEffect(() => {
     if (deployedChainIds.length === 0) return;
     if (!deployedChainIds.includes(activeChain)) setActiveChain(deployedChainIds[0]);
-  }, [deployedChainIds, activeChain]);
+  }, [deployedChainIds, activeChain, setActiveChain]);
 
   // Distinct from chainTxs below — used by the "txs exist on other
   // chains" hint so the user knows to switch the chain picker if their

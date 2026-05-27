@@ -961,16 +961,26 @@ the full state snapshot.
 
 \`\`\`
 POST ${BASE}/v1/apps {
-  "id":    "ens",
-  "label": "ENS",
-  "icon":  "/icons/ens.png",
-  "url":   "https://app.ens.domains"
+  "id":     "my-dapp",                # lowercase letters/digits/dashes, 1-40 chars
+  "label":  "My Dapp",                # shown under the icon (and in the title bar if chrome:"app")
+  "icon":   "/v1/app-icons/my-dapp",  # a built-in /icons/<f>.png OR an uploaded /v1/app-icons/<id>
+  "url":    "https://<cid>.ipfs.community.bgipfs.com/",
+  "chrome": "app"                     # optional — see table
 }
 \`\`\`
 
-The optional \`kind\` field selects what the icon spawns when
-double-clicked. Without it, the icon opens a shared browser to
-\`url\`. With \`kind\` set:
+Upsert keyed on \`id\`: re-POST the same \`id\` to re-point an app (eg
+after you redeploy a dapp to a new IPFS CID). \`id/label/icon/url\` are
+required; \`chrome\` is optional and controls the window frame:
+
+| \`chrome\` | Window |
+| --- | --- |
+| omitted | normal browser chrome — URL bar + back/forward, pointed at \`url\` |
+| \`"app"\` | clean titled window: \`label\` in the title bar, URL bar hidden — a dapp looks like a native app, not a website |
+
+The \`kind\` you'll see on built-in icons is NOT settable here — those
+are singleton windows shipped in the relay code. Anything you POST is a
+\`url\`-backed browser/app window. For reference, the built-in kinds:
 
 | \`kind\` | What double-click does |
 | --- | --- |
@@ -1027,6 +1037,49 @@ Either way you get back a \`url\` — pass it straight to
 (served at \`/v1/app-icons/<id>\`), persist, and need no deploy. The
 repo's \`public/icons/\` + \`yarn icon:add\` path still exists but is
 only for built-in apps shipped in DEFAULT_APPS.
+
+## Build a dapp from scratch and put it on the desktop
+
+Author a brand-new dapp and have it show up as a desktop icon in this
+room — contract, frontend, icon, all of it — with NO access to this
+repo and NO relay redeploy. It's three public skills chained together;
+fetch each and follow it:
+
+1. BUILD — Scaffold-ETH 2 + the ethskills playbook.
+   - https://ethskills.com/SKILL.md       (build playbook: what to build, phases, audit)
+   - https://docs.scaffoldeth.io/SKILL.md  (the SE-2 framework: create-eth, hooks, deploy)
+   Prompt your agent: "use ethskills.com to build <X> dapp." Write the
+   contract, deploy to a live chain (Base is the house default), then
+   build the Next.js frontend as a static export.
+
+2. UPLOAD — BuidlGuidl IPFS.
+   - https://www.bgipfs.com/SKILL.md
+   \`yarn ipfs\` (or \`bgipfs upload out\`) pins the \`out/\` dir and prints a CID.
+   ⚠️ Use the SUBDOMAIN gateway url, not the path one. A static Next
+   export uses absolute \`/_next/...\` asset paths that 404 on a path
+   gateway (\`community.bgipfs.com/ipfs/<cid>/\`). Serve it so the CID is
+   the origin root instead:
+       https://<cid>.ipfs.community.bgipfs.com/
+   (Upload 500s are usually transient — just retry the upload.)
+
+3. REGISTER — the Apps catalog above.
+   - Make an icon: POST /v1/icons/generate (or upload one) → get its \`url\`.
+   - POST /v1/apps { id, label, icon, url: "<subdomain url>", chrome: "app" }.
+   - Redeploy later? Re-POST the same \`id\` with the new CID's url.
+
+### Transactions in the room — the impersonator
+
+A dapp in a slop browser window doesn't get a normal wallet — it gets
+the room's impersonator: an injected EIP-1193 provider (EIP-6963 rdns
+\`computer.slop.impersonator\`, \`isSlopImpersonator: true\`) whose connected
+account IS the room multisig. Build with ordinary wallet code
+(wagmi / viem / RainbowKit) and it just works: \`eth_accounts\` returns
+the multisig, and every \`eth_sendTransaction\` becomes a PROPOSAL in the
+room's multisig wallet for the signers to approve — nothing
+auto-executes. Notes:
+- Want slop-specific UX? Branch on \`window.ethereum.isSlopImpersonator\`.
+- The impersonated account lives on the multisig's chain — point the
+  dapp's target network at it (the house multisig is on Base).
 `;
 }
 
