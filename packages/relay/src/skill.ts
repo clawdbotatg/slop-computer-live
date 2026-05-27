@@ -2480,6 +2480,39 @@ HTTP unavailability, no WS reconnect storm, no broadcast
 disruption. The audience hears you keep talking; the desktop just
 gains an icon.
 
+## Third-party app, zero repo access — the full loop
+
+You do NOT need the slop-computer-live repo to ship an app to a room.
+With just a host-scoped token you can generate an icon, register the
+app, and have it bubble transactions to the room's multisig. The whole
+flow is HTTP:
+
+\`\`\`bash
+# 1. Get an icon — generate one in the house style from a prompt …
+curl -s -X POST -H "Authorization: Bearer ${token}" -H "content-type: application/json" \\
+  "${BASE}/v1/icons/generate" \\
+  -d '{"id":"my-dapp","prompt":"A retro 3D piggy bank with neon lightning bolts."}'
+#   … or upload your own PNG instead:
+#   curl -X POST -H "content-type: image/png" --data-binary @icon.png "${BASE}/v1/icons?id=my-dapp"
+#   → both return { url: "/v1/app-icons/my-dapp" }
+
+# 2. Register the app. chrome:"app" = clean titled window (no URL bar),
+#    so a dApp looks like a real app, not a browser tab.
+curl -s -X POST -H "Authorization: Bearer ${token}" -H "content-type: application/json" \\
+  "${BASE}/v1/apps" \\
+  -d '{"id":"my-dapp","label":"My DApp","icon":"/v1/app-icons/my-dapp","url":"https://my-dapp.vercel.app","chrome":"app"}'
+\`\`\`
+
+That's the whole thing — the icon shows on every desktop, double-click
+opens your dApp in the shared browser. Because the shared browser
+injects the impersonator (set to the room's deployed multisig when one
+exists), your dApp's \`eth_sendTransaction\` is captured and proposed to
+that multisig — the room's signers ratify it N-of-M and it executes
+on-chain. Build a normal viem/wagmi dApp; treat every tx as advisory
+(the connected account is a contract with no private key). Detect the
+impersonator via EIP-6963 \`rdns: "computer.slop.impersonator"\` (or
+\`window.ethereum.isSlopImpersonator\`) and fire txs straight at it.
+
 ## Quick recipe — drop an iframe app right now
 
 \`\`\`bash
