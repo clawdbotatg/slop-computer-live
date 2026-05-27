@@ -148,8 +148,8 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["clock", "card", "research", "transcript"],
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
-  ["browser", "wallet", "ens", "music", "chess"],
-  ["pong"],
+  ["browser", "wallet", "ens", "music"],
+  ["pong", "chess"],
 ];
 
 function defaultIconPosition(appId: string, i: number): { x: number; y: number } {
@@ -904,8 +904,21 @@ function DesktopInner({ slug }: { slug: string }) {
     const layout = layouts[n - 1]!;
     const gridW = vw - PAD * 2;
     const gridH = vh - TOP_INSET - PAD * 2;
-    const cellW = Math.floor((gridW - (layout.cols - 1) * PAD) / layout.cols);
-    const cellH = Math.floor((gridH - (layout.rows - 1) * PAD) / layout.rows);
+    // Fit each cell to the grid, then cap it. Uncapped, a 1- or 2-camera
+    // call ballooned each tile to span the full viewport height — way too
+    // big. Capped cells stay a tidy webcam-sized tile, and the whole
+    // block is centered rather than anchored to the top-left corner.
+    const MAX_CELL_W = 480;
+    const MAX_CELL_H = 400;
+    const fitW = Math.floor((gridW - (layout.cols - 1) * PAD) / layout.cols);
+    const fitH = Math.floor((gridH - (layout.rows - 1) * PAD) / layout.rows);
+    const cellW = Math.min(fitW, MAX_CELL_W);
+    const cellH = Math.min(fitH, MAX_CELL_H);
+
+    const blockW = layout.cols * cellW + (layout.cols - 1) * PAD;
+    const blockH = layout.rows * cellH + (layout.rows - 1) * PAD;
+    const originX = Math.max(PAD, Math.floor((vw - blockW) / 2));
+    const originY = TOP_INSET + Math.max(PAD, Math.floor((vh - TOP_INSET - blockH) / 2));
 
     let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
 
@@ -919,8 +932,8 @@ function DesktopInner({ slug }: { slug: string }) {
         row = 1;
         col = 0;
       }
-      const x = PAD + col * (cellW + PAD);
-      const y = TOP_INSET + PAD + row * (cellH + PAD);
+      const x = originX + col * (cellW + PAD);
+      const y = originY + row * (cellH + PAD);
       // For the centered 3rd cell, span across both columns horizontally.
       const w = n === 3 && i === 2 ? cellW * 2 + PAD : cellW;
       meshUpdateSlotForArrange({
@@ -934,9 +947,10 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, [meshPublications, meshUpdateSlotForArrange]);
 
-  // Open music + clock side by side, start a 10-minute countdown so
-  // everyone sees the same timer tick down. Wall-clock-anchored via
-  // endAt so peers stay in lockstep without per-tick sync.
+  // Put the guest card up top as the hero, with a smaller music window +
+  // countdown clock side by side beneath it, then start a 10-minute
+  // countdown so everyone sees the same timer tick down. Wall-clock-
+  // anchored via endAt so peers stay in lockstep without per-tick sync.
   const meshSetClockStateForArrange = mesh.setClockState;
   const meshOpenWindowForArrange = mesh.openWindow;
   const arrangeForCountdown = useCallback(() => {
@@ -945,30 +959,55 @@ function DesktopInner({ slug }: { slug: string }) {
     const TOP_INSET = 38;
     const PAD = 16;
 
+    meshOpenWindowForArrange("card");
     meshOpenWindowForArrange("music");
     meshOpenWindowForArrange("clock");
 
-    // Music left, clock right. Sized so both fit on a normal viewport
-    // without overlap; height bounded so they sit in the upper-middle
-    // of the screen rather than spanning everything.
-    const halfW = Math.max(360, Math.floor((vw - PAD * 3) / 2));
-    const winH = Math.max(440, Math.min(640, vh - TOP_INSET - PAD * 2));
-    const winY = TOP_INSET + PAD;
+    const TITLEBAR = 36;
+    const areaW = vw - PAD * 2;
+    const areaH = vh - TOP_INSET - PAD * 2;
+
+    // Card is the hero up top — landscape (~3:2, matching the 1536×1024
+    // template so it doesn't letterbox), capped so it stays a tidy size
+    // on a big OBS canvas instead of spanning the whole stage.
+    const cardW = Math.max(480, Math.min(720, areaW));
+    const cardH = Math.round(cardW / 1.5) + TITLEBAR;
+
+    // Music + countdown sit smaller, side by side, directly beneath the
+    // card and aligned to its width.
+    const lowerW = Math.floor((cardW - PAD) / 2);
+    const lowerH = Math.max(240, Math.min(320, areaH - cardH - PAD));
+
+    // Center the whole card-over-pair block in the stage.
+    const blockH = cardH + PAD + lowerH;
+    const originX = Math.max(PAD, Math.floor((vw - cardW) / 2));
+    const originY = TOP_INSET + Math.max(PAD, Math.floor((vh - TOP_INSET - blockH) / 2));
+    const lowerY = originY + cardH + PAD;
+
     let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
     meshUpdateSlotForArrange({
       id: "app-music",
-      x: PAD,
-      y: winY,
-      width: halfW,
-      height: winH,
+      x: originX,
+      y: lowerY,
+      width: lowerW,
+      height: lowerH,
       z: z++,
     });
     meshUpdateSlotForArrange({
       id: "app-clock",
-      x: PAD + halfW + PAD,
-      y: winY,
-      width: halfW,
-      height: winH,
+      x: originX + lowerW + PAD,
+      y: lowerY,
+      width: lowerW,
+      height: lowerH,
+      z: z++,
+    });
+    // Card last so it sits on top of the stack.
+    meshUpdateSlotForArrange({
+      id: "app-card",
+      x: originX,
+      y: originY,
+      width: cardW,
+      height: cardH,
       z: z++,
     });
 
