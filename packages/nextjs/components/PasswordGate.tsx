@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Bevel, Button } from "~~/components/ui";
+import { LEGACY_STORAGE_KEY, readStoredRoomPassword, slugStorageKey } from "~~/utils/roomPassword";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -14,18 +15,6 @@ export type PasswordGateProps = {
   defaultPassword?: string;
   /** Called after the relay accepts the password and sets the cookie. */
   onAccepted: () => void;
-};
-
-const slugStorageKey = (slug: string) => `slop-room-password-${slug}`;
-const LEGACY_STORAGE_KEY = "slop-invite-password";
-
-const readStoredPassword = (slug: string): string => {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(slugStorageKey(slug)) ?? "";
-  } catch {
-    return "";
-  }
 };
 
 // Lightweight gate shown before any login UI. The relay holds a scrypt-
@@ -54,8 +43,7 @@ export const PasswordGate = ({ slug, defaultPassword = "", onAccepted }: Passwor
   // see it flash before the cookie comes back.
   const [silentRetrying, setSilentRetrying] = useState(() => {
     if (typeof window === "undefined") return false;
-    const stored = window.localStorage.getItem(slugStorageKey(slug)) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
-    return !defaultPassword.trim() && !!stored;
+    return !defaultPassword.trim() && !!readStoredRoomPassword(slug);
   });
 
   const submit = async (value: string, opts: { silent?: boolean; legacy?: boolean } = {}) => {
@@ -149,7 +137,7 @@ export const PasswordGate = ({ slug, defaultPassword = "", onAccepted }: Passwor
         void submit(fromUrl);
         return;
       }
-      const stored = readStoredPassword(slug) || window.localStorage.getItem(LEGACY_STORAGE_KEY) || "";
+      const stored = readStoredRoomPassword(slug);
       if (stored) {
         void submit(stored, { silent: true });
       } else {

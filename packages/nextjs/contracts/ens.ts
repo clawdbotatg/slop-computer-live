@@ -15,10 +15,16 @@ export const ENS_CHAIN_ID = 1 as const;
 //     every room subnode so the addr() record resolves everywhere.
 //   - ReverseRegistrar: `setName(string)` sets the *caller's* primary name.
 //     The multisig executes via `target.call{}`, so msg.sender is the
-//     multisig itself — exactly what we want for the reverse record.
+//     multisig itself — exactly what we want for the reverse record. This
+//     MUST be the registrar that currently owns the `addr.reverse` node on
+//     the registry above (it calls `registry.setSubnodeOwner(addr.reverse,…)`
+//     to claim the reverse node — any other registrar reverts there). The
+//     previous registrar 0x084b…8148 still has code + a defaultResolver but
+//     is no longer that owner, so setName from it reverts. Verified via
+//     `registry.owner(namehash("addr.reverse"))` on 2026-05-27.
 export const ENS_REGISTRY = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e" as const;
 export const ENS_PUBLIC_RESOLVER = "0xF29100983E058B709F3D539b0c765937B804AC15" as const;
-export const ENS_REVERSE_REGISTRAR = "0x084b1c3C81545d370f3634392De611CaaBFf8148" as const;
+export const ENS_REVERSE_REGISTRAR = "0xa58E81fe9b61B5c3fE2AFD33CF304c454AbFc7Cb" as const;
 
 // The parent name every room subdomain hangs off of: <slug>.slopcomputer.eth.
 export const PARENT_NAME = "slopcomputer.eth" as const;

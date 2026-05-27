@@ -6,6 +6,7 @@ import { LivePulse } from "./LivePulse";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
+import { readStoredRoomPassword } from "~~/utils/roomPassword";
 
 export type MenuItem = {
   label: string;
@@ -537,6 +538,7 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
 function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const [linkStatus, setLinkStatus] = useState<"idle" | "copied" | "failed">("idle");
   const ref = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -547,6 +549,29 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  // Copy a shareable link to this room on the live. subdomain (the current
+  // origin) with the room password baked into `?invite=` so the recipient
+  // clears the password gate on landing. The password is whatever this
+  // browser cached when it last passed the gate — the same value
+  // PasswordGate replays on mount.
+  const copyLink = async () => {
+    if (!slug) return;
+    try {
+      const password = readStoredRoomPassword(slug);
+      const base = `${window.location.origin}/${slug}`;
+      const url = password ? `${base}?invite=${encodeURIComponent(password)}` : base;
+      await navigator.clipboard.writeText(url);
+      setLinkStatus("copied");
+      setTimeout(() => {
+        setLinkStatus("idle");
+        setOpen(false);
+      }, 1200);
+    } catch {
+      setLinkStatus("failed");
+      setTimeout(() => setLinkStatus("idle"), 1500);
+    }
+  };
 
   const copySkill = async () => {
     setStatus("copying");
@@ -667,6 +692,24 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
                 background: "rgba(255,62,201,0.3)",
               }}
             />
+          ) : null}
+          {slug ? (
+            <button
+              type="button"
+              onClick={copyLink}
+              style={itemStyle}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.background =
+                  "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+                (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+              }}
+            >
+              {linkStatus === "copied" ? "link copied!" : linkStatus === "failed" ? "copy failed" : "copy link"}
+            </button>
           ) : null}
           <button
             type="button"
