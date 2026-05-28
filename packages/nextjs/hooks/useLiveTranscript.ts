@@ -112,6 +112,20 @@ const INTERIM_THROTTLE_MS = 33;
 // Set generously — we'd rather miss the fallback flip than over-react.
 const HUNG_TIMEOUT_MS = 20_000;
 
+// A single utterance arrives from Web Speech as a stream of partial
+// results that revise + re-segment as you talk — say "yo yo yo" then
+// "check check" and the recognizer may hand back just "check" for a beat
+// before re-merging. Emitting each fragment as its own caption frame made
+// the on-screen line flutter (drop to the latest fragment, then snap back
+// to the whole phrase). Instead we keep a per-line buffer: finalized words
+// accumulate, the live interim tail is appended, and we emit ONE additive
+// string. The line is locked as a FINAL (and reset for the next one) only
+// after the speaker goes quiet for LINE_QUIET_MS — i.e. on a real pause.
+const LINE_QUIET_MS = 1200;
+// Soft cap so a long unbroken monologue doesn't grow the line forever; we
+// keep the most recent chars (the visible tail of a one-line subtitle).
+const LINE_MAX_CHARS = 220;
+
 export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTranscriptResult {
   const {
     enabled: rawEnabled,
@@ -165,6 +179,13 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   const pendingInterimRef = useRef<string | null>(null);
   const pendingTimerRef = useRef<number | null>(null);
   const lastResultAtRef = useRef(0);
+  // Per-line accumulation (see LINE_QUIET_MS above). `lineRef` holds the
+  // finalized words of the current line; `lastDisplayRef` holds the latest
+  // line+interim string actually shown, so the quiet-gap finalizer locks
+  // exactly what the viewer last saw (interim tail included).
+  const lineRef = useRef("");
+  const lastDisplayRef = useRef("");
+  const quietTimerRef = useRef<number | null>(null);
 
   const setAlive = (alive: boolean) => {
     aliveDesiredRef.current = alive;
@@ -184,6 +205,37 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       lastInterimSentAtRef.current = Date.now();
       sendLiveCaptionRef.current(pending, false);
     }
+  };
+
+  // Throttled interim send: ship immediately once past the cooldown,
+  // otherwise hold the latest text for flushPendingInterim to drain. Keeps
+  // a chatty recognizer from flooding the WS without ever delaying beyond
+  // INTERIM_THROTTLE_MS.
+  const queueInterim = (text: string) => {
+    const now = Date.now();
+    const since = now - lastInterimSentAtRef.current;
+    if (since >= INTERIM_THROTTLE_MS) {
+      lastInterimSentAtRef.current = now;
+      sendLiveCaptionRef.current(text, false);
+      pendingInterimRef.current = null;
+    } else {
+      pendingInterimRef.current = text;
+      if (pendingTimerRef.current == null) {
+        pendingTimerRef.current = window.setTimeout(flushPendingInterim, INTERIM_THROTTLE_MS - since);
+      }
+    }
+  };
+
+  // Drop the current line buffer + pending quiet-gap finalize WITHOUT
+  // emitting. Used on teardown and on mute (enabled→false): a half-spoken
+  // line must not lock in after the user has muted.
+  const resetLine = () => {
+    if (quietTimerRef.current != null) {
+      window.clearTimeout(quietTimerRef.current);
+      quietTimerRef.current = null;
+    }
+    lineRef.current = "";
+    lastDisplayRef.current = "";
   };
 
   useEffect(() => {
@@ -210,43 +262,59 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       // Bump the visible-pulse counter so the menubar 🎙️ flashes on
       // every recognition event. Cheap React update — single integer.
       setResultTick(c => c + 1);
-      // Iterate from resultIndex — the browser may batch multiple
-      // updates into a single event, and we'd otherwise re-emit earlier
-      // results on repeats.
+
+      // Split this event's results (from resultIndex — earlier ones are
+      // already locked) into newly-finalized words and the still-forming
+      // interim tail. A result flips isFinal exactly once and resultIndex
+      // advances past it afterward, so each final is counted once.
+      let newlyFinal = "";
+      let interim = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const r = ev.results[i];
-        const alt = r[0];
-        const text = alt?.transcript ?? "";
-        if (!text) continue;
-        if (r.isFinal) {
-          // Final: flush any pending interim of the same utterance
-          // (we'd otherwise send "hello wo" interim then "hello world"
-          // final out of order if a timer fires post-final).
-          if (pendingTimerRef.current != null) {
-            window.clearTimeout(pendingTimerRef.current);
-            pendingTimerRef.current = null;
-          }
-          pendingInterimRef.current = null;
-          sendLiveCaptionRef.current(text, true);
-          setFinalCount(c => c + 1);
-        } else {
-          // Interim: throttle to ~10Hz. If we're within the cooldown,
-          // hold the latest text and schedule a flush; if we're past
-          // it, send immediately.
-          const now = Date.now();
-          const since = now - lastInterimSentAtRef.current;
-          if (since >= INTERIM_THROTTLE_MS) {
-            lastInterimSentAtRef.current = now;
-            sendLiveCaptionRef.current(text, false);
-            pendingInterimRef.current = null;
-          } else {
-            pendingInterimRef.current = text;
-            if (pendingTimerRef.current == null) {
-              pendingTimerRef.current = window.setTimeout(flushPendingInterim, INTERIM_THROTTLE_MS - since);
-            }
-          }
+        const t = (r[0]?.transcript ?? "").trim();
+        if (!t) continue;
+        if (r.isFinal) newlyFinal = newlyFinal ? `${newlyFinal} ${t}` : t;
+        else interim = interim ? `${interim} ${t}` : t;
+      }
+
+      // Commit finalized words to the line, then render line + interim —
+      // ADDITIVE, so the caption never flickers back to just the latest
+      // fragment ("yo yo yo" stays put while "check check" is appended).
+      if (newlyFinal) {
+        lineRef.current = lineRef.current ? `${lineRef.current} ${newlyFinal}` : newlyFinal;
+        if (lineRef.current.length > LINE_MAX_CHARS) {
+          // Keep the tail; strip the leading partial word the slice cut.
+          lineRef.current = lineRef.current.slice(-LINE_MAX_CHARS).replace(/^\S*\s/, "");
         }
       }
+      const display = (
+        lineRef.current && interim ? `${lineRef.current} ${interim}` : lineRef.current || interim
+      ).trim();
+      if (!display) return;
+      lastDisplayRef.current = display;
+      queueInterim(display);
+
+      // (Re)arm the quiet-gap finalizer. While results keep flowing the
+      // line stays interim (dim, no dwell); once the speaker pauses for
+      // LINE_QUIET_MS we lock exactly what's on screen as a FINAL (full
+      // opacity + HOLD_MS dwell, then fade) and start a fresh line.
+      if (quietTimerRef.current != null) window.clearTimeout(quietTimerRef.current);
+      quietTimerRef.current = window.setTimeout(() => {
+        quietTimerRef.current = null;
+        const finalText = lastDisplayRef.current.trim();
+        lineRef.current = "";
+        lastDisplayRef.current = "";
+        if (!finalText) return;
+        // Drop any throttled interim still queued so the final isn't
+        // immediately overwritten by a stale partial.
+        if (pendingTimerRef.current != null) {
+          window.clearTimeout(pendingTimerRef.current);
+          pendingTimerRef.current = null;
+        }
+        pendingInterimRef.current = null;
+        sendLiveCaptionRef.current(finalText, true);
+        setFinalCount(c => c + 1);
+      }, LINE_QUIET_MS);
     };
 
     rec.onerror = ev => {
@@ -285,6 +353,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
         pendingTimerRef.current = null;
       }
       pendingInterimRef.current = null;
+      resetLine();
       try {
         rec.abort();
       } catch {
@@ -336,6 +405,9 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       } catch {
         /* not running */
       }
+      // Mute mid-sentence: drop the half-spoken line so it can't lock in
+      // as a final after the user muted (matches the abort-not-stop choice).
+      resetLine();
       // Mute is NOT "dead" — the speaker can unmute at any moment and
       // the local STT pipeline is still healthy. Keep alive=true so
       // the server keeps suppressing god-mode for them; the mute path

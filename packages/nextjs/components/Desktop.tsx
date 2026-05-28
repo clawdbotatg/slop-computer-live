@@ -550,6 +550,23 @@ function DesktopInner({ slug }: { slug: string }) {
     return () => window.removeEventListener("slop-audio-muted-change", handler as EventListener);
   }, [slug]);
 
+  // True when we're publishing a LIVE mic audio track — either a dedicated
+  // "audio" share OR the audio bundled inside a "camera" publication.
+  // `media.activeAudio` only counts the standalone audio share, so a
+  // camera-sharer (the mic rides inside the camera stream) would otherwise
+  // never trip the local-STT gate below and stay stuck on the slower
+  // god-mode round-trip — even though god-mode reads that exact bundled
+  // track. Mirror useGodModeStt's source selection (kind audio | camera)
+  // so both caption lanes agree on "this speaker has voice on air".
+  const publishingMicAudio = useMemo(
+    () =>
+      streams.some(
+        s =>
+          (s.kind === "audio" || s.kind === "camera") && s.stream.getAudioTracks().some(t => t.readyState === "live"),
+      ),
+    [streams],
+  );
+
   // In-browser Web Speech captions. Runs alongside god-mode STT — it's
   // ~3-5s faster and viewers see the speaker's words form in real time.
   // God-mode is suppressed (broadcast-side only, archive untouched) for
@@ -558,7 +575,7 @@ function DesktopInner({ slug }: { slug: string }) {
   // takes the captions slot. God-mode itself doesn't run this — its
   // captures would all be its own muted/empty mic.
   const liveStt = useLiveTranscript({
-    enabled: !isGodMode && media.activeAudio && !audioMuted && episode.captionsOn,
+    enabled: !isGodMode && publishingMicAudio && !audioMuted && episode.captionsOn,
     episodeSttOn: episode.sttOn,
     meshConnected: mesh.connected,
     sendLiveCaption: mesh.sendLiveCaption,

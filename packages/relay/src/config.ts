@@ -19,6 +19,42 @@ const corsOrigins = env("CORS_ORIGINS", "http://localhost:3000,http://localhost:
   .map(s => s.trim())
   .filter(Boolean);
 
+const isProd = process.env.NODE_ENV === "production";
+
+// Fail closed on the session secret. This value is the HMAC key for
+// room-access cookies (room-auth.ts) AND the @fastify/cookie signing
+// secret (index.ts). The dev fallback below is public in this repo — if
+// the relay boots in production with it, anyone could compute
+// signRoomCookie(slug, "dev-secret-change-me") and forge a valid cookie
+// for any room, bypassing every password gate (WS /signal, all ?slug=
+// v1 routes, and the /auth/anon + /auth/godmode invite checks). Refuse
+// to start rather than silently run wide open. Mirrors siwe.ts's
+// ALCHEMY_API_KEY guard. Generate one with `openssl rand -hex 32`.
+const DEV_SESSION_SECRET = "dev-secret-change-me";
+const sessionSecret = env("SIWE_SESSION_SECRET", DEV_SESSION_SECRET);
+if (isProd && sessionSecret === DEV_SESSION_SECRET) {
+  throw new Error(
+    "SIWE_SESSION_SECRET is unset (or set to the public dev fallback) while " +
+      "NODE_ENV=production — refusing to start. This secret signs room-access " +
+      "cookies; the fallback is public in the repo, so anyone could forge a " +
+      "valid cookie for any room. Set a strong random value (`openssl rand -hex 32`).",
+  );
+}
+
+// Wildcard CORS + credentials is a credential-theft vector: @fastify/cors
+// resolves origin:true by *reflecting* the caller's origin and emitting
+// Access-Control-Allow-Credentials: true, so any website could make
+// authenticated requests with a visitor's cookies. We genuinely need
+// credentials (cross-origin cookies from slop.computer), so the safe move
+// is to refuse "*" in production rather than silently pair it with creds.
+if (isProd && corsOrigins.includes("*")) {
+  throw new Error(
+    'CORS_ORIGINS includes "*" while NODE_ENV=production — refusing to start. ' +
+      "A wildcard origin combined with credentialed requests lets any site make " +
+      "authenticated calls using a visitor's cookies. List explicit origins instead.",
+  );
+}
+
 export const config = {
   port: Number(env("PORT", "8081")),
   host: env("HOST", "0.0.0.0"),
@@ -33,7 +69,7 @@ export const config = {
   // or click broadcasts, can't publish or chat. Intended for the
   // streaming machine that captures the live show.
   godPassword: env("GOD_MODE_PASSWORD", ""),
-  sessionSecret: env("SIWE_SESSION_SECRET", "dev-secret-change-me"),
+  sessionSecret,
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),
   mediamtxRtmpIngress: env("MEDIAMTX_RTMP_INGRESS_URL", "rtmp://localhost:1935"),
