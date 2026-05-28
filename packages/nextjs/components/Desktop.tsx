@@ -949,8 +949,12 @@ function DesktopInner({ slug }: { slug: string }) {
         {
           label: "Load Layout",
           disabled: layoutNames.length === 0,
-          submenu: layoutNames.map(n => ({
+          // The first 9 layouts get a Ctrl+Shift+1..9 binding so the
+          // top-of-mind setups switch instantly without diving through the
+          // menu. Wired in the global keydown effect further down.
+          submenu: layoutNames.map((n, i) => ({
             label: n,
+            shortcut: i < 9 ? `⌃⇧${i + 1}` : undefined,
             onClick: () => loadLayout(n),
             onDelete: () => deleteLayout(n),
           })),
@@ -2130,6 +2134,19 @@ function DesktopInner({ slug }: { slug: string }) {
 
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || !e.shiftKey) return;
+      // Ctrl+Shift+1..9 → load saved layout N (newest-first, same order as
+      // File ▸ Load Layout ▸). Match via e.code so a layout that turns
+      // Shift+1 into "!" (US) or "+" (DE) still triggers — e.key would be
+      // the shifted glyph, e.code stays Digit1.
+      const digit = e.code.match(/^Digit([1-9])$/);
+      if (digit) {
+        if (isEditable(e.target)) return;
+        const name = layoutNames[Number(digit[1]) - 1];
+        if (!name) return;
+        e.preventDefault();
+        loadLayout(name);
+        return;
+      }
       const key = e.key.toLowerCase();
       const isClose = key === "w" || key === "q";
       const isMinimize = key === "m";
@@ -2144,7 +2161,7 @@ function DesktopInner({ slug }: { slug: string }) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeTopWindow, minimizeTopWindow, autoArrange]);
+  }, [closeTopWindow, minimizeTopWindow, autoArrange, loadLayout, layoutNames]);
 
   // Spacebar = mute / unmute my own mic. A quick "mute me" that doesn't
   // require hunting for the button on the camera/audio window. We only
