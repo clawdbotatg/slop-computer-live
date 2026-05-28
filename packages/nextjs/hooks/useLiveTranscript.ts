@@ -120,8 +120,20 @@ const HUNG_TIMEOUT_MS = 20_000;
 // to the whole phrase). Instead we keep a per-line buffer: finalized words
 // accumulate, the live interim tail is appended, and we emit ONE additive
 // string. The line is locked as a FINAL (and reset for the next one) only
-// after the speaker goes quiet for LINE_QUIET_MS — i.e. on a real pause.
-const LINE_QUIET_MS = 500;
+// after the speaker goes quiet — i.e. on a real pause.
+//
+// The quiet-gap STAIRCASES DOWN as the line grows: a short line waits
+// for a generous pause (natural sentence break), but a long line snaps
+// on the first half-beat. This avoids the LINE_MAX_CHARS tail truncation
+// where the viewer sees a leading "…" and loses the head of the
+// sentence — we'd rather lock early and start a fresh line than let
+// the head fall off the end.
+function lineQuietMsForWords(wordCount: number): number {
+  if (wordCount >= 10) return 200;
+  if (wordCount >= 8) return 300;
+  if (wordCount >= 6) return 400;
+  return 500;
+}
 // Soft cap so a long unbroken monologue doesn't grow the line forever; we
 // keep the most recent chars (the visible tail of a one-line subtitle).
 const LINE_MAX_CHARS = 220;
@@ -295,10 +307,13 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       queueInterim(display);
 
       // (Re)arm the quiet-gap finalizer. While results keep flowing the
-      // line stays interim (dim, no dwell); once the speaker pauses for
-      // LINE_QUIET_MS we lock exactly what's on screen as a FINAL (full
-      // opacity + HOLD_MS dwell, then fade) and start a fresh line.
+      // line stays interim (dim, no dwell); once the speaker pauses we
+      // lock exactly what's on screen as a FINAL (full opacity + HOLD_MS
+      // dwell, then fade) and start a fresh line. The gap scales down
+      // with line length so long monologues snap on shorter pauses.
       if (quietTimerRef.current != null) window.clearTimeout(quietTimerRef.current);
+      const wordCount = display ? display.split(/\s+/).length : 0;
+      const quietMs = lineQuietMsForWords(wordCount);
       quietTimerRef.current = window.setTimeout(() => {
         quietTimerRef.current = null;
         const finalText = lastDisplayRef.current.trim();
@@ -314,7 +329,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
         pendingInterimRef.current = null;
         sendLiveCaptionRef.current(finalText, true);
         setFinalCount(c => c + 1);
-      }, LINE_QUIET_MS);
+      }, quietMs);
     };
 
     rec.onerror = ev => {
