@@ -71,6 +71,15 @@ The `/admin` capabilities (start/stop session, kick peers, control fanouts)
 require both `role === "host"` **and** `address ∈ ADMIN_ADDRESSES`. SIWE alone
 isn't enough.
 
+The summary above is the happy-path. The **full** auth model — every
+sign-in endpoint, the room-password gate, the two symmetric gates (WS
+`/signal` and REST `v1AuthFromReq`), defense-in-depth boundaries, and
+known caveats (passkey audience chat, debug-room openness) — is in
+[`docs/AUTH.md`](./AUTH.md). Read that before touching any `/auth/*`
+endpoint, the gates, or adding a new `?slug=` route. The deferred-work
+roadmap lives at
+[`ops/PLAN-auth-hardening.md`](../ops/PLAN-auth-hardening.md).
+
 ---
 
 ## Shared state model
