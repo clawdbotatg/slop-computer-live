@@ -68,6 +68,7 @@ import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
+import { reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
@@ -412,6 +413,12 @@ function DesktopInner({ slug }: { slug: string }) {
   // an admin with a stale session would auto-connect and the server's
   // password-required gate would close the socket in a reconnect loop.
   const mesh = usePeerMesh(session.authenticated && roomAuthed === true, selfHint, slug);
+  // Publish the relay WS state into the module-level pub/sub so
+  // UpgradeModal (mounted in the providers shell) can react to deploy-
+  // induced WS drops in real time, without a context bridge.
+  useEffect(() => {
+    reportRelayWsConnected(mesh.connected);
+  }, [mesh.connected]);
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated

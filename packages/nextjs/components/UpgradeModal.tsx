@@ -2,54 +2,107 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Bevel, LoadingBar } from "~~/components/ui";
+import { getRelayHealthSnapshot, subscribeRelayHealth } from "~~/lib/relayHealth";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
-// Poll cadence + per-request timeout. Keep both short so we react fast
-// when the relay restarts (the deploy script kills it for ~2s, then it
-// comes back, but the Next.js client bundle on this tab is now stale).
-const POLL_INTERVAL_MS = 2000;
-const FETCH_TIMEOUT_MS = 1500;
+// /health polling fallback — covers surfaces without a mesh WS (front
+// page, unauthed spectators). The primary signal is the mesh WS state
+// via the relayHealth pub/sub, which trips within milliseconds of the
+// relay restart; this poll is here so non-mesh tabs still get the
+// modal.
+const POLL_INTERVAL_MS = 1000;
+const FETCH_TIMEOUT_MS = 800;
+// 2 consecutive fails at 1s cadence catches a ~1-2s relay restart —
+// far tighter than the previous 3-fail/2s setup, which missed real
+// systemctl restarts entirely.
+const FAIL_TRIGGER_COUNT = 2;
 
-// We require N consecutive failed pings AFTER having been healthy at
-// least once. That keeps a flaky-Wi-Fi blip from triggering a forced
-// reload (one fail is normal; ~6s of dead air looks like a deploy).
-const FAIL_TRIGGER_COUNT = 3;
+// When the WS drops, wait this long before triggering. A clean network
+// blip will reconnect in milliseconds; a real relay restart stays down
+// for at least a second or two. 1.2s is a comfortable middle ground.
+const WS_DROP_GRACE_MS = 1200;
 
-// Duration of the cosmetic progress bar. The actual deploy window from
-// the Next.js stop → HTTPS-back recovery is ~2-5s, but the new bundle
-// won't be cleanly fetchable for a few more seconds while the relay +
-// browser-host also bounce. 25s is comfortable headroom; users sit
-// through it once, see "Downloading Upgrade…", then come back with
-// the new client.
+// Duration of the cosmetic progress bar. The actual deploy window is
+// ~2-5s of HTTPS downtime + a few more seconds for the relay and
+// browser-host to bounce; 25s is comfortable headroom before the
+// hard reload.
 const UPGRADE_DURATION_MS = 25000;
 
 /**
  * Detects a production deploy in progress and forces a hard reload so
  * the user lands on the new client bundle.
  *
- * Symptom this fixes: during `./ops/deploy.sh`, slop-relay (and the
- * Next.js server) get restarted. The existing client tab reconnects
- * to the new relay but is still running the old JS bundle — any
- * features shipped in the deploy are invisible until a manual reload.
+ * Symptom this fixes: during `./ops/deploy.sh`, slop-relay restarts.
+ * The client tab's WS reconnects to the new relay but is still
+ * running the previous JS bundle — newly-shipped features stay
+ * invisible until a manual reload.
  *
- * Detection: poll `${RELAY_HTTP}/health` every 2s. Once we've seen at
- * least one healthy response, treat 3 consecutive failures as "deploy
- * in flight". This avoids false-positives on first load (we wait for
- * proof of life first) and on single packet drops.
+ * Two parallel detectors trip the modal:
+ *   1. Mesh WS drop (primary): when the relay restarts, the WS
+ *      closes within milliseconds. Desktop publishes mesh.connected
+ *      into the relayHealth pub/sub; we subscribe and start a 1.2s
+ *      grace timer on any true→false transition. If still down at
+ *      the end of the grace, modal goes up.
+ *   2. /health polling (fallback): covers surfaces that never
+ *      open the mesh WS (front page, unauthed spectators). 1s
+ *      cadence, 0.8s timeout, 2 consecutive fails trip the modal.
  *
- * Reaction: full-viewport blur + "Downloading Upgrade…" modal with the
- * shared LoadingBar, running for UPGRADE_DURATION_MS. At the end,
- * `window.location.reload()` — that fetches the new index.html, which
- * references the new hashed chunk URLs, so the next page is the new
- * version.
+ * In both cases we require at least one healthy observation first —
+ * cold loads against a transient/offline relay shouldn't trigger.
  */
 export function UpgradeModal() {
   const [showing, setShowing] = useState(false);
   const [progress, setProgress] = useState(0);
-  const wasHealthyRef = useRef(false);
+  const httpEverHealthyRef = useRef(false);
   const consecutiveFailsRef = useRef(0);
 
+  // --- Detector 1: mesh WS drop -----------------------------------------
+  useEffect(() => {
+    if (showing) return;
+    let cancelled = false;
+    let dropTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const handle = (connected: boolean) => {
+      if (cancelled) return;
+      if (connected) {
+        if (dropTimer) {
+          clearTimeout(dropTimer);
+          dropTimer = null;
+        }
+        return;
+      }
+      // WS just dropped. We only care if it had ever been up — a tab
+      // that never connected (e.g. unauthed spectator) isn't a deploy
+      // signal.
+      const snap = getRelayHealthSnapshot();
+      if (!snap.everConnected) return;
+      if (dropTimer) return;
+      dropTimer = setTimeout(() => {
+        if (cancelled) return;
+        setShowing(true);
+      }, WS_DROP_GRACE_MS);
+    };
+
+    // Seed with the current snapshot in case the WS is already down at
+    // mount (e.g. modal mounted late).
+    const initial = getRelayHealthSnapshot();
+    if (initial.everConnected && !initial.connected) {
+      dropTimer = setTimeout(() => {
+        if (cancelled) return;
+        setShowing(true);
+      }, WS_DROP_GRACE_MS);
+    }
+
+    const unsub = subscribeRelayHealth(handle);
+    return () => {
+      cancelled = true;
+      unsub();
+      if (dropTimer) clearTimeout(dropTimer);
+    };
+  }, [showing]);
+
+  // --- Detector 2: /health polling (fallback) ---------------------------
   useEffect(() => {
     if (showing) return;
     let cancelled = false;
@@ -72,14 +125,11 @@ export function UpgradeModal() {
       if (cancelled) return;
 
       if (ok) {
-        wasHealthyRef.current = true;
+        httpEverHealthyRef.current = true;
         consecutiveFailsRef.current = 0;
         return;
       }
-      // Don't trigger before we've ever seen the relay healthy — that
-      // covers cold loads against a transient/offline relay where a
-      // forced reload would just spin.
-      if (!wasHealthyRef.current) return;
+      if (!httpEverHealthyRef.current) return;
       consecutiveFailsRef.current += 1;
       if (consecutiveFailsRef.current >= FAIL_TRIGGER_COUNT) {
         setShowing(true);
@@ -94,6 +144,7 @@ export function UpgradeModal() {
     };
   }, [showing]);
 
+  // --- Progress bar + forced reload -------------------------------------
   useEffect(() => {
     if (!showing) return;
     const startedAt = performance.now();
