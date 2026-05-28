@@ -166,7 +166,7 @@ export function UpgradeModal() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Downloading upgrade"
+      aria-label="Updating"
       style={{
         position: "fixed",
         inset: 0,
@@ -200,7 +200,7 @@ export function UpgradeModal() {
             color: "var(--slop-text)",
           }}
         >
-          Downloading Upgrade…
+          💾 Updating...
         </h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, marginTop: 0, marginBottom: 16 }}>
           A new version of slop.computer is being deployed.
