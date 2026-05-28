@@ -20,22 +20,27 @@ const FAIL_TRIGGER_COUNT = 2;
 
 // When the WS drops, wait this long before triggering. A clean network
 // blip will reconnect in milliseconds; a real relay restart stays down
-// for at least a second or two. 1.2s is a comfortable middle ground.
-const WS_DROP_GRACE_MS = 1200;
+// for at least a second. 800ms is short enough to feel responsive
+// without false-positiving on transient network hiccups.
+const WS_DROP_GRACE_MS = 800;
 
-// Once the modal is up, probe /health on this cadence. As soon as it
-// comes back, we reload — the modal is no longer a fixed-duration
-// timer, it's a "wait until the new server is reachable" indicator.
-const RECOVERY_PROBE_MS = 500;
-const RECOVERY_TIMEOUT_MS = 800;
-// Don't flash the modal: even if the server is already back when the
-// modal trips (e.g. very fast deploy), keep it visible at least this
-// long so the user sees what happened.
-const MIN_VISIBLE_MS = 1500;
+// Probe /health aggressively once the modal is up. The endpoint is
+// cheap (returns 3 fields) and we want to catch the recovery moment
+// within ~200ms of it actually happening. 500ms timeout because a
+// slow probe past that horizon means the server isn't really back.
+const RECOVERY_PROBE_MS = 200;
+const RECOVERY_TIMEOUT_MS = 500;
+// Minimum modal visibility so the user gets a brief "💾 Updating..."
+// confirmation rather than a sub-frame flash. Kept tight (300ms ≈ a
+// blink) so we don't sit on top of a server that's already back.
+const MIN_VISIBLE_MS = 300;
 // How long we expect the new server to take to be reachable. Drives
 // the progress bar fill rate; the bar caps at 95% until the probe
 // actually succeeds, so we never claim "done" before we are.
-const EXPECTED_RECOVERY_MS = 6000;
+const EXPECTED_RECOVERY_MS = 3000;
+// Final paint delay so the LoadingBar's 100% frame commits before
+// the page unloads. ~100ms is ~6 browser frames, plenty.
+const RELOAD_PAINT_MS = 100;
 // Safety net: if /health never comes back (deploy hung, server died),
 // reload anyway after this long.
 const MAX_WAIT_MS = 45000;
@@ -175,7 +180,7 @@ export function UpgradeModal() {
       reloading = true;
       // 100% paint frame, then reload.
       setProgress(100);
-      window.setTimeout(() => window.location.reload(), 250);
+      window.setTimeout(() => window.location.reload(), RELOAD_PAINT_MS);
     };
 
     const probe = async () => {

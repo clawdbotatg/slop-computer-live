@@ -976,6 +976,17 @@ function DesktopInner({ slug }: { slug: string }) {
     [savedLayouts],
   );
 
+  // Refs into the close/minimize-top-window callbacks defined far below
+  // this point in the file. Both the File menu (Close Window) and the
+  // View menu (Close/Minimize Window) need to invoke them, but the
+  // actual callbacks depend on closeWindow (the publication closer)
+  // which isn't defined yet at this line — directly referencing them
+  // would TDZ. The ref pattern decouples reference from definition:
+  // menu items call .current() on click, and a downstream useEffect
+  // points .current at the live callback.
+  const closeTopWindowRef = useRef<() => void>(() => {});
+  const minimizeTopWindowRef = useRef<() => void>(() => {});
+
   const fileMenu = useMemo<Menu>(
     () => ({
       label: "File",
@@ -983,7 +994,7 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "New Window", shortcut: "⌘N", disabled: true },
         { label: "Open…", shortcut: "⌘O", disabled: true },
         { divider: true, label: "" },
-        { label: "Close Window", shortcut: "⌘W", disabled: true },
+        { label: "Close Window", shortcut: "⌃⇧W", onClick: () => closeTopWindowRef.current() },
         { label: "Save Layout…", shortcut: "⌃⇧S", onClick: () => setSaveLayoutOpen(true) },
         {
           label: "Load Layout",
@@ -1352,16 +1363,6 @@ function DesktopInner({ slug }: { slug: string }) {
       }
     }
   }, [autoArrangeIcons, meshPublications, meshUpdateSlotForArrange]);
-
-  // Refs into the close/minimize callbacks defined far below this point
-  // in the file. We need the menu items here to invoke them, but the
-  // actual callbacks depend on closeWindow (the publication closer)
-  // which isn't defined yet at this line — directly referencing them
-  // would TDZ. The ref pattern decouples reference from definition: the
-  // menu items call .current() on click, and a downstream useEffect
-  // points .current at the live callback.
-  const closeTopWindowRef = useRef<() => void>(() => {});
-  const minimizeTopWindowRef = useRef<() => void>(() => {});
 
   const viewMenu = useMemo<Menu>(
     () => ({
