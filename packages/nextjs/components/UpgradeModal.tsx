@@ -54,18 +54,22 @@ const MAX_WAIT_MS = 45000;
  * running the previous JS bundle — newly-shipped features stay
  * invisible until a manual reload.
  *
- * Two parallel detectors trip the modal:
- *   1. Mesh WS drop (primary): when the relay restarts, the WS
- *      closes within milliseconds. Desktop publishes mesh.connected
- *      into the relayHealth pub/sub; we subscribe and start a 1.2s
- *      grace timer on any true→false transition. If still down at
- *      the end of the grace, modal goes up.
- *   2. /health polling (fallback): covers surfaces that never
- *      open the mesh WS (front page, unauthed spectators). 1s
- *      cadence, 0.8s timeout, 2 consecutive fails trip the modal.
+ * Trigger (modal goes up):
+ *   - Mesh WS drop: relay restart kills the WS within milliseconds.
+ *     Desktop publishes mesh.connected; we wait WS_DROP_GRACE_MS to
+ *     filter out network blips, then show the modal.
+ *   - /health polling: fallback for surfaces without a mesh WS
+ *     (front page, unauthed spectators).
  *
- * In both cases we require at least one healthy observation first —
- * cold loads against a transient/offline relay shouldn't trigger.
+ * Recovery (modal closes, page reloads):
+ *   - Mesh users: wait for mesh.bootstrapped to flip back true. That
+ *     means the relay has finished loading room state and served us
+ *     a complete snapshot. (/health is too early — it returns OK
+ *     several seconds before room state is ready, which would dump
+ *     the user back through the password gate and end with missing
+ *     icons.)
+ *   - Non-mesh users: fall back to /health, with no bootstrap signal
+ *     to wait on.
  */
 export function UpgradeModal() {
   const [showing, setShowing] = useState(false);
@@ -79,9 +83,9 @@ export function UpgradeModal() {
     let cancelled = false;
     let dropTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const handle = (connected: boolean) => {
+    const handle = (s: { connected: boolean; everConnected: boolean }) => {
       if (cancelled) return;
-      if (connected) {
+      if (s.connected) {
         if (dropTimer) {
           clearTimeout(dropTimer);
           dropTimer = null;
@@ -91,8 +95,7 @@ export function UpgradeModal() {
       // WS just dropped. We only care if it had ever been up — a tab
       // that never connected (e.g. unauthed spectator) isn't a deploy
       // signal.
-      const snap = getRelayHealthSnapshot();
-      if (!snap.everConnected) return;
+      if (!s.everConnected) return;
       if (dropTimer) return;
       dropTimer = setTimeout(() => {
         if (cancelled) return;
@@ -160,31 +163,56 @@ export function UpgradeModal() {
     };
   }, [showing]);
 
-  // --- Probe-driven progress + reload -----------------------------------
-  // Replaces the previous fixed-duration timer. While we wait the
-  // progress bar fills toward 95% over EXPECTED_RECOVERY_MS so it
-  // looks like work is happening; the moment /health responds OK we
-  // jump to 100% and reload. This makes the modal as short as the
-  // actual deploy and avoids the "it took longer than it should"
-  // feeling of the old 25s hardcoded timer.
+  // --- Recovery detection + progress bar + forced reload ----------------
+  // For mesh users (room pages), the gold-standard readiness signal is
+  // mesh.bootstrapped going back true after the WS reconnect — that
+  // means the relay finished loading room state and successfully
+  // served us a snapshot. /health is *not* good enough: it returns OK
+  // as soon as the HTTP listener is bound, several seconds before
+  // room state, passwords, and slots are loaded. Reloading on /health
+  // alone forced users back through the password gate and ended with
+  // missing icons until a second manual reload.
+  //
+  // For non-mesh surfaces (front page, never-bootstrapped tabs), we
+  // fall back to /health probing — they don't have a real readiness
+  // signal but also aren't disrupted as severely by an early reload.
   useEffect(() => {
     if (!showing) return;
 
     const startedAt = performance.now();
+    const snapAtShow = getRelayHealthSnapshot();
+    // Wait for bootstrapped-again only when the tab had ever
+    // bootstrapped before the modal showed — i.e., a mesh user mid-
+    // session. Cold tabs / non-mesh surfaces use the /health fallback.
+    const useBootstrappedSignal = snapAtShow.everBootstrapped;
+
     let cancelled = false;
-    let recovered = false;
+    // Seed `recovered` from the live snapshot in case bootstrap fired
+    // between the modal showing and the subscribe call below.
+    let recovered = useBootstrappedSignal && snapAtShow.bootstrapped;
     let reloading = false;
 
     const reloadOnce = () => {
       if (reloading) return;
       reloading = true;
-      // 100% paint frame, then reload.
       setProgress(100);
       window.setTimeout(() => window.location.reload(), RELOAD_PAINT_MS);
     };
 
+    // Subscribe to relayHealth: for mesh users, wait for bootstrapped
+    // to flip back true. (Bootstrapped only goes true after the relay
+    // has served a complete snapshot, so this is end-to-end readiness.)
+    const unsub = subscribeRelayHealth(s => {
+      if (cancelled) return;
+      if (useBootstrappedSignal && s.bootstrapped) recovered = true;
+    });
+
+    // /health probe — only used as the recovery signal when we don't
+    // have a mesh bootstrap to wait on. (Always-on probing would
+    // race the bootstrapped signal and reload too early.)
     const probe = async () => {
       if (cancelled || recovered) return;
+      if (useBootstrappedSignal) return;
       try {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), RECOVERY_TIMEOUT_MS);
@@ -199,8 +227,11 @@ export function UpgradeModal() {
       }
     };
 
-    void probe();
-    const probeTimer = setInterval(() => void probe(), RECOVERY_PROBE_MS);
+    let probeTimer: ReturnType<typeof setInterval> | null = null;
+    if (!useBootstrappedSignal) {
+      void probe();
+      probeTimer = setInterval(() => void probe(), RECOVERY_PROBE_MS);
+    }
 
     const tickTimer = setInterval(() => {
       if (reloading) return;
@@ -213,7 +244,7 @@ export function UpgradeModal() {
         reloadOnce();
         return;
       }
-      // Cap visible progress at 95% until /health actually comes back;
+      // Cap visible progress at 95% until the recovery signal fires;
       // jumping to 100% prematurely would lie about readiness.
       const pct = Math.min(95, (elapsed / EXPECTED_RECOVERY_MS) * 100);
       setProgress(pct);
@@ -221,7 +252,8 @@ export function UpgradeModal() {
 
     return () => {
       cancelled = true;
-      clearInterval(probeTimer);
+      unsub();
+      if (probeTimer) clearInterval(probeTimer);
       clearInterval(tickTimer);
     };
   }, [showing]);

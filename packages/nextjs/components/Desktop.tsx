@@ -68,7 +68,7 @@ import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
-import { reportRelayWsConnected } from "~~/lib/relayHealth";
+import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
@@ -456,9 +456,17 @@ function DesktopInner({ slug }: { slug: string }) {
   // Publish the relay WS state into the module-level pub/sub so
   // UpgradeModal (mounted in the providers shell) can react to deploy-
   // induced WS drops in real time, without a context bridge.
+  // We publish both `connected` (HTTP-listener-bound, used as the
+  // deploy-started trigger) and `bootstrapped` (relay has loaded room
+  // state and served us a snapshot, used as the deploy-finished
+  // reload signal — /health lies about readiness for several seconds
+  // after the relay process is up, but bootstrapped doesn't).
   useEffect(() => {
     reportRelayWsConnected(mesh.connected);
   }, [mesh.connected]);
+  useEffect(() => {
+    reportMeshBootstrapped(mesh.bootstrapped);
+  }, [mesh.bootstrapped]);
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated
@@ -986,13 +994,18 @@ function DesktopInner({ slug }: { slug: string }) {
   // points .current at the live callback.
   const closeTopWindowRef = useRef<() => void>(() => {});
   const minimizeTopWindowRef = useRef<() => void>(() => {});
+  // Hidden <input type="file"> driven by File ▸ Upload…. Declared here
+  // so the menu can ref-click it without depending on uploadFiles's
+  // (much later) declaration site; the onChange runs at user-interaction
+  // time, by which point uploadFiles is in scope.
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const fileMenu = useMemo<Menu>(
     () => ({
       label: "File",
       items: [
         { label: "New Window", shortcut: "⌘N", disabled: true },
-        { label: "Open…", shortcut: "⌘O", disabled: true },
+        { label: "Upload…", onClick: () => uploadInputRef.current?.click() },
         { divider: true, label: "" },
         { label: "Close Window", shortcut: "⌃⇧W", onClick: () => closeTopWindowRef.current() },
         { label: "Save Layout…", shortcut: "⌃⇧S", onClick: () => setSaveLayoutOpen(true) },
@@ -3343,6 +3356,27 @@ function DesktopInner({ slug }: { slug: string }) {
           onSave={saveLayout}
         />
       ) : null}
+
+      {/* File ▸ Upload… picker. Same flow as drag-and-drop — files
+          land on the desktop near viewport center, the relay broadcasts
+          `file_added`, every peer sees the new icon appear. value=""
+          on each change so re-picking the same file fires onChange. */}
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={e => {
+          const files = e.currentTarget.files;
+          e.currentTarget.value = "";
+          if (!files || files.length === 0) return;
+          // (44, 55) half-centers a default 88×110 icon on the point —
+          // matches the offset the drop handler uses for the cursor.
+          const x = Math.max(80, Math.round(window.innerWidth / 2 - 44));
+          const y = Math.max(280, Math.round(window.innerHeight / 2 - 55));
+          void uploadFiles(files, x, y);
+        }}
+      />
 
       {/* Click ripples — rendered at top level (not inside the desktop
           wrapper) so the rings aren't clipped over the menubar. Each
