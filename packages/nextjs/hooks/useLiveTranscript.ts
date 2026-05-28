@@ -129,9 +129,9 @@ const HUNG_TIMEOUT_MS = 20_000;
 // sentence — we'd rather lock early and start a fresh line than let
 // the head fall off the end.
 function lineQuietMsForWords(wordCount: number): number {
-  if (wordCount >= 10) return 200;
-  if (wordCount >= 8) return 300;
-  if (wordCount >= 6) return 400;
+  if (wordCount >= 7) return 200;
+  if (wordCount >= 6) return 300;
+  if (wordCount >= 5) return 400;
   return 500;
 }
 // Soft cap so a long unbroken monologue doesn't grow the line forever; we
