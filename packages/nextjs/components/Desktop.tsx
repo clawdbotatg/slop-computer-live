@@ -235,6 +235,11 @@ type SlotGeom = { x: number; y: number; width: number; height: number; z: number
 type SavedLayout = {
   name: string;
   savedAt: number;
+  /** Explicit ordering for the Load Layout submenu. Decoupled from
+   *  savedAt so drag-reorder can rearrange without lying about when a
+   *  layout was created. Backfilled from savedAt-ascending for any
+   *  legacy layout that lacks the field (see migrateLayoutsAddOrderField). */
+  order?: number;
   /** Singleton apps that were open, with their window geometry. */
   apps: { id: string; geom: SlotGeom }[];
   /** Browser windows. Ids are random per-open so geometry rides inline and
@@ -279,9 +284,34 @@ const migrateLegacyLayouts = () => {
   }
 };
 
+// Backfill the `order` field on any layout that predates drag-reorder.
+// Sorts existing entries by savedAt ascending (the order they appeared
+// in the menu before this feature) and assigns 0..N-1. Run-once per
+// session; subsequent reads see complete records and no-op.
+let orderFieldMigrated = false;
+const migrateLayoutsAddOrderField = () => {
+  if (orderFieldMigrated || typeof window === "undefined") return;
+  orderFieldMigrated = true;
+  try {
+    const raw = window.localStorage.getItem(LAYOUTS_KEY);
+    if (!raw) return;
+    const map = JSON.parse(raw) as Record<string, SavedLayout>;
+    if (!Object.values(map).some(l => l.order === undefined)) return;
+    const sorted = Object.values(map).sort((a, b) => (a.savedAt ?? 0) - (b.savedAt ?? 0));
+    const next: Record<string, SavedLayout> = {};
+    sorted.forEach((l, i) => {
+      next[l.name] = { ...l, order: l.order ?? i };
+    });
+    window.localStorage.setItem(LAYOUTS_KEY, JSON.stringify(next));
+  } catch {
+    /* private mode / quota / malformed */
+  }
+};
+
 const readLayouts = (): Record<string, SavedLayout> => {
   if (typeof window === "undefined") return {};
   migrateLegacyLayouts();
+  migrateLayoutsAddOrderField();
   try {
     return JSON.parse(window.localStorage.getItem(LAYOUTS_KEY) ?? "{}") as Record<string, SavedLayout>;
   } catch {
@@ -917,8 +947,14 @@ function DesktopInner({ slug }: { slug: string }) {
       const media: SavedLayout["media"] = [];
       if (key && md.activeCamera) media.push({ kind: "camera", geom: geomFromSlot(`owner-${key}-camera`) });
       if (key && md.activeAudio) media.push({ kind: "audio", geom: geomFromSlot(`owner-${key}-audio`) });
-      const layout: SavedLayout = { name, savedAt: Date.now(), apps, browsers, media };
       setSavedLayouts(prev => {
+        // Preserve the existing position on overwrite so save-over-save
+        // doesn't yank a layout to the bottom of the menu. Otherwise
+        // append: order = (max of existing) + 1.
+        const existingOrder = prev[name]?.order;
+        const maxOrder = Object.values(prev).reduce((m, l) => Math.max(m, l.order ?? -1), -1);
+        const order = existingOrder ?? maxOrder + 1;
+        const layout: SavedLayout = { name, savedAt: Date.now(), order, apps, browsers, media };
         const next = { ...prev, [name]: layout };
         writeLayouts(next);
         return next;
@@ -981,15 +1017,45 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, []);
 
-  // Oldest-saved first. Append-only ordering keeps the Ctrl+Shift+N
-  // bindings stable: whatever you saved first stays bound to ⌃⇧1
-  // forever, new saves get the next number at the bottom of the menu.
-  // (Newest-first reassigned every binding on every save — muscle
-  // memory was wrong the moment you saved a second layout.)
+  // Sorted by explicit `order` field (set on save, mutated by drag-
+  // reorder). Falls back to savedAt for any legacy record that slipped
+  // past the migration. Stable Ctrl+Shift+N bindings: ⌃⇧1 = top row,
+  // ⌃⇧2 = second row, etc.
   const layoutNames = useMemo(
-    () => Object.keys(savedLayouts).sort((a, b) => (savedLayouts[a]?.savedAt ?? 0) - (savedLayouts[b]?.savedAt ?? 0)),
+    () =>
+      Object.keys(savedLayouts).sort((a, b) => {
+        const ao = savedLayouts[a]?.order ?? savedLayouts[a]?.savedAt ?? 0;
+        const bo = savedLayouts[b]?.order ?? savedLayouts[b]?.savedAt ?? 0;
+        return ao - bo;
+      }),
     [savedLayouts],
   );
+
+  // Drag-and-drop reorder within the Load Layout submenu. Rebuilds the
+  // ordered list with `dragged` moved adjacent to `target`, then
+  // renumbers `order` from 0 so future inserts have a clean integer
+  // sequence to extend.
+  const reorderLayout = useCallback((dragged: string, target: string, position: "before" | "after") => {
+    setSavedLayouts(prev => {
+      if (!prev[dragged] || !prev[target] || dragged === target) return prev;
+      const ordered = Object.values(prev).sort((a, b) => {
+        const ao = a.order ?? a.savedAt ?? 0;
+        const bo = b.order ?? b.savedAt ?? 0;
+        return ao - bo;
+      });
+      const withoutDragged = ordered.filter(l => l.name !== dragged);
+      const targetIdx = withoutDragged.findIndex(l => l.name === target);
+      if (targetIdx < 0) return prev;
+      const insertAt = position === "before" ? targetIdx : targetIdx + 1;
+      const final = [...withoutDragged.slice(0, insertAt), prev[dragged], ...withoutDragged.slice(insertAt)];
+      const next: Record<string, SavedLayout> = {};
+      final.forEach((l, i) => {
+        next[l.name] = { ...l, order: i };
+      });
+      writeLayouts(next);
+      return next;
+    });
+  }, []);
 
   // Refs into the close/minimize-top-window callbacks defined far below
   // this point in the file. Both the File menu (Close Window) and the
@@ -1021,19 +1087,22 @@ function DesktopInner({ slug }: { slug: string }) {
           disabled: layoutNames.length === 0,
           // The first 9 layouts get a Ctrl+Shift+1..9 binding so the
           // top-of-mind setups switch instantly without diving through the
-          // menu. Wired in the global keydown effect further down.
+          // menu. Wired in the global keydown effect further down. Each
+          // row is also drag-reorderable — the closure captures `n` as
+          // the drop target so reorderLayout knows which row was hovered.
           submenu: layoutNames.map((n, i) => ({
             label: n,
             shortcut: i < 9 ? `⌃⇧${i + 1}` : undefined,
             onClick: () => loadLayout(n),
             onDelete: () => deleteLayout(n),
+            onReorder: (dragged, position) => reorderLayout(dragged, n, position),
           })),
         },
         { divider: true, label: "" },
         { label: "Reload", shortcut: "⌘R", onClick: () => window.location.reload() },
       ],
     }),
-    [layoutNames, loadLayout, deleteLayout],
+    [layoutNames, loadLayout, deleteLayout, reorderLayout],
   );
 
   const editMenu = useMemo<Menu>(

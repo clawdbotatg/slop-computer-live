@@ -22,6 +22,12 @@ export type MenuItem = {
    *  the row's onClick (and leaves the menu open). Used for delete-in-place
    *  rows like saved layouts. */
   onDelete?: () => void;
+  /** Makes the row a drag SOURCE and drop TARGET for manual reordering.
+   *  Fires when something is dropped on this row — `position` is
+   *  "before" (top half) or "after" (bottom half), `draggedLabel` is
+   *  the moved row's label. The caller closes over its own row identity
+   *  to know which row was the drop target. */
+  onReorder?: (draggedLabel: string, position: "before" | "after") => void;
 };
 
 export type Menu = {
@@ -376,7 +382,12 @@ const unhighlightRow = (el: HTMLElement, disabled?: boolean) => {
 // submenus. `closeRoot` collapses the whole menu after a leaf action fires.
 function MenuRow({ item, closeRoot }: { item: MenuItem; closeRoot: () => void }) {
   const [subOpen, setSubOpen] = useState(false);
+  // Drag-reorder state: which half of THIS row the drag cursor is in,
+  // null when nothing is hovering. Drives the magenta insertion line
+  // and the "before/after" decision on drop.
+  const [dragOver, setDragOver] = useState<"before" | "after" | null>(null);
   const hasSub = Array.isArray(item.submenu);
+  const reorderable = !!item.onReorder;
 
   if (item.divider) {
     return (
@@ -391,21 +402,62 @@ function MenuRow({ item, closeRoot }: { item: MenuItem; closeRoot: () => void })
     );
   }
 
+  // Drop-target handlers live on the wrapper so moving within the row's
+  // children doesn't bounce dragLeave. Drag-source handlers stay on the
+  // button — only the button is `draggable`.
+  const onDragOver = (e: React.DragEvent) => {
+    if (!reorderable) return;
+    // Only accept the drop if there's actually a payload from a sibling
+    // row. (Files dragged from the OS would also fire onDragOver here;
+    // checking types keeps them from being treated as reorders.)
+    if (!Array.from(e.dataTransfer.types).includes("application/x-slop-menu-row")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mid = rect.top + rect.height / 2;
+    const next: "before" | "after" = e.clientY < mid ? "before" : "after";
+    if (next !== dragOver) setDragOver(next);
+  };
+  const onDragLeave = () => setDragOver(null);
+  const onDrop = (e: React.DragEvent) => {
+    if (!reorderable) return;
+    e.preventDefault();
+    const dragged = e.dataTransfer.getData("application/x-slop-menu-row");
+    const pos = dragOver;
+    setDragOver(null);
+    if (!dragged || dragged === item.label || !pos) return;
+    item.onReorder?.(dragged, pos);
+  };
+  const onDragStart = (e: React.DragEvent) => {
+    if (!reorderable) return;
+    // Custom MIME type so we can distinguish reorder drags from OS file
+    // drops landing on the desktop (Desktop.tsx wires its own onDrop).
+    e.dataTransfer.setData("application/x-slop-menu-row", item.label);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const onDragEnd = () => setDragOver(null);
+
   return (
     <div
       style={{ position: "relative" }}
       onMouseEnter={hasSub ? () => setSubOpen(true) : undefined}
       onMouseLeave={hasSub ? () => setSubOpen(false) : undefined}
+      onDragOver={reorderable ? onDragOver : undefined}
+      onDragLeave={reorderable ? onDragLeave : undefined}
+      onDrop={reorderable ? onDrop : undefined}
     >
       <button
         type="button"
         disabled={item.disabled}
+        draggable={reorderable}
+        onDragStart={reorderable ? onDragStart : undefined}
+        onDragEnd={reorderable ? onDragEnd : undefined}
         onClick={() => {
           if (hasSub) return; // parent rows only fly out — they don't act
           closeRoot();
           item.onClick?.();
         }}
-        style={rowStyle(item.disabled)}
+        style={{ ...rowStyle(item.disabled), cursor: reorderable ? "grab" : rowStyle(item.disabled).cursor }}
         onMouseEnter={e => {
           if (!item.disabled) highlightRow(e.currentTarget);
         }}
@@ -442,6 +494,22 @@ function MenuRow({ item, closeRoot }: { item: MenuItem; closeRoot: () => void })
           <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>{item.shortcut}</span>
         ) : null}
       </button>
+      {dragOver ? (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: 4,
+            right: 4,
+            [dragOver === "before" ? "top" : "bottom"]: -1,
+            height: 2,
+            background: "var(--slop-cyan)",
+            boxShadow: "0 0 6px var(--slop-cyan)",
+            pointerEvents: "none",
+            zIndex: 2,
+          }}
+        />
+      ) : null}
       {hasSub && subOpen && !item.disabled ? (
         <div style={{ ...MENU_PANEL_STYLE, position: "absolute", top: -4, left: "100%", minWidth: 200 }}>
           {item.submenu!.length === 0 ? (
