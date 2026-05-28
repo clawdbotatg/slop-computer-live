@@ -250,6 +250,14 @@ export const MenuBar = ({
                 display: "inline-flex",
                 alignItems: "center",
                 justifyContent: "center",
+                // Honest indicator. Full opacity when local STT is actively
+                // running (listening) — your captions ride your browser.
+                // Half when it's merely *supported* but idle (gate closed:
+                // mic unpublished, self-muted, or captions/STT off) so you can
+                // see local COULD engage but isn't — you're on the slower
+                // god-mode round-trip until it does.
+                opacity: localSttListening ? 1 : 0.5,
+                transition: "opacity 280ms ease",
               }}
               title={
                 localSttError

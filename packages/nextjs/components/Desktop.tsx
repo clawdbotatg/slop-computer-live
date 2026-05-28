@@ -1307,10 +1307,10 @@ function DesktopInner({ slug }: { slug: string }) {
     () => ({
       label: "View",
       items: [
-        { label: "Minimize Window", shortcut: "⇧⌘M", onClick: () => minimizeTopWindowRef.current() },
-        { label: "Close Window", shortcut: "⇧⌘W", onClick: () => closeTopWindowRef.current() },
+        { label: "Minimize Window", shortcut: "⌃⇧M", onClick: () => minimizeTopWindowRef.current() },
+        { label: "Close Window", shortcut: "⌃⇧W", onClick: () => closeTopWindowRef.current() },
         { divider: true, label: "" },
-        { label: "Auto Arrange", shortcut: "⇧⌘A", onClick: autoArrange },
+        { label: "Auto Arrange", shortcut: "⌃⇧A", onClick: autoArrange },
         { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
         { label: "Arrange for Screen Share", onClick: arrangeForScreenShare },
         { label: "Arrange for Video", onClick: arrangeForVideo },
@@ -2097,8 +2097,10 @@ function DesktopInner({ slug }: { slug: string }) {
     minimizeTopWindowRef.current = minimizeTopWindow;
   }, [closeTopWindow, minimizeTopWindow]);
 
-  // Global window keyboard shortcuts. Both Ctrl-* and Cmd-* variants
-  // (W and Q alias as close; M minimizes; A auto-arranges). Skipped while
+  // Global window keyboard shortcuts. Ctrl+Shift+* only — deliberately NOT
+  // Cmd+Shift+*, which collides with browser/OS bindings on Mac (⌘⇧W closes
+  // the whole window and can't be prevented, ⌘⇧A is Chrome's tab search).
+  // W and Q alias as close; M minimizes; A auto-arranges. Skipped while
   // focus is in an input so the user can still type Shift-letters in a
   // textarea.
   useEffect(() => {
@@ -2110,7 +2112,7 @@ function DesktopInner({ slug }: { slug: string }) {
     };
 
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      if (!e.ctrlKey || !e.shiftKey) return;
       const key = e.key.toLowerCase();
       const isClose = key === "w" || key === "q";
       const isMinimize = key === "m";
