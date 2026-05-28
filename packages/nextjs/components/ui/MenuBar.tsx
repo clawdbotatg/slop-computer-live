@@ -14,6 +14,14 @@ export type MenuItem = {
   disabled?: boolean;
   shortcut?: string;
   divider?: boolean;
+  /** When present, this row becomes a parent that opens a flyout panel to
+   *  the right on hover (its own onClick is ignored). An empty array
+   *  renders an "(empty)" placeholder. */
+  submenu?: MenuItem[];
+  /** Renders a small ✕ affordance on the row that fires this instead of
+   *  the row's onClick (and leaves the menu open). Used for delete-in-place
+   *  rows like saved layouts. */
+  onDelete?: () => void;
 };
 
 export type Menu = {
@@ -316,6 +324,139 @@ export const MenuBar = ({
   );
 };
 
+// Shared dropdown-panel chrome — reused by both the root menu panel and any
+// flyout submenu so they stay visually identical.
+const MENU_PANEL_STYLE: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
+  backdropFilter: "blur(12px)",
+  border: "1px solid rgba(255,62,201,0.5)",
+  borderRadius: 8,
+  boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
+  padding: 4,
+  zIndex: 9100,
+  color: "var(--slop-text)",
+  textTransform: "none",
+};
+
+const rowStyle = (disabled?: boolean): React.CSSProperties => ({
+  display: "flex",
+  width: "100%",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "5px 12px",
+  background: "transparent",
+  border: 0,
+  color: disabled ? "var(--slop-text-muted)" : "var(--slop-text)",
+  font: "inherit",
+  cursor: disabled ? "not-allowed" : "pointer",
+  borderRadius: 4,
+  textAlign: "left",
+  letterSpacing: "0.04em",
+});
+
+const highlightRow = (el: HTMLElement) => {
+  el.style.background = "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+  el.style.color = "#fff";
+};
+const unhighlightRow = (el: HTMLElement, disabled?: boolean) => {
+  el.style.background = "transparent";
+  el.style.color = disabled ? "var(--slop-text-muted)" : "var(--slop-text)";
+};
+
+// One row of a dropdown — a plain action, or (if it has `submenu`) a parent
+// that opens a flyout panel to the right on hover. Recurses for nested
+// submenus. `closeRoot` collapses the whole menu after a leaf action fires.
+function MenuRow({ item, closeRoot }: { item: MenuItem; closeRoot: () => void }) {
+  const [subOpen, setSubOpen] = useState(false);
+  const hasSub = Array.isArray(item.submenu);
+
+  if (item.divider) {
+    return (
+      <div
+        style={{
+          height: 1,
+          background:
+            "repeating-linear-gradient(90deg, rgba(255,62,201,0.4) 0, rgba(255,62,201,0.4) 4px, transparent 4px, transparent 8px)",
+          margin: "4px 6px",
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={hasSub ? () => setSubOpen(true) : undefined}
+      onMouseLeave={hasSub ? () => setSubOpen(false) : undefined}
+    >
+      <button
+        type="button"
+        disabled={item.disabled}
+        onClick={() => {
+          if (hasSub) return; // parent rows only fly out — they don't act
+          closeRoot();
+          item.onClick?.();
+        }}
+        style={rowStyle(item.disabled)}
+        onMouseEnter={e => {
+          if (!item.disabled) highlightRow(e.currentTarget);
+        }}
+        onMouseLeave={e => unhighlightRow(e.currentTarget, item.disabled)}
+      >
+        <span style={{ whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 8 }}>
+          {item.label}
+          {item.onDelete ? (
+            <span
+              role="button"
+              aria-label={`Delete ${item.label}`}
+              title="Delete"
+              onClick={e => {
+                e.stopPropagation();
+                item.onDelete?.();
+              }}
+              style={{ opacity: 0.55, fontSize: 11, padding: "0 2px", cursor: "pointer" }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLSpanElement).style.opacity = "1";
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLSpanElement).style.opacity = "0.55";
+              }}
+            >
+              ✕
+            </span>
+          ) : null}
+        </span>
+        {hasSub ? (
+          <span aria-hidden style={{ marginLeft: 24 }}>
+            ▸
+          </span>
+        ) : item.shortcut ? (
+          <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>{item.shortcut}</span>
+        ) : null}
+      </button>
+      {hasSub && subOpen && !item.disabled ? (
+        <div style={{ ...MENU_PANEL_STYLE, position: "absolute", top: -4, left: "100%", minWidth: 200 }}>
+          {item.submenu!.length === 0 ? (
+            <div
+              style={{
+                padding: "6px 12px",
+                color: "var(--slop-text-muted)",
+                fontSize: 12,
+                fontStyle: "italic",
+                whiteSpace: "nowrap",
+              }}
+            >
+              (empty)
+            </div>
+          ) : (
+            item.submenu!.map((sub, i) => <MenuRow key={i} item={sub} closeRoot={closeRoot} />)
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Dropdown({ menu }: { menu: Menu }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
@@ -347,80 +488,10 @@ function Dropdown({ menu }: { menu: Menu }) {
         {menu.label} <span aria-hidden>▾</span>
       </button>
       {open ? (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            minWidth: 260,
-            background: "linear-gradient(180deg, rgba(20,10,40,0.96) 0%, rgba(6,3,13,0.96) 100%)",
-            backdropFilter: "blur(12px)",
-            border: "1px solid rgba(255,62,201,0.5)",
-            borderRadius: 8,
-            boxShadow: "0 12px 32px #000c, 0 0 24px rgba(255,62,201,0.3)",
-            padding: 4,
-            zIndex: 9100,
-            color: "var(--slop-text)",
-            textTransform: "none",
-          }}
-        >
-          {menu.items.map((item, i) =>
-            item.divider ? (
-              <div
-                key={i}
-                style={{
-                  height: 1,
-                  background:
-                    "repeating-linear-gradient(90deg, rgba(255,62,201,0.4) 0, rgba(255,62,201,0.4) 4px, transparent 4px, transparent 8px)",
-                  margin: "4px 6px",
-                }}
-              />
-            ) : (
-              <button
-                key={i}
-                type="button"
-                disabled={item.disabled}
-                onClick={() => {
-                  setOpen(false);
-                  item.onClick?.();
-                }}
-                style={{
-                  display: "flex",
-                  width: "100%",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "5px 12px",
-                  background: "transparent",
-                  border: 0,
-                  color: item.disabled ? "var(--slop-text-muted)" : "var(--slop-text)",
-                  font: "inherit",
-                  cursor: item.disabled ? "not-allowed" : "pointer",
-                  borderRadius: 4,
-                  textAlign: "left",
-                  letterSpacing: "0.04em",
-                }}
-                onMouseEnter={e => {
-                  if (item.disabled) return;
-                  (e.currentTarget as HTMLButtonElement).style.background =
-                    "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
-                  (e.currentTarget as HTMLButtonElement).style.color = "#fff";
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-                  (e.currentTarget as HTMLButtonElement).style.color = item.disabled
-                    ? "var(--slop-text-muted)"
-                    : "var(--slop-text)";
-                }}
-              >
-                <span style={{ whiteSpace: "nowrap" }}>{item.label}</span>
-                {item.shortcut ? (
-                  <span style={{ marginLeft: 24, color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>
-                    {item.shortcut}
-                  </span>
-                ) : null}
-              </button>
-            ),
-          )}
+        <div style={{ ...MENU_PANEL_STYLE, position: "absolute", top: "calc(100% + 4px)", left: 0, minWidth: 260 }}>
+          {menu.items.map((item, i) => (
+            <MenuRow key={i} item={item} closeRoot={() => setOpen(false)} />
+          ))}
         </div>
       ) : null}
     </span>

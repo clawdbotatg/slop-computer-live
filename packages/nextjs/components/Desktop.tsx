@@ -32,6 +32,7 @@ import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { PongWindow } from "~~/components/desktop/PongWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
+import { SaveLayoutDialog } from "~~/components/desktop/SaveLayoutDialog";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
@@ -209,6 +210,48 @@ const writeResume = (slug: string, state: ResumeState) => {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(resumeKey(slug), JSON.stringify(state));
+  } catch {
+    /* quota / private mode */
+  }
+};
+
+// --- Saved window layouts (per-room, private to this browser) -----------
+// A layout is a named snapshot of which app + browser windows are open,
+// where they sit, and whether this user's camera/mic were live. Stored in
+// localStorage and NEVER synced — but APPLYING one mutates the shared,
+// relay-authoritative window state, so loading rearranges the desktop for
+// everyone in the room (see loadLayout for the Replace semantics). Scoped
+// to slug like the resume flags above so layouts don't bleed across rooms.
+const LAYOUTS_KEY_BASE = "slop-layouts-v1";
+const layoutsKey = (slug: string) => `${LAYOUTS_KEY_BASE}:${slug}`;
+
+type SlotGeom = { x: number; y: number; width: number; height: number; z: number };
+type SavedLayout = {
+  name: string;
+  savedAt: number;
+  /** Singleton apps that were open, with their window geometry. */
+  apps: { id: string; geom: SlotGeom }[];
+  /** Browser windows. Ids are random per-open so geometry rides inline and
+   *  a fresh id is minted on restore. */
+  browsers: { url: string; appId?: string; geom: SlotGeom }[];
+  /** Only this user's own camera/mic — screen-share is intentionally
+   *  excluded (getDisplayMedia needs a fresh OS picker on every restore). */
+  media: { kind: "camera" | "audio"; geom: SlotGeom }[];
+};
+
+const readLayouts = (slug: string): Record<string, SavedLayout> => {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(layoutsKey(slug)) ?? "{}") as Record<string, SavedLayout>;
+  } catch {
+    return {};
+  }
+};
+
+const writeLayouts = (slug: string, map: Record<string, SavedLayout>) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(layoutsKey(slug), JSON.stringify(map));
   } catch {
     /* quota / private mode */
   }
@@ -755,6 +798,128 @@ function DesktopInner({ slug }: { slug: string }) {
     };
   }, [slug]);
 
+  // --- Saved layouts: state + save / load / delete -----------------------
+  // Snapshots live in localStorage keyed by slug; mirror them into React
+  // state so the "Load Layout" submenu re-renders on save/delete. Re-read
+  // when the room changes.
+  const [savedLayouts, setSavedLayouts] = useState<Record<string, SavedLayout>>(() => readLayouts(slug));
+  const [saveLayoutOpen, setSaveLayoutOpen] = useState(false);
+  useEffect(() => {
+    setSavedLayouts(readLayouts(slug));
+  }, [slug]);
+
+  // Read live mesh + media through refs so the callbacks stay stable (they
+  // fire on a user click, not a hot path — no need to re-create per render).
+  const meshRefForLayouts = useRef(mesh);
+  meshRefForLayouts.current = mesh;
+  const mediaRefForLayouts = useRef(media);
+  mediaRefForLayouts.current = media;
+  // ownerKey for this user's own publication slot ids (mirrors myOwnerKey
+  // computed later in the component; recomputed here so the callbacks below
+  // don't depend on its declaration order).
+  const ownerKeyForLayouts = session.authenticated
+    ? ((session.address ?? session.handle)?.toLowerCase() ?? null)
+    : null;
+  const ownerKeyRefForLayouts = useRef(ownerKeyForLayouts);
+  ownerKeyRefForLayouts.current = ownerKeyForLayouts;
+
+  const geomFromSlot = useCallback((slotId: string): SlotGeom => {
+    const s = meshRefForLayouts.current.slots[slotId];
+    return s
+      ? { x: s.x, y: s.y, width: s.width, height: s.height, z: s.z }
+      : { x: 80, y: 280, width: 360, height: 260, z: 5 };
+  }, []);
+
+  const saveLayout = useCallback(
+    (name: string) => {
+      const m = meshRefForLayouts.current;
+      const md = mediaRefForLayouts.current;
+      const key = ownerKeyRefForLayouts.current;
+      const apps = [...m.openWindowIds].map(id => ({ id, geom: geomFromSlot(`app-${id}`) }));
+      const browsers = Object.values(m.browsers).map(b => ({
+        url: b.url,
+        appId: b.appId,
+        geom: geomFromSlot(`browser-${b.id}`),
+      }));
+      const media: SavedLayout["media"] = [];
+      if (key && md.activeCamera) media.push({ kind: "camera", geom: geomFromSlot(`owner-${key}-camera`) });
+      if (key && md.activeAudio) media.push({ kind: "audio", geom: geomFromSlot(`owner-${key}-audio`) });
+      const layout: SavedLayout = { name, savedAt: Date.now(), apps, browsers, media };
+      setSavedLayouts(prev => {
+        const next = { ...prev, [name]: layout };
+        writeLayouts(slug, next);
+        return next;
+      });
+      setSaveLayoutOpen(false);
+    },
+    [slug, geomFromSlot],
+  );
+
+  // Replace semantics: make the desktop match the snapshot exactly. Closes
+  // open windows that aren't in it, reopens + repositions the ones that
+  // are, and re-acquires this user's camera/mic. NB: app/browser windows
+  // are room-shared, so this rearranges every peer's view (by design — see
+  // the type comment on SavedLayout). Camera/mic only touch this user.
+  const loadLayout = useCallback(
+    (name: string) => {
+      const layout = readLayouts(slug)[name];
+      if (!layout) return;
+      const m = meshRefForLayouts.current;
+      const md = mediaRefForLayouts.current;
+      const key = ownerKeyRefForLayouts.current;
+
+      // Close apps not in the snapshot.
+      const wantApps = new Set(layout.apps.map(a => a.id));
+      for (const id of [...m.openWindowIds]) if (!wantApps.has(id)) m.closeWindow(id);
+      // Browser ids are random per-open and can't be matched to saved ones,
+      // so for an exact Replace we close every browser and reopen the set.
+      for (const b of Object.values(m.browsers)) m.closeBrowser(b.id);
+
+      // Open + position apps.
+      for (const a of layout.apps) {
+        m.openWindow(a.id);
+        m.updateSlot({ id: `app-${a.id}`, ...a.geom });
+      }
+      // Reopen browsers with fresh ids + saved geometry.
+      for (const b of layout.browsers) {
+        const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
+        m.openBrowser(id, b.url, b.appId);
+        m.updateSlot({ id: `browser-${id}`, ...b.geom });
+      }
+
+      // Own camera/mic: stop what's not wanted, auto-start what is (sticky
+      // Chrome perms mean these usually re-publish without a prompt). The
+      // publish/stop lifecycle keeps the localStorage resume flags honest,
+      // so a later reload matches too.
+      const wantCamera = layout.media.some(x => x.kind === "camera");
+      const wantAudio = layout.media.some(x => x.kind === "audio");
+      if (md.activeCamera && !wantCamera) md.stop("camera");
+      if (md.activeAudio && !wantAudio) md.stop("audio");
+      if (wantCamera && !md.activeCamera) void md.startCamera().catch(() => {});
+      if (wantAudio && !md.activeAudio) void md.startAudio().catch(() => {});
+      if (key) for (const x of layout.media) m.updateSlot({ id: `owner-${key}-${x.kind}`, ...x.geom });
+    },
+    [slug],
+  );
+
+  const deleteLayout = useCallback(
+    (name: string) => {
+      setSavedLayouts(prev => {
+        const next = { ...prev };
+        delete next[name];
+        writeLayouts(slug, next);
+        return next;
+      });
+    },
+    [slug],
+  );
+
+  // Newest-saved first.
+  const layoutNames = useMemo(
+    () => Object.keys(savedLayouts).sort((a, b) => (savedLayouts[b]?.savedAt ?? 0) - (savedLayouts[a]?.savedAt ?? 0)),
+    [savedLayouts],
+  );
+
   const fileMenu = useMemo<Menu>(
     () => ({
       label: "File",
@@ -763,12 +928,21 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Open…", shortcut: "⌘O", disabled: true },
         { divider: true, label: "" },
         { label: "Close Window", shortcut: "⌘W", disabled: true },
-        { label: "Save Layout", shortcut: "⌘S", disabled: true },
+        { label: "Save Layout…", shortcut: "⌘S", onClick: () => setSaveLayoutOpen(true) },
+        {
+          label: "Load Layout",
+          disabled: layoutNames.length === 0,
+          submenu: layoutNames.map(n => ({
+            label: n,
+            onClick: () => loadLayout(n),
+            onDelete: () => deleteLayout(n),
+          })),
+        },
         { divider: true, label: "" },
         { label: "Reload", shortcut: "⌘R", onClick: () => window.location.reload() },
       ],
     }),
-    [],
+    [layoutNames, loadLayout, deleteLayout],
   );
 
   const editMenu = useMemo<Menu>(
@@ -1136,7 +1310,7 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Minimize Window", shortcut: "⇧⌘M", onClick: () => minimizeTopWindowRef.current() },
         { label: "Close Window", shortcut: "⇧⌘W", onClick: () => closeTopWindowRef.current() },
         { divider: true, label: "" },
-        { label: "Auto Arrange", onClick: autoArrange },
+        { label: "Auto Arrange", shortcut: "⇧⌘A", onClick: autoArrange },
         { label: "Auto Arrange Icons", onClick: autoArrangeIcons },
         { label: "Arrange for Screen Share", onClick: arrangeForScreenShare },
         { label: "Arrange for Video", onClick: arrangeForVideo },
@@ -1924,8 +2098,9 @@ function DesktopInner({ slug }: { slug: string }) {
   }, [closeTopWindow, minimizeTopWindow]);
 
   // Global window keyboard shortcuts. Both Ctrl-* and Cmd-* variants
-  // (W and Q alias as close; M minimizes). Skipped while focus is in
-  // an input so the user can still type Shift-letters in a textarea.
+  // (W and Q alias as close; M minimizes; A auto-arranges). Skipped while
+  // focus is in an input so the user can still type Shift-letters in a
+  // textarea.
   useEffect(() => {
     const isEditable = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -1939,16 +2114,18 @@ function DesktopInner({ slug }: { slug: string }) {
       const key = e.key.toLowerCase();
       const isClose = key === "w" || key === "q";
       const isMinimize = key === "m";
-      if (!isClose && !isMinimize) return;
+      const isArrange = key === "a";
+      if (!isClose && !isMinimize && !isArrange) return;
       if (isEditable(e.target)) return;
       e.preventDefault();
       if (isMinimize) minimizeTopWindow();
+      else if (isArrange) autoArrange();
       else closeTopWindow();
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeTopWindow, minimizeTopWindow]);
+  }, [closeTopWindow, minimizeTopWindow, autoArrange]);
 
   // Spacebar = mute / unmute my own mic. A quick "mute me" that doesn't
   // require hunting for the button on the camera/audio window. We only
@@ -3078,6 +3255,15 @@ function DesktopInner({ slug }: { slug: string }) {
 
       {videoDialog ? (
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
+      ) : null}
+
+      {saveLayoutOpen ? (
+        <SaveLayoutDialog
+          defaultName={`Layout ${Object.keys(savedLayouts).length + 1}`}
+          existingNames={Object.keys(savedLayouts)}
+          onClose={() => setSaveLayoutOpen(false)}
+          onSave={saveLayout}
+        />
       ) : null}
 
       {/* Click ripples — rendered at top level (not inside the desktop
