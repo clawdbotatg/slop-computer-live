@@ -855,8 +855,14 @@ function v1AuthFromReq(
       // debug sandbox — ie they fail closed on every real room.
       const q = (req.query ?? {}) as { slug?: unknown };
       const rawSlug = typeof q.slug === "string" ? q.slug : "";
-      if (rawSlug && isValidSlug(rawSlug) && rawSlug !== (s.roomSlug ?? DEFAULT_SLUG)) {
-        return null;
+      if (rawSlug && isValidSlug(rawSlug)) {
+        // Bearer must match the token's baked room (cross-room hole).
+        if (rawSlug !== (s.roomSlug ?? DEFAULT_SLUG)) return null;
+        // …and that room must be claimed (or be debug). Mirrors the cookie
+        // path + WS /signal gate so the invariant holds uniformly: a
+        // passwordless non-debug slug is unreachable, even via a stale
+        // agent token whose room later lost its password.
+        if (rawSlug !== DEFAULT_SLUG && !getOrCreateRoom(rawSlug).auth.hasPassword()) return null;
       }
       return { session: s, isHost: s.role === "host" && !!s.address && isAdminAddress(s.address), via: "bearer" };
     }
@@ -877,6 +883,14 @@ function v1AuthFromReq(
     const rawSlug = typeof q.slug === "string" ? q.slug : "";
     if (rawSlug && isValidSlug(rawSlug)) {
       const room = getOrCreateRoom(rawSlug);
+      // Fail CLOSED, mirroring the WS /signal gate (line ~4950): a
+      // non-debug slug with no password is *unclaimed* → unreachable, not
+      // open. Without this, any passwordless room (a leftover/abandoned
+      // room, or simply a slug an attacker names) was fully readable AND
+      // writable over REST with no password proof — even though the live
+      // WS mesh refuses it. Claimed rooms always have a password, so this
+      // only closes the gap; it never affects a real live room.
+      if (rawSlug !== DEFAULT_SLUG && !room.auth.hasPassword()) return null;
       if (room.auth.hasPassword() && !hasValidRoomCookie(req, rawSlug)) return null;
     }
   }
