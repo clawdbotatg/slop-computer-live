@@ -25,9 +25,9 @@ const FAIL_TRIGGER_COUNT = 2;
 const RECOVERY_PROBE_MS = 200;
 const RECOVERY_TIMEOUT_MS = 500;
 // Minimum modal visibility so the user gets a brief "💾 Updating..."
-// confirmation rather than a sub-frame flash. Kept tight (300ms ≈ a
-// blink) so we don't sit on top of a server that's already back.
-const MIN_VISIBLE_MS = 300;
+// confirmation rather than a sub-frame flash. Kept very tight (200ms ≈
+// an eye blink) so we don't sit on top of a server that's already back.
+const MIN_VISIBLE_MS = 200;
 // How long we expect the new server to take to be reachable. Drives
 // the progress bar fill rate; the bar caps at 95% until the probe
 // actually succeeds, so we never claim "done" before we are.

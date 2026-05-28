@@ -4600,17 +4600,22 @@ app.post("/admin/finalize", async (req, reply) => {
       } catch {
         /* no card saved yet — manifest just ships without it */
       }
-      // Resolve anon participants' chosen display names from `peerNames`
-      // before handing the roster to finalize. The recorded `handle` is the
-      // initial AnonXXXX assigned at session creation; what the user actually
-      // wants to see on the post-show page is whatever they set via
-      // /auth/handle (peerNames keyed by anonId). SIWE/passkey peers pass
-      // through unchanged — their display chain lives on the frontend.
+      // Resolve chosen display names from `peerNames` before handing the
+      // roster to finalize. `peerNames` is keyed by lowercased address for
+      // SIWE/passkey peers and by anonId for anon peers; both ID kinds land
+      // in the same map, so a single lookup covers both.
+      //
+      // Priority on the published page is custom > ENS > truncated address.
+      // Anons: the AnonXXXX initial handle is the only visible fallback (no
+      // ENS to lean on), so keep it when no chosen name exists.
+      // SIWE/passkey: null out `handle` when no chosen name exists so the
+      // static renderer falls through to ENS reverse-resolution instead of
+      // showing a stale capture from join time.
       const participants = room.participants.list().map(p => {
-        if (p.anonId) {
-          const chosen = peerNames.get(p.anonId);
-          return { ...p, handle: chosen ?? p.handle };
-        }
+        const key = p.anonId ?? p.address;
+        const chosen = key ? peerNames.get(key) : null;
+        if (chosen) return { ...p, handle: chosen };
+        if (p.address) return { ...p, handle: null };
         return p;
       });
       await finalizeRecording({
