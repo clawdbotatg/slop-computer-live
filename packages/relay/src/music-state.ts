@@ -34,6 +34,16 @@ export type MusicSnapshot = {
 
 type Waiter = { wake: () => void; cleanup: () => void };
 
+// How often to roll the persisted position+at forward during steady
+// playback. Without this, the saved snapshot only updates on user
+// actions (play/pause/seek/track change), so a track played for 30
+// minutes still has the saved `position` from when "play" was first
+// pressed — and on relay restart the music would resume from THERE,
+// not from the current minute-30. 5s is small enough that any restart
+// loses at most ~5s of progress (which the deploy outage itself
+// already consumed) yet keeps disk writes lazy.
+const TICK_PERSIST_MS = 5_000;
+
 export class MusicState {
   private snapshot: MusicSnapshot | null = null;
   // Bumped on every set. Lets an agent DJ-loop (long-poll → react →
@@ -43,8 +53,32 @@ export class MusicState {
   private waiters: Waiter[] = [];
   private loaded = false;
   private saveQueued = false;
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly filePath: string | null = null) {}
+  constructor(private readonly filePath: string | null = null) {
+    if (filePath) {
+      this.tickTimer = setInterval(() => this.tickPersist(), TICK_PERSIST_MS);
+      // Don't keep the Node event loop alive just for this — the relay
+      // process owns its lifetime, and tick writes are non-essential.
+      this.tickTimer.unref?.();
+    }
+  }
+
+  /** Rewrite the persisted snapshot with the current `livePosition`
+   *  while playing, so a relay restart resumes near the actual
+   *  playback head instead of jumping back to wherever the last user
+   *  action happened. No-op while paused or no track loaded.
+   *
+   *  Does NOT bumpVersion — clients keep computing livePosition
+   *  themselves and are already in sync; this is purely persistence
+   *  bookkeeping. */
+  private tickPersist(): void {
+    if (!this.snapshot || !this.snapshot.playing) return;
+    const now = Date.now();
+    const advanced = this.snapshot.position + (now - this.snapshot.at) / 1000;
+    this.snapshot = { ...this.snapshot, position: advanced, at: now };
+    this.scheduleSave();
+  }
 
   private load(): void {
     if (this.loaded) return;

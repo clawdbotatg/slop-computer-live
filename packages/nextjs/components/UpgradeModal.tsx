@@ -75,25 +75,31 @@ export function UpgradeModal() {
   // --- Detector 1: mesh WS drop -----------------------------------------
   // Modal shows the instant the WS goes down (no grace period) so the
   // blur layer covers the desktop *before* the user sees icons drop.
-  // Side effect: a transient network blip that kills the WS will also
-  // trigger a reload. Acceptable — those are rare on a stable network,
-  // and the alternative (waiting hundreds of ms) leaves a visible gap
-  // where the user watches their icons disappear unexplained.
+  //
+  // Arming condition: require `everBootstrapped`, NOT just
+  // `everConnected`. Bootstrapped only flips true after the relay has
+  // served a complete room snapshot — that's our proof the tab had a
+  // fully-working session worth protecting. Using `connected` alone
+  // false-positived hard on god-mode loads, where the WS can briefly
+  // open→close→reopen during auth handshake before settling: each
+  // flap looked like a deploy and tripped the modal, the auto-reload
+  // started the dance over, and the tab loop-reloaded 6+ times before
+  // a successful bootstrap finally calmed it down.
   useEffect(() => {
     if (showing) return;
     let cancelled = false;
 
-    const handle = (s: { connected: boolean; everConnected: boolean }) => {
+    const handle = (s: { connected: boolean; everBootstrapped: boolean }) => {
       if (cancelled) return;
       if (s.connected) return;
-      if (!s.everConnected) return;
+      if (!s.everBootstrapped) return;
       setShowing(true);
     };
 
     // Seed with the current snapshot in case the WS is already down at
     // mount (e.g. modal mounted late).
     const initial = getRelayHealthSnapshot();
-    if (initial.everConnected && !initial.connected) {
+    if (initial.everBootstrapped && !initial.connected) {
       setShowing(true);
       return;
     }
@@ -112,6 +118,15 @@ export function UpgradeModal() {
 
     const ping = async () => {
       if (cancelled) return;
+      // Mesh-using surfaces have an authoritative signal (Detector 1).
+      // Skip /health probing entirely for them — a slow probe past our
+      // 800ms timeout would otherwise trigger the modal even though
+      // the WS is fine. This is what was false-positiving god-mode.
+      const snap = getRelayHealthSnapshot();
+      if (snap.connected || snap.everConnected) {
+        consecutiveFailsRef.current = 0;
+        return;
+      }
       let ok = false;
       try {
         const ctl = new AbortController();

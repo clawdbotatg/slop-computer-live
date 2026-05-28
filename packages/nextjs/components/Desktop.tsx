@@ -497,6 +497,17 @@ function DesktopInner({ slug }: { slug: string }) {
   useEffect(() => {
     reportMeshBootstrapped(mesh.bootstrapped);
   }, [mesh.bootstrapped]);
+  // Hoisted up here (originally lived further down with other gates)
+  // because the camera/audio resume effect at ~L1555 needs `gestured`
+  // in its dependency array. Calling the hook earlier than its
+  // consumer is necessary; useUserGesture has no other dependencies.
+  // Browsers won't autoplay <audio src="…"> until the tab has registered
+  // a user gesture this page-load. The sign-in click counts; a reload
+  // with a still-valid cookie does not. If we have a session but no
+  // gesture yet, surface the EntryGate so the user produces one — then
+  // the global "slop:activated" event lets MusicPlayerWindow (and any
+  // future autoplay-blocked component) retry their .play() call.
+  const { gestured, trip: tripGesture } = useUserGesture();
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated
@@ -1553,31 +1564,46 @@ function DesktopInner({ slug }: { slug: string }) {
   // restart silently).
   useEffect(() => {
     if (!session.authenticated || !mesh.connected) return;
+    // Wait for the entry-gate click before touching media. Acquiring
+    // before the user gesture isn't strictly required by spec for
+    // already-granted permissions, but Chrome's been observed to fail
+    // the camera grab transiently when the previous tab (our auto-
+    // reload precursor) hasn't fully released the device yet. Adding
+    // gestured to the deps lets the user's natural click on the entry
+    // gate buy that release window for free.
+    if (!gestured) return;
     // Spectators (god-mode streaming sessions) never publish — the
     // relay would reject the publish frame anyway, but skip the
     // mic/cam acquisition entirely so the streaming box doesn't
     // flash a permission prompt.
     if (session.spectator) return;
     const r = readResume(slug);
-    if (r.audio) {
-      void media.startAudio().catch(() => {
-        const cur = readResume(slug);
-        delete cur.audio;
-        writeResume(slug, cur);
+
+    // Retry once on first failure before giving up. Chrome can hold a
+    // brief lock on the camera right after the previous tab unloads
+    // (autoreload from UpgradeModal); a single retry ~1.5s later
+    // catches that case. Only clear the resume flag on the second
+    // failure so a genuine permission-revoked state still gets
+    // cleared eventually rather than looping forever.
+    const tryWithRetry = (kind: "audio" | "camera", start: () => Promise<void>) => {
+      void start().catch(() => {
+        window.setTimeout(() => {
+          void start().catch(() => {
+            const cur = readResume(slug);
+            delete cur[kind];
+            writeResume(slug, cur);
+          });
+        }, 1500);
       });
-    }
-    if (r.camera) {
-      void media.startCamera().catch(() => {
-        const cur = readResume(slug);
-        delete cur.camera;
-        writeResume(slug, cur);
-      });
-    }
-    // Fire once when both auth + WS are up. media is the live ref and
-    // startAudio/startCamera are idempotent (acquire() bails when
+    };
+
+    if (r.audio) tryWithRetry("audio", () => media.startAudio());
+    if (r.camera) tryWithRetry("camera", () => media.startCamera());
+    // Fire when auth + WS + gesture are all up. media is the live ref
+    // and startAudio/startCamera are idempotent (acquire() bails when
     // activeIds[kind] is set), so a reconnect re-fire is a no-op.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.authenticated, mesh.connected]);
+  }, [session.authenticated, mesh.connected, gestured]);
 
   // ---- Manual screen share resumption ------------------------------------
   // Route through media.startScreen (the same path the Share menu uses) so
@@ -1905,13 +1931,6 @@ function DesktopInner({ slug }: { slug: string }) {
   );
 
   const localCursor = useLocalCursor();
-  // Browsers won't autoplay <audio src="…"> until the tab has registered
-  // a user gesture this page-load. The sign-in click counts; a reload
-  // with a still-valid cookie does not. If we have a session but no
-  // gesture yet, surface the EntryGate so the user produces one — then
-  // the global "slop:activated" event lets MusicPlayerWindow (and any
-  // future autoplay-blocked component) retry their .play() call.
-  const { gestured, trip: tripGesture } = useUserGesture();
 
   // Hint auto-dismiss after the configured timeout. Only starts ticking
   // once the user is past every gate (auth + room password + gesture)
