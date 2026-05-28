@@ -3372,14 +3372,21 @@ function DesktopInner({ slug }: { slug: string }) {
         multiple
         style={{ display: "none" }}
         onChange={e => {
-          const files = e.currentTarget.files;
-          e.currentTarget.value = "";
+          const input = e.currentTarget;
+          const files = input.files;
           if (!files || files.length === 0) return;
           // (44, 55) half-centers a default 88×110 icon on the point —
           // matches the offset the drop handler uses for the cursor.
           const x = Math.max(80, Math.round(window.innerWidth / 2 - 44));
           const y = Math.max(280, Math.round(window.innerHeight / 2 - 55));
+          // Kick off the upload BEFORE clearing the input: uploadFiles
+          // runs Array.from(files) synchronously at its top, snapshotting
+          // the FileList into a real Array. Resetting input.value = ""
+          // empties the live FileList in place, so doing it first wiped
+          // the upload before it could read any file. Clear after to
+          // still allow re-picking the same file next time.
           void uploadFiles(files, x, y);
+          input.value = "";
         }}
       />
 
