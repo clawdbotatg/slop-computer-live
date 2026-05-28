@@ -580,6 +580,9 @@ function DesktopInner({ slug }: { slug: string }) {
     mesh,
     relayHttpUrl: RELAY_HTTP,
     slug,
+    // Hardcode English so gpt-4o-mini-transcribe doesn't auto-detect
+    // per chunk and drift into Spanish/Danish/etc. on short utterances.
+    lang: "en",
   });
 
   // Mirror the AudioVisualizer's selfMuted state up to here so the live
@@ -1005,7 +1008,7 @@ function DesktopInner({ slug }: { slug: string }) {
       label: "File",
       items: [
         { label: "New Window", shortcut: "⌘N", disabled: true },
-        { label: "Upload…", onClick: () => uploadInputRef.current?.click() },
+        { label: "Upload…", shortcut: "⌃⇧U", onClick: () => uploadInputRef.current?.click() },
         { divider: true, label: "" },
         { label: "Close Window", shortcut: "⌃⇧W", onClick: () => closeTopWindowRef.current() },
         { label: "Save Layout…", shortcut: "⌃⇧S", onClick: () => setSaveLayoutOpen(true) },
@@ -2205,12 +2208,14 @@ function DesktopInner({ slug }: { slug: string }) {
       const isMinimize = key === "m";
       const isArrange = key === "a";
       const isSave = key === "s";
-      if (!isClose && !isMinimize && !isArrange && !isSave) return;
+      const isUpload = key === "u";
+      if (!isClose && !isMinimize && !isArrange && !isSave && !isUpload) return;
       if (isEditable(e.target)) return;
       e.preventDefault();
       if (isMinimize) minimizeTopWindow();
       else if (isArrange) autoArrange();
       else if (isSave) setSaveLayoutOpen(true);
+      else if (isUpload) uploadInputRef.current?.click();
       else closeTopWindow();
     };
 

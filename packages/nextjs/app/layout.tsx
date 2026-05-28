@@ -28,7 +28,7 @@ export const viewport: Viewport = {
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   return (
-    <html suppressHydrationWarning data-theme="dark" className={silkscreen.variable}>
+    <html lang="en" suppressHydrationWarning data-theme="dark" className={silkscreen.variable}>
       <head>
         {/* The pointer cursor is the very first thing the user looks for —
             without it the page reads as broken. Preload it before any other
