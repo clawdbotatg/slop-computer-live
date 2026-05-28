@@ -121,7 +121,7 @@ const HUNG_TIMEOUT_MS = 20_000;
 // accumulate, the live interim tail is appended, and we emit ONE additive
 // string. The line is locked as a FINAL (and reset for the next one) only
 // after the speaker goes quiet for LINE_QUIET_MS — i.e. on a real pause.
-const LINE_QUIET_MS = 800;
+const LINE_QUIET_MS = 600;
 // Soft cap so a long unbroken monologue doesn't grow the line forever; we
 // keep the most recent chars (the visible tail of a one-line subtitle).
 const LINE_MAX_CHARS = 220;
