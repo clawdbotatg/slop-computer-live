@@ -84,6 +84,7 @@ export const SKILL_TOPICS = [
   "card",
   "episode",
   "rooms",
+  "ws",
   "build",
 ] as const;
 export type SkillTopic = (typeof SKILL_TOPICS)[number];
@@ -315,6 +316,7 @@ rules and recommended loops that aren't repeated here.
 | **Card** (per-room title card — AI gen + overlay) | \`GET ${BASE}/v1/skill/card\` |  |
 | **Episode** (sttOn flag + SSE stream) | \`GET ${BASE}/v1/skill/episode\` |  |
 | **Rooms** (create / auth / list — multi-room) | \`GET ${BASE}/v1/skill/rooms\` | host-only for create |
+| **WebSocket** (mesh signaling + WS-only verbs + broadcast catalog) | \`GET ${BASE}/v1/skill/ws\` | cookie auth only |
 | **Build** (add a new app — iframe, kind, web3 dapp) | \`GET ${BASE}/v1/skill/build\` | for app authors |
 
 Each sub-skill is self-contained — most are ~100-200 lines (music and
@@ -440,6 +442,17 @@ The chess slot is a singleton — fails with 409 if a game is already
 active. Use \`POST /v1/chess/close?slug=${slugStr(slug)}\` to abort an active
 game. Available AI \`ownerKey\` values are listed in \`GET /v1/state\`'s
 \`aiPlayers\` array; they all start with \`ai:\`.
+
+### List AI opponents (dedicated endpoint)
+
+\`\`\`
+GET ${BASE}/v1/ai-players
+# → { aiPlayers: [{ ownerKey, label, ... }, ...] }
+\`\`\`
+
+Same list as \`state.aiPlayers\`, global (not room-scoped). Useful when
+you only want the roster and don't want to pull a full \`/v1/state\`.
+API keys are stripped server-side.
 
 ### Submit a move
 
@@ -1685,6 +1698,26 @@ for the episode. Read or stream that flag via \`GET /v1/skill/episode\`.
 If \`sttOn === false\`, agents that *append* to the transcript will
 still succeed (the gate is client-side, not server-side), but you'll
 be talking into a silent room — better to wait.
+
+### God-mode audio relay (god-mode tokens only)
+
+\`\`\`
+POST ${BASE}/v1/transcript/relay?slug=${slugStr(slug)}&address=<0x..>&handle=<x>&anonId=<x>&lang=<x>
+Content-Type: audio/webm | audio/ogg
+Body: raw audio bytes (≤ STT_AUDIO_MAX_BYTES)
+# → { ok: true, seg: { id, ts, address, handle, text, source: "live" } | null }
+\`\`\`
+
+God-mode (OBS-capture) path for pushing raw recorded audio into the
+relay's transcription pipeline. The resulting segment lands in the
+transcript tagged \`source: "live"\` — same as per-browser Web Speech.
+
+Locked down hard: **403 godmode-only** unless your session is
+\`spectator: true\`. Normal host / peer agent tokens cannot hit this.
+**503 stt-not-configured** if the relay has no STT key; **429
+rate-limited** when the per-speaker bucket fills (keyed on
+\`address ?? anonId ?? token\`, so one god-mode caller can transcribe
+many speakers without sharing one bucket).
 `;
 }
 
@@ -2194,6 +2227,14 @@ with fresh portfolio/activity context. Read the thread at
 \`wallet_chat\` WS broadcast, not the HTTP response (poll \`/v1/state\` or
 watch the socket). A second send while a turn is in flight gets a 409.
 
+Reset the thread (clear history, back to an empty state):
+
+\`\`\`
+DELETE ${BASE}/v1/wallet-chat?slug=${slugStr(slug)}
+# → { ok: true, state: <empty thread> }
+# 409 → in-flight; refused so we don't orphan a running AI turn
+\`\`\`
+
 ### Agent recipes
 
 **"What's the current wallet doing?":**
@@ -2472,6 +2513,23 @@ GET ${BASE}/v1/rooms/${slugStr(slug)}/auth
 #   }
 \`\`\`
 
+### Room metadata (unauthed)
+
+\`\`\`
+GET ${BASE}/v1/rooms/${slugStr(slug)}/meta
+# → {
+#     slug, name, createdAt,
+#     live: boolean,                # at least one peer connected right now
+#     stt:  boolean,                # sttOn flag for the episode
+#     card: { published: boolean }, # baked title card on disk
+#     wallet: { address, label, chains: number[] } | null
+#   }
+\`\`\`
+
+Public read — useful for an external dashboard / preview card without
+needing a token. Returns a snapshot, not a long-poll. \`live: true\`
+is the cheap "is anyone home?" check before deciding to join.
+
 ### Create / claim a room — host-only
 
 \`\`\`
@@ -2539,6 +2597,152 @@ has a live in-memory presence.
 only), filter \`hot: true\`, then \`/v1/state?slug=<each>\` to see
 peer counts. Pick whichever has the most humans and run your loop
 against that slug.
+`;
+}
+
+// =============================================================================
+// WebSocket (mesh signaling + WS-only verbs + broadcast catalog)
+// =============================================================================
+
+export function skillWs(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  const S = slugStr(slug);
+  return `${header(token, scope, "")}
+
+## WebSocket sub-skill
+
+${slugNote(slug)}
+
+The mesh socket at \`wss://live.slop.computer/signal?slug=${S}\` carries
+three things REST can't (or won't):
+
+1. **WebRTC signaling** — offer / answer / ice between peers for media.
+2. **Real-time input** — paddle Y, worm direction, cursor drag — anything
+   too fast for an HTTP round-trip per frame.
+3. **Server → client broadcasts** — every room mutation fans out here so
+   you can react without polling \`/v1/state\`.
+
+Most agent-callable surfaces also have REST mirrors documented in the
+per-app sub-skills. This page exists for (a) the few WS-only verbs and
+(b) the broadcast catalog.
+
+### Connection + auth
+
+\`\`\`
+wss://live.slop.computer/signal?slug=${S}
+\`\`\`
+
+Auth is **cookie-only today**: the WS handshake reads the \`SESSION_COOKIE\`
+and (for non-default slugs with a password) the room cookie. An agent
+that only holds a \`/v1/agent-token\` bearer **cannot open the socket** —
+bearer-tokened agents stay HTTP-only and poll \`/v1/state\` / sub-skill
+long-polls. If you need WS access for an agent, hand it a real browser
+session (cookies from the password / passkey / SIWE / anon flow) and
+join \`/signal\` from there.
+
+On successful connect the server sends:
+
+\`\`\`json
+{ "type": "hello", "id": "<peerId>", "peers": [...], "publications": [...],
+  "slots": {...}, "browsers": {...}, "avatars": {...}, "chatHistory": [...],
+  "openWindows": [...], "musicState": {...}, "chessGame": {...}, ... }
+\`\`\`
+
+Same shape as the top-level fields of \`/v1/state\` plus the \`peerId\` the
+relay assigned you. Cache it as your initial snapshot.
+
+Close codes: \`4401\` unauthenticated · \`4404\` room-not-found · \`4403\`
+room-auth-required · \`4290\` payment-required · \`4409\` session-replaced.
+
+### Client → server messages
+
+Every message is JSON \`{ "type": "<name>", ...fields }\`. **Spectator
+(god-mode) sessions** are restricted to \`hello / ping / offer / answer /
+ice / god_viewport\`; every other type is dropped server-side as a
+defense-in-depth measure.
+
+| Type | Fields | REST equivalent | Notes |
+| --- | --- | --- | --- |
+| \`hello\` | — | n/a | handshake ack (no-op, the server-side hello is what matters) |
+| \`ping\` | — | n/a | server replies \`{type:"pong"}\` |
+| \`ping_report\` | \`rtt\` | n/a | publish your relay-RTT to the guest-list meter |
+| \`offer\` / \`answer\` / \`ice\` | \`to\`, \`payload\` | **WS-only** | WebRTC signaling, routed to a single peer |
+| \`god_viewport\` | \`viewport: {width, height} \\| null\` | **WS-only** | OBS-capture dashed rectangle (god-mode only) |
+| \`cursor\` | \`x, y\` | \`POST /v1/cursor\` | labelled cursor position |
+| \`click\` | \`x, y\` | \`POST /v1/click\` | colored click ripple |
+| \`card_title\` | \`title: { text, x, y, sizeFrac }\` | **WS-only** | shared title overlay on the per-room card; \`0 ≤ x,y ≤ 1\`, \`0.015 ≤ sizeFrac ≤ 0.25\` |
+| \`chat_send\` | \`text\` | \`POST /v1/chat\` | room chat |
+| \`live_caption\` / \`live_caption_state\` | \`text\` / \`on\` | none | speaker's in-browser STT subtitle line + on/off |
+| \`set_custom_name\` | \`name\` | \`POST /auth/handle\` | anon-user rename |
+| \`todo_add\` / \`todo_toggle\` / \`todo_update\` / \`todo_delete\` / \`todo_clear_done\` / \`todo_reorder\` | mirror REST | \`POST /v1/todos*\` | full CRUD over WS |
+| \`note_create\` / \`note_update\` / \`note_delete\` | mirror REST | \`POST /v1/notes*\` | full CRUD over WS |
+| \`glossary_add\` / \`glossary_regenerate\` / \`glossary_delete\` | mirror REST | \`POST /v1/glossary*\` | full CRUD over WS |
+| \`publish\` / \`unpublish\` / \`set_camera_off\` | publication fields | **WS-only** | declare/withdraw a camera/mic/screen publication |
+| \`slot_update\` | \`id\`, partial geometry | \`POST /v1/slots\` | move/resize a window or icon |
+| \`browser_open\` / \`browser_navigate\` / \`browser_close\` | \`id\`, \`url\` | \`POST/DELETE /v1/browsers...\` | shared browsers |
+| \`window_open\` / \`window_close\` | \`id\` | \`POST/DELETE /v1/windows\` | singleton windows |
+| \`preview_media\` | playhead | none | per-room file-preview playhead sync |
+| \`scroll_sync\` | \`scrollTop\` | none | per-room scroll-position sync |
+| \`ui_state\` | partial | none | per-room misc UI scratch |
+| \`music_state\` | snapshot | \`POST /v1/music/state\` | shared slopamp head |
+| \`chess_create_game\` / \`chess_move\` / \`chess_resign\` / \`chess_close_game\` | mirror REST | \`POST /v1/chess/...\` | chess |
+| \`pong_claim\` / \`pong_release\` / \`pong_paddle\` / \`pong_reset\` | mirror REST | \`POST /v1/pong/...\` | pong (use WS for paddle @ 30Hz) |
+| \`worm_claim\` / \`worm_release\` / \`worm_dir\` / \`worm_reset\` | mirror REST | \`POST /v1/worm/...\` | worm (use WS for dir) |
+| \`tx_request\` | tx | **WS-only** | impersonator captured an \`eth_sendTransaction\` (from browser-host) |
+| \`tx_forward\` | tx | **WS-only** | peer wants to forward a captured tx to their own real wallet |
+| \`wallet_deploy\` / \`wallet_add_deployment\` | sigs + deployment | **WS-only** | multisig deployment flow (real signers, not agents) |
+| \`wallet_new_episode\` | — | **WS-only** | host clears wallet for new show |
+| \`wallet_draft_update\` | partial draft | **WS-only** | collaborative pre-deploy form state |
+| \`wallet_tx_propose\` | proposal | \`POST /v1/wallet/propose\` | propose a multisig tx (REST mirror is the agent-friendly path) |
+| \`wallet_tx_sign\` | sig | **WS-only** | sign a pending tx (needs a real signer's private key) |
+| \`wallet_tx_status\` / \`wallet_tx_remove\` / \`wallet_tx_resummarize\` | \`txId\`, ... | **WS-only** | tx-queue maintenance |
+
+**WS-only** in that table = no REST mirror. The big ones for agents to
+know about: \`card_title\` (the only way to drive the title overlay) and
+the wallet deploy/sign flow (real signers only — agents shouldn't sign).
+
+### Server → client broadcasts
+
+Every state-bearing room subsystem fans out over the same socket. Listen
+to these to react without polling \`/v1/state\`:
+
+| Type | Fields | Fires when |
+| --- | --- | --- |
+| \`peer_join\` / \`peer_leave\` | \`peer\` | someone enters / leaves the room |
+| \`peer_ping\` | \`from\`, \`rtt\` | peer reports relay RTT |
+| \`cursor\` / \`click\` | \`from\`, \`x\`, \`y\` | live presence |
+| \`chat\` | \`msg\` | new chat appended |
+| \`transcript_seg\` | \`seg\` | new STT segment landed |
+| \`chess_state\` / \`chess_history\` | \`game\` / \`history\` | chess changed |
+| \`music_state\` / \`music_genre\` / \`music_custom\` | snapshot / event / tracks | music changed |
+| \`todos\` / \`notes\` | \`items\` | list mutated |
+| \`clock_state\` / \`episode\` / \`chyron\` | \`state\` | per-room subsystems |
+| \`research_state\` / \`wallet_chat\` | \`state\` | AI surfaces finished a turn |
+| \`card_state\` / \`card_job\` / \`card_title\` | snapshot / job / title | title-card pipeline |
+| \`window_opened\` / \`window_closed\` | \`id\` | singleton toggled |
+| \`browser\` / \`browser_closed\` | \`browser\` / \`id\` | shared browsers |
+| \`slot\` | \`slot\` | window/icon moved or resized |
+| \`published\` / \`unpublished\` | \`publication\` / \`peerId,streamId\` | media publication changes |
+| \`avatar\` | \`ownerKey\`, \`url\` | someone updated their PFP |
+| \`wallet_tx_attention\` | \`txId\`, \`source\`, \`at\` | new pending tx wants signatures |
+| \`pong\` / \`worm\` | snapshot | physics tick (only while playing) |
+
+### Agent pattern — WS-listen, REST-mutate
+
+The recommended shape for a HOSTED browser-session agent:
+
+1. Open WS once, cache the \`hello\` payload as your initial snapshot.
+2. \`switch (msg.type)\` to keep your local copy fresh. Most updates
+   are last-writer-wins replacements of one field — no diff logic.
+3. Mutate via REST (every sub-skill documents the routes). REST is
+   easier to retry, idempotent on most surfaces, and survives a WS
+   reconnect cleanly.
+
+For an HTTP-only agent (bearer token, no cookies, no WS): poll \`/v1/state\`
+at ~1 Hz for the slow drift, and use the per-app long-polls
+(\`/v1/chess/wait\`, \`/v1/music/wait\`) for the things that need fast
+reactions. You'll miss sub-second events (paddle frames, raw cursor
+streams) but every persistent surface is reachable.
 `;
 }
 
@@ -2933,6 +3137,8 @@ export function skillForTopic(
       return skillEpisode(token, isHost, slug);
     case "rooms":
       return skillRooms(token, isHost, slug);
+    case "ws":
+      return skillWs(token, isHost, slug);
     case "build":
       return skillBuild(token, isHost, slug);
   }

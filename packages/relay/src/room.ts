@@ -105,6 +105,7 @@ function roomPaths(id: string): {
   browsers: { path: string; legacyPath: string | null; legacyHostKey: string | null };
   desktop: { slotsFile: string; legacySlotsFile: string | null; legacyHostKey: string | null };
   chess: SubsystemPath;
+  music: { path: string };
   wallet: SubsystemPath;
   research: { path: string };
   walletChat: { path: string };
@@ -172,6 +173,12 @@ function roomPaths(id: string): {
     chess: {
       path: `${dir}/chess.json`,
       legacy: legacy ? (process.env.CHESS_PATH ?? "/var/lib/slop-relay/chess.json") : null,
+    },
+    music: {
+      // No legacy path — music state has always been in-memory until
+      // now, so the DEFAULT_SLUG room has nothing to inherit either.
+      // Cold start = paused/empty.
+      path: `${dir}/music.json`,
     },
     wallet: {
       path: `${dir}/wallet.json`,
@@ -262,7 +269,7 @@ export class Room {
   readonly files: FileIndex;
   readonly browsers: BrowserRegistry;
   readonly desktop: DesktopState;
-  readonly music = new MusicState();
+  readonly music: MusicState;
   readonly pong = new Pong();
   readonly worm = new Worm();
   readonly research: ResearchState;
@@ -314,6 +321,7 @@ export class Room {
     );
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
+    this.music = new MusicState(paths.music.path);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
