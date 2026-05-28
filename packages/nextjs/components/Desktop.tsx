@@ -981,9 +981,13 @@ function DesktopInner({ slug }: { slug: string }) {
     });
   }, []);
 
-  // Newest-saved first.
+  // Oldest-saved first. Append-only ordering keeps the Ctrl+Shift+N
+  // bindings stable: whatever you saved first stays bound to ⌃⇧1
+  // forever, new saves get the next number at the bottom of the menu.
+  // (Newest-first reassigned every binding on every save — muscle
+  // memory was wrong the moment you saved a second layout.)
   const layoutNames = useMemo(
-    () => Object.keys(savedLayouts).sort((a, b) => (savedLayouts[b]?.savedAt ?? 0) - (savedLayouts[a]?.savedAt ?? 0)),
+    () => Object.keys(savedLayouts).sort((a, b) => (savedLayouts[a]?.savedAt ?? 0) - (savedLayouts[b]?.savedAt ?? 0)),
     [savedLayouts],
   );
 
