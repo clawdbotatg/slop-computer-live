@@ -17,6 +17,14 @@ import type { Bands } from "~~/utils/blockieBands";
 const CAMERA_MIC_MUTED_KEY_BASE = "slop-camera-mic-mute-v1";
 export const cameraMicMutedKey = (slug: string) => `${CAMERA_MIC_MUTED_KEY_BASE}:${slug}`;
 
+// Per-room "mirror my own view" preference. Purely a local viewing flip
+// (transform: scaleX(-1)) — never propagated to peers, so the room still
+// sees the publisher in real orientation. Persisted because it's a
+// stable preference: people who like seeing themselves mirrored almost
+// always like it across reloads.
+const CAMERA_MIRRORED_KEY_BASE = "slop-camera-mirrored-v1";
+const cameraMirroredKey = (slug: string) => `${CAMERA_MIRRORED_KEY_BASE}:${slug}`;
+
 export type VideoViewProps = {
   stream: MediaStream;
   /** Mute local playback on self streams (echo prevention — a camera
@@ -55,6 +63,11 @@ export type VideoViewProps = {
   audioBusId?: string | null;
   /** Human-readable label for the /eq popup row. */
   audioBusLabel?: string;
+  /** Show the publisher's "mirror my view" toggle. Cameras want this
+   *  (people often prefer seeing themselves flipped, like a mirror);
+   *  screen shares don't. The flip is purely local — peers always see
+   *  the real orientation. */
+  mirrorable?: boolean;
 };
 
 // Camera / screen-share renderer with publisher-only controls in the
@@ -78,9 +91,11 @@ export const VideoView = ({
   hidden = false,
   audioBusId = null,
   audioBusLabel = "video",
+  mirrorable = false,
 }: VideoViewProps) => {
   const slug = useRoomSlug();
   const storageKey = cameraMicMutedKey(slug);
+  const mirroredKey = cameraMirroredKey(slug);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Lazy init from localStorage when this is my own publication, so the
   // initial track.enabled effect below sees the resumed micMuted=true
@@ -106,6 +121,27 @@ export const VideoView = ({
   // upstream — only my local <video> element goes silent. Same model
   // as the music player + AudioVisualizer.
   const [selfMuted, setSelfMuted] = useState(false);
+  // Publisher-only "mirror my view" — local CSS flip on the <video>
+  // element. Never broadcast: peers continue to see the real
+  // orientation. Persisted across reload, scoped to room slug, same
+  // pattern as the mic-mute resume above.
+  const [mirrored, setMirrored] = useState<boolean>(() => {
+    if (!isMine || !mirrorable || typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(mirroredKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (!isMine || !mirrorable || typeof window === "undefined") return;
+    try {
+      if (mirrored) window.localStorage.setItem(mirroredKey, "1");
+      else window.localStorage.removeItem(mirroredKey);
+    } catch {
+      /* quota / private mode */
+    }
+  }, [mirrored, isMine, mirrorable, mirroredKey]);
 
   // My own mic: flip track.enabled so the *room* hears silence. Separate
   // from the audio-only toggle below — you can be muted with video on,
@@ -172,7 +208,14 @@ export const VideoView = ({
         // would play twice — direct from this element AND through
         // the bus's MediaStreamSource).
         muted={muted || (!isMine && selfMuted) || busActive}
-        style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "block" }}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          background: "#000",
+          display: "block",
+          transform: mirrored ? "scaleX(-1)" : undefined,
+        }}
       />
       {/* Audio-only backdrop, shown whenever the publisher is in
           audio-only mode (needs the identity palette; screen shares
@@ -237,6 +280,21 @@ export const VideoView = ({
           >
             {micMuted ? <MicOffIcon /> : <MicIcon />}
           </button>
+          {mirrorable ? (
+            <button
+              type="button"
+              onClick={() => setMirrored(m => !m)}
+              aria-label={mirrored ? "show real view" : "show mirror view"}
+              title={
+                mirrored
+                  ? "mirror view ON — only you see this flip; everyone else sees the real view"
+                  : "flip my view (mirror) — only you; others still see the real view"
+              }
+              style={overlayBtnStyle(mirrored)}
+            >
+              <FlipHorizontalIcon />
+            </button>
+          ) : null}
           {onToggleCameraOff ? (
             <button
               type="button"
@@ -351,6 +409,32 @@ const MicOffIcon = () => (
     {/* slash */}
     <line x1="2" y1="2" x2="14" y2="14" stroke="#000" strokeWidth="2.6" />
     <line x1="2" y1="2" x2="14" y2="14" />
+  </svg>
+);
+
+// Horizontal-flip / mirror toggle. Reload-style curved arrows split
+// across a vertical mirror line so the glyph reads as "flip the
+// picture left↔right" rather than "refresh".
+const FlipHorizontalIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    {/* dashed vertical mirror axis */}
+    <line x1="8" y1="2" x2="8" y2="14" strokeDasharray="1.5 1.5" />
+    {/* left half: curved arrow pointing inward toward the axis */}
+    <path d="M2.5 5 Q 2.5 11 6.5 11" />
+    <path d="M6.5 11 L 5.2 9.6 M6.5 11 L 5.2 12.3" />
+    {/* right half: mirror image, arrow into axis from the right */}
+    <path d="M13.5 5 Q 13.5 11 9.5 11" />
+    <path d="M9.5 11 L 10.8 9.6 M9.5 11 L 10.8 12.3" />
   </svg>
 );
 

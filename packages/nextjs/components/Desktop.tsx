@@ -2784,6 +2784,9 @@ function DesktopInner({ slug }: { slug: string }) {
                       // route it through the EQ bus too.
                       audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
                       audioBusLabel={`${badgeLabel} · cam`}
+                      // Camera kind: offer the publisher a local mirror
+                      // toggle. Screen-share VideoView below skips this.
+                      mirrorable
                     />
                   ) : (
                     <VideoView
