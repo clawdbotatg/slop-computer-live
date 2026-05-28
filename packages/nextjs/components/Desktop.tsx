@@ -3375,10 +3375,33 @@ function DesktopInner({ slug }: { slug: string }) {
           const input = e.currentTarget;
           const files = input.files;
           if (!files || files.length === 0) return;
-          // (44, 55) half-centers a default 88×110 icon on the point —
-          // matches the offset the drop handler uses for the cursor.
-          const x = Math.max(80, Math.round(window.innerWidth / 2 - 44));
-          const y = Math.max(280, Math.round(window.innerHeight / 2 - 55));
+          // Find the "next logical icon spot" — column-major scan of the
+          // existing icon grid. Snap every desktop-grid slot (app icons
+          // AND file icons) to its nearest cell so manual drags still
+          // count as occupied; place the upload at the first empty cell.
+          // First fill any gaps in the curated app columns, then expand
+          // into col 6+ where the cascade already lives.
+          const occupied = new Set<string>();
+          for (const [id, slot] of Object.entries(mesh.slots)) {
+            if (!id.startsWith("icon-") && !id.startsWith("file-")) continue;
+            const col = Math.round((slot.x - ICON_DEFAULT_X) / ICON_COL_PITCH);
+            const row = Math.round((slot.y - ICON_DEFAULT_Y0) / ICON_ROW_PITCH);
+            if (col >= 0 && row >= 0) occupied.add(`${col},${row}`);
+          }
+          // Fallback if every cell in a generous 30×ICONS_PER_COL area is
+          // taken: cascade off the right edge — uploadFiles still works,
+          // the icon just lands somewhere past the visible cluster.
+          let x = ICON_DEFAULT_X + 30 * ICON_COL_PITCH;
+          let y = ICON_DEFAULT_Y0;
+          outer: for (let col = 0; col < 30; col++) {
+            for (let row = 0; row < ICONS_PER_COL; row++) {
+              if (!occupied.has(`${col},${row}`)) {
+                x = ICON_DEFAULT_X + col * ICON_COL_PITCH;
+                y = ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH;
+                break outer;
+              }
+            }
+          }
           // Kick off the upload BEFORE clearing the input: uploadFiles
           // runs Array.from(files) synchronously at its top, snapshotting
           // the FileList into a real Array. Resetting input.value = ""

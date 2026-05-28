@@ -18,12 +18,6 @@ const FETCH_TIMEOUT_MS = 800;
 // systemctl restarts entirely.
 const FAIL_TRIGGER_COUNT = 2;
 
-// When the WS drops, wait this long before triggering. A clean network
-// blip will reconnect in milliseconds; a real relay restart stays down
-// for at least a second. 800ms is short enough to feel responsive
-// without false-positiving on transient network hiccups.
-const WS_DROP_GRACE_MS = 800;
-
 // Probe /health aggressively once the modal is up. The endpoint is
 // cheap (returns 3 fields) and we want to catch the recovery moment
 // within ~200ms of it actually happening. 500ms timeout because a
@@ -56,8 +50,9 @@ const MAX_WAIT_MS = 45000;
  *
  * Trigger (modal goes up):
  *   - Mesh WS drop: relay restart kills the WS within milliseconds.
- *     Desktop publishes mesh.connected; we wait WS_DROP_GRACE_MS to
- *     filter out network blips, then show the modal.
+ *     Desktop publishes mesh.connected; we show the modal the same
+ *     frame mesh.connected flips false, so the blur layer covers the
+ *     desktop *before* the user sees icons drop.
  *   - /health polling: fallback for surfaces without a mesh WS
  *     (front page, unauthed spectators).
  *
@@ -78,46 +73,35 @@ export function UpgradeModal() {
   const consecutiveFailsRef = useRef(0);
 
   // --- Detector 1: mesh WS drop -----------------------------------------
+  // Modal shows the instant the WS goes down (no grace period) so the
+  // blur layer covers the desktop *before* the user sees icons drop.
+  // Side effect: a transient network blip that kills the WS will also
+  // trigger a reload. Acceptable — those are rare on a stable network,
+  // and the alternative (waiting hundreds of ms) leaves a visible gap
+  // where the user watches their icons disappear unexplained.
   useEffect(() => {
     if (showing) return;
     let cancelled = false;
-    let dropTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handle = (s: { connected: boolean; everConnected: boolean }) => {
       if (cancelled) return;
-      if (s.connected) {
-        if (dropTimer) {
-          clearTimeout(dropTimer);
-          dropTimer = null;
-        }
-        return;
-      }
-      // WS just dropped. We only care if it had ever been up — a tab
-      // that never connected (e.g. unauthed spectator) isn't a deploy
-      // signal.
+      if (s.connected) return;
       if (!s.everConnected) return;
-      if (dropTimer) return;
-      dropTimer = setTimeout(() => {
-        if (cancelled) return;
-        setShowing(true);
-      }, WS_DROP_GRACE_MS);
+      setShowing(true);
     };
 
     // Seed with the current snapshot in case the WS is already down at
     // mount (e.g. modal mounted late).
     const initial = getRelayHealthSnapshot();
     if (initial.everConnected && !initial.connected) {
-      dropTimer = setTimeout(() => {
-        if (cancelled) return;
-        setShowing(true);
-      }, WS_DROP_GRACE_MS);
+      setShowing(true);
+      return;
     }
 
     const unsub = subscribeRelayHealth(handle);
     return () => {
       cancelled = true;
       unsub();
-      if (dropTimer) clearTimeout(dropTimer);
     };
   }, [showing]);
 
