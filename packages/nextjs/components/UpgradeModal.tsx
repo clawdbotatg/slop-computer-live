@@ -23,11 +23,22 @@ const FAIL_TRIGGER_COUNT = 2;
 // for at least a second or two. 1.2s is a comfortable middle ground.
 const WS_DROP_GRACE_MS = 1200;
 
-// Duration of the cosmetic progress bar. The actual deploy window is
-// ~2-5s of HTTPS downtime + a few more seconds for the relay and
-// browser-host to bounce; 25s is comfortable headroom before the
-// hard reload.
-const UPGRADE_DURATION_MS = 25000;
+// Once the modal is up, probe /health on this cadence. As soon as it
+// comes back, we reload — the modal is no longer a fixed-duration
+// timer, it's a "wait until the new server is reachable" indicator.
+const RECOVERY_PROBE_MS = 500;
+const RECOVERY_TIMEOUT_MS = 800;
+// Don't flash the modal: even if the server is already back when the
+// modal trips (e.g. very fast deploy), keep it visible at least this
+// long so the user sees what happened.
+const MIN_VISIBLE_MS = 1500;
+// How long we expect the new server to take to be reachable. Drives
+// the progress bar fill rate; the bar caps at 95% until the probe
+// actually succeeds, so we never claim "done" before we are.
+const EXPECTED_RECOVERY_MS = 6000;
+// Safety net: if /health never comes back (deploy hung, server died),
+// reload anyway after this long.
+const MAX_WAIT_MS = 45000;
 
 /**
  * Detects a production deploy in progress and forces a hard reload so
@@ -144,20 +155,70 @@ export function UpgradeModal() {
     };
   }, [showing]);
 
-  // --- Progress bar + forced reload -------------------------------------
+  // --- Probe-driven progress + reload -----------------------------------
+  // Replaces the previous fixed-duration timer. While we wait the
+  // progress bar fills toward 95% over EXPECTED_RECOVERY_MS so it
+  // looks like work is happening; the moment /health responds OK we
+  // jump to 100% and reload. This makes the modal as short as the
+  // actual deploy and avoids the "it took longer than it should"
+  // feeling of the old 25s hardcoded timer.
   useEffect(() => {
     if (!showing) return;
+
     const startedAt = performance.now();
-    const id = setInterval(() => {
-      const elapsed = performance.now() - startedAt;
-      const pct = Math.min(100, (elapsed / UPGRADE_DURATION_MS) * 100);
-      setProgress(pct);
-      if (elapsed >= UPGRADE_DURATION_MS) {
-        clearInterval(id);
-        window.location.reload();
+    let cancelled = false;
+    let recovered = false;
+    let reloading = false;
+
+    const reloadOnce = () => {
+      if (reloading) return;
+      reloading = true;
+      // 100% paint frame, then reload.
+      setProgress(100);
+      window.setTimeout(() => window.location.reload(), 250);
+    };
+
+    const probe = async () => {
+      if (cancelled || recovered) return;
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), RECOVERY_TIMEOUT_MS);
+        const res = await fetch(`${RELAY_HTTP}/health`, {
+          signal: ctl.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timer);
+        if (res.ok) recovered = true;
+      } catch {
+        /* still down — keep trying */
       }
-    }, 200);
-    return () => clearInterval(id);
+    };
+
+    void probe();
+    const probeTimer = setInterval(() => void probe(), RECOVERY_PROBE_MS);
+
+    const tickTimer = setInterval(() => {
+      if (reloading) return;
+      const elapsed = performance.now() - startedAt;
+      if (elapsed >= MAX_WAIT_MS) {
+        reloadOnce();
+        return;
+      }
+      if (recovered && elapsed >= MIN_VISIBLE_MS) {
+        reloadOnce();
+        return;
+      }
+      // Cap visible progress at 95% until /health actually comes back;
+      // jumping to 100% prematurely would lie about readiness.
+      const pct = Math.min(95, (elapsed / EXPECTED_RECOVERY_MS) * 100);
+      setProgress(pct);
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      clearInterval(probeTimer);
+      clearInterval(tickTimer);
+    };
   }, [showing]);
 
   if (!showing) return null;
@@ -202,12 +263,7 @@ export function UpgradeModal() {
         >
           💾 Updating...
         </h2>
-        <p style={{ color: "var(--slop-text-muted)", fontSize: 12, marginTop: 0, marginBottom: 16 }}>
-          A new version of slop.computer is being deployed.
-          <br />
-          Hang tight — this page will reload automatically.
-        </p>
-        <div style={{ display: "flex", justifyContent: "center" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
           <LoadingBar progress={progress} cells={20} />
         </div>
       </Bevel>

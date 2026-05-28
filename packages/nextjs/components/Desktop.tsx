@@ -216,15 +216,20 @@ const writeResume = (slug: string, state: ResumeState) => {
   }
 };
 
-// --- Saved window layouts (per-room, private to this browser) -----------
+// --- Saved window layouts (GLOBAL per browser, NOT per-room) ------------
 // A layout is a named snapshot of which app + browser windows are open,
 // where they sit, and whether this user's camera/mic were live. Stored in
-// localStorage and NEVER synced — but APPLYING one mutates the shared,
-// relay-authoritative window state, so loading rearranges the desktop for
-// everyone in the room (see loadLayout for the Replace semantics). Scoped
-// to slug like the resume flags above so layouts don't bleed across rooms.
-const LAYOUTS_KEY_BASE = "slop-layouts-v1";
-const layoutsKey = (slug: string) => `${LAYOUTS_KEY_BASE}:${slug}`;
+// localStorage and NEVER synced. Deliberately *not* slug-scoped — layouts
+// are personal workflow setups ("Demo mode", "Coding") that the user wants
+// available in every room, unlike the resume-publishing flags above which
+// are correctly per-slug. Applying one still mutates the shared, relay-
+// authoritative window state of the CURRENT room (see loadLayout's
+// Replace semantics).
+const LAYOUTS_KEY = "slop-layouts-v1";
+// Legacy: a pre-cross-room build wrote under `slop-layouts-v1:<slug>`.
+// migrateLegacyLayouts (called from readLayouts) merges those buckets into
+// LAYOUTS_KEY the first time we read, then deletes the per-slug entries.
+const LEGACY_LAYOUTS_KEY_PREFIX = `${LAYOUTS_KEY}:`;
 
 type SlotGeom = { x: number; y: number; width: number; height: number; z: number };
 type SavedLayout = {
@@ -240,19 +245,54 @@ type SavedLayout = {
   media: { kind: "camera" | "audio"; geom: SlotGeom }[];
 };
 
-const readLayouts = (slug: string): Record<string, SavedLayout> => {
-  if (typeof window === "undefined") return {};
+// Run-once guard: we only need to scan localStorage for legacy keys on
+// the first read of this session. Subsequent reads skip the scan.
+let legacyLayoutsMigrated = false;
+const migrateLegacyLayouts = () => {
+  if (legacyLayoutsMigrated || typeof window === "undefined") return;
+  legacyLayoutsMigrated = true;
   try {
-    return JSON.parse(window.localStorage.getItem(layoutsKey(slug)) ?? "{}") as Record<string, SavedLayout>;
+    const legacyKeys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(LEGACY_LAYOUTS_KEY_PREFIX)) legacyKeys.push(k);
+    }
+    if (legacyKeys.length === 0) return;
+    const merged = JSON.parse(window.localStorage.getItem(LAYOUTS_KEY) ?? "{}") as Record<string, SavedLayout>;
+    for (const k of legacyKeys) {
+      try {
+        const perRoom = JSON.parse(window.localStorage.getItem(k) ?? "{}") as Record<string, SavedLayout>;
+        // Newest-saved wins on name collision so a layout the user
+        // updated in a later room replaces the older one.
+        for (const [name, layout] of Object.entries(perRoom)) {
+          const cur = merged[name];
+          if (!cur || (layout.savedAt ?? 0) > (cur.savedAt ?? 0)) merged[name] = layout;
+        }
+      } catch {
+        /* skip malformed legacy bucket */
+      }
+      window.localStorage.removeItem(k);
+    }
+    window.localStorage.setItem(LAYOUTS_KEY, JSON.stringify(merged));
+  } catch {
+    /* quota / private mode */
+  }
+};
+
+const readLayouts = (): Record<string, SavedLayout> => {
+  if (typeof window === "undefined") return {};
+  migrateLegacyLayouts();
+  try {
+    return JSON.parse(window.localStorage.getItem(LAYOUTS_KEY) ?? "{}") as Record<string, SavedLayout>;
   } catch {
     return {};
   }
 };
 
-const writeLayouts = (slug: string, map: Record<string, SavedLayout>) => {
+const writeLayouts = (map: Record<string, SavedLayout>) => {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(layoutsKey(slug), JSON.stringify(map));
+    window.localStorage.setItem(LAYOUTS_KEY, JSON.stringify(map));
   } catch {
     /* quota / private mode */
   }
@@ -823,14 +863,12 @@ function DesktopInner({ slug }: { slug: string }) {
   }, [slug]);
 
   // --- Saved layouts: state + save / load / delete -----------------------
-  // Snapshots live in localStorage keyed by slug; mirror them into React
-  // state so the "Load Layout" submenu re-renders on save/delete. Re-read
-  // when the room changes.
-  const [savedLayouts, setSavedLayouts] = useState<Record<string, SavedLayout>>(() => readLayouts(slug));
+  // Snapshots live in a single global localStorage bucket (cross-room by
+  // design — see the LAYOUTS_KEY comment above). Mirror into React state
+  // so the "Load Layout" submenu re-renders on save/delete. No slug
+  // dependency: same data shows up in every room within this browser.
+  const [savedLayouts, setSavedLayouts] = useState<Record<string, SavedLayout>>(() => readLayouts());
   const [saveLayoutOpen, setSaveLayoutOpen] = useState(false);
-  useEffect(() => {
-    setSavedLayouts(readLayouts(slug));
-  }, [slug]);
 
   // Read live mesh + media through refs so the callbacks stay stable (they
   // fire on a user click, not a hot path — no need to re-create per render).
@@ -871,12 +909,12 @@ function DesktopInner({ slug }: { slug: string }) {
       const layout: SavedLayout = { name, savedAt: Date.now(), apps, browsers, media };
       setSavedLayouts(prev => {
         const next = { ...prev, [name]: layout };
-        writeLayouts(slug, next);
+        writeLayouts(next);
         return next;
       });
       setSaveLayoutOpen(false);
     },
-    [slug, geomFromSlot],
+    [geomFromSlot],
   );
 
   // Replace semantics: make the desktop match the snapshot exactly. Closes
@@ -884,59 +922,53 @@ function DesktopInner({ slug }: { slug: string }) {
   // are, and re-acquires this user's camera/mic. NB: app/browser windows
   // are room-shared, so this rearranges every peer's view (by design — see
   // the type comment on SavedLayout). Camera/mic only touch this user.
-  const loadLayout = useCallback(
-    (name: string) => {
-      const layout = readLayouts(slug)[name];
-      if (!layout) return;
-      const m = meshRefForLayouts.current;
-      const md = mediaRefForLayouts.current;
-      const key = ownerKeyRefForLayouts.current;
+  const loadLayout = useCallback((name: string) => {
+    const layout = readLayouts()[name];
+    if (!layout) return;
+    const m = meshRefForLayouts.current;
+    const md = mediaRefForLayouts.current;
+    const key = ownerKeyRefForLayouts.current;
 
-      // Close apps not in the snapshot.
-      const wantApps = new Set(layout.apps.map(a => a.id));
-      for (const id of [...m.openWindowIds]) if (!wantApps.has(id)) m.closeWindow(id);
-      // Browser ids are random per-open and can't be matched to saved ones,
-      // so for an exact Replace we close every browser and reopen the set.
-      for (const b of Object.values(m.browsers)) m.closeBrowser(b.id);
+    // Close apps not in the snapshot.
+    const wantApps = new Set(layout.apps.map(a => a.id));
+    for (const id of [...m.openWindowIds]) if (!wantApps.has(id)) m.closeWindow(id);
+    // Browser ids are random per-open and can't be matched to saved ones,
+    // so for an exact Replace we close every browser and reopen the set.
+    for (const b of Object.values(m.browsers)) m.closeBrowser(b.id);
 
-      // Open + position apps.
-      for (const a of layout.apps) {
-        m.openWindow(a.id);
-        m.updateSlot({ id: `app-${a.id}`, ...a.geom });
-      }
-      // Reopen browsers with fresh ids + saved geometry.
-      for (const b of layout.browsers) {
-        const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
-        m.openBrowser(id, b.url, b.appId);
-        m.updateSlot({ id: `browser-${id}`, ...b.geom });
-      }
+    // Open + position apps.
+    for (const a of layout.apps) {
+      m.openWindow(a.id);
+      m.updateSlot({ id: `app-${a.id}`, ...a.geom });
+    }
+    // Reopen browsers with fresh ids + saved geometry.
+    for (const b of layout.browsers) {
+      const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
+      m.openBrowser(id, b.url, b.appId);
+      m.updateSlot({ id: `browser-${id}`, ...b.geom });
+    }
 
-      // Own camera/mic: stop what's not wanted, auto-start what is (sticky
-      // Chrome perms mean these usually re-publish without a prompt). The
-      // publish/stop lifecycle keeps the localStorage resume flags honest,
-      // so a later reload matches too.
-      const wantCamera = layout.media.some(x => x.kind === "camera");
-      const wantAudio = layout.media.some(x => x.kind === "audio");
-      if (md.activeCamera && !wantCamera) md.stop("camera");
-      if (md.activeAudio && !wantAudio) md.stop("audio");
-      if (wantCamera && !md.activeCamera) void md.startCamera().catch(() => {});
-      if (wantAudio && !md.activeAudio) void md.startAudio().catch(() => {});
-      if (key) for (const x of layout.media) m.updateSlot({ id: `owner-${key}-${x.kind}`, ...x.geom });
-    },
-    [slug],
-  );
+    // Own camera/mic: stop what's not wanted, auto-start what is (sticky
+    // Chrome perms mean these usually re-publish without a prompt). The
+    // publish/stop lifecycle keeps the localStorage resume flags honest,
+    // so a later reload matches too.
+    const wantCamera = layout.media.some(x => x.kind === "camera");
+    const wantAudio = layout.media.some(x => x.kind === "audio");
+    if (md.activeCamera && !wantCamera) md.stop("camera");
+    if (md.activeAudio && !wantAudio) md.stop("audio");
+    if (wantCamera && !md.activeCamera) void md.startCamera().catch(() => {});
+    if (wantAudio && !md.activeAudio) void md.startAudio().catch(() => {});
+    if (key) for (const x of layout.media) m.updateSlot({ id: `owner-${key}-${x.kind}`, ...x.geom });
+  }, []);
 
-  const deleteLayout = useCallback(
-    (name: string) => {
-      setSavedLayouts(prev => {
-        const next = { ...prev };
-        delete next[name];
-        writeLayouts(slug, next);
-        return next;
-      });
-    },
-    [slug],
-  );
+  const deleteLayout = useCallback((name: string) => {
+    setSavedLayouts(prev => {
+      const next = { ...prev };
+      delete next[name];
+      writeLayouts(next);
+      return next;
+    });
+  }, []);
 
   // Newest-saved first.
   const layoutNames = useMemo(
@@ -952,7 +984,7 @@ function DesktopInner({ slug }: { slug: string }) {
         { label: "Open…", shortcut: "⌘O", disabled: true },
         { divider: true, label: "" },
         { label: "Close Window", shortcut: "⌘W", disabled: true },
-        { label: "Save Layout…", shortcut: "⌘S", onClick: () => setSaveLayoutOpen(true) },
+        { label: "Save Layout…", shortcut: "⌃⇧S", onClick: () => setSaveLayoutOpen(true) },
         {
           label: "Load Layout",
           disabled: layoutNames.length === 0,
@@ -2158,11 +2190,13 @@ function DesktopInner({ slug }: { slug: string }) {
       const isClose = key === "w" || key === "q";
       const isMinimize = key === "m";
       const isArrange = key === "a";
-      if (!isClose && !isMinimize && !isArrange) return;
+      const isSave = key === "s";
+      if (!isClose && !isMinimize && !isArrange && !isSave) return;
       if (isEditable(e.target)) return;
       e.preventDefault();
       if (isMinimize) minimizeTopWindow();
       else if (isArrange) autoArrange();
+      else if (isSave) setSaveLayoutOpen(true);
       else closeTopWindow();
     };
 
