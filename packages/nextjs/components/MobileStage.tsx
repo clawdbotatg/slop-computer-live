@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
 import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
-import { type Box, layoutFor } from "~~/components/mobile/layouts";
+import { type Box, LAYOUT_VARIANTS, type LayoutVariant, layoutFor } from "~~/components/mobile/layouts";
+import { MusicTicker, WalletPill } from "~~/components/mobile/secondaryOverlays";
 import type { PeerMeshState, Publication } from "~~/hooks/usePeerMesh";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
@@ -39,26 +40,31 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
     }
   }, []);
 
-  // [ / ] cycle fake presets — only wired when a preset was set via the
-  // URL (so a normal clip-capture session won't fire layout changes on
-  // accidental keypresses from OBS hotkeys).
-  const cyclePreset = useCallback((dir: -1 | 1) => {
-    setFakePreset(prev => {
-      if (prev === null) return prev;
-      const i = FAKE_PRESETS.indexOf(prev);
-      const next = (i + dir + FAKE_PRESETS.length) % FAKE_PRESETS.length;
-      return FAKE_PRESETS[next];
-    });
-  }, []);
+  // [ / ] cycle through LAYOUT VARIANTS (default, +music, +wallet,
+  // focus, people-only). Wired for ALL sessions (real publishers
+  // included) — that's the whole point of variants.
+  // , / . cycle FAKE PRESETS — only wired when ?fakeLayout= was used,
+  // so a clip-capture session won't accidentally jump publisher sets.
+  const [variantIndex, setVariantIndex] = useState(0);
+  const variant: LayoutVariant = LAYOUT_VARIANTS[variantIndex];
   useEffect(() => {
-    if (fakePreset === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "[") cyclePreset(-1);
-      else if (e.key === "]") cyclePreset(1);
+      if (e.key === "[") {
+        setVariantIndex(i => (i - 1 + LAYOUT_VARIANTS.length) % LAYOUT_VARIANTS.length);
+      } else if (e.key === "]") {
+        setVariantIndex(i => (i + 1) % LAYOUT_VARIANTS.length);
+      } else if (fakePreset !== null && (e.key === "," || e.key === ".")) {
+        const dir = e.key === "." ? 1 : -1;
+        setFakePreset(prev => {
+          if (prev === null) return prev;
+          const i = FAKE_PRESETS.indexOf(prev);
+          return FAKE_PRESETS[(i + dir + FAKE_PRESETS.length) % FAKE_PRESETS.length];
+        });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fakePreset, cyclePreset]);
+  }, [fakePreset]);
 
   // Track the viewport so layoutFor() can compute pixel boxes. We
   // recompute on every resize tick — phones rotate, OBS resizes its
@@ -77,10 +83,15 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
   const realPubs = mesh.publications;
   const pubs = useMemo(() => (fakePreset ? fakePubsFor(fakePreset) : realPubs), [fakePreset, realPubs]);
 
-  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - SUBTITLE_H);
+  // Music ticker eats 32px out of the video area when its variant is
+  // active. Wallet pill is overlay-only (doesn't claim layout space).
+  const showMusicTicker = variant === "music";
+  const showWalletPill = variant === "wallet";
+  const MUSIC_TICKER_H = 32;
+  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - SUBTITLE_H - (showMusicTicker ? MUSIC_TICKER_H : 0));
   const layout = useMemo(
-    () => layoutFor(pubs, { width: viewport.width, height: videoAreaH }),
-    [pubs, viewport.width, videoAreaH],
+    () => layoutFor(pubs, { width: viewport.width, height: videoAreaH }, variant),
+    [pubs, viewport.width, videoAreaH, variant],
   );
 
   return (
@@ -148,9 +159,13 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
         )}
       </div>
 
+      {showMusicTicker ? <MusicTicker mesh={mesh} /> : null}
+
       <MobileSubtitleBand mesh={mesh} height={SUBTITLE_H} />
 
-      {fakePreset ? <PreviewHud preset={fakePreset} layoutKind={layout.kind} /> : null}
+      {showWalletPill ? <WalletPill mesh={mesh} /> : null}
+
+      <VariantHud variant={variant} layoutKind={layout.kind} fakePreset={fakePreset} />
     </div>
   );
 };
@@ -369,40 +384,59 @@ const MobileVideo = ({ stream, fit }: MobileVideoProps) => {
   );
 };
 
-// Preview HUD: shown ONLY when ?fakeLayout was used. Tells the operator
-// which preset is active and how to cycle. Positioned to clear the
-// subtitle band so it doesn't fight with real captions.
-type PreviewHudProps = {
-  preset: FakePreset;
+// Variant HUD: tells the operator which variant is active and how to
+// cycle. Auto-fades after a couple seconds of no changes — the recording
+// shouldn't show a persistent overlay. Only the "default" variant
+// suppresses the HUD entirely (clean by, well, default).
+type VariantHudProps = {
+  variant: LayoutVariant;
   layoutKind: string;
+  fakePreset: FakePreset | null;
 };
 
-const PreviewHud = ({ preset, layoutKind }: PreviewHudProps) => (
-  <div
-    style={{
-      position: "fixed",
-      top: TITLE_BAR_H + 6,
-      right: 6,
-      padding: "4px 8px",
-      background: "rgba(6,8,24,0.78)",
-      border: "1px solid rgba(255,62,201,0.55)",
-      borderRadius: 4,
-      fontFamily: "var(--slop-font-display)",
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "var(--slop-magenta, #ff3ec9)",
-      pointerEvents: "none",
-      zIndex: 9000,
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "flex-end",
-      gap: 2,
-    }}
-  >
-    <span>preview · {preset}</span>
-    <span style={{ color: "var(--slop-text-muted)", fontSize: 9 }}>{layoutKind} · [ ] cycle</span>
-  </div>
-);
+const VariantHud = ({ variant, layoutKind, fakePreset }: VariantHudProps) => {
+  const [visible, setVisible] = useState(false);
+  // Re-show on every variant or preset change, then fade after 2s.
+  useEffect(() => {
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), 2000);
+    return () => window.clearTimeout(id);
+  }, [variant, fakePreset]);
+  // If we're sitting on the default variant AND no fake preset, never
+  // flash the HUD — pristine recording state.
+  if (variant === "default" && fakePreset === null) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: TITLE_BAR_H + 6,
+        right: 6,
+        padding: "4px 8px",
+        background: "rgba(6,8,24,0.85)",
+        border: "1px solid rgba(255,62,201,0.55)",
+        borderRadius: 4,
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 10,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "var(--slop-magenta, #ff3ec9)",
+        pointerEvents: "none",
+        zIndex: 9000,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-end",
+        gap: 2,
+        opacity: visible ? 1 : 0,
+        transition: "opacity 400ms ease",
+      }}
+    >
+      <span>{variant} · [ ] cycle</span>
+      <span style={{ color: "var(--slop-text-muted)", fontSize: 9 }}>
+        {layoutKind}
+        {fakePreset ? ` · preview:${fakePreset} · , .` : ""}
+      </span>
+    </div>
+  );
+};
 
 export default MobileStage;

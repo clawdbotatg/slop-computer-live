@@ -12,6 +12,14 @@ import type { Publication } from "~~/hooks/usePeerMesh";
 
 export type LayoutKind = "idle" | "all-people" | "screen-hero" | "interview" | "panel-w-screen" | "multi-screen";
 
+/** Alternate arrangements the operator can flip through with [ / ].
+ *  Each variant either reinterprets the publication set OR layers a
+ *  secondary overlay (music ticker, wallet pill) on top of the default
+ *  layout. Order matters — it's the cycle order. */
+export type LayoutVariant = "default" | "music" | "wallet" | "focus" | "people-only";
+
+export const LAYOUT_VARIANTS: LayoutVariant[] = ["default", "music", "wallet", "focus", "people-only"];
+
 /** Per-tile render dispatch. `video` = live camera frame; `audio` =
  *  audio-only publication OR a camera that flipped cameraOff (render
  *  the avatar instead); `screen` = screen share (letterbox). */
@@ -69,15 +77,39 @@ function boxFor(pub: Publication, x: number, y: number, w: number, h: number): B
   return { pub, kind, x, y, width: w, height: h, fit: kind === "screen" ? "contain" : "cover" };
 }
 
+/** Filter publications per variant before they enter the layout
+ *  dispatcher. Overlays (music/wallet) are pure layering and don't
+ *  change the publisher set, so they pass through unchanged. */
+function applyVariant(pubs: Publication[], variant: LayoutVariant): Publication[] {
+  if (variant === "focus") {
+    // Pick the first publisher in canonical order (video > screen > audio).
+    // Falls back to the original list if no pubs at all.
+    const { videos, screens, audios } = partition(pubs);
+    const first = videos[0] ?? screens[0] ?? audios[0];
+    return first ? [first] : pubs;
+  }
+  if (variant === "people-only") {
+    return pubs.filter(p => p.kind !== "screen");
+  }
+  return pubs;
+}
+
 /** Compute tile boxes for a given viewport and publisher set. */
-export function layoutFor(pubs: Publication[], videoArea: { width: number; height: number }): LayoutResult {
-  const { screens, videos, audios } = partition(pubs);
+export function layoutFor(
+  pubs: Publication[],
+  videoArea: { width: number; height: number },
+  variant: LayoutVariant = "default",
+): LayoutResult {
+  const filtered = applyVariant(pubs, variant);
+  const { screens, videos, audios } = partition(filtered);
   // Video cameras first, then audio publications — keeps a stable
   // visual order across layout changes (a new audio guest doesn't push
   // an existing talking head out of slot 0).
   const people = [...videos, ...audios];
 
-  const kind = pickLayout(pubs);
+  // Decide the layout based on the FILTERED set so "people-only" picks
+  // all-people instead of trying to render a hidden screen.
+  const kind = pickLayout(filtered);
   const { width: W, height: H } = videoArea;
 
   if (kind === "idle") {
