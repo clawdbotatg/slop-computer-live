@@ -1,6 +1,19 @@
 # PLAN — `?mobileMode=` recording layout
 
-**Status:** design doc, not implemented
+**Status:** SHIPPED — see commit `74fa045` for initial wiring and the
+follow-up commit that made audio first-class. Live on prod.
+
+**Key deltas from the original design (below):**
+- Audio publishers are first-class tiles — they share the stage 50/50
+  with cameras (rendered via `AudioVisualizer`: avatar + waveform).
+  No pill row footer. Layout `all-cameras` renamed to `all-people`.
+- `?fakeLayout=<preset>` URL param + `[ / ]` keys cycle 12 fake
+  publisher sets for previewing every layout without real publishers.
+  Implementation: `components/mobile/fakePubs.ts`.
+- `isGodMode` in `Desktop.tsx` excludes `mobileMode` so the portrait
+  spectator never claims the audio bus, runs server-STT, or sets the
+  public god-viewport bounds (the dashed stream-output rectangle).
+
 **Goal:** a URL-secret-gated spectator session that renders a portrait,
 clip-friendly stage instead of the full desktop. For OBS / phone capture
 of interviews and demos.

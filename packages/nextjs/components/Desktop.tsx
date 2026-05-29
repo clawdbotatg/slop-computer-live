@@ -646,7 +646,11 @@ function DesktopInner({ slug }: { slug: string }) {
   const media = useLocalMedia(addStream, stopStream);
 
   const episode = useEpisodeState(RELAY_HTTP, slug);
-  const isGodMode = session.authenticated && session.spectator === true;
+  // Real god-mode (streaming box) ONLY — not the mobile-clip spectator.
+  // Both sessions carry `spectator: true`, but mobileMode is a portrait
+  // clip stage and must not own the audio bus, run god-STT, or set the
+  // public stream-output bounds (the dashed god-viewport rectangle).
+  const isGodMode = session.authenticated && session.spectator === true && !session.mobileMode;
   // Wake the shared AudioBus on the spectator/streaming box. Every
   // audio element on the page that registers via useAudioBusElement
   // gates on its own god-mode flag too, but the bus itself needs to

@@ -1,16 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AudioPillRow } from "~~/components/mobile/AudioPillRow";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
+import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
 import { type Box, layoutFor } from "~~/components/mobile/layouts";
-import type { PeerMeshState } from "~~/hooks/usePeerMesh";
+import type { PeerMeshState, Publication } from "~~/hooks/usePeerMesh";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
+import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Strip heights (CSS pixels). Picked to read well on portrait phones
 // without eating into the video area. See ops/PLAN-mobile-mode.md.
 const TITLE_BAR_H = 48;
-const AUDIO_ROW_H = 40;
 const SUBTITLE_H = 96;
 
 // Portrait clip stage. Rendered in place of the desktop tree when the
@@ -23,6 +24,42 @@ export type MobileStageProps = {
 };
 
 export const MobileStage = ({ mesh }: MobileStageProps) => {
+  // ?fakeLayout=<preset> URL preview. Operator-facing: lets us see what
+  // each layout looks like without needing real publishers. Read once
+  // on mount and scrub from the URL bar like ?mobileMode= itself.
+  const [fakePreset, setFakePreset] = useState<FakePreset | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    const raw = u.searchParams.get("fakeLayout");
+    if (raw && isFakePreset(raw)) {
+      setFakePreset(raw);
+      u.searchParams.delete("fakeLayout");
+      window.history.replaceState({}, "", u.toString());
+    }
+  }, []);
+
+  // [ / ] cycle fake presets — only wired when a preset was set via the
+  // URL (so a normal clip-capture session won't fire layout changes on
+  // accidental keypresses from OBS hotkeys).
+  const cyclePreset = useCallback((dir: -1 | 1) => {
+    setFakePreset(prev => {
+      if (prev === null) return prev;
+      const i = FAKE_PRESETS.indexOf(prev);
+      const next = (i + dir + FAKE_PRESETS.length) % FAKE_PRESETS.length;
+      return FAKE_PRESETS[next];
+    });
+  }, []);
+  useEffect(() => {
+    if (fakePreset === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "[") cyclePreset(-1);
+      else if (e.key === "]") cyclePreset(1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fakePreset, cyclePreset]);
+
   // Track the viewport so layoutFor() can compute pixel boxes. We
   // recompute on every resize tick — phones rotate, OBS resizes its
   // capture window, etc. Storing in state (not a ref) so React re-renders.
@@ -37,18 +74,13 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const audioOnlyPubs = useMemo(
-    () => mesh.publications.filter(p => p.kind === "audio" || (p.kind === "camera" && p.cameraOff)),
-    [mesh.publications],
-  );
-  const showAudioRow = audioOnlyPubs.length > 0;
+  const realPubs = mesh.publications;
+  const pubs = useMemo(() => (fakePreset ? fakePubsFor(fakePreset) : realPubs), [fakePreset, realPubs]);
 
-  // Video area dimensions: viewport minus the title strip on top and
-  // (subtitle band + optional audio row) on the bottom.
-  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - SUBTITLE_H - (showAudioRow ? AUDIO_ROW_H : 0));
+  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - SUBTITLE_H);
   const layout = useMemo(
-    () => layoutFor(mesh.publications, { width: viewport.width, height: videoAreaH }),
-    [mesh.publications, viewport.width, videoAreaH],
+    () => layoutFor(pubs, { width: viewport.width, height: videoAreaH }),
+    [pubs, viewport.width, videoAreaH],
   );
 
   return (
@@ -116,9 +148,9 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
         )}
       </div>
 
-      {showAudioRow ? <AudioPillRow mesh={mesh} publishers={audioOnlyPubs} height={AUDIO_ROW_H} /> : null}
-
       <MobileSubtitleBand mesh={mesh} height={SUBTITLE_H} />
+
+      {fakePreset ? <PreviewHud preset={fakePreset} layoutKind={layout.kind} /> : null}
     </div>
   );
 };
@@ -130,12 +162,15 @@ type MobileTileProps = {
 
 const MobileTile = ({ box, mesh }: MobileTileProps) => {
   const pub = box.pub;
+  const isFake = pub?.streamId.startsWith("fake-") === true;
   // streamFor logic — spectators only ever see remote streams, so we
-  // skip the local-stream branch entirely.
-  const stream = pub ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
+  // skip the local-stream branch entirely. Fake pubs intentionally
+  // have no stream and render a placeholder block.
+  const stream = pub && !isFake ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
   const peer = pub ? mesh.peers.find(p => p.id === pub.peerId) : null;
   const label = useMemo(() => {
     if (!pub) return "";
+    if (isFake) return pub.label ?? pub.streamId;
     const key = pub.ownerKey.toLowerCase();
     return (
       mesh.customNames[key] ??
@@ -144,7 +179,18 @@ const MobileTile = ({ box, mesh }: MobileTileProps) => {
       pub.label ??
       pub.ownerKey.slice(0, 8)
     );
-  }, [pub, peer, mesh.customNames]);
+  }, [pub, peer, mesh.customNames, isFake]);
+
+  const bands = useMemo(
+    () =>
+      bandsFromIdentity({
+        address: peer?.address ?? null,
+        anonId: peer?.anonId ?? null,
+        handle: peer?.handle ?? null,
+        fallback: pub?.ownerKey ?? pub?.peerId ?? "fake",
+      }),
+    [peer, pub],
+  );
 
   return (
     <div
@@ -158,26 +204,7 @@ const MobileTile = ({ box, mesh }: MobileTileProps) => {
         overflow: "hidden",
       }}
     >
-      {stream ? (
-        <MobileVideo stream={stream} fit={box.fit} />
-      ) : (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--slop-text-muted)",
-            fontSize: 12,
-            fontFamily: "var(--slop-font-display)",
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-          }}
-        >
-          connecting…
-        </div>
-      )}
+      <TileContent box={box} stream={stream} mesh={mesh} bands={bands} isFake={isFake} />
       {/* Speaker label, bottom-left, small. Useful for clip attribution
           when the same tile crops the publisher's face. */}
       {pub ? (
@@ -200,6 +227,7 @@ const MobileTile = ({ box, mesh }: MobileTileProps) => {
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            zIndex: 3,
           }}
         >
           {label}
@@ -208,6 +236,96 @@ const MobileTile = ({ box, mesh }: MobileTileProps) => {
     </div>
   );
 };
+
+type TileContentProps = {
+  box: Box;
+  stream: MediaStream | null;
+  mesh: PeerMeshState;
+  bands: ReturnType<typeof bandsFromIdentity>;
+  isFake: boolean;
+};
+
+const TileContent = ({ box, stream, mesh, bands, isFake }: TileContentProps) => {
+  const pub = box.pub;
+  if (isFake && pub) return <FakeTile box={box} pub={pub} bands={bands} />;
+  if (!stream || !pub) {
+    return <Placeholder label="connecting…" bands={bands} />;
+  }
+  if (box.kind === "audio") {
+    const peer = mesh.peers.find(p => p.id === pub.peerId);
+    return (
+      <AudioVisualizer
+        stream={stream}
+        bands={bands}
+        muted={false}
+        avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+        address={peer?.address ?? null}
+        hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+        controls={false}
+      />
+    );
+  }
+  return <MobileVideo stream={stream} fit={box.fit} />;
+};
+
+type FakeTileProps = {
+  box: Box;
+  pub: Publication;
+  bands: ReturnType<typeof bandsFromIdentity>;
+};
+
+// Placeholder block for fake/preview pubs. Tries to look "production
+// enough" that the operator can tell which tile is which (gradient
+// keyed to identity bands + kind label) without bothering with a real
+// stream. The kind label means "you're previewing what a screen-share
+// would look like here, not a real screen-share."
+const FakeTile = ({ box, pub, bands }: FakeTileProps) => {
+  const kindLabel = box.kind === "video" ? "video" : box.kind === "audio" ? "audio" : "screen";
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        background: `linear-gradient(135deg, ${bands.band1} 0%, ${bands.band2} 50%, ${bands.band3} 100%)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "rgba(6,8,24,0.85)",
+        fontFamily: "var(--slop-font-display)",
+        textTransform: "uppercase",
+        letterSpacing: "0.12em",
+        fontSize: Math.min(box.width, box.height) > 200 ? 18 : 12,
+      }}
+    >
+      {kindLabel} · {pub.label}
+    </div>
+  );
+};
+
+type PlaceholderProps = {
+  label: string;
+  bands: ReturnType<typeof bandsFromIdentity>;
+};
+
+const Placeholder = ({ label, bands }: PlaceholderProps) => (
+  <div
+    style={{
+      width: "100%",
+      height: "100%",
+      background: `radial-gradient(circle, ${bands.band2}33 0%, #000 70%)`,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "var(--slop-text-muted)",
+      fontSize: 12,
+      fontFamily: "var(--slop-font-display)",
+      letterSpacing: "0.1em",
+      textTransform: "uppercase",
+    }}
+  >
+    {label}
+  </div>
+);
 
 // Minimal video element — no publisher controls, no audio bus, no mic
 // mute. The mobile spectator hears the room (audio routes through the
@@ -250,5 +368,41 @@ const MobileVideo = ({ stream, fit }: MobileVideoProps) => {
     />
   );
 };
+
+// Preview HUD: shown ONLY when ?fakeLayout was used. Tells the operator
+// which preset is active and how to cycle. Positioned to clear the
+// subtitle band so it doesn't fight with real captions.
+type PreviewHudProps = {
+  preset: FakePreset;
+  layoutKind: string;
+};
+
+const PreviewHud = ({ preset, layoutKind }: PreviewHudProps) => (
+  <div
+    style={{
+      position: "fixed",
+      top: TITLE_BAR_H + 6,
+      right: 6,
+      padding: "4px 8px",
+      background: "rgba(6,8,24,0.78)",
+      border: "1px solid rgba(255,62,201,0.55)",
+      borderRadius: 4,
+      fontFamily: "var(--slop-font-display)",
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "var(--slop-magenta, #ff3ec9)",
+      pointerEvents: "none",
+      zIndex: 9000,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "flex-end",
+      gap: 2,
+    }}
+  >
+    <span>preview · {preset}</span>
+    <span style={{ color: "var(--slop-text-muted)", fontSize: 9 }}>{layoutKind} · [ ] cycle</span>
+  </div>
+);
 
 export default MobileStage;
