@@ -5,9 +5,12 @@ import type { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCame
 import { denoiseStream } from "~~/utils/noiseSuppression";
 
 export type UseLocalMedia = {
-  startCamera: () => Promise<void>;
-  startScreen: () => Promise<void>;
-  startAudio: () => Promise<void>;
+  // Resolve to true on success, false on failure. The error is also
+  // recorded in `error` for display, but the boolean lets callers (the
+  // reload auto-resume) retry a contended device instead of giving up.
+  startCamera: () => Promise<boolean>;
+  startScreen: () => Promise<boolean>;
+  startAudio: () => Promise<boolean>;
   stop: (kind: StreamKind) => void;
   stopById: (id: string) => void;
   hasScreen: (id: string) => boolean;
@@ -142,8 +145,9 @@ export function useLocalMedia(
   const acquire = useCallback(
     async (kind: StreamKind, getStream: () => Promise<MediaStream>) => {
       // Camera/audio are single-slot: bail if one is already running.
-      // Screen is multi-slot — every call opens a fresh picker.
-      if (kind !== "screen" && activeIds[kind]) return;
+      // Screen is multi-slot — every call opens a fresh picker. Already
+      // active counts as success for the caller's retry bookkeeping.
+      if (kind !== "screen" && activeIds[kind]) return true;
       setError("");
       setBusy(kind);
       try {
@@ -192,8 +196,10 @@ export function useLocalMedia(
             }
           }),
         );
+        return true;
       } catch (e) {
         setError(`${kind}: ${(e as Error).message}`);
+        return false;
       } finally {
         setBusy(null);
       }

@@ -65,6 +65,7 @@ import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useGodModeStt } from "~~/hooks/useGodModeStt";
 import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
+import type { UseLocalMedia } from "~~/hooks/useLocalMedia";
 import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
@@ -1627,28 +1628,55 @@ function DesktopInner({ slug }: { slug: string }) {
     if (session.spectator) return;
     const r = readResume(slug);
 
-    // Retry once on first failure before giving up. Chrome can hold a
-    // brief lock on the camera right after the previous tab unloads
-    // (autoreload from UpgradeModal); a single retry ~1.5s later
-    // catches that case. Only clear the resume flag on the second
-    // failure so a genuine permission-revoked state still gets
-    // cleared eventually rather than looping forever.
-    const tryWithRetry = (kind: "audio" | "camera", start: () => Promise<void>) => {
-      void start().catch(() => {
-        window.setTimeout(() => {
-          void start().catch(() => {
+    // Retry with backoff before giving up. Chrome can hold a lock on the
+    // camera for a few seconds after the previous tab unloads (autoreload
+    // from UpgradeModal), so getUserMedia rejects with a transient
+    // NotReadableError. A single retry wasn't enough margin — the camera
+    // window would silently vanish while the mic (which re-acquires
+    // faster) survived. Spread retries across ~10s of device-release
+    // window and only clear the resume flag once they're all exhausted,
+    // so a genuinely revoked permission still stops looping eventually.
+    //
+    // start* now returns success/failure (acquire swallows the error for
+    // display but reports the boolean), so this retry loop is actually
+    // live — previously start* always resolved and the .catch never ran.
+    // Calls route through the live media ref so a retry that fires after
+    // the user manually started the device sees activeIds and no-ops.
+    const RESUME_RETRY_MS = [1500, 3000, 5000];
+    let cancelled = false;
+    const timers = new Set<number>();
+
+    const tryWithRetry = (kind: "audio" | "camera", start: (m: UseLocalMedia) => Promise<boolean>) => {
+      let attempt = 0;
+      const go = () => {
+        if (cancelled) return;
+        void start(mediaRefForLayouts.current).then(ok => {
+          if (ok || cancelled) return;
+          if (attempt >= RESUME_RETRY_MS.length) {
             const cur = readResume(slug);
             delete cur[kind];
             writeResume(slug, cur);
-          });
-        }, 1500);
-      });
+            return;
+          }
+          const delay = RESUME_RETRY_MS[attempt++]!;
+          const t = window.setTimeout(() => {
+            timers.delete(t);
+            go();
+          }, delay);
+          timers.add(t);
+        });
+      };
+      go();
     };
 
-    if (r.audio) tryWithRetry("audio", () => media.startAudio());
-    if (r.camera) tryWithRetry("camera", () => media.startCamera());
-    // Fire when auth + WS + gesture are all up. media is the live ref
-    // and startAudio/startCamera are idempotent (acquire() bails when
+    if (r.audio) tryWithRetry("audio", m => m.startAudio());
+    if (r.camera) tryWithRetry("camera", m => m.startCamera());
+    return () => {
+      cancelled = true;
+      for (const t of timers) clearTimeout(t);
+    };
+    // Fire when auth + WS + gesture are all up. media is read via the live
+    // ref and startAudio/startCamera are idempotent (acquire() bails when
     // activeIds[kind] is set), so a reconnect re-fire is a no-op.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.authenticated, mesh.connected, gestured]);
@@ -1660,9 +1688,11 @@ function DesktopInner({ slug }: { slug: string }) {
   // the share was live — the menu then offered a second "Screen" instead
   // of "Stop screen".
   const startScreenShare = useCallback(async () => {
-    try {
-      await media.startScreen();
-    } catch {
+    // getDisplayMedia rejecting (user cancelled the picker) now surfaces
+    // as a false return rather than a throw — drop the resume flag so the
+    // next reload doesn't re-offer a placeholder for a share they bailed on.
+    const ok = await media.startScreen();
+    if (!ok) {
       const cur = readResume(slug);
       delete cur.screen;
       writeResume(slug, cur);
