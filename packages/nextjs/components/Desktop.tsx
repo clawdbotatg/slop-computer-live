@@ -1839,9 +1839,37 @@ function DesktopInner({ slug }: { slug: string }) {
   // itself. The prevPubIds ref tracks the previous render's set so we
   // only fire on real removals.
   const prevMyPubIdsRef = useRef<Set<string>>(new Set());
+  // Tracks whether the PREVIOUS render was fully bootstrapped. We only run
+  // the teardown diff while bootstrapped stays continuously true — never
+  // across a reconnect boundary (see below).
+  const wasBootstrappedRef = useRef(false);
   useEffect(() => {
-    if (!mesh.connected || !mesh.bootstrapped || !mesh.myId) return;
+    if (!mesh.connected || !mesh.bootstrapped || !mesh.myId) {
+      // Connection lost (or never up). Remember we're un-bootstrapped so the
+      // next bootstrap re-seeds instead of diffing across the gap.
+      wasBootstrappedRef.current = false;
+      return;
+    }
     const myPubStreamIds = new Set(mesh.publications.filter(p => p.peerId === mesh.myId).map(p => p.streamId));
+
+    // FIRST render after a (re)connect. The relay's fresh `hello` snapshot
+    // does NOT include our own publications: the relay doesn't persist them
+    // across a restart, and our re-announce (usePeerMesh ws.onopen) hasn't
+    // round-tripped back as a `published` yet. Diffing the pre-disconnect
+    // set against this momentarily-empty snapshot looks exactly like
+    // "someone closed my window" — so the teardown below would stop our own
+    // camera/mic AND wipe the resume flag, milliseconds before the
+    // UpgradeModal reloads the page. The reload then finds no resume flag and
+    // the share never comes back. This was THE reason video/audio didn't
+    // survive a deploy. Re-seed from the snapshot and skip teardown on this
+    // cycle; a genuine window-close arrives as an `unpublished` while we stay
+    // bootstrapped, which the normal path below still handles.
+    if (!wasBootstrappedRef.current) {
+      wasBootstrappedRef.current = true;
+      prevMyPubIdsRef.current = myPubStreamIds;
+      return;
+    }
+
     for (const id of prevMyPubIdsRef.current) {
       if (myPubStreamIds.has(id)) continue;
       const s = streamsRef.current.find(x => x.id === id);
