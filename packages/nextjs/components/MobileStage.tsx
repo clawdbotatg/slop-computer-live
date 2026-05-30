@@ -6,15 +6,19 @@ import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
 import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
 import { type Box, LAYOUT_VARIANTS, type LayoutVariant, layoutFor } from "~~/components/mobile/layouts";
 import { MusicTicker, WalletPill } from "~~/components/mobile/secondaryOverlays";
+import { DesktopBackground } from "~~/components/ui/DesktopBackground";
 import type { PeerMeshState, Publication } from "~~/hooks/usePeerMesh";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Strip heights (CSS pixels). Picked to read well on portrait phones
 // without eating into the video area. See ops/PLAN-mobile-mode.md.
-// No subtitle strip — captions float in the seam between tiles
-// (see MobileSubtitleBand + layoutFor.captionY).
-const TITLE_BAR_H = 48;
+// Brand identity now lives in the DesktopBackground (covers the whole
+// stage) + a small SLOP.COMPUTER watermark at the bottom-right, so no
+// fixed-height top bar; tiles get the full viewport. Captions still
+// float in the seam between tiles (see MobileSubtitleBand +
+// layoutFor.captionY).
+const TITLE_BAR_H = 0;
 
 // Portrait clip stage. Rendered in place of the desktop tree when the
 // session has `mobileMode: true`. Pulls publications from the same mesh
@@ -122,7 +126,9 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
       style={{
         position: "fixed",
         inset: 0,
-        background: "#000",
+        // DesktopBackground paints --slop-base as its first layer, so
+        // no need to set background here — would just hide the dotted
+        // dither + starfield.
         color: "var(--slop-text)",
         fontFamily: "var(--slop-font-body)",
         overflow: "hidden",
@@ -130,68 +136,24 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
         flexDirection: "column",
       }}
     >
-      {/* Title strip — reuses the same magenta→purple gradient as the
-          desktop's brand chip (`.slop-menubar__brand` in globals.css)
-          so the mobile clip reads as the same product. Logo mark + the
-          stacked SLOP.COMPUTER wordmark inline. */}
-      <div
-        style={{
-          height: TITLE_BAR_H,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 10,
-          background: "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-purple) 100%)",
-          borderBottom: "1px solid rgba(0,0,0,0.6)",
-          boxShadow:
-            "inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -1px 0 rgba(0,0,0,0.35), 0 2px 10px rgba(255,62,201,0.45)",
-          fontFamily: "var(--slop-font-display)",
-          fontSize: 22,
-          letterSpacing: "0.18em",
-          color: "#fff",
-          textShadow: "0 1px 1px rgba(0,0,0,0.55)",
-        }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/logo-mark.png"
-          alt=""
-          width={28}
-          height={28}
-          aria-hidden
-          style={{ filter: "drop-shadow(0 1px 0 rgba(0,0,0,0.5))", flexShrink: 0 }}
-        />
-        <span>SLOP.COMPUTER</span>
-      </div>
+      {/* Same starfield/dither backdrop as the desktop. Sits behind
+          every tile so any negative space (idle state, screen-share
+          letterboxing, small audio tile gaps) shows the slop look
+          instead of a flat black. */}
+      <DesktopBackground />
 
-      {/* Video area */}
+      {/* Video area — transparent so DesktopBackground shows through
+          any negative space (idle state, screen-share letterboxing). */}
       <div
         style={{
           position: "relative",
           width: viewport.width,
           height: videoAreaH,
           flexShrink: 0,
-          background: "#000",
         }}
       >
         {layout.kind === "idle" ? (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--slop-text-muted)",
-              fontFamily: "var(--slop-font-display)",
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              fontSize: 14,
-            }}
-          >
-            waiting for stream…
-          </div>
+          <IdleMiniIcons />
         ) : (
           layout.boxes.map((box, i) => (
             <MobileTile key={`${box.pub?.streamId ?? i}`} box={box} mesh={mesh} muted={audioMuted} />
@@ -212,6 +174,7 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
 
       <VariantHud variant={variant} layoutKind={layout.kind} fakePreset={fakePreset} />
       <AudioMuteHud muted={audioMuted} />
+      <Watermark />
     </div>
   );
 };
@@ -535,5 +498,128 @@ const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
     </div>
   );
 };
+
+// SLOP.COMPUTER signature in the bottom-right corner. Subtle, low
+// opacity so it doesn't fight with the subtitle chip at the seam —
+// just enough to brand a screenshot or clip thumbnail.
+const Watermark = () => (
+  <div
+    style={{
+      position: "fixed",
+      bottom: 10,
+      right: 12,
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      pointerEvents: "none",
+      zIndex: 60,
+      opacity: 0.75,
+    }}
+  >
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img
+      src="/logo-mark.png"
+      alt=""
+      width={16}
+      height={16}
+      aria-hidden
+      style={{ filter: "drop-shadow(0 1px 0 rgba(0,0,0,0.6))", flexShrink: 0 }}
+    />
+    <span
+      style={{
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 11,
+        letterSpacing: "0.14em",
+        color: "#fff",
+        textShadow: "0 1px 2px rgba(0,0,0,0.85), 0 0 6px rgba(255,62,201,0.45)",
+      }}
+    >
+      SLOP.COMPUTER
+    </span>
+  </div>
+);
+
+// Mini icon grid for the idle state — a stripped-down preview of the
+// desktop icon column so the empty stage still looks like the same
+// product. Pulled from the same /icons/ folder the desktop apps use;
+// labels come from app.label conventions. Centered in the video area.
+const IDLE_ICONS: { id: string; label: string; src: string }[] = [
+  { id: "chat", label: "chat", src: "/icons/chat.png" },
+  { id: "video", label: "video", src: "/icons/video.png" },
+  { id: "music", label: "music", src: "/icons/music.png" },
+  { id: "wallet", label: "wallet", src: "/icons/wallet.png" },
+  { id: "card", label: "card", src: "/icons/card.png" },
+  { id: "chess", label: "chess", src: "/icons/chess.png" },
+];
+
+const IdleMiniIcons = () => (
+  <div
+    style={{
+      position: "absolute",
+      inset: 0,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 18,
+    }}
+  >
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 64px)",
+        gap: 18,
+      }}
+    >
+      {IDLE_ICONS.map(icon => (
+        <div
+          key={icon.id}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 4,
+            opacity: 0.85,
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={icon.src}
+            alt=""
+            width={48}
+            height={48}
+            style={{
+              imageRendering: "pixelated",
+              filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.6))",
+            }}
+          />
+          <span
+            style={{
+              fontFamily: "var(--slop-font-display)",
+              fontSize: 9,
+              letterSpacing: "0.10em",
+              textTransform: "uppercase",
+              color: "var(--slop-text-muted)",
+            }}
+          >
+            {icon.label}
+          </span>
+        </div>
+      ))}
+    </div>
+    <div
+      style={{
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 11,
+        letterSpacing: "0.18em",
+        textTransform: "uppercase",
+        color: "var(--slop-text-muted)",
+        opacity: 0.7,
+      }}
+    >
+      waiting for stream…
+    </div>
+  </div>
+);
 
 export default MobileStage;
