@@ -130,7 +130,10 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
         flexDirection: "column",
       }}
     >
-      {/* Title strip */}
+      {/* Title strip — reuses the same magenta→purple gradient as the
+          desktop's brand chip (`.slop-menubar__brand` in globals.css)
+          so the mobile clip reads as the same product. Logo mark + the
+          stacked SLOP.COMPUTER wordmark inline. */}
       <div
         style={{
           height: TITLE_BAR_H,
@@ -138,16 +141,28 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "rgba(6,8,24,0.85)",
-          borderBottom: "1px solid rgba(63,207,255,0.30)",
+          gap: 10,
+          background: "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-purple) 100%)",
+          borderBottom: "1px solid rgba(0,0,0,0.6)",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -1px 0 rgba(0,0,0,0.35), 0 2px 10px rgba(255,62,201,0.45)",
           fontFamily: "var(--slop-font-display)",
           fontSize: 22,
           letterSpacing: "0.18em",
-          color: "var(--slop-text)",
-          textShadow: "0 0 6px rgba(63,207,255,0.55)",
+          color: "#fff",
+          textShadow: "0 1px 1px rgba(0,0,0,0.55)",
         }}
       >
-        SLOP.COMPUTER
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-mark.png"
+          alt=""
+          width={28}
+          height={28}
+          aria-hidden
+          style={{ filter: "drop-shadow(0 1px 0 rgba(0,0,0,0.5))", flexShrink: 0 }}
+        />
+        <span>SLOP.COMPUTER</span>
       </div>
 
       {/* Video area */}

@@ -132,19 +132,19 @@ const HUNG_TIMEOUT_MS = 20_000;
 // the gap, so the timer is re-armed before it can fire and the line
 // never breaks. At that point we force a hard break (see onresult).
 function lineQuietMsForWords(wordCount: number): number {
-  if (wordCount >= 10) return 50;
-  if (wordCount >= 9) return 100;
-  if (wordCount >= 8) return 150;
-  if (wordCount >= 7) return 200;
-  if (wordCount >= 6) return 300;
-  if (wordCount >= 5) return 400;
+  if (wordCount >= 7) return 50;
+  if (wordCount >= 6) return 100;
+  if (wordCount >= 5) return 150;
+  if (wordCount >= 4) return 200;
+  if (wordCount >= 3) return 300;
+  if (wordCount >= 2) return 400;
   return 500;
 }
 // Hard break: a line this long with NO pause at all gets locked
 // immediately and a fresh line started, regardless of whether the
 // speaker ever goes quiet. Backstop for the nonstop-monologue case the
 // quiet-gap timer can't catch.
-const WORD_FORCE_BREAK = 11;
+const WORD_FORCE_BREAK = 8;
 // Soft cap so a long unbroken monologue doesn't grow the line forever; we
 // keep the most recent chars (the visible tail of a one-line subtitle).
 const LINE_MAX_CHARS = 220;
