@@ -127,13 +127,24 @@ const HUNG_TIMEOUT_MS = 20_000;
 // on the first half-beat. This avoids the LINE_MAX_CHARS tail truncation
 // where the viewer sees a leading "…" and loses the head of the
 // sentence — we'd rather lock early and start a fresh line than let
-// the head fall off the end.
+// the head fall off the end. Past WORD_FORCE_BREAK words the timer alone
+// isn't enough: a true nonstop talker emits interim events faster than
+// the gap, so the timer is re-armed before it can fire and the line
+// never breaks. At that point we force a hard break (see onresult).
 function lineQuietMsForWords(wordCount: number): number {
+  if (wordCount >= 10) return 50;
+  if (wordCount >= 9) return 100;
+  if (wordCount >= 8) return 150;
   if (wordCount >= 7) return 200;
   if (wordCount >= 6) return 300;
   if (wordCount >= 5) return 400;
   return 500;
 }
+// Hard break: a line this long with NO pause at all gets locked
+// immediately and a fresh line started, regardless of whether the
+// speaker ever goes quiet. Backstop for the nonstop-monologue case the
+// quiet-gap timer can't catch.
+const WORD_FORCE_BREAK = 11;
 // Soft cap so a long unbroken monologue doesn't grow the line forever; we
 // keep the most recent chars (the visible tail of a one-line subtitle).
 const LINE_MAX_CHARS = 220;
@@ -198,6 +209,11 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   const lineRef = useRef("");
   const lastDisplayRef = useRef("");
   const quietTimerRef = useRef<number | null>(null);
+  // Set true between a forced hard break (rec.stop) and the recognizer's
+  // restart (onend). Chrome keeps the pre-stop interim in its buffer and
+  // re-emits it as a trailing final/interim; we ignore everything until
+  // the bounce completes so those locked words don't reappear.
+  const suppressUntilRestartRef = useRef(false);
 
   const setAlive = (alive: boolean) => {
     aliveDesiredRef.current = alive;
@@ -238,6 +254,23 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     }
   };
 
+  // Lock `finalText` as a FINAL caption and reset the per-line buffer for
+  // the next line. Shared by the quiet-gap timer (natural pause) and the
+  // forced hard break (WORD_FORCE_BREAK). Clearing the throttled interim
+  // keeps a stale partial from immediately overwriting the final.
+  const lockLine = (finalText: string) => {
+    lineRef.current = "";
+    lastDisplayRef.current = "";
+    if (!finalText) return;
+    if (pendingTimerRef.current != null) {
+      window.clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    pendingInterimRef.current = null;
+    sendLiveCaptionRef.current(finalText, true);
+    setFinalCount(c => c + 1);
+  };
+
   // Drop the current line buffer + pending quiet-gap finalize WITHOUT
   // emitting. Used on teardown and on mute (enabled→false): a half-spoken
   // line must not lock in after the user has muted.
@@ -246,6 +279,7 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       window.clearTimeout(quietTimerRef.current);
       quietTimerRef.current = null;
     }
+    suppressUntilRestartRef.current = false;
     lineRef.current = "";
     lastDisplayRef.current = "";
   };
@@ -274,6 +308,11 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       // Bump the visible-pulse counter so the menubar 🎙️ flashes on
       // every recognition event. Cheap React update — single integer.
       setResultTick(c => c + 1);
+
+      // We forced a hard break and are waiting for the recognizer to
+      // bounce — ignore the trailing pre-stop results so the words we
+      // just locked don't re-render. Cleared in onend at the restart.
+      if (suppressUntilRestartRef.current) return;
 
       // Split this event's results (from resultIndex — earlier ones are
       // already locked) into newly-finalized words and the still-forming
@@ -311,24 +350,32 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       // lock exactly what's on screen as a FINAL (full opacity + HOLD_MS
       // dwell, then fade) and start a fresh line. The gap scales down
       // with line length so long monologues snap on shorter pauses.
-      if (quietTimerRef.current != null) window.clearTimeout(quietTimerRef.current);
+      if (quietTimerRef.current != null) {
+        window.clearTimeout(quietTimerRef.current);
+        quietTimerRef.current = null;
+      }
       const wordCount = display ? display.split(/\s+/).length : 0;
+
+      // Hard break: a nonstop talker never gives the quiet timer a gap to
+      // fire in (each interim event re-arms it), so once the line hits
+      // WORD_FORCE_BREAK words we lock it NOW and bounce the recognizer.
+      // The bounce is the only way to clear Chrome's interim buffer —
+      // without it the same words would re-stream and re-trigger forever.
+      if (wordCount >= WORD_FORCE_BREAK) {
+        lockLine(display);
+        suppressUntilRestartRef.current = true;
+        try {
+          rec.stop(); // onend auto-restarts a fresh, empty utterance
+        } catch {
+          suppressUntilRestartRef.current = false;
+        }
+        return;
+      }
+
       const quietMs = lineQuietMsForWords(wordCount);
       quietTimerRef.current = window.setTimeout(() => {
         quietTimerRef.current = null;
-        const finalText = lastDisplayRef.current.trim();
-        lineRef.current = "";
-        lastDisplayRef.current = "";
-        if (!finalText) return;
-        // Drop any throttled interim still queued so the final isn't
-        // immediately overwritten by a stale partial.
-        if (pendingTimerRef.current != null) {
-          window.clearTimeout(pendingTimerRef.current);
-          pendingTimerRef.current = null;
-        }
-        pendingInterimRef.current = null;
-        sendLiveCaptionRef.current(finalText, true);
-        setFinalCount(c => c + 1);
+        lockLine(lastDisplayRef.current.trim());
       }, quietMs);
     };
 
@@ -347,6 +394,9 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     rec.onend = () => {
       setListening(false);
       startingRef.current = false;
+      // Bounce complete (whether from a forced hard break or Chrome's own
+      // ~60s cut) — the interim buffer is gone, so stop suppressing.
+      suppressUntilRestartRef.current = false;
       if (enabledRef.current) {
         // Chrome cuts the session at ~60s of audio or on silence; restart
         // immediately so the speaker doesn't have to retoggle anything.
