@@ -12,8 +12,9 @@ import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Strip heights (CSS pixels). Picked to read well on portrait phones
 // without eating into the video area. See ops/PLAN-mobile-mode.md.
+// No subtitle strip — captions float in the seam between tiles
+// (see MobileSubtitleBand + layoutFor.captionY).
 const TITLE_BAR_H = 48;
-const SUBTITLE_H = 96;
 
 // Portrait clip stage. Rendered in place of the desktop tree when the
 // session has `mobileMode: true`. Pulls publications from the same mesh
@@ -110,7 +111,7 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
   const showMusicTicker = variant === "music";
   const showWalletPill = variant === "wallet";
   const MUSIC_TICKER_H = 32;
-  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - SUBTITLE_H - (showMusicTicker ? MUSIC_TICKER_H : 0));
+  const videoAreaH = Math.max(0, viewport.height - TITLE_BAR_H - (showMusicTicker ? MUSIC_TICKER_H : 0));
   const layout = useMemo(
     () => layoutFor(pubs, { width: viewport.width, height: videoAreaH }, variant),
     [pubs, viewport.width, videoAreaH, variant],
@@ -183,9 +184,14 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
         )}
       </div>
 
-      {showMusicTicker ? <MusicTicker mesh={mesh} /> : null}
+      {/* Caption chip floats over the video area at the layout's seam
+          Y so words don't cover a face. The +TITLE_BAR_H lifts the
+          seam coordinate (which is relative to the video area) into
+          viewport space, matching how the band positions absolutely
+          inside this root `position: fixed` container. */}
+      <MobileSubtitleBand mesh={mesh} top={TITLE_BAR_H + layout.captionY} />
 
-      <MobileSubtitleBand mesh={mesh} height={SUBTITLE_H} />
+      {showMusicTicker ? <MusicTicker mesh={mesh} /> : null}
 
       {showWalletPill ? <WalletPill mesh={mesh} /> : null}
 
@@ -493,7 +499,7 @@ const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
     <div
       style={{
         position: "fixed",
-        bottom: SUBTITLE_H + 6,
+        bottom: 10,
         right: 6,
         padding: "3px 8px",
         background: "rgba(6,8,24,0.85)",

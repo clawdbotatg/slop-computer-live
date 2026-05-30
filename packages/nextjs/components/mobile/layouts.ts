@@ -44,6 +44,13 @@ export type LayoutResult = {
   kind: LayoutKind;
   /** Tiles to draw inside the video area, in render order. */
   boxes: Box[];
+  /** Y coordinate (relative to the top of the video area) where the
+   *  caption band should sit. Picked to land in the seam between tiles
+   *  whenever possible, so words don't cover a talking head's face.
+   *  Falls back to the bottom of the video area when there's no seam
+   *  (single tile / idle). The band is rendered centered on this Y by
+   *  the consumer — not anchored above or below. */
+  captionY: number;
 };
 
 /** Categorise pubs into screen / video-camera / audio (incl. cameraOff). */
@@ -113,15 +120,20 @@ export function layoutFor(
   const { width: W, height: H } = videoArea;
 
   if (kind === "idle") {
-    return { kind, boxes: [] };
+    return { kind, boxes: [], captionY: H / 2 };
   }
 
   if (kind === "all-people") {
     // Equal vertical stack. 1 person → fullscreen; 2 → 50/50; N → 100/N.
     const h = H / people.length;
+    // Caption sits at the first seam (between tile 0 and tile 1) so
+    // the words don't cover the top talker's face. Single tile has no
+    // seam — drop it at the bottom edge instead.
+    const captionY = people.length >= 2 ? h : H;
     return {
       kind,
       boxes: people.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
+      captionY,
     };
   }
 
@@ -130,6 +142,7 @@ export function layoutFor(
     return {
       kind,
       boxes: screens.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
+      captionY: screens.length >= 2 ? h : H,
     };
   }
 
@@ -139,6 +152,9 @@ export function layoutFor(
     return {
       kind,
       boxes: [boxFor(people[0], 0, 0, W, personH), boxFor(screens[0], 0, personH, W, H - personH)],
+      // Seam between the cam strip and the screen — out of the cam,
+      // not covering the screen's prime real estate either.
+      captionY: personH,
     };
   }
 
@@ -148,7 +164,8 @@ export function layoutFor(
     const colW = W / people.length;
     const boxes: Box[] = people.map((pub, i) => boxFor(pub, i * colW, 0, colW, topH));
     boxes.push(boxFor(screens[0], 0, topH, W, H - topH));
-    return { kind, boxes };
+    // Seam between cams row and screen.
+    return { kind, boxes, captionY: topH };
   }
 
   // multi-screen: 2+ screens. People strip top (20%), screens stacked
@@ -161,5 +178,10 @@ export function layoutFor(
   }
   const screenH = (H - topH) / screens.length;
   screens.forEach((pub, i) => boxes.push(boxFor(pub, 0, topH + i * screenH, W, screenH)));
-  return { kind, boxes };
+  // Seam between the people strip and the first screen. When there's
+  // no people strip (audios=0, videos=0, but screens are all that's
+  // here — caught by screen-hero above actually) drop to first screen
+  // seam.
+  const captionY = topH > 0 ? topH : screenH;
+  return { kind, boxes, captionY };
 }
