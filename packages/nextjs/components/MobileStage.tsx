@@ -13,12 +13,10 @@ import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // Strip heights (CSS pixels). Picked to read well on portrait phones
 // without eating into the video area. See ops/PLAN-mobile-mode.md.
-// Brand identity now lives in the DesktopBackground (covers the whole
-// stage) + a small SLOP.COMPUTER watermark at the bottom-right, so no
-// fixed-height top bar; tiles get the full viewport. Captions still
-// float in the seam between tiles (see MobileSubtitleBand +
-// layoutFor.captionY).
-const TITLE_BAR_H = 0;
+// Brand identity: gradient title bar on top + DesktopBackground filling
+// the rest + ASCII SLOP.COMPUTER watermark bottom-right (matches the
+// desktop). Captions float in the seam between tiles.
+const TITLE_BAR_H = 48;
 
 // Portrait clip stage. Rendered in place of the desktop tree when the
 // session has `mobileMode: true`. Pulls publications from the same mesh
@@ -141,6 +139,42 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
           letterboxing, small audio tile gaps) shows the slop look
           instead of a flat black. */}
       <DesktopBackground />
+
+      {/* Title strip — magenta→purple gradient + logo mark, mirrors
+          the desktop's brand chip (.slop-menubar__brand in globals.css)
+          so the mobile clip reads as the same product. */}
+      <div
+        style={{
+          height: TITLE_BAR_H,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 10,
+          background: "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-purple) 100%)",
+          borderBottom: "1px solid rgba(0,0,0,0.6)",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -1px 0 rgba(0,0,0,0.35), 0 2px 10px rgba(255,62,201,0.45)",
+          fontFamily: "var(--slop-font-display)",
+          fontSize: 22,
+          letterSpacing: "0.18em",
+          color: "#fff",
+          textShadow: "0 1px 1px rgba(0,0,0,0.55)",
+          position: "relative",
+          zIndex: 5,
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-mark.png"
+          alt=""
+          width={28}
+          height={28}
+          aria-hidden
+          style={{ filter: "drop-shadow(0 1px 0 rgba(0,0,0,0.5))", flexShrink: 0 }}
+        />
+        <span>SLOP.COMPUTER</span>
+      </div>
 
       {/* Video area — transparent so DesktopBackground shows through
           any negative space (idle state, screen-share letterboxing). */}
@@ -499,126 +533,163 @@ const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
   );
 };
 
-// SLOP.COMPUTER signature in the bottom-right corner. Subtle, low
-// opacity so it doesn't fight with the subtitle chip at the seam —
-// just enough to brand a screenshot or clip thumbnail.
+// Same chunky SLOP.COMPUTER ASCII watermark the desktop floats above
+// the trash can — pulled into the mobile bottom-right corner so the
+// frame reads as the same product. Pure decoration; pointer-events
+// off so it never intercepts. Scaled smaller than the desktop default
+// (~1.18vw) since portrait viewports are narrower.
+const SLOP_ASCII = `███████╗██╗      ██████╗ ██████╗  ██████╗ ██████╗ ███╗   ███╗██████╗ ██╗   ██╗████████╗███████╗██████╗
+██╔════╝██║     ██╔═══██╗██╔══██╗██╔════╝██╔═══██╗████╗ ████║██╔══██╗██║   ██║╚══██╔══╝██╔════╝██╔══██╗
+███████╗██║     ██║   ██║██████╔╝██║     ██║   ██║██╔████╔██║██████╔╝██║   ██║   ██║   █████╗  ██████╔╝
+╚════██║██║     ██║   ██║██╔═══╝ ██║     ██║   ██║██║╚██╔╝██║██╔═══╝ ██║   ██║   ██║   ██╔══╝  ██╔══██╗
+███████║███████╗╚██████╔╝██║██╗  ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ╚██████╔╝   ██║   ███████╗██║  ██║
+╚══════╝╚══════╝ ╚═════╝ ╚═╝╚═╝   ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝      ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝`;
+
 const Watermark = () => (
-  <div
+  <pre
+    aria-hidden
     style={{
       position: "fixed",
-      bottom: 10,
-      right: 12,
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
+      right: 8,
+      bottom: 8,
+      display: "inline-block",
+      width: "auto",
+      margin: 0,
+      padding: 0,
       pointerEvents: "none",
-      zIndex: 60,
-      opacity: 0.75,
+      userSelect: "none",
+      zIndex: 0, // behind tiles + HUDs, on top of DesktopBackground
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      // Hugs the portrait viewport: ~99 cols × 0.6em = ~60vw at this size.
+      fontSize: "max(3px, 0.95vw)",
+      lineHeight: 1,
+      letterSpacing: 0,
+      whiteSpace: "pre",
+      textAlign: "left",
+      color: "var(--slop-magenta, #ff3ec9)",
+      opacity: 0.2,
+      textShadow: "0 0 6px rgba(255,62,201,0.25)",
+      overflow: "hidden",
     }}
   >
-    {/* eslint-disable-next-line @next/next/no-img-element */}
-    <img
-      src="/logo-mark.png"
-      alt=""
-      width={16}
-      height={16}
-      aria-hidden
-      style={{ filter: "drop-shadow(0 1px 0 rgba(0,0,0,0.6))", flexShrink: 0 }}
-    />
-    <span
-      style={{
-        fontFamily: "var(--slop-font-display)",
-        fontSize: 11,
-        letterSpacing: "0.14em",
-        color: "#fff",
-        textShadow: "0 1px 2px rgba(0,0,0,0.85), 0 0 6px rgba(255,62,201,0.45)",
-      }}
-    >
-      SLOP.COMPUTER
-    </span>
-  </div>
+    {SLOP_ASCII}
+  </pre>
 );
 
-// Mini icon grid for the idle state — a stripped-down preview of the
-// desktop icon column so the empty stage still looks like the same
-// product. Pulled from the same /icons/ folder the desktop apps use;
-// labels come from app.label conventions. Centered in the video area.
-const IDLE_ICONS: { id: string; label: string; src: string }[] = [
-  { id: "chat", label: "chat", src: "/icons/chat.png" },
-  { id: "video", label: "video", src: "/icons/video.png" },
-  { id: "music", label: "music", src: "/icons/music.png" },
-  { id: "wallet", label: "wallet", src: "/icons/wallet.png" },
-  { id: "card", label: "card", src: "/icons/card.png" },
-  { id: "chess", label: "chess", src: "/icons/chess.png" },
+// Mini desktop-icon grid for the idle state. Mirrors the desktop's
+// AUTO_ARRANGE_COLUMNS layout — same apps, same column order — so the
+// mobile clip's empty stage looks like a tiny snapshot of the slop
+// desktop. Anchored to the TOP-RIGHT of the video area (icons hug the
+// right edge the way they would on a real desktop monitor).
+//
+// Icon paths mirror DEFAULT_APPS in packages/relay/src/index.ts. If you
+// add an app there, add it here too — there's no shared frontend
+// constant yet and the mobile stage is read-only spectator so we
+// don't need to fetch the actual app list dynamically for this preview.
+const IDLE_ICON_COLUMNS: ReadonlyArray<ReadonlyArray<{ id: string; src: string }>> = [
+  [
+    { id: "chat", src: "/icons/chat.png" },
+    { id: "video", src: "/icons/video.png" },
+    { id: "audio", src: "/icons/mic.png" },
+    { id: "screen", src: "/icons/screen-sharing.png" },
+  ],
+  [
+    { id: "clock", src: "/icons/clock.png" },
+    { id: "card", src: "/icons/card.png" },
+    { id: "research", src: "/icons/research.png" },
+    { id: "transcript", src: "/icons/transcript.png" },
+  ],
+  [
+    { id: "glossary", src: "/icons/glossary.png" },
+    { id: "notes", src: "/icons/notes.png" },
+    { id: "todo", src: "/icons/todo.png" },
+    { id: "qr", src: "/icons/qr.png" },
+  ],
+  [
+    { id: "nifty-ink", src: "/icons/paint.png" },
+    { id: "abi-ninja", src: "/icons/ninja.png" },
+    { id: "gas", src: "/icons/gas.png" },
+    { id: "news", src: "/icons/news.png" },
+  ],
+  [
+    { id: "browser", src: "/icons/browser.png" },
+    { id: "wallet", src: "/icons/wallet.png" },
+    { id: "ens", src: "/icons/ens.png" },
+    { id: "music", src: "/icons/music.png" },
+  ],
+  [
+    { id: "pong", src: "/icons/pong.png" },
+    { id: "chess", src: "/icons/chess.png" },
+    { id: "worm", src: "/icons/worm.png" },
+  ],
 ];
+
+const MOBILE_ICON_SIZE = 40;
+const MOBILE_ICON_COL_PITCH = 56;
+const MOBILE_ICON_ROW_PITCH = 60;
 
 const IdleMiniIcons = () => (
   <div
     style={{
       position: "absolute",
-      inset: 0,
+      top: 16,
+      right: 12,
       display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 18,
+      flexDirection: "row-reverse",
+      alignItems: "flex-start",
+      gap: MOBILE_ICON_COL_PITCH - MOBILE_ICON_SIZE,
     }}
   >
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(3, 64px)",
-        gap: 18,
-      }}
-    >
-      {IDLE_ICONS.map(icon => (
-        <div
-          key={icon.id}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 4,
-            opacity: 0.85,
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={icon.src}
-            alt=""
-            width={48}
-            height={48}
+    {IDLE_ICON_COLUMNS.map((col, colIdx) => (
+      <div
+        key={colIdx}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: MOBILE_ICON_ROW_PITCH - MOBILE_ICON_SIZE - 12,
+        }}
+      >
+        {col.map(icon => (
+          <div
+            key={icon.id}
             style={{
-              imageRendering: "pixelated",
-              filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.6))",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "var(--slop-font-display)",
-              fontSize: 9,
-              letterSpacing: "0.10em",
-              textTransform: "uppercase",
-              color: "var(--slop-text-muted)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 2,
+              opacity: 0.88,
+              width: MOBILE_ICON_SIZE + 8,
             }}
           >
-            {icon.label}
-          </span>
-        </div>
-      ))}
-    </div>
-    <div
-      style={{
-        fontFamily: "var(--slop-font-display)",
-        fontSize: 11,
-        letterSpacing: "0.18em",
-        textTransform: "uppercase",
-        color: "var(--slop-text-muted)",
-        opacity: 0.7,
-      }}
-    >
-      waiting for stream…
-    </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={icon.src}
+              alt=""
+              width={MOBILE_ICON_SIZE}
+              height={MOBILE_ICON_SIZE}
+              style={{
+                imageRendering: "pixelated",
+                filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.65))",
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 8,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--slop-text-muted)",
+                textShadow: "0 1px 2px rgba(0,0,0,0.85)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {icon.id}
+            </span>
+          </div>
+        ))}
+      </div>
+    ))}
   </div>
 );
 
