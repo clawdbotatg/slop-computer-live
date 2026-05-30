@@ -1841,7 +1841,8 @@ function DesktopInner({ slug }: { slug: string }) {
   const prevMyPubIdsRef = useRef<Set<string>>(new Set());
   // Tracks whether the PREVIOUS render was fully bootstrapped. We only run
   // the teardown diff while bootstrapped stays continuously true — never
-  // across a reconnect boundary (see below).
+  // across a reconnect boundary (see below); this is what lets a share
+  // survive a deploy's relay restart.
   const wasBootstrappedRef = useRef(false);
   useEffect(() => {
     if (!mesh.connected || !mesh.bootstrapped || !mesh.myId) {
