@@ -75,6 +75,19 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
     return () => window.removeEventListener("keydown", onKey);
   }, [fakePreset]);
 
+  // Prepend "[mobile]" to the document title so the operator can
+  // tell the mobile-mode tab apart from the god-mode tab in the
+  // browser's tab strip / window list. Restore the original on
+  // unmount in case Desktop ever re-mounts a non-mobile MobileStage.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const original = document.title;
+    document.title = `[mobile] ${original}`;
+    return () => {
+      document.title = original;
+    };
+  }, []);
+
   // Track the viewport so layoutFor() can compute pixel boxes. We
   // recompute on every resize tick — phones rotate, OBS resizes its
   // capture window, etc. Storing in state (not a ref) so React re-renders.
