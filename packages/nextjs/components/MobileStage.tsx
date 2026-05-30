@@ -456,16 +456,26 @@ const VariantHud = ({ variant, layoutKind, fakePreset }: VariantHudProps) => {
   );
 };
 
-// Audio mute indicator: a small persistent badge so the operator
-// always knows whether mobile is audible. Bottom-right corner, above
-// the subtitle band's right edge. Hidden when audio is on (clean
-// recording state); shown when muted (the default).
+// Audio mute indicator: flashes briefly on `m` toggle, fades out after
+// 2s. Same fade pattern as the variant HUD — recording state stays
+// clean unless the operator just changed something. Skips the very
+// first render so we don't flash "muted" on every page load.
 type AudioMuteHudProps = {
   muted: boolean;
 };
 
 const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
-  if (!muted) return null;
+  const [visible, setVisible] = useState(false);
+  const firstRef = useRef(true);
+  useEffect(() => {
+    if (firstRef.current) {
+      firstRef.current = false;
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), 2000);
+    return () => window.clearTimeout(id);
+  }, [muted]);
   return (
     <div
       style={{
@@ -473,19 +483,21 @@ const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
         bottom: SUBTITLE_H + 6,
         right: 6,
         padding: "3px 8px",
-        background: "rgba(6,8,24,0.78)",
+        background: "rgba(6,8,24,0.85)",
         border: "1px solid rgba(63,207,255,0.40)",
         borderRadius: 4,
         fontFamily: "var(--slop-font-display)",
         fontSize: 9,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
-        color: "var(--slop-text-muted)",
+        color: muted ? "var(--slop-text-muted)" : "var(--slop-cyan, #3fcfff)",
         pointerEvents: "none",
         zIndex: 9000,
+        opacity: visible ? 1 : 0,
+        transition: "opacity 400ms ease",
       }}
     >
-      🔇 muted · m
+      {muted ? "🔇 muted" : "🔊 audible"} · m
     </div>
   );
 };
