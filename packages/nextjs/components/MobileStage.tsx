@@ -47,12 +47,21 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
   // so a clip-capture session won't accidentally jump publisher sets.
   const [variantIndex, setVariantIndex] = useState(0);
   const variant: LayoutVariant = LAYOUT_VARIANTS[variantIndex];
+  // Audio defaults to MUTED. When the operator has both a god-mode tab
+  // (stream output) and a mobile-mode tab (clip capture) open on the
+  // same machine, the same room audio plays from both windows and you
+  // get a reverb. Mute the mobile path; OBS Browser Source can still
+  // capture audio directly without going through system speakers.
+  // Press `m` to toggle audible for previewing.
+  const [audioMuted, setAudioMuted] = useState(true);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "[") {
         setVariantIndex(i => (i - 1 + LAYOUT_VARIANTS.length) % LAYOUT_VARIANTS.length);
       } else if (e.key === "]") {
         setVariantIndex(i => (i + 1) % LAYOUT_VARIANTS.length);
+      } else if (e.key === "m" || e.key === "M") {
+        setAudioMuted(m => !m);
       } else if (fakePreset !== null && (e.key === "," || e.key === ".")) {
         const dir = e.key === "." ? 1 : -1;
         setFakePreset(prev => {
@@ -155,7 +164,9 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
             waiting for stream…
           </div>
         ) : (
-          layout.boxes.map((box, i) => <MobileTile key={`${box.pub?.streamId ?? i}`} box={box} mesh={mesh} />)
+          layout.boxes.map((box, i) => (
+            <MobileTile key={`${box.pub?.streamId ?? i}`} box={box} mesh={mesh} muted={audioMuted} />
+          ))
         )}
       </div>
 
@@ -166,6 +177,7 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
       {showWalletPill ? <WalletPill mesh={mesh} /> : null}
 
       <VariantHud variant={variant} layoutKind={layout.kind} fakePreset={fakePreset} />
+      <AudioMuteHud muted={audioMuted} />
     </div>
   );
 };
@@ -173,9 +185,10 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
 type MobileTileProps = {
   box: Box;
   mesh: PeerMeshState;
+  muted: boolean;
 };
 
-const MobileTile = ({ box, mesh }: MobileTileProps) => {
+const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
   const pub = box.pub;
   const isFake = pub?.streamId.startsWith("fake-") === true;
   // streamFor logic — spectators only ever see remote streams, so we
@@ -219,7 +232,7 @@ const MobileTile = ({ box, mesh }: MobileTileProps) => {
         overflow: "hidden",
       }}
     >
-      <TileContent box={box} stream={stream} mesh={mesh} bands={bands} isFake={isFake} />
+      <TileContent box={box} stream={stream} mesh={mesh} bands={bands} isFake={isFake} muted={muted} />
       {/* Speaker label, bottom-left, small. Useful for clip attribution
           when the same tile crops the publisher's face. */}
       {pub ? (
@@ -258,9 +271,10 @@ type TileContentProps = {
   mesh: PeerMeshState;
   bands: ReturnType<typeof bandsFromIdentity>;
   isFake: boolean;
+  muted: boolean;
 };
 
-const TileContent = ({ box, stream, mesh, bands, isFake }: TileContentProps) => {
+const TileContent = ({ box, stream, mesh, bands, isFake, muted }: TileContentProps) => {
   const pub = box.pub;
   if (isFake && pub) return <FakeTile box={box} pub={pub} bands={bands} />;
   if (!stream || !pub) {
@@ -272,7 +286,7 @@ const TileContent = ({ box, stream, mesh, bands, isFake }: TileContentProps) => 
       <AudioVisualizer
         stream={stream}
         bands={bands}
-        muted={false}
+        muted={muted}
         avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
         address={peer?.address ?? null}
         hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
@@ -280,7 +294,7 @@ const TileContent = ({ box, stream, mesh, bands, isFake }: TileContentProps) => 
       />
     );
   }
-  return <MobileVideo stream={stream} fit={box.fit} />;
+  return <MobileVideo stream={stream} fit={box.fit} muted={muted} />;
 };
 
 type FakeTileProps = {
@@ -343,15 +357,17 @@ const Placeholder = ({ label, bands }: PlaceholderProps) => (
 );
 
 // Minimal video element — no publisher controls, no audio bus, no mic
-// mute. The mobile spectator hears the room (audio routes through the
-// element by default). Object-fit varies per tile (cover for cameras,
-// contain for screen shares).
+// mute. Object-fit varies per tile (cover for cameras, contain for
+// screen shares). The `muted` prop is gated by MobileStage's `m`
+// toggle — defaults to muted to prevent reverb when a god-mode tab is
+// already piping the room's audio.
 type MobileVideoProps = {
   stream: MediaStream;
   fit: "cover" | "contain";
+  muted: boolean;
 };
 
-const MobileVideo = ({ stream, fit }: MobileVideoProps) => {
+const MobileVideo = ({ stream, fit, muted }: MobileVideoProps) => {
   const ref = useRef<HTMLVideoElement>(null);
   // Same autoplay-retry-on-first-gesture pattern the desktop VideoView
   // uses — Chromium occasionally leaves a fresh srcObject paused on
@@ -373,6 +389,7 @@ const MobileVideo = ({ stream, fit }: MobileVideoProps) => {
       }}
       autoPlay
       playsInline
+      muted={muted}
       style={{
         width: "100%",
         height: "100%",
@@ -435,6 +452,40 @@ const VariantHud = ({ variant, layoutKind, fakePreset }: VariantHudProps) => {
         {layoutKind}
         {fakePreset ? ` · preview:${fakePreset} · , .` : ""}
       </span>
+    </div>
+  );
+};
+
+// Audio mute indicator: a small persistent badge so the operator
+// always knows whether mobile is audible. Bottom-right corner, above
+// the subtitle band's right edge. Hidden when audio is on (clean
+// recording state); shown when muted (the default).
+type AudioMuteHudProps = {
+  muted: boolean;
+};
+
+const AudioMuteHud = ({ muted }: AudioMuteHudProps) => {
+  if (!muted) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: SUBTITLE_H + 6,
+        right: 6,
+        padding: "3px 8px",
+        background: "rgba(6,8,24,0.78)",
+        border: "1px solid rgba(63,207,255,0.40)",
+        borderRadius: 4,
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 9,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "var(--slop-text-muted)",
+        pointerEvents: "none",
+        zIndex: 9000,
+      }}
+    >
+      🔇 muted · m
     </div>
   );
 };
