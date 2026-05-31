@@ -1236,11 +1236,18 @@ export const MusicPlayerWindow = ({
                 <>
                   <LoadingBar
                     cells={14}
+                    // First-cold-load downloads ~20 tracks from Jamendo
+                    // sequentially (~3.5s each, measured), so a fresh
+                    // genre takes ~60–75s. Drive the bar off that ETA so
+                    // it creeps over the real wait instead of looping.
+                    // Already-cached genres resolve in <1s and the bar
+                    // barely shows.
+                    estimateMs={70000}
                     caption={`FETCHING ${activeGenre.toUpperCase()}`}
                     style={{ fontSize: 11, color: "var(--slop-lime, #bcff5b)" }}
                   />
                   <span style={{ fontSize: 9, color: "var(--slop-text-muted)" }}>
-                    pulling trending tracks from jamendo (~30s)
+                    downloading this week&apos;s tracks from jamendo — first load can take a minute or two
                   </span>
                 </>
               ) : (

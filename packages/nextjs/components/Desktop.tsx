@@ -84,6 +84,66 @@ const DEFAULT_BASE_X = 80;
 const DEFAULT_BASE_Y = 280;
 const DEFAULT_STEP = 30;
 
+// Sensible maximum size (px) per window kind, applied by every "Arrange …"
+// action so auto-layout never balloons a window past a useful size. Most
+// windows look best far smaller than the space a naive tiler would hand them
+// — SlopAmp, the clock, QR, etc. The layouts still position windows to use
+// the whole stage, but each one is clamped to its max and centered in the
+// cell it was allotted.
+//
+// Screen shares are deliberately ABSENT: they're the one window that should
+// be free to fill the stage (see arrangeForScreenShare + the "screen" case
+// in maxSizeForSlot, which returns Infinity).
+const WINDOW_MAX: Record<string, { w: number; h: number }> = {
+  music: { w: 260, h: 360 },
+  chat: { w: 360, h: 620 },
+  clock: { w: 380, h: 320 },
+  qr: { w: 320, h: 360 },
+  card: { w: 520, h: 660 },
+  wallet: { w: 440, h: 600 },
+  chess: { w: 520, h: 560 },
+  pong: { w: 680, h: 520 },
+  worm: { w: 520, h: 520 },
+  gas: { w: 420, h: 520 },
+  ens: { w: 460, h: 440 },
+  glossary: { w: 520, h: 620 },
+  notes: { w: 560, h: 640 },
+  todo: { w: 460, h: 600 },
+  news: { w: 560, h: 700 },
+  research: { w: 600, h: 720 },
+  transcript: { w: 520, h: 720 },
+  camera: { w: 440, h: 340 },
+  audio: { w: 340, h: 220 },
+  browser: { w: 1100, h: 820 },
+};
+
+// Windows with no explicit entry above get a comfortably large default — big
+// enough to be useful, never the whole stage.
+const WINDOW_MAX_DEFAULT = { w: 640, h: 560 };
+
+// Resolve a slot id back to the max-size bucket it belongs to. App windows
+// carry their kind in the apps catalog (music/chess/… or "browser" for the
+// locked dapps); publication slots encode their kind in the id; browser
+// windows are always "browser". Screen shares return Infinity — the single
+// window allowed to fill the stage.
+function maxSizeForSlot(id: string, appKindById: Record<string, string | undefined>): { w: number; h: number } {
+  let kind = "";
+  if (id.startsWith("app-")) {
+    const appId = id.slice("app-".length);
+    kind = appKindById[appId] ?? appId;
+  } else if (id.startsWith("browser-")) {
+    kind = "browser";
+  } else if (id.includes("-screen-")) {
+    kind = "screen";
+  } else if (id.endsWith("-camera")) {
+    kind = "camera";
+  } else if (id.endsWith("-audio")) {
+    kind = "audio";
+  }
+  if (kind === "screen") return { w: Infinity, h: Infinity };
+  return WINDOW_MAX[kind] ?? WINDOW_MAX_DEFAULT;
+}
+
 // Apps catalog comes from the relay's /apps?slug= endpoint on every
 // request: built-in DEFAULT_APPS + the global hot-apps overlay + any apps
 // scoped to this room. Add a global app by editing hot-apps.json (or POST
@@ -1303,6 +1363,10 @@ function DesktopInner({ slug }: { slug: string }) {
   meshOpenWindowIdsRef.current = mesh.openWindowIds;
   const meshBrowsersRefForArrange = useRef(mesh.browsers);
   meshBrowsersRefForArrange.current = mesh.browsers;
+  // App-id → kind map for the max-size lookup (most ids equal their kind;
+  // the locked dapps and the generic browser app resolve to "browser").
+  const appsRefForArrange = useRef(apps);
+  appsRefForArrange.current = apps;
 
   const arrangeForScreenShare = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -1332,16 +1396,25 @@ function DesktopInner({ slug }: { slug: string }) {
       });
     });
 
-    // Cameras stack equally down the right strip.
+    // Cameras stack down the right strip, each clamped to a tidy webcam tile
+    // — never stretched to fill the column. A single camera sits at the top
+    // at its natural size rather than ballooning down the whole edge.
     if (cameras.length > 0) {
+      const camMax = WINDOW_MAX.camera;
+      const camW = Math.min(RIGHT_STRIP, camMax.w);
+      // Keep the reference tile's aspect so the narrow strip doesn't produce
+      // a tall, skinny camera.
+      const camAspectH = Math.round(camW * (camMax.h / camMax.w));
       const totalGap = (cameras.length - 1) * PAD;
-      const camHeight = Math.max(120, Math.floor((vh - TOP_INSET - PAD * 2 - totalGap) / cameras.length));
+      const split = Math.floor((vh - TOP_INSET - PAD * 2 - totalGap) / cameras.length);
+      const camHeight = Math.max(120, Math.min(split, camAspectH, camMax.h));
+      const camX = vw - RIGHT_STRIP - PAD + Math.round((RIGHT_STRIP - camW) / 2);
       cameras.forEach((pub, i) => {
         meshUpdateSlotForArrange({
           id: slotIdFor(pub),
-          x: vw - RIGHT_STRIP - PAD,
+          x: camX,
           y: TOP_INSET + PAD + i * (camHeight + PAD),
-          width: RIGHT_STRIP,
+          width: camW,
           height: camHeight,
           z: z++,
         });
@@ -1371,16 +1444,14 @@ function DesktopInner({ slug }: { slug: string }) {
     const layout = layouts[n - 1]!;
     const gridW = vw - PAD * 2;
     const gridH = vh - TOP_INSET - PAD * 2;
-    // Fit each cell to the grid, then cap it. Uncapped, a 1- or 2-camera
-    // call ballooned each tile to span the full viewport height — way too
-    // big. Capped cells stay a tidy webcam-sized tile, and the whole
+    // Fit each cell to the grid, then cap it to the camera tile max. Uncapped,
+    // a 1- or 2-camera call ballooned each tile to span the full viewport —
+    // way too big. Capped cells stay a tidy webcam-sized tile, and the whole
     // block is centered rather than anchored to the top-left corner.
-    const MAX_CELL_W = 480;
-    const MAX_CELL_H = 400;
     const fitW = Math.floor((gridW - (layout.cols - 1) * PAD) / layout.cols);
     const fitH = Math.floor((gridH - (layout.rows - 1) * PAD) / layout.rows);
-    const cellW = Math.min(fitW, MAX_CELL_W);
-    const cellH = Math.min(fitH, MAX_CELL_H);
+    const cellW = Math.min(fitW, WINDOW_MAX.camera.w);
+    const cellH = Math.min(fitH, WINDOW_MAX.camera.h);
 
     const blockW = layout.cols * cellW + (layout.cols - 1) * PAD;
     const blockH = layout.rows * cellH + (layout.rows - 1) * PAD;
@@ -1495,16 +1566,27 @@ function DesktopInner({ slug }: { slug: string }) {
     const areaW = vw - PAD * 2;
     const areaH = vh - TOP_INSET - PAD * 2;
 
+    const appKindById: Record<string, string | undefined> = {};
+    for (const a of appsRefForArrange.current) appKindById[a.id] = a.kind ?? "browser";
+
     let z = Math.max(0, ...Object.values(slots).map(s => s.z), 5) + 1;
-    const set = (id: string, x: number, y: number, w: number, h: number) =>
+    // Clamp each window to its sensible max, then center the (possibly
+    // smaller) window inside the cell the strategy allotted it — so a layout
+    // that hands a window the whole stage still renders it at a usable size
+    // instead of full-screen. Screen shares have no max and fill their cell.
+    const set = (id: string, x: number, y: number, w: number, h: number) => {
+      const max = maxSizeForSlot(id, appKindById);
+      const fw = Math.min(w, max.w);
+      const fh = Math.min(h, max.h);
       meshUpdateSlotForArrange({
         id,
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.max(180, Math.round(w)),
-        height: Math.max(120, Math.round(h)),
+        x: Math.round(x + (w - fw) / 2),
+        y: Math.round(y + (h - fh) / 2),
+        width: Math.max(180, Math.round(fw)),
+        height: Math.max(120, Math.round(fh)),
         z: z++,
       });
+    };
 
     const strategies = ["grid", "cascade", "master", "columns", "spotlight"] as const;
     const strategy = strategies[autoArrangeCycleRef.current % strategies.length]!;

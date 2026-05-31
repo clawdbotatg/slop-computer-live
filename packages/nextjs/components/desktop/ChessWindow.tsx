@@ -30,18 +30,20 @@ type Props = {
 
 export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
   const game = mesh.chessGame;
-  const wager = mesh.wager;
+  // Only a chess-owned escrow session drives this window.
+  const escrow = mesh.escrow && mesh.escrow.game === "chess" ? mesh.escrow : null;
+  const liveGame = !!game && game.status === "active";
   // The wager takes over the whole window for everything except the
-  // actual play phase: pre-game funding/arming, and the post-game payout
-  // "screen" the user described. During `playing` we show the board with
-  // a thin pot banner; with no wager, the normal lobby + a propose card.
+  // actual play phase: collecting buy-ins (open), the pre-game "ready"
+  // gate (locked, no live game yet), and the post-game payout "screen"
+  // (settling/settled). During play we show the board + a thin pot
+  // banner; with no session, the normal lobby + a propose card.
   const wagerTakesOver =
-    !!wager &&
-    (wager.status === "funding" ||
-      wager.status === "armed" ||
-      wager.status === "settling" ||
-      wager.status === "refunding" ||
-      wager.status === "settled");
+    !!escrow &&
+    (escrow.status === "open" ||
+      (escrow.status === "locked" && !game) ||
+      escrow.status === "settling" ||
+      escrow.status === "settled");
   return (
     <div
       style={{
@@ -54,10 +56,10 @@ export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
       }}
     >
       {wagerTakesOver ? (
-        <WagerStage mesh={mesh} wager={wager} />
+        <WagerStage mesh={mesh} escrow={escrow} />
       ) : (
         <>
-          {wager?.status === "playing" && <WagerBanner wager={wager} />}
+          {escrow && escrow.status === "locked" && liveGame && <WagerBanner escrow={escrow} />}
           {game ? (
             <ActiveOrEnded mesh={mesh} game={game} myOwnerKey={myOwnerKey} />
           ) : (
@@ -65,7 +67,7 @@ export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
               mesh={mesh}
               myOwnerKey={myOwnerKey}
               myLabel={myLabel}
-              proposeCard={<WagerProposeCard mesh={mesh} />}
+              proposeCard={escrow ? null : <WagerProposeCard mesh={mesh} />}
             />
           )}
         </>

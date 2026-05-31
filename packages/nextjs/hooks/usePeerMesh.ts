@@ -898,37 +898,48 @@ export type ChessResult = {
   moveCount: number;
 };
 
-/** Money chess: an ETH wager escrowed in the room multisig. Mirrors the
- *  relay's Wager type (packages/relay/src/wager.ts). The relay owns every
- *  transition — clients render this snapshot and drive UI off it. */
-export type WagerStatus = "funding" | "armed" | "playing" | "settling" | "settled" | "refunding" | "cancelled";
+/** Generic money escrow for games. Mirrors the relay's EscrowSession
+ *  (packages/relay/src/escrow.ts). One session per room, backed by the
+ *  room multisig. The relay owns every transition — clients render this
+ *  snapshot and drive UI off it. Chess/pong/poker all use this shape;
+ *  game-specific framing comes from `game`, account `role`, and `meta`. */
+export type EscrowStatus = "open" | "locked" | "settling" | "settled" | "cancelled";
 
+/** Chess seat, used by the chess UI to read the right account. */
 export type WagerSide = "white" | "black";
 
-export type WagerDeposit = {
+export type EscrowDeposit = {
   txHash: string;
   amountWei: string;
   confirmedAt: number;
 };
 
-export type Wager = {
+export type EscrowAccount = {
+  key: string;
+  label: string;
+  /** Game-defined: "white"/"black" for chess, seat index for poker. */
+  role: string;
+  requiredWei: string;
+  depositedWei: string;
+  balanceWei: string;
+  deposit: EscrowDeposit | null;
+};
+
+export type EscrowPayout = { to: string; amountWei: string };
+
+export type EscrowSession = {
   id: string;
-  status: WagerStatus;
+  game: string;
   chainId: number;
   multisig: string;
-  buyinWei: string;
-  whiteKey: string;
-  whiteLabel: string;
-  blackKey: string;
-  blackLabel: string;
-  whiteDeposit: WagerDeposit | null;
-  blackDeposit: WagerDeposit | null;
-  outcome: ChessGameStatus | null;
-  winner: WagerSide | "draw" | null;
+  status: EscrowStatus;
+  accounts: EscrowAccount[];
+  payouts: EscrowPayout[] | null;
   payoutTxId: string | null;
   payoutTxHash: string | null;
   settledAt: number | null;
-  proposedBy: string;
+  meta: Record<string, unknown>;
+  createdBy: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -1031,17 +1042,19 @@ export type PeerMeshState = {
   chessMove: (from: string, to: string, promotion?: string) => void;
   chessResign: () => void;
   chessCloseGame: () => void;
-  /** Money chess: the current ETH wager escrowed in the room multisig. */
-  wager: Wager | null;
+  /** The current money-game escrow session (chess wager, etc.). */
+  escrow: EscrowSession | null;
   /** Latest deposit-verification result from the relay (per reported tx),
    *  so the Send-buy-in UI can show "confirming…/retry" feedback. */
-  wagerFundResult: { ok: boolean; txHash: string; reason?: string } | null;
-  wagerPropose: (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => void;
-  wagerFund: (txHash: string) => void;
-  wagerStart: () => void;
-  wagerLinkPayout: (txId: string) => void;
-  wagerCancel: () => void;
-  wagerClear: () => void;
+  escrowFundResult: { ok: boolean; txHash: string; reason?: string } | null;
+  /** Chess-specific: open + fund a chess wager (proposer plays white). */
+  chessWagerPropose: (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => void;
+  /** Chess-specific: start the game once both buy-ins are escrowed. */
+  chessWagerStart: () => void;
+  /** Generic escrow actions (any game). */
+  escrowFund: (txHash: string) => void;
+  escrowCancel: () => void;
+  escrowClear: () => void;
   /** Shared todo list. Full-state replace from server on every change. */
   todos: TodoItem[];
   todoAdd: (text: string) => void;
@@ -1424,8 +1437,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
-  const [wager, setWager] = useState<Wager | null>(null);
-  const [wagerFundResult, setWagerFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(null);
+  const [escrow, setEscrow] = useState<EscrowSession | null>(null);
+  const [escrowFundResult, setEscrowFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(
+    null,
+  );
   const [aiPlayers, setAiPlayers] = useState<AIPlayer[]>([]);
   const [wallet, setWallet] = useState<WalletRecord | null>(null);
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
@@ -1845,34 +1860,30 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     send({ type: "chess_close_game" });
   }, [send]);
 
-  // Money chess. The relay owns every transition; these just post intent.
-  const wagerPropose = useCallback(
+  // Money games. The relay owns every transition; these just post intent.
+  // Chess-specific openers:
+  const chessWagerPropose = useCallback(
     (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => {
       send({ type: "wager_propose", ...args });
     },
     [send],
   );
-  const wagerFund = useCallback(
-    (txHash: string) => {
-      setWagerFundResult(null);
-      send({ type: "wager_fund", txHash });
-    },
-    [send],
-  );
-  const wagerStart = useCallback(() => {
+  const chessWagerStart = useCallback(() => {
     send({ type: "wager_start" });
   }, [send]);
-  const wagerLinkPayout = useCallback(
-    (txId: string) => {
-      send({ type: "wager_link_payout", txId });
+  // Generic escrow actions (any game):
+  const escrowFund = useCallback(
+    (txHash: string) => {
+      setEscrowFundResult(null);
+      send({ type: "escrow_fund", txHash });
     },
     [send],
   );
-  const wagerCancel = useCallback(() => {
-    send({ type: "wager_cancel" });
+  const escrowCancel = useCallback(() => {
+    send({ type: "escrow_cancel" });
   }, [send]);
-  const wagerClear = useCallback(() => {
-    send({ type: "wager_clear" });
+  const escrowClear = useCallback(() => {
+    send({ type: "escrow_clear" });
   }, [send]);
 
   // Reconcile myPongSeat against the authoritative seats map. Catches
@@ -2605,8 +2616,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.chessHistory)) {
             setChessHistory(msg.chessHistory as ChessResult[]);
           }
-          if (msg.wager === null || (msg.wager && typeof msg.wager === "object")) {
-            setWager((msg.wager ?? null) as Wager | null);
+          if (msg.escrow === null || (msg.escrow && typeof msg.escrow === "object")) {
+            setEscrow((msg.escrow ?? null) as EscrowSession | null);
           }
           if (Array.isArray(msg.aiPlayers)) {
             setAiPlayers(msg.aiPlayers as AIPlayer[]);
@@ -3026,13 +3037,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
-        if (msg.type === "wager_state") {
-          setWager((msg.wager ?? null) as Wager | null);
+        if (msg.type === "escrow_state") {
+          setEscrow((msg.escrow ?? null) as EscrowSession | null);
           return;
         }
 
-        if (msg.type === "wager_fund_result") {
-          setWagerFundResult({
+        if (msg.type === "escrow_fund_result") {
+          setEscrowFundResult({
             ok: !!msg.ok,
             txHash: typeof msg.txHash === "string" ? msg.txHash : "",
             reason: typeof msg.reason === "string" ? msg.reason : undefined,
@@ -3487,14 +3498,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     chessMove,
     chessResign,
     chessCloseGame,
-    wager,
-    wagerFundResult,
-    wagerPropose,
-    wagerFund,
-    wagerStart,
-    wagerLinkPayout,
-    wagerCancel,
-    wagerClear,
+    escrow,
+    escrowFundResult,
+    chessWagerPropose,
+    chessWagerStart,
+    escrowFund,
+    escrowCancel,
+    escrowClear,
     todos,
     todoAdd,
     todoToggle,

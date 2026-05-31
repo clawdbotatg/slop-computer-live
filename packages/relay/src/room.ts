@@ -39,7 +39,7 @@ import { TodoList } from "./todos.js";
 import { Transcript } from "./transcript.js";
 import { formatBytes, ownerKeyActor } from "./transcript-actions.js";
 import { WalletState } from "./wallet.js";
-import { WagerState } from "./wager.js";
+import { EscrowState } from "./escrow.js";
 import { WindowSet } from "./windows.js";
 import { send } from "./ws-send.js";
 
@@ -109,7 +109,7 @@ function roomPaths(id: string): {
   chess: SubsystemPath;
   music: { path: string };
   wallet: SubsystemPath;
-  wager: { path: string };
+  escrow: { path: string };
   research: { path: string };
   walletChat: { path: string };
   auth: { path: string };
@@ -187,10 +187,10 @@ function roomPaths(id: string): {
       path: `${dir}/wallet.json`,
       legacy: legacy ? (process.env.WALLET_FILE ?? "./.slop-data/wallet.json") : null,
     },
-    wager: {
-      // No legacy path — money-chess is a new concept; nothing global to
-      // inherit. Cold start = no wager.
-      path: `${dir}/wager.json`,
+    escrow: {
+      // No legacy path — money games are a new concept; nothing global to
+      // inherit. Cold start = no escrow session.
+      path: `${dir}/escrow.json`,
     },
     research: {
       // No legacy path — guest-research never persisted before, so the
@@ -289,7 +289,7 @@ export class Room {
   readonly chess: ChessState;
   readonly aiMover: AIMover;
   readonly wallet: WalletState;
-  readonly wager: WagerState;
+  readonly escrow: EscrowState;
   readonly walletChat: WalletChatState;
   readonly auth: RoomAuth;
   readonly chyron: Chyron;
@@ -333,7 +333,7 @@ export class Room {
     this.aiMover = new AIMover(this.chess);
     this.music = new MusicState(paths.music.path);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
-    this.wager = new WagerState(paths.wager.path);
+    this.escrow = new EscrowState(paths.escrow.path);
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
     this.auth = new RoomAuth(paths.auth.path);

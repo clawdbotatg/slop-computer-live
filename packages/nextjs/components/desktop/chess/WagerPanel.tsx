@@ -1,19 +1,23 @@
 "use client";
 
-// Money chess UI. The relay (packages/relay/src/wager.ts) owns the
-// wager state machine; this surface only renders `mesh.wager` and posts
-// intent (propose / fund / start / claim) back. Three escrow movements:
+// Money chess UI, built on the generic escrow session (mesh.escrow). The
+// relay (packages/relay/src/escrow.ts) owns the state machine; this
+// surface renders the session and posts intent. Three escrow movements:
 //
 //   1. Buy-in   — each player sends a PLAIN ETH transfer from their own
 //                 wallet to the multisig (useSendTransaction). Once it's
 //                 mined we tell the relay the hash; the relay reads it
 //                 back on-chain before counting the side as funded.
-//   2. Play     — once both buy-ins land, any player starts the game.
-//   3. Payout   — when chess ends, the pot is released FROM the multisig
-//                 via the normal multisig tx flow (winner gets the pot;
-//                 a draw refunds each buy-in via a batch). The relay
-//                 auto-recognizes the proposal as the payout and watches
-//                 it execute, then flips the wager to `settled`.
+//   2. Play     — once all buy-ins land, any player starts the game.
+//   3. Payout   — when chess ends, the relay sets a canonical `payouts`
+//                 plan; the claim button proposes a multisig tx matching
+//                 it (single send for a winner, batch for a refund). The
+//                 relay auto-adopts the proposal and watches it execute,
+//                 then flips the session to `settled`.
+//
+// This component is chess-specific (white/black framing) but reads the
+// generic escrow shape — pong/poker get their own panels over the same
+// session. White/black come from account.role; the winner from meta.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type Address as AddressType, type Hex, formatEther, parseEther } from "viem";
 import {
@@ -26,7 +30,7 @@ import {
 } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
-import type { Peer, PeerMeshState, Wager, WagerSide } from "~~/hooks/usePeerMesh";
+import type { EscrowAccount, EscrowSession, Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -43,22 +47,34 @@ const CHAIN_LABELS: Record<number, string> = {
 };
 const chainLabel = (id: number) => CHAIN_LABELS[id] ?? `chain ${id}`;
 
+const EXPLORERS: Record<number, string> = {
+  1: "https://etherscan.io/tx/",
+  8453: "https://basescan.org/tx/",
+  10: "https://optimistic.etherscan.io/tx/",
+  42161: "https://arbiscan.io/tx/",
+  137: "https://polygonscan.com/tx/",
+};
+
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 function fmtEth(wei: string): string {
   try {
     const s = formatEther(BigInt(wei));
-    // Trim trailing zeros but keep it readable.
     return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
   } catch {
     return "0";
   }
 }
 
-const potWei = (w: Wager) => (BigInt(w.buyinWei) * 2n).toString();
+// ─── escrow helpers ─────────────────────────────────────────────────
 
-// Pick the chain the escrow can actually settle on: a chain the multisig
-// is deployed on, preferring Base.
+const seat = (e: EscrowSession, role: "white" | "black") => e.accounts.find(a => a.role === role) ?? null;
+const buyinWei = (e: EscrowSession) => seat(e, "white")?.requiredWei ?? "0";
+const potWei = (e: EscrowSession) => e.accounts.reduce((s, a) => s + BigInt(a.depositedWei), 0n).toString();
+const isFunded = (a: EscrowAccount) => BigInt(a.depositedWei) >= BigInt(a.requiredWei);
+
+// Pick the chain the escrow can settle on: one the multisig is deployed
+// on, preferring Base.
 function escrowChainId(mesh: PeerMeshState): number | null {
   const w = mesh.wallet;
   if (!w) return null;
@@ -100,7 +116,7 @@ const label: React.CSSProperties = {
 };
 
 // =====================================================================
-// Propose card — shown in the chess lobby when no wager is live.
+// Propose card — shown in the chess lobby when no session is live.
 // =====================================================================
 
 export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
@@ -111,7 +127,6 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const chainId = useMemo(() => escrowChainId(mesh), [mesh.wallet]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Opponents = connected peers with a real address, excluding me + spectators.
   const opponents = useMemo(() => {
     const me = address?.toLowerCase();
     const seen = new Set<string>();
@@ -149,7 +164,7 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
     }
     if (wei <= 0n) return setErr("Buy-in must be greater than 0.");
     const opp = opponents.find(o => o.addr === opponent);
-    mesh.wagerPropose({
+    mesh.chessWagerPropose({
       opponentKey: opponent,
       opponentLabel: opp?.label ?? short(opponent),
       buyinWei: wei.toString(),
@@ -236,49 +251,45 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
 };
 
 // =====================================================================
-// Stage — funding / armed / settling / refunding / settled.
+// Stage — funding (open) / ready (locked) / settling / settled.
 // =====================================================================
 
-export const WagerStage = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
+export const WagerStage = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
   const { address } = useAccount();
-  const mySide: WagerSide | null = useMemo(() => {
+  const white = seat(escrow, "white");
+  const black = seat(escrow, "black");
+  const isParticipant = useMemo(() => {
     const a = address?.toLowerCase();
-    if (!a) return null;
-    if (a === wager.whiteKey) return "white";
-    if (a === wager.blackKey) return "black";
-    return null;
-  }, [address, wager.whiteKey, wager.blackKey]);
+    return !!a && escrow.accounts.some(acc => acc.key === a);
+  }, [address, escrow.accounts]);
 
-  const pot = fmtEth(potWei(wager));
+  if (!white || !black) return null;
+  const pot = fmtEth(potWei(escrow));
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: ACCENT }}>♟ Money Chess</div>
         <div style={{ fontSize: 12, color: CYAN }}>
-          {fmtEth(wager.buyinWei)} ETH buy-in · {pot} ETH pot · {chainLabel(wager.chainId)}
+          {fmtEth(buyinWei(escrow))} ETH buy-in · {pot} ETH pot · {chainLabel(escrow.chainId)}
         </div>
       </div>
 
-      <PlayerRow wager={wager} side="white" />
-      <PlayerRow wager={wager} side="black" />
+      <PlayerRow escrow={escrow} account={white} />
+      <PlayerRow escrow={escrow} account={black} />
 
-      {(wager.status === "funding" || wager.status === "armed") && (
-        <FundingControls mesh={mesh} wager={wager} mySide={mySide} />
+      {(escrow.status === "open" || escrow.status === "locked") && (
+        <FundingControls mesh={mesh} escrow={escrow} isParticipant={isParticipant} />
       )}
-      {(wager.status === "settling" || wager.status === "refunding") && (
-        <SettleControls mesh={mesh} wager={wager} mySide={mySide} />
-      )}
-      {wager.status === "settled" && <SettledView mesh={mesh} wager={wager} />}
+      {escrow.status === "settling" && <SettleControls mesh={mesh} escrow={escrow} isParticipant={isParticipant} />}
+      {escrow.status === "settled" && <SettledView mesh={mesh} escrow={escrow} />}
     </div>
   );
 };
 
-const PlayerRow = ({ wager, side }: { wager: Wager; side: WagerSide }) => {
-  const isWhite = side === "white";
-  const label2 = isWhite ? wager.whiteLabel : wager.blackLabel;
-  const deposit = isWhite ? wager.whiteDeposit : wager.blackDeposit;
-  const won = wager.winner === side;
+const PlayerRow = ({ escrow, account }: { escrow: EscrowSession; account: EscrowAccount }) => {
+  const isWhite = account.role === "white";
+  const won = (escrow.meta.winner as string | undefined) === account.role;
   return (
     <div
       style={{
@@ -293,34 +304,48 @@ const PlayerRow = ({ wager, side }: { wager: Wager; side: WagerSide }) => {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 18 }}>{isWhite ? "♔" : "♚"}</span>
-        <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 14 }}>{label2}</span>
+        <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 14 }}>{account.label}</span>
         {won && <span style={{ color: LIME, fontSize: 12, fontWeight: 700 }}>WINNER</span>}
       </div>
-      <div style={{ fontSize: 12, color: deposit ? LIME : "var(--slop-text-muted)" }}>
-        {deposit ? `✓ funded ${fmtEth(deposit.amountWei)} ETH` : "waiting for buy-in…"}
+      <div style={{ fontSize: 12, color: isFunded(account) ? LIME : "var(--slop-text-muted)" }}>
+        {isFunded(account) ? `✓ funded ${fmtEth(account.depositedWei)} ETH` : "waiting for buy-in…"}
       </div>
     </div>
   );
 };
 
-// ─── Funding / armed ────────────────────────────────────────────────
+// ─── Funding (open) / ready (locked) ────────────────────────────────
 
-const FundingControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: Wager; mySide: WagerSide | null }) => {
-  const myFunded = mySide === "white" ? !!wager.whiteDeposit : mySide === "black" ? !!wager.blackDeposit : false;
+const FundingControls = ({
+  mesh,
+  escrow,
+  isParticipant,
+}: {
+  mesh: PeerMeshState;
+  escrow: EscrowSession;
+  isParticipant: boolean;
+}) => {
+  const { address } = useAccount();
+  const myAccount = useMemo(() => {
+    const a = address?.toLowerCase();
+    return a ? (escrow.accounts.find(acc => acc.key === a) ?? null) : null;
+  }, [address, escrow.accounts]);
+  const ready = escrow.status === "locked";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {mySide && !myFunded && <FundButton mesh={mesh} wager={wager} />}
-      {mySide && myFunded && <div style={{ fontSize: 13, color: LIME }}>✓ Your buy-in is in escrow.</div>}
-      {!mySide && (
+      {myAccount && !isFunded(myAccount) && <FundButton mesh={mesh} escrow={escrow} account={myAccount} />}
+      {myAccount && isFunded(myAccount) && <div style={{ fontSize: 13, color: LIME }}>✓ Your buy-in is in escrow.</div>}
+      {!isParticipant && (
         <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>
           You&apos;re spectating this wager — only the two players fund it.
         </div>
       )}
-      {wager.status === "armed" && (
+      {ready && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ fontSize: 13, color: LIME }}>Both buy-ins escrowed — ready to play.</div>
-          {mySide && (
-            <button type="button" onClick={() => mesh.wagerStart()} style={btn(LIME)}>
+          <div style={{ fontSize: 13, color: LIME }}>All buy-ins escrowed — ready to play.</div>
+          {isParticipant && (
+            <button type="button" onClick={() => mesh.chessWagerStart()} style={btn(LIME)}>
               ▶ Start game
             </button>
           )}
@@ -328,7 +353,7 @@ const FundingControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: 
       )}
       <button
         type="button"
-        onClick={() => mesh.wagerCancel()}
+        onClick={() => mesh.escrowCancel()}
         style={{
           ...btn("transparent"),
           color: "var(--slop-text-muted)",
@@ -344,8 +369,16 @@ const FundingControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: 
 
 // The buy-in: a plain ETH transfer FROM the player's wallet TO the
 // multisig. After it's mined we report the hash; the relay verifies it
-// before counting the side as funded.
-const FundButton = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
+// before counting the account as funded.
+const FundButton = ({
+  mesh,
+  escrow,
+  account,
+}: {
+  mesh: PeerMeshState;
+  escrow: EscrowSession;
+  account: EscrowAccount;
+}) => {
   const currentChainId = useChainId();
   const { switchChainAsync, isPending: switching } = useSwitchChain();
   const { sendTransactionAsync, isPending: sending } = useSendTransaction();
@@ -354,38 +387,40 @@ const FundButton = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
   const [err, setErr] = useState<string | null>(null);
   const { isLoading: waiting, data: receipt } = useWaitForTransactionReceipt({
     hash: txHash ?? undefined,
-    chainId: wager.chainId,
+    chainId: escrow.chainId,
   });
 
   // Once the deposit is mined, hand the hash to the relay to verify.
   useEffect(() => {
     if (receipt && txHash && !reported) {
       setReported(true);
-      mesh.wagerFund(txHash);
+      mesh.escrowFund(txHash);
     }
   }, [receipt, txHash, reported, mesh]);
 
-  const fundResult = mesh.wagerFundResult;
+  const fundResult = mesh.escrowFundResult;
   const relayRejected =
     reported && fundResult && !fundResult.ok && fundResult.txHash === txHash ? fundResult.reason : null;
+
+  const owed = (BigInt(account.requiredWei) - BigInt(account.depositedWei)).toString();
 
   const onFund = useCallback(async () => {
     setErr(null);
     try {
-      if (currentChainId !== wager.chainId) {
-        await switchChainAsync({ chainId: wager.chainId });
+      if (currentChainId !== escrow.chainId) {
+        await switchChainAsync({ chainId: escrow.chainId });
       }
       const hash = await sendTransactionAsync({
-        to: wager.multisig as AddressType,
-        value: BigInt(wager.buyinWei),
-        chainId: wager.chainId,
+        to: escrow.multisig as AddressType,
+        value: BigInt(owed),
+        chainId: escrow.chainId,
       });
       setReported(false);
       setTxHash(hash);
     } catch (e) {
       setErr(String(e).slice(0, 160));
     }
-  }, [currentChainId, wager.chainId, wager.multisig, wager.buyinWei, switchChainAsync, sendTransactionAsync]);
+  }, [currentChainId, escrow.chainId, escrow.multisig, owed, switchChainAsync, sendTransactionAsync]);
 
   const busy = switching || sending || (!!txHash && (waiting || (reported && !relayRejected)));
   const statusText = switching
@@ -401,7 +436,7 @@ const FundButton = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <button type="button" onClick={onFund} disabled={busy} style={btn(CYAN, busy)}>
-        {busy ? "Sending buy-in…" : `Send ${fmtEth(wager.buyinWei)} ETH buy-in`}
+        {busy ? "Sending buy-in…" : `Send ${fmtEth(owed)} ETH buy-in`}
       </button>
       {busy && <LoadingBar />}
       {statusText && <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>{statusText}</div>}
@@ -415,7 +450,7 @@ const FundButton = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
               type="button"
               onClick={() => {
                 setReported(false);
-                mesh.wagerFund(txHash);
+                mesh.escrowFund(txHash);
               }}
               style={{ ...btn(CYAN), padding: "4px 10px", marginLeft: 8, fontSize: 11 }}
             >
@@ -429,18 +464,26 @@ const FundButton = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
   );
 };
 
-// ─── Settling / refunding ───────────────────────────────────────────
+// ─── Settling ───────────────────────────────────────────────────────
 
-const SettleControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: Wager; mySide: WagerSide | null }) => {
-  const isDraw = wager.winner === "draw" || wager.status === "refunding";
-  const iWon = !isDraw && wager.winner === mySide;
-  const winnerLabel = wager.winner === "white" ? wager.whiteLabel : wager.blackLabel;
+const SettleControls = ({
+  mesh,
+  escrow,
+  isParticipant,
+}: {
+  mesh: PeerMeshState;
+  escrow: EscrowSession;
+  isParticipant: boolean;
+}) => {
+  const { address } = useAccount();
+  const winner = escrow.meta.winner as string | undefined;
+  const isRefund = !winner || winner === "draw";
+  const iWon = !isRefund && seat(escrow, winner as "white" | "black")?.key === address?.toLowerCase();
+  const winnerLabel = winner && winner !== "draw" ? (seat(escrow, winner as "white" | "black")?.label ?? winner) : null;
 
-  // The linked payout tx (if proposed) — show its progress through the
-  // normal multisig sign/execute flow.
   const payoutTx = useMemo(
-    () => (wager.payoutTxId ? (mesh.walletTxs.find(t => t.id === wager.payoutTxId) ?? null) : null),
-    [wager.payoutTxId, mesh.walletTxs],
+    () => (escrow.payoutTxId ? (mesh.walletTxs.find(t => t.id === escrow.payoutTxId) ?? null) : null),
+    [escrow.payoutTxId, mesh.walletTxs],
   );
   const threshold = mesh.wallet?.threshold ?? 0;
 
@@ -450,25 +493,25 @@ const SettleControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: W
         style={{
           fontFamily: "var(--slop-font-display)",
           fontSize: 16,
-          color: isDraw ? CYAN : iWon ? LIME : "var(--slop-text)",
+          color: isRefund ? CYAN : iWon ? LIME : "var(--slop-text)",
         }}
       >
-        {wager.status === "refunding"
-          ? "↩️ Wager cancelled — buy-ins to be refunded"
-          : isDraw
-            ? "🤝 Draw — buy-ins to be refunded"
+        {winner === "draw"
+          ? "🤝 Draw — buy-ins to be refunded"
+          : isRefund
+            ? "↩️ Wager cancelled — buy-ins to be refunded"
             : iWon
-              ? `🏆 You won the ${fmtEth(potWei(wager))} ETH pot!`
-              : `🏆 ${winnerLabel} won the ${fmtEth(potWei(wager))} ETH pot`}
+              ? `🏆 You won the ${fmtEth(potWei(escrow))} ETH pot!`
+              : `🏆 ${winnerLabel} won the ${fmtEth(potWei(escrow))} ETH pot`}
       </div>
 
       {!payoutTx ? (
-        // Nobody has proposed the payout yet.
-        <PayoutProposeButton mesh={mesh} wager={wager} isDraw={isDraw} iWon={iWon} mySide={mySide} />
+        <PayoutProposeButton mesh={mesh} escrow={escrow} isRefund={isRefund} canPropose={isParticipant} />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ fontSize: 13, color: CYAN }}>
-            Payout proposed — sign &amp; execute it in the <b>Wallet</b> app (Transactions tab).
+            {isRefund ? "Refund" : "Payout"} proposed — sign &amp; execute it in the <b>Wallet</b> app (Transactions
+            tab).
           </div>
           <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
             {payoutTx.status === "executing"
@@ -482,36 +525,33 @@ const SettleControls = ({ mesh, wager, mySide }: { mesh: PeerMeshState; wager: W
   );
 };
 
-// Build + propose the settlement tx. Winner-takes-pot is a single send;
-// a draw/refund is a batch returning each buy-in. The relay auto-links
-// it to the wager (no separate call), then watches it execute.
+// Propose the settlement tx straight from the relay's canonical
+// `payouts` plan — single send (winner) or batch (refund). The relay
+// auto-adopts a matching proposal and watches it execute.
 const PayoutProposeButton = ({
   mesh,
-  wager,
-  isDraw,
-  iWon,
-  mySide,
+  escrow,
+  isRefund,
+  canPropose,
 }: {
   mesh: PeerMeshState;
-  wager: Wager;
-  isDraw: boolean;
-  iWon: boolean;
-  mySide: WagerSide | null;
+  escrow: EscrowSession;
+  isRefund: boolean;
+  canPropose: boolean;
 }) => {
-  const publicClient = usePublicClient({ chainId: wager.chainId });
+  const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [state, setState] = useState<"idle" | "proposing" | "done">("idle");
   const [err, setErr] = useState<string | null>(null);
-
-  // Who may propose: the winner (single payout) or either player (draw refund).
-  const canPropose = isDraw ? !!mySide : iWon;
 
   const onPropose = useCallback(async () => {
     setErr(null);
     const wallet = mesh.wallet;
+    const payouts = escrow.payouts;
     if (!wallet) return setErr("No escrow multisig.");
-    if (!publicClient) return setErr(`No RPC client for ${chainLabel(wager.chainId)}.`);
-    if (!(wager.chainId in wallet.deployments)) {
-      return setErr(`Multisig isn't deployed on ${chainLabel(wager.chainId)}.`);
+    if (!payouts || payouts.length === 0) return setErr("No payout plan yet.");
+    if (!publicClient) return setErr(`No RPC client for ${chainLabel(escrow.chainId)}.`);
+    if (!(escrow.chainId in wallet.deployments)) {
+      return setErr(`Multisig isn't deployed on ${chainLabel(escrow.chainId)}.`);
     }
     setState("proposing");
     try {
@@ -521,19 +561,8 @@ const PayoutProposeButton = ({
         functionName: "nonce",
       })) as bigint;
       const deadline = defaultDeadline();
-      if (isDraw) {
-        // Refund batch: return the buy-in to every side that ACTUALLY
-        // funded. For a played-out draw that's both; for a cancelled
-        // half-funded wager it's only the one who paid in (refunding an
-        // unfunded side would over-draw the escrow or revert).
-        const buyin = BigInt(wager.buyinWei);
-        const calls: { target: string; value: string; data: string }[] = [];
-        if (wager.whiteDeposit) calls.push({ target: wager.whiteKey, value: buyin.toString(), data: "0x" });
-        if (wager.blackDeposit) calls.push({ target: wager.blackKey, value: buyin.toString(), data: "0x" });
-        if (calls.length === 0) {
-          setState("idle");
-          return setErr("Nothing to refund — no buy-ins landed.");
-        }
+      if (payouts.length > 1) {
+        const calls = payouts.map(p => ({ target: p.to, value: p.amountWei, data: "0x" }));
         const execHash = (await publicClient.readContract({
           address: wallet.address as AddressType,
           abi: MultisigAbi,
@@ -544,7 +573,7 @@ const PayoutProposeButton = ({
           ],
         })) as Hex;
         mesh.walletProposeTx({
-          chainId: wager.chainId,
+          chainId: escrow.chainId,
           target: wallet.address,
           value: "0",
           data: "0x",
@@ -556,20 +585,20 @@ const PayoutProposeButton = ({
           calls,
         });
       } else {
-        const winnerAddr = (wager.winner === "white" ? wager.whiteKey : wager.blackKey) as AddressType;
-        const value = BigInt(potWei(wager));
+        const p = payouts[0]!;
+        const value = BigInt(p.amountWei);
         const execHash = computeExecHash({
-          chainId: wager.chainId,
+          chainId: escrow.chainId,
           multisig: wallet.address as AddressType,
           nonce,
           deadline,
-          target: winnerAddr,
+          target: p.to as AddressType,
           value,
           data: "0x",
         });
         mesh.walletProposeTx({
-          chainId: wager.chainId,
-          target: winnerAddr,
+          chainId: escrow.chainId,
+          target: p.to,
           value: value.toString(),
           data: "0x",
           deadline: deadline.toString(),
@@ -584,24 +613,22 @@ const PayoutProposeButton = ({
       setState("idle");
       setErr(String(e).slice(0, 160));
     }
-  }, [mesh, publicClient, wager, isDraw]);
+  }, [mesh, publicClient, escrow]);
 
   if (!canPropose) {
     return (
       <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>
-        {isDraw ? "A player will propose the refund." : "The winner will claim the pot."}
+        {isRefund ? "A player will propose the refund." : "The winner will claim the pot."}
       </div>
     );
   }
 
+  const total = (escrow.payouts ?? []).reduce((s, p) => s + BigInt(p.amountWei), 0n).toString();
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <button type="button" onClick={onPropose} disabled={state !== "idle"} style={btn(LIME, state !== "idle")}>
-        {state === "proposing"
-          ? "Proposing…"
-          : isDraw
-            ? `Propose refund (${fmtEth(wager.buyinWei)} ETH each)`
-            : `Claim ${fmtEth(potWei(wager))} ETH pot`}
+        {state === "proposing" ? "Proposing…" : isRefund ? "Propose refund" : `Claim ${fmtEth(total)} ETH pot`}
       </button>
       {state === "proposing" && <LoadingBar />}
       {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}
@@ -611,22 +638,22 @@ const PayoutProposeButton = ({
 
 // ─── Settled ────────────────────────────────────────────────────────
 
-const SettledView = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => {
-  // A settled wager paid out either to a winner (winner white/black) or
-  // as a refund — both a draw (winner === "draw") and a cancellation
-  // (winner === null) settle via the refund batch.
-  const isRefund = wager.winner === "draw" || wager.winner == null;
-  const explorer = EXPLORERS[wager.chainId];
+const SettledView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const winner = escrow.meta.winner as string | undefined;
+  const isRefund = !winner || winner === "draw";
+  const winnerLabel = winner && winner !== "draw" ? (seat(escrow, winner as "white" | "black")?.label ?? winner) : null;
+  const explorer = EXPLORERS[escrow.chainId];
+  const total = (escrow.payouts ?? []).reduce((s, p) => s + BigInt(p.amountWei), 0n).toString();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 16, color: LIME }}>
         {isRefund
-          ? `↩️ Refunded — ${fmtEth(wager.buyinWei)} ETH returned`
-          : `🏆 Paid out — ${fmtEth(potWei(wager))} ETH to ${wager.winner === "white" ? wager.whiteLabel : wager.blackLabel}`}
+          ? `↩️ Refunded — ${fmtEth(buyinWei(escrow))} ETH returned`
+          : `🏆 Paid out — ${fmtEth(total)} ETH to ${winnerLabel}`}
       </div>
-      {wager.payoutTxHash && explorer && (
+      {escrow.payoutTxHash && explorer && (
         <a
-          href={`${explorer}${wager.payoutTxHash}`}
+          href={`${explorer}${escrow.payoutTxHash}`}
           target="_blank"
           rel="noreferrer"
           style={{ fontSize: 12, color: CYAN }}
@@ -634,26 +661,18 @@ const SettledView = ({ mesh, wager }: { mesh: PeerMeshState; wager: Wager }) => 
           View settlement tx ↗
         </a>
       )}
-      <button type="button" onClick={() => mesh.wagerClear()} style={btn(ACCENT)}>
+      <button type="button" onClick={() => mesh.escrowClear()} style={btn(ACCENT)}>
         New game
       </button>
     </div>
   );
 };
 
-const EXPLORERS: Record<number, string> = {
-  1: "https://etherscan.io/tx/",
-  8453: "https://basescan.org/tx/",
-  10: "https://optimistic.etherscan.io/tx/",
-  42161: "https://arbiscan.io/tx/",
-  137: "https://polygonscan.com/tx/",
-};
-
 // =====================================================================
 // Banner — thin pot strip shown above the board while playing.
 // =====================================================================
 
-export const WagerBanner = ({ wager }: { wager: Wager }) => (
+export const WagerBanner = ({ escrow }: { escrow: EscrowSession }) => (
   <div
     style={{
       display: "flex",
@@ -669,6 +688,6 @@ export const WagerBanner = ({ wager }: { wager: Wager }) => (
       color: LIME,
     }}
   >
-    💰 Playing for {fmtEth(potWei(wager))} ETH · winner takes the pot
+    💰 Playing for {fmtEth(potWei(escrow))} ETH · winner takes the pot
   </div>
 );
