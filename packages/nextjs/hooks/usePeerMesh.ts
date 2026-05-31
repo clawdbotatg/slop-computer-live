@@ -1090,8 +1090,17 @@ export type PeerMeshState = {
   /** Latest deposit-verification result from the relay (per reported tx),
    *  so the Send-buy-in UI can show "confirming…/retry" feedback. */
   escrowFundResult: { ok: boolean; txHash: string; reason?: string } | null;
-  /** Chess-specific: open + fund a chess wager (proposer plays white). */
-  chessWagerPropose: (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => void;
+  /** Chess-specific: open a chess wager between the two players already
+   *  chosen in the lobby. Proposer needn't be a player; each side funds
+   *  its own seat. */
+  chessWagerPropose: (args: {
+    whiteKey: string;
+    whiteLabel: string;
+    blackKey: string;
+    blackLabel: string;
+    buyinWei: string;
+    chainId: number;
+  }) => void;
   /** Chess-specific: start the game once both buy-ins are escrowed. */
   chessWagerStart: () => void;
   /** Generic escrow actions (any game). */
@@ -1928,7 +1937,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // Money games. The relay owns every transition; these just post intent.
   // Chess-specific openers:
   const chessWagerPropose = useCallback(
-    (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => {
+    (args: {
+      whiteKey: string;
+      whiteLabel: string;
+      blackKey: string;
+      blackLabel: string;
+      buyinWei: string;
+      chainId: number;
+    }) => {
       send({ type: "wager_propose", ...args });
     },
     [send],

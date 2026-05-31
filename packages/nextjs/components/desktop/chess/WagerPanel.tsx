@@ -30,7 +30,7 @@ import {
 } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
-import type { EscrowAccount, EscrowSession, Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
+import type { EscrowAccount, EscrowSession, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -119,27 +119,27 @@ const label: React.CSSProperties = {
 // Propose card — shown in the chess lobby when no session is live.
 // =====================================================================
 
-export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
-  const { address } = useAccount();
-  const [opponent, setOpponent] = useState<string>("");
+const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v);
+
+export const WagerProposeCard = ({
+  mesh,
+  whiteKey,
+  whiteLabel,
+  blackKey,
+  blackLabel,
+}: {
+  mesh: PeerMeshState;
+  // The two players already chosen in the lobby form above. The wager is
+  // played between them — this card only adds the stakes.
+  whiteKey: string;
+  whiteLabel: string;
+  blackKey: string;
+  blackLabel: string;
+}) => {
   const [buyin, setBuyin] = useState<string>("0.001");
   const [err, setErr] = useState<string | null>(null);
 
   const chainId = useMemo(() => escrowChainId(mesh), [mesh.wallet]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const opponents = useMemo(() => {
-    const me = address?.toLowerCase();
-    const seen = new Set<string>();
-    const out: { addr: string; label: string }[] = [];
-    for (const p of mesh.peers as Peer[]) {
-      if (!p.address || p.spectator) continue;
-      const a = p.address.toLowerCase();
-      if (a === me || seen.has(a)) continue;
-      seen.add(a);
-      out.push({ addr: a, label: mesh.customNames[a] ?? p.handle ?? short(a) });
-    }
-    return out;
-  }, [mesh.peers, mesh.customNames, address]);
 
   if (!mesh.wallet || chainId == null) {
     return (
@@ -152,10 +152,15 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
     );
   }
 
+  // Both seats must be wallet addresses to fund + sign. AI/anon players
+  // (whose ownerKey isn't an address) can't play for money.
+  const bothAddrs = isAddr(whiteKey) && isAddr(blackKey);
+  const distinct = whiteKey.toLowerCase() !== blackKey.toLowerCase();
+
   const onChallenge = () => {
     setErr(null);
-    if (!address) return setErr("Connect a wallet to play for ETH.");
-    if (!opponent) return setErr("Pick an opponent.");
+    if (!bothAddrs) return setErr("Both players must be wallet-connected to play for ETH.");
+    if (!distinct) return setErr("Pick two different players above.");
     let wei: bigint;
     try {
       wei = parseEther(buyin || "0");
@@ -163,14 +168,15 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
       return setErr("Bad buy-in amount.");
     }
     if (wei <= 0n) return setErr("Buy-in must be greater than 0.");
-    const opp = opponents.find(o => o.addr === opponent);
-    mesh.chessWagerPropose({
-      opponentKey: opponent,
-      opponentLabel: opp?.label ?? short(opponent),
-      buyinWei: wei.toString(),
-      chainId,
-    });
+    mesh.chessWagerPropose({ whiteKey, whiteLabel, blackKey, blackLabel, buyinWei: wei.toString(), chainId });
   };
+
+  let pot = "?";
+  try {
+    pot = fmtEth((parseEther(buyin || "0") * 2n).toString());
+  } catch {
+    /* keep ? */
+  }
 
   return (
     <div style={card}>
@@ -180,69 +186,38 @@ export const WagerProposeCard = ({ mesh }: { mesh: PeerMeshState }) => {
           {chainLabel(chainId)} · escrow {short(mesh.wallet.address)}
         </div>
       </div>
-      {opponents.length === 0 ? (
+      {!bothAddrs ? (
         <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>
-          No other wallet-connected players in the room yet.
+          Both players must be wallet-connected to play for ETH (AI / anonymous players can&apos;t fund).
         </div>
       ) : (
         <>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 160 }}>
-              <span style={{ ...label, fontSize: 10 }}>Opponent (plays black)</span>
-              <select
-                value={opponent}
-                onChange={e => setOpponent(e.target.value)}
-                style={{
-                  background: "#06030d",
-                  color: "var(--slop-text)",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  borderRadius: 6,
-                  padding: "8px 10px",
-                  fontFamily: "var(--slop-font-body)",
-                }}
-              >
-                <option value="">— select —</option>
-                {opponents.map(o => (
-                  <option key={o.addr} value={o.addr}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 120 }}>
-              <span style={{ ...label, fontSize: 10 }}>Buy-in (ETH)</span>
-              <input
-                value={buyin}
-                onChange={e => setBuyin(e.target.value)}
-                inputMode="decimal"
-                style={{
-                  background: "#06030d",
-                  color: "var(--slop-text)",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  borderRadius: 6,
-                  padding: "8px 10px",
-                  fontFamily: "var(--slop-font-mono, monospace)",
-                }}
-              />
-            </div>
+          <div style={{ fontSize: 13 }}>
+            <span style={{ color: CYAN }}>{whiteLabel}</span> vs <span style={{ color: ACCENT }}>{blackLabel}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 140 }}>
+            <span style={{ ...label, fontSize: 10 }}>Buy-in each (ETH)</span>
+            <input
+              value={buyin}
+              onChange={e => setBuyin(e.target.value)}
+              inputMode="decimal"
+              style={{
+                background: "#06030d",
+                color: "var(--slop-text)",
+                border: "1px solid rgba(255,255,255,0.15)",
+                borderRadius: 6,
+                padding: "8px 10px",
+                fontFamily: "var(--slop-font-mono, monospace)",
+              }}
+            />
           </div>
           <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
-            Each side sends the buy-in to escrow. Winner takes the{" "}
-            <span style={{ color: LIME }}>
-              {(() => {
-                try {
-                  return fmtEth((parseEther(buyin || "0") * 2n).toString());
-                } catch {
-                  return "?";
-                }
-              })()}{" "}
-              ETH
-            </span>{" "}
-            pot. A draw refunds both.
+            Each side sends the buy-in to escrow. Winner takes the <span style={{ color: LIME }}>{pot} ETH</span> pot. A
+            draw refunds both.
           </div>
           {err && <div style={{ color: ACCENT, fontSize: 12 }}>{err}</div>}
           <button type="button" onClick={onChallenge} style={btn(ACCENT)}>
-            Challenge for ETH
+            Play for {pot} ETH
           </button>
         </>
       )}

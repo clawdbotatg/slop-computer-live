@@ -5949,13 +5949,17 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "wager_propose": {
-          // Money chess: open an escrow session for a chess game. The
-          // proposer challenges an opponent for ETH — proposer plays
-          // white, opponent black. Both must be real addresses (they have
-          // to fund + sign). The escrow is the room's existing multisig —
-          // buy-ins go there, the pot pays out from there.
-          if (!info.address) return send(socket, { type: "error", error: "wager_needs_address" });
-          if (typeof msg.opponentKey !== "string" || typeof msg.buyinWei !== "string") {
+          // Money chess: open an escrow session for a chess game between
+          // the two players ALREADY chosen in the chess lobby (white +
+          // black). The proposer just sets the buy-in — they need not be a
+          // player themselves; each side funds + signs for their own seat.
+          // Both seats must be real addresses (AI/anon can't fund). The
+          // escrow is the room's existing multisig.
+          if (
+            typeof msg.whiteKey !== "string" ||
+            typeof msg.blackKey !== "string" ||
+            typeof msg.buyinWei !== "string"
+          ) {
             return send(socket, { type: "error", error: "bad_wager_propose" });
           }
           const cur = room.wallet.getCurrent();
@@ -5964,20 +5968,22 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "chess_in_progress" });
           }
           const chainId = typeof msg.chainId === "number" ? msg.chainId : 8453;
-          const whiteAddr = info.address.toLowerCase();
-          const blackAddr = msg.opponentKey.toLowerCase();
+          const whiteAddr = msg.whiteKey.toLowerCase();
+          const blackAddr = msg.blackKey.toLowerCase();
+          const whiteLabel =
+            typeof msg.whiteLabel === "string" ? msg.whiteLabel : (shortHex(whiteAddr) ?? whiteAddr);
           const blackLabel =
-            typeof msg.opponentLabel === "string" ? msg.opponentLabel : (shortHex(blackAddr) ?? blackAddr);
+            typeof msg.blackLabel === "string" ? msg.blackLabel : (shortHex(blackAddr) ?? blackAddr);
           const result = room.escrow.open({
             game: "chess",
             chainId,
             multisig: cur.address,
             accounts: [
-              { key: whiteAddr, label: info.handle ?? shortHex(whiteAddr) ?? whiteAddr, role: "white", requiredWei: msg.buyinWei },
+              { key: whiteAddr, label: whiteLabel, role: "white", requiredWei: msg.buyinWei },
               { key: blackAddr, label: blackLabel, role: "black", requiredWei: msg.buyinWei },
             ],
             meta: { buyinWei: msg.buyinWei },
-            createdBy: whiteAddr,
+            createdBy: (info.address ?? info.handle ?? info.id).toLowerCase(),
           });
           if (!result.ok) return send(socket, { type: "error", error: result.error });
           broadcastEscrowState(room);
@@ -5986,7 +5992,7 @@ app.register(async function signalRoutes(fastify) {
             address: info.address,
             handle: info.handle,
             anonId: info.anonId,
-            text: `♟️ ${actorName(info)} proposed a ${formatEth(msg.buyinWei)} ETH chess wager vs ${blackLabel}`,
+            text: `♟️ ${actorName(info)} set up a ${formatEth(msg.buyinWei)} ETH chess wager — ${whiteLabel} vs ${blackLabel}`,
             meta: { escrowId: result.session.id, buyinWei: msg.buyinWei, chainId },
           });
           return;

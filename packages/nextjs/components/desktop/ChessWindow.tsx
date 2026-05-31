@@ -63,12 +63,7 @@ export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
           {game ? (
             <ActiveOrEnded mesh={mesh} game={game} myOwnerKey={myOwnerKey} />
           ) : (
-            <Lobby
-              mesh={mesh}
-              myOwnerKey={myOwnerKey}
-              myLabel={myLabel}
-              proposeCard={escrow ? null : <WagerProposeCard mesh={mesh} />}
-            />
+            <Lobby mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
           )}
         </>
       )}
@@ -84,14 +79,10 @@ const Lobby = ({
   mesh,
   myOwnerKey,
   myLabel,
-  proposeCard,
 }: {
   mesh: PeerMeshState;
   myOwnerKey: string | null;
   myLabel: string | null;
-  /** Money-chess "Play for ETH" card, injected so the lobby stays
-   *  agnostic about the wager subsystem. */
-  proposeCard?: React.ReactNode;
 }) => {
   // Build a "selectable identities" list = every connected peer + me +
   // every server-side AI player. Dedupe by ownerKey so a peer whose
@@ -167,7 +158,17 @@ const Lobby = ({
         Start Game
       </button>
 
-      {proposeCard}
+      {/* Stake the game between the two players selected above. Hidden
+          while any escrow session is already live. */}
+      {!mesh.escrow && whiteKey && blackKey && (
+        <WagerProposeCard
+          mesh={mesh}
+          whiteKey={whiteKey}
+          whiteLabel={options.find(o => o.key === whiteKey)?.label ?? whiteKey}
+          blackKey={blackKey}
+          blackLabel={options.find(o => o.key === blackKey)?.label ?? blackKey}
+        />
+      )}
 
       <div
         style={{

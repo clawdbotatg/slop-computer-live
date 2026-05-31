@@ -7,21 +7,13 @@ import { Rnd } from "react-rnd";
 
 const TITLEBAR_HEIGHT = 36;
 // While docked, dragging the pill UP by at least this many px pops the
-// window back open. Below it, the drag is treated as a horizontal
-// reposition and the pill snaps back to the dock edge — so a little
-// vertical wobble while sliding it sideways doesn't un-minimize.
+// window back open (live, mid-drag). Below it, the drag just slides the
+// pill left/right along the dock edge — so a little vertical wobble while
+// repositioning doesn't un-minimize.
 const UNDOCK_DRAG_THRESHOLD = 24;
-// Movement (px) below which a docked gesture is a click (→ restore),
-// not a drag-reposition.
+// Movement (px) below which a docked press is a click (→ restore), not a
+// drag — used to decide whether to swallow the trailing click.
 const DOCK_DRAG_EPS = 3;
-
-// Viewport Y of a mouse/touch event. mouseup carries it on the event;
-// touchend carries it on changedTouches (touches is empty by then).
-const pointerY = (e: MouseEvent | TouchEvent): number => {
-  if ("changedTouches" in e && e.changedTouches.length) return e.changedTouches[0].clientY;
-  if ("touches" in e && e.touches.length) return e.touches[0].clientY;
-  return (e as MouseEvent).clientY;
-};
 
 export type WindowProps = {
   title: string;
@@ -100,11 +92,10 @@ export const Window = ({
   // restore the window. Reset at the start of every gesture so it can't
   // get stuck across gestures.
   const dockSuppressClickRef = useRef(false);
-  // Pointer Y (viewport px) where a docked drag began. We lock the docked
-  // drag to the X axis (the pill physically can't leave the dock edge), so
-  // "pull up to restore" is detected from the raw pointer delta instead of
-  // react-rnd's reported y — which is locked and would never change.
-  const dockStartPointerYRef = useRef(0);
+  // Teardown for the in-flight docked-drag pointer listeners, so a window
+  // that unmounts mid-drag doesn't leak them.
+  const dockDragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dockDragCleanupRef.current?.(), []);
 
   const insets = {
     top: containerInset?.top ?? 0,
@@ -151,6 +142,69 @@ export const Window = ({
       return;
     }
     restore();
+  };
+
+  // Drag the docked "pill" ourselves (react-rnd dragging is disabled while
+  // docked). Below the pull-up threshold the pill slides left/right along
+  // the dock edge; the instant the pointer crosses the threshold upward we
+  // restore the window full-size UNDER the cursor and keep moving it with
+  // the same press — so it's in-hand immediately, not on release.
+  const handleDockPointerDown = (e: React.PointerEvent) => {
+    if (!isDocked || e.button !== 0) return;
+    e.preventDefault();
+    onFocus?.();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const pillX = x;
+    const restoredW = savedRect?.width ?? Math.max(minWidth, 320);
+    const restoredH = savedRect?.height ?? Math.max(minHeight, 240);
+    // Keep the cursor at the same horizontal spot on the (wider) restored
+    // titlebar that it grabbed on the pill.
+    const grabDX = Math.min(Math.max(startX - pillX, 8), restoredW - 8);
+    let restored = false;
+    let moved = false;
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const draggedUp = startY - ev.clientY;
+      if (Math.abs(dx) > DOCK_DRAG_EPS || draggedUp > DOCK_DRAG_EPS) moved = true;
+
+      if (!restored && draggedUp > UNDOCK_DRAG_THRESHOLD) {
+        // Cross the threshold → restore full-size, titlebar under cursor.
+        restored = true;
+        const nx = ev.clientX - grabDX;
+        const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
+        onMove?.({ x: nx, y: ny });
+        onResize?.({ x: nx, y: ny, width: restoredW, height: restoredH });
+        setSavedRect(null);
+        setMode("normal");
+        return;
+      }
+      if (restored) {
+        // Keep the restored window glued to the cursor.
+        const nx = ev.clientX - grabDX;
+        const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
+        onMove?.({ x: nx, y: ny });
+      } else {
+        // Still docked → slide horizontally, stay pinned to the dock edge.
+        onMove?.({ x: pillX + dx, y: dockedY });
+      }
+    };
+
+    const finish = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finish);
+      dockDragCleanupRef.current = null;
+      // Swallow the click the browser fires after a real drag (so it can't
+      // also toggle restore). A no-move press leaves this false and falls
+      // through to handleDockClick → restore.
+      dockSuppressClickRef.current = moved;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finish);
+    dockDragCleanupRef.current = finish;
   };
 
   const handleZoom = () => {
@@ -213,6 +267,7 @@ export const Window = ({
         onMinimize={isDocked ? undefined : handleMinimize}
         onZoom={isDocked ? undefined : handleZoom}
         onTitleClick={isDocked ? handleDockClick : undefined}
+        onTitlePointerDown={isDocked ? handleDockPointerDown : undefined}
       />
       {isDocked && !keepMountedWhenDocked ? null : (
         <div
@@ -277,14 +332,11 @@ export const Window = ({
       // onMouseDown also fires to bump z), forcing users to click twice
       // to close.
       cancel=".slop-titlebar__dot"
-      // Docked windows ARE draggable (slide sideways / drag up to open) —
-      // the docked-vs-normal behavior is sorted out in onDragStop.
-      disableDragging={false}
-      // While docked, lock dragging to the X axis so the pill physically
-      // stays glued to the dock edge — it can only slide left/right, never
-      // lift off. "Pull up to restore" is detected separately from the raw
-      // pointer delta in onDragStart/onDragStop, not from y movement.
-      dragAxis={isDocked ? "x" : "both"}
+      // While docked, react-rnd's own dragging is OFF — the docked "pill"
+      // is dragged by our pointer handler (handleDockPointerDown) instead,
+      // because react-rnd can't restore-and-keep-dragging mid-gesture
+      // (react-draggable ignores position changes while a drag is live).
+      disableDragging={isDocked}
       // Only allow resizing from the bottom + right edges and the
       // bottom-right grip. react-rnd's default top/left/topLeft/topRight
       // handles are positioned at -10px and span 20px, so their inner
@@ -312,35 +364,7 @@ export const Window = ({
         overflow: "hidden",
       }}
       onMouseDown={onFocus}
-      // Fresh gesture — clear any stale click-suppression from a prior
-      // drag whose synthetic click never landed, and record the pointer's
-      // start Y so the docked branch below can measure a real pull-up.
-      onDragStart={e => {
-        dockSuppressClickRef.current = false;
-        dockStartPointerYRef.current = pointerY(e as MouseEvent | TouchEvent);
-      }}
-      onDragStop={(e, d) => {
-        if (isDocked) {
-          // Drag is X-locked, so the pill never moved vertically. Measure
-          // the pull-up from the raw pointer delta (start → release).
-          const draggedUp = dockStartPointerYRef.current - pointerY(e as MouseEvent | TouchEvent);
-          const movedX = Math.abs(d.x - x);
-          // Genuine drag (vs. a click): suppress the trailing click so it
-          // can't double-fire restore / un-minimize a horizontal slide.
-          if (movedX > DOCK_DRAG_EPS || Math.abs(draggedUp) > DOCK_DRAG_EPS) {
-            dockSuppressClickRef.current = true;
-          }
-          if (draggedUp > UNDOCK_DRAG_THRESHOLD) {
-            // Pulled up far enough → pop back open.
-            restore();
-          } else if (movedX > DOCK_DRAG_EPS) {
-            // Horizontal slide → reposition the pill, stay docked. y stays
-            // pinned to the dock edge (it was X-locked the whole drag).
-            onMove?.({ x: d.x, y: dockedY });
-          }
-          // Pure click (no real movement) falls through to handleDockClick.
-          return;
-        }
+      onDragStop={(_e, d) => {
         // react-rnd fires onDragStop on every mouseup, even when the user
         // didn't actually move the window (e.g. a click on a titlebar dot).
         // Only treat this as a manual move if something changed — otherwise

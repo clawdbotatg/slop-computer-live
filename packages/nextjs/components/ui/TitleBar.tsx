@@ -13,6 +13,10 @@ interface TitleBarProps {
    *  window. A real drag won't fire onClick because react-rnd's drag
    *  threshold suppresses the synthetic click. */
   onTitleClick?: () => void;
+  /** Optional pointer-down handler for the whole title row. Used by the
+   *  minimized "dock" mode to drive its own drag (react-rnd dragging is
+   *  off while docked). */
+  onTitlePointerDown?: (e: React.PointerEvent) => void;
   className?: string;
 }
 
@@ -78,6 +82,7 @@ export const TitleBar = ({
   onMinimize,
   onZoom,
   onTitleClick,
+  onTitlePointerDown,
   className = "",
 }: TitleBarProps) => {
   return (
@@ -85,6 +90,7 @@ export const TitleBar = ({
       data-grab="true"
       className={`slop-titlebar ${active ? "slop-titlebar--active" : ""} ${className}`.trim()}
       onClick={onTitleClick}
+      onPointerDown={onTitlePointerDown}
       style={onTitleClick ? { cursor: "pointer" } : undefined}
     >
       {showDots && (
