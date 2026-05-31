@@ -29,6 +29,11 @@ export type PeerInfo = {
   // video), but filtered out of the visible guest list on every
   // client.
   spectator?: boolean;
+  // Distinguishes the two spectator flavors (both set `spectator`):
+  // mobileMode is the portrait clip-friendly stage minted via
+  // `?mobileMode=…`; a bare spectator with no mobileMode is god-mode.
+  // Surfaced in the admin peer list so a host can tell them apart.
+  mobileMode?: boolean;
   // Mirrored from the session for passkey peers. Lets other peers in
   // the same room register this user as a passkey signer on a multisig
   // (the deploy form auto-routes signers with a `passkey` field into

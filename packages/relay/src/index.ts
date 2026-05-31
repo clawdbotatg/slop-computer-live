@@ -5124,6 +5124,7 @@ app.register(async function signalRoutes(fastify) {
       anonId: session.anonId ?? null,
       connectedAt: Date.now(),
       ...(isSpectator ? { spectator: true as const } : {}),
+      ...(session.mobileMode ? { mobileMode: true as const } : {}),
       ...(session.passkey ? { passkey: session.passkey } : {}),
     };
 

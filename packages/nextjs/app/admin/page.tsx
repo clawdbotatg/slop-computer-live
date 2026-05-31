@@ -84,6 +84,17 @@ type Peer = {
   handle: string | null;
   connectedAt?: number;
   slug?: string;
+  spectator?: boolean;
+  mobileMode?: boolean;
+};
+
+// Both god-mode and mobile-mode peers join as role "guest" with
+// `spectator` set; only mobile-mode also carries `mobileMode`. Surface
+// the real flavor so the admin list doesn't collapse them all to "guest".
+const peerMode = (p: Peer): string => {
+  if (p.mobileMode) return "mobileMode";
+  if (p.spectator) return "godMode";
+  return p.role;
 };
 
 const formatConnectedAt = (ts?: number) => {
@@ -1606,7 +1617,7 @@ const AdminPage: NextPage = () => {
               {peers.map(p => (
                 <tr key={p.id}>
                   <td style={{ padding: "4px 8px" }}>
-                    <code>{p.id.slice(0, 8)}</code> · {p.role}
+                    <code>{p.id.slice(0, 8)}</code> · {peerMode(p)}
                   </td>
                   <td style={{ padding: "4px 8px" }}>
                     {p.slug ? <code>{p.slug}</code> : <span style={{ color: "var(--slop-text-muted)" }}>—</span>}
