@@ -61,7 +61,7 @@ const BORDER = "1px solid rgba(255,62,201,0.25)";
 export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const st = mesh.leftclawState;
   const slug = useRoomSlug();
-  const { address } = useAccount();
+  const { address, chainId } = useAccount();
   const { openConnectModal } = useConnectModal();
   const { switchChainAsync } = useSwitchChain();
   const { signMessageAsync } = useSignMessage();
@@ -106,9 +106,17 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
 
     try {
-      // Both paths sign on Base — make sure the wallet is there.
-      mesh.leftclawUpdate("Switching to Base…");
-      await switchChainAsync({ chainId: base.id }).catch(() => {});
+      // Both paths sign on Base — make sure the wallet is actually there
+      // before doing anything irreversible. A swallowed switch failure
+      // would otherwise let us burn CV against the wrong chain.
+      if (chainId !== base.id) {
+        mesh.leftclawUpdate("Switching to Base…");
+        try {
+          await switchChainAsync({ chainId: base.id });
+        } catch {
+          throw new Error("Switch your wallet to Base, then post again.");
+        }
+      }
 
       if (payment === "cv") {
         // 1. Price: cvAmount = ceil((highestCVBalance / 5) / cvDivisor)
@@ -127,12 +135,29 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           throw new Error("could not compute CV cost");
         }
         const cvAmount = BigInt(Math.ceil(highest / 5 / cvDivisor));
+        const fullDesc = context.trim() ? `${desc}\n\nContext: ${context.trim()}` : desc;
 
-        // 2. Sign the static CV spend authorization (EIP-191 personal sign).
+        // 2. Simulate the on-chain post BEFORE burning CV. CV is spent
+        // off-chain and can't be refunded, so a doomed post (bad service,
+        // empty desc, RPC reachability) must fail here — never after the
+        // burn. Returns the validated request we then submit verbatim.
+        // (Note: this can't catch a wallet that mangles tx *submission* —
+        // e.g. MetaMask Smart Transactions; that's a wallet-side issue and
+        // the USDC path avoids it entirely.)
+        mesh.leftclawUpdate("Checking the job will post…");
+        const { request } = await publicClient.simulateContract({
+          account: address,
+          address: LEFTCLAW_CONTRACT,
+          abi: LEFTCLAW_ABI,
+          functionName: "postJobWithCV",
+          args: [BigInt(serviceId), cvAmount, fullDesc],
+        });
+
+        // 3. Sign the static CV spend authorization (EIP-191 personal sign).
         mesh.leftclawUpdate("Signing CV spend…");
         const signature = await signMessageAsync({ message: "larv.ai CV Spend" });
 
-        // 3. Burn CV off-chain (relay proxy — Leftclaw has no CORS).
+        // 4. Burn CV off-chain (relay proxy — Leftclaw has no CORS).
         mesh.leftclawUpdate("Burning CV…");
         const spendRes = await fetch(withSlug(`${RELAY_HTTP}/v1/leftclaw/cv-spend`, slug), {
           method: "POST",
@@ -145,16 +170,9 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           throw new Error(`CV burn failed: ${spendJson?.error ?? spendRes.status}`);
         }
 
-        // 4. Post the job on-chain (description folds in the optional context).
+        // 5. Post the job on-chain with the pre-validated request.
         mesh.leftclawUpdate("Posting on-chain…");
-        const fullDesc = context.trim() ? `${desc}\n\nContext: ${context.trim()}` : desc;
-        const hash = await writeContractAsync({
-          address: LEFTCLAW_CONTRACT,
-          abi: LEFTCLAW_ABI,
-          functionName: "postJobWithCV",
-          args: [BigInt(serviceId), cvAmount, fullDesc],
-          chainId: base.id,
-        });
+        const hash = await writeContractAsync(request);
 
         mesh.leftclawUpdate("Confirming…");
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
@@ -194,6 +212,7 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
   }, [
     address,
+    chainId,
     publicClient,
     walletClient,
     description,

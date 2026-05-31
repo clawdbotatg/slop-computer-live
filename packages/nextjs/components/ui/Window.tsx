@@ -146,10 +146,16 @@ export const Window = ({
 
   // Drag the docked "pill" ourselves (react-rnd dragging is disabled while
   // docked). Below the pull-up threshold the pill slides left/right along
-  // the dock edge; the instant the pointer crosses the threshold upward we
+  // the dock edge; the instant the cursor crosses the threshold upward we
   // restore the window full-size UNDER the cursor and keep moving it with
   // the same press — so it's in-hand immediately, not on release.
-  const handleDockPointerDown = (e: React.PointerEvent) => {
+  //
+  // MOUSE events, not pointer events: the custom SVG cursor (useLocalCursor)
+  // tracks `mousemove`, and calling preventDefault on a *pointerdown* would
+  // suppress the browser's compatibility mouse events for the whole gesture
+  // — freezing the cursor mid-drag. preventDefault on *mousedown* only stops
+  // text selection and is safe (mousemove still fires).
+  const handleDockMouseDown = (e: React.MouseEvent) => {
     if (!isDocked || e.button !== 0) return;
     e.preventDefault();
     onFocus?.();
@@ -165,7 +171,7 @@ export const Window = ({
     let restored = false;
     let moved = false;
 
-    const onPointerMove = (ev: PointerEvent) => {
+    const onMouseMove = (ev: MouseEvent) => {
       const dx = ev.clientX - startX;
       const draggedUp = startY - ev.clientY;
       if (Math.abs(dx) > DOCK_DRAG_EPS || draggedUp > DOCK_DRAG_EPS) moved = true;
@@ -193,8 +199,8 @@ export const Window = ({
     };
 
     const finish = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", finish);
       dockDragCleanupRef.current = null;
       // Swallow the click the browser fires after a real drag (so it can't
       // also toggle restore). A no-move press leaves this false and falls
@@ -202,8 +208,8 @@ export const Window = ({
       dockSuppressClickRef.current = moved;
     };
 
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", finish);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", finish);
     dockDragCleanupRef.current = finish;
   };
 
@@ -267,7 +273,7 @@ export const Window = ({
         onMinimize={isDocked ? undefined : handleMinimize}
         onZoom={isDocked ? undefined : handleZoom}
         onTitleClick={isDocked ? handleDockClick : undefined}
-        onTitlePointerDown={isDocked ? handleDockPointerDown : undefined}
+        onTitleMouseDown={isDocked ? handleDockMouseDown : undefined}
       />
       {isDocked && !keepMountedWhenDocked ? null : (
         <div
