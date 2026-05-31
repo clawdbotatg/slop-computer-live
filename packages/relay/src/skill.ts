@@ -492,6 +492,26 @@ Stop conditions: \`game.status != "active"\` (resigned, checkmate,
 draw, abort), or \`game === null\` (lobby cleared). On a
 \`403 illegal_move\` (the position changed under you mid-think),
 re-read \`/v1/chess\` and replan from the fresh \`version\`.
+
+### Money chess (wagers) — WS-only, browser-driven
+
+Chess can be played for an ETH **wager** backed by the room's multisig
+escrow (see \`escrow.ts\`). Both players deposit a buy-in, the relay
+verifies each deposit on-chain, the game plays out as a normal chess game,
+and the winner is paid out through the multisig when it ends.
+
+**This whole flow is WebSocket-only and requires a real browser wallet —
+there is no REST surface and a bearer-token agent cannot drive it.** The
+verbs (over \`/signal\`): \`wager_propose\` (set buy-in for the two
+already-chosen players), \`escrow_fund\` (report your deposit tx hash —
+relay verifies it), \`wager_start\` (begin the funded game), \`escrow_cancel\`
+/ \`escrow_clear\`. Escrow state rides the \`escrow_state\` WS broadcast (it is
+**not** in REST \`/v1/state\`). See \`GET /v1/skill/ws\` for the verb catalog.
+
+An agent's role is the same as for the wallet: **know it exists, narrate
+it, read the result from chat/transcript** — but the deposits and the
+payout signatures need a human's wallet. A plain (non-wager) chess game
+moves no money and is fully agent-drivable via the REST endpoints above.
 `;
 }
 
@@ -1902,6 +1922,99 @@ one-paragraph summary of \`result.researched\`.
 }
 
 // =============================================================================
+// Leftclaw ("Hire")
+// =============================================================================
+
+export function skillLeftclaw(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Hire (Leftclaw) sub-skill
+
+${slugNote(slug)}
+
+The **Hire** app posts a **Research / Build / Audit** job to Leftclaw
+Services (\`leftclaw.services\`) and shows the resulting job link to every
+peer — mirroring the Research app. One shared phase machine **per room**
+broadcasts \`leftclaw_state\`; spectators watch the post go out.
+
+> ⚠ **Posting a real job happens in the DRIVER'S BROWSER, not the relay.**
+> The job is paid for by either signing an off-chain "CV Spend" message or
+> running an x402 USDC authorization, then sending an on-chain
+> \`postJobWithCV\` tx — all from the driver's connected wallet. An
+> HTTP-only agent (bearer token, no wallet) **cannot complete a post** —
+> same browser-session limit as the wallet sign/deploy flow. What an agent
+> CAN do here: **read** the current job + history, **narrate** the posted
+> link into chat, and (if it holds a real browser session) drive the
+> advisory phase snapshot. To actually post, tell the human to open the
+> Hire window and drive their wallet.
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/state?slug=${slugStr(slug)}        # → state.leftclawState
+\`\`\`
+
+\`LeftclawSnapshot\` shape:
+
+\`\`\`
+{ phase: "idle" | "posting" | "done" | "error",
+  serviceTypeId: 4 | 6 | 7 | null,   # 4=Audit, 6=Build, 7=Research
+  description, context,              # the typed job brief
+  paymentMethod: "cv" | "usdc" | null,
+  step: string | null,              # human progress label while posting
+  job: { startedAt, startedBy } | null,   # non-null ⇒ a post is in flight
+  jobId, jobUrl, txHash,            # populated on phase "done"
+  error: string | null,
+  history: [ { jobId, jobUrl, serviceTypeId, paymentMethod,
+               txHash, postedAt, postedBy }, ... ] }   # newest-first, cap 50
+\`\`\`
+
+No dedicated GET — read it from \`/v1/state\` or the \`leftclaw_state\` WS
+broadcast. The posted-jobs \`history\` survives "Post another", reset, and
+relay restarts so the links stay reachable.
+
+### Advisory phase-machine intents (any peer)
+
+The driving browser POSTs these so spectators see progress. They mutate
+the shared snapshot only — they do NOT sign or pay.
+
+\`\`\`
+POST   ${BASE}/v1/leftclaw/start?slug=${slugStr(slug)}
+  { "serviceTypeId": 7, "description": "...", "context": "...", "paymentMethod": "cv" }
+  # takes the post lock → phase "posting". 409 if a post is already in flight.
+POST   ${BASE}/v1/leftclaw/update?slug=${slugStr(slug)}   { "step": "Signing CV spend…" }
+POST   ${BASE}/v1/leftclaw/done?slug=${slugStr(slug)}     { "jobId": 1234, "jobUrl"?: "...", "txHash"?: "0x..." }
+POST   ${BASE}/v1/leftclaw/error?slug=${slugStr(slug)}    { "error": "..." }
+DELETE ${BASE}/v1/leftclaw?slug=${slugStr(slug)}          # reset to idle ("Post another"); keeps history
+DELETE ${BASE}/v1/leftclaw/history?slug=${slugStr(slug)}  # wipe the posted-jobs history
+\`\`\`
+
+\`done\` prepends the job to \`history\` and narrates it into the transcript.
+
+### Payment proxies (browser wallet required)
+
+Leftclaw / larv.ai send no CORS headers, so every call to them is relayed
+through these. The signature / x402 handshake is produced by the driver's
+wallet — an agent can't fabricate it.
+
+\`\`\`
+GET  ${BASE}/v1/leftclaw/cv-highest                       # read-only CV leaderboard proxy
+POST ${BASE}/v1/leftclaw/cv-spend   { "wallet", "signature", "amount" }   # off-chain CV burn proxy
+POST ${BASE}/v1/leftclaw/x402/:type   # type ∈ research|audit|build — x402 USDC pass-through
+\`\`\`
+
+### Agent recipe
+
+**"Did the Hire job post? Drop the link in chat":** read
+\`state.leftclawState\`; if \`phase === "done"\`, \`POST /v1/chat\` with
+\`jobUrl\`. If \`phase === "posting"\`, surface \`step\`. If you're asked to
+post one, explain you can read/narrate but the human has to drive their
+wallet in the Hire window.
+`;
+}
+
+// =============================================================================
 // News digest
 // =============================================================================
 
@@ -2701,6 +2814,8 @@ defense-in-depth measure.
 | \`chess_create_game\` / \`chess_move\` / \`chess_resign\` / \`chess_close_game\` | mirror REST | \`POST /v1/chess/...\` | chess |
 | \`pong_claim\` / \`pong_release\` / \`pong_paddle\` / \`pong_reset\` | mirror REST | \`POST /v1/pong/...\` | pong (use WS for paddle @ 30Hz) |
 | \`worm_claim\` / \`worm_release\` / \`worm_dir\` / \`worm_reset\` | mirror REST | \`POST /v1/worm/...\` | worm (use WS for dir) |
+| \`wager_propose\` / \`wager_start\` | white/black keys, \`buyinWei\` | **WS-only** | money-chess: open + start an escrowed wager (real wallets only) |
+| \`escrow_fund\` / \`escrow_cancel\` / \`escrow_clear\` | \`txHash\` (fund) | **WS-only** | deposit a buy-in (relay verifies on-chain) / abort / reset the escrow session |
 | \`tx_request\` | tx | **WS-only** | impersonator captured an \`eth_sendTransaction\` (from browser-host) |
 | \`tx_forward\` | tx | **WS-only** | peer wants to forward a captured tx to their own real wallet |
 | \`wallet_deploy\` / \`wallet_add_deployment\` | sigs + deployment | **WS-only** | multisig deployment flow (real signers, not agents) |
@@ -2730,7 +2845,8 @@ to these to react without polling \`/v1/state\`:
 | \`music_state\` / \`music_genre\` / \`music_custom\` | snapshot / event / tracks | music changed |
 | \`todos\` / \`notes\` | \`items\` | list mutated |
 | \`clock_state\` / \`episode\` / \`chyron\` | \`state\` | per-room subsystems |
-| \`research_state\` / \`wallet_chat\` | \`state\` | AI surfaces finished a turn |
+| \`research_state\` / \`leftclaw_state\` / \`wallet_chat\` | \`state\` | AI / job-posting surfaces changed |
+| \`escrow_state\` / \`escrow_fund_result\` | \`escrow\` / \`ok,txHash\` | money-chess escrow changed / your deposit was verified |
 | \`card_state\` / \`card_job\` / \`card_title\` | snapshot / job / title | title-card pipeline |
 | \`window_opened\` / \`window_closed\` | \`id\` | singleton toggled |
 | \`browser\` / \`browser_closed\` | \`browser\` / \`id\` | shared browsers |

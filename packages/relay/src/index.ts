@@ -38,9 +38,11 @@ import { generateCard } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
+  type TranscriptKind,
+  type TranscriptMeta,
   type TranscriptSegment,
 } from "./transcript.js";
-import { actorName, chainLabel, formatEth, musicTrackLabel, ownerKeyActor, shortHex } from "./transcript-actions.js";
+import { actorName, chainLabel, formatEth, musicTrackLabel, ownerKeyActor, shortHex, urlHostLabel } from "./transcript-actions.js";
 import type { MusicSnapshot } from "./music-state.js";
 import { isSttConfigured, transcribeAudio } from "./stt.js";
 import {
@@ -558,6 +560,26 @@ function noteMusicTranscript(
     anonId: actor.anonId,
     text,
     meta: { src: next.src, index: next.index, playing: next.playing },
+  });
+}
+
+// Narrate a deliberate agent/host action (chyron, apps, browser, card,
+// research, leftclaw, …) into the room transcript so the show archive
+// captures what changed and who did it — same archive/poll-only path as
+// music/chess (kept out of the live caption broadcast by kind, see room.ts).
+// Actor + source come straight off the authed session: bearer ⇒ "agent",
+// cookie ⇒ "live". The actor's name is baked into `text` so the JSONL reads
+// standalone. High-signal ON PURPOSE — only discrete, low-churn events route
+// here, never per-frame telemetry (cursor, paddle, slot drags) or reads.
+function noteAction(room: Room, a: V1Auth, kind: TranscriptKind, text: string, meta?: TranscriptMeta): void {
+  room.transcript.appendAction({
+    kind,
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+    text,
+    ...(meta ? { meta } : {}),
+    source: a.via === "bearer" ? "agent" : "live",
   });
 }
 
@@ -1277,11 +1299,16 @@ app.post<{ Body: AppBody }>("/v1/apps", async (req, reply) => {
     if (idx >= 0) hot[idx] = next;
     else hot.push(next);
     await writeHotApps(hot);
+    noteAction(roomFromReq(req), a, "app", `🪟 ${actorName(a.session)} added the “${label}” app to every room`, {
+      id,
+      scope: "global",
+    });
     return { ok: true, app: next, scope, total: readApps().length };
   }
   const slug = a.session.roomSlug ?? DEFAULT_SLUG;
   const room = getOrCreateRoom(slug);
   room.apps.upsert(next);
+  noteAction(room, a, "app", `🪟 ${actorName(a.session)} added the “${label}” app`, { id, scope: "room" });
   return { ok: true, app: next, scope, slug, total: resolveAppsForRoom(room.apps.list()).length };
 });
 
@@ -1303,6 +1330,10 @@ app.delete<{ Params: { id: string }; Querystring: { scope?: string } }>("/v1/app
         .send({ error: isBuiltIn ? "built-in-app-not-removable" : "no-such-app", id });
     }
     await writeHotApps(filtered);
+    noteAction(roomFromReq(req), a, "app", `🗑️ ${actorName(a.session)} removed the “${id}” app from every room`, {
+      id,
+      scope: "global",
+    });
     return { ok: true, removed: id, scope, total: readApps().length };
   }
   const slug = a.session.roomSlug ?? DEFAULT_SLUG;
@@ -1310,6 +1341,7 @@ app.delete<{ Params: { id: string }; Querystring: { scope?: string } }>("/v1/app
   if (!room.apps.remove(id)) {
     return reply.code(404).send({ error: "no-such-room-app", id, slug });
   }
+  noteAction(room, a, "app", `🗑️ ${actorName(a.session)} removed the “${id}” app`, { id, scope: "room" });
   return { ok: true, removed: id, scope, slug, total: resolveAppsForRoom(room.apps.list()).length };
 });
 
@@ -1333,6 +1365,10 @@ app.post<{ Params: { id: string } }>("/v1/apps/:id/promote", async (req, reply) 
   else hot.push(entry);
   await writeHotApps(hot);
   room.apps.remove(id);
+  noteAction(room, a, "app", `🌟 ${actorName(a.session)} promoted the “${entry.label}” app to every room`, {
+    id,
+    scope: "global",
+  });
   return { ok: true, promoted: id, fromRoom: slug, app: entry, total: readApps().length };
 });
 
@@ -1374,6 +1410,7 @@ app.post<{ Body: OpenBrowserBody }>("/v1/browsers", async (req, reply) => {
   const room = roomFromReq(req);
   const browser = room.browsers.open(id, url, "agent", appId);
   room.broadcast({ type: "browser", browser });
+  noteAction(room, a, "browser", `🌐 ${actorName(a.session)} opened a browser → ${urlHostLabel(url)}`, { id, url });
   return { ok: true, browser };
 });
 
@@ -1388,6 +1425,10 @@ app.post<{ Params: { id: string }; Body: NavBody }>("/v1/browsers/:id/navigate",
   const browser = room.browsers.navigate(req.params.id, url);
   if (!browser) return reply.code(404).send({ error: "no-such-browser" });
   room.broadcast({ type: "browser", browser });
+  noteAction(room, a, "browser", `🌐 ${actorName(a.session)} steered a browser → ${urlHostLabel(url)}`, {
+    id: req.params.id,
+    url,
+  });
   return { ok: true, browser };
 });
 
@@ -1503,18 +1544,13 @@ app.post<{ Body: { text?: unknown } }>("/v1/chyron", async (req, reply) => {
   // the lower-third banner is a deliberate, on-screen host act — it belongs
   // in the archive next to the speech it's captioning.
   if (state.text !== before) {
-    const who = a.session;
-    room.transcript.appendAction({
-      kind: "chyron",
-      address: who.address,
-      handle: who.handle,
-      anonId: who.anonId ?? null,
-      text: state.text
-        ? `📺 ${actorName(who)} set the chyron: “${state.text}”`
-        : `📺 ${actorName(who)} cleared the chyron`,
-      meta: { text: state.text },
-      source: a.via === "bearer" ? "agent" : "live",
-    });
+    noteAction(
+      room,
+      a,
+      "chyron",
+      state.text ? `📺 ${actorName(a.session)} set the chyron: “${state.text}”` : `📺 ${actorName(a.session)} cleared the chyron`,
+      { text: state.text },
+    );
   }
   return { ok: true, state };
 });
@@ -2345,6 +2381,7 @@ app.post(
     const job: CardJob = { startedAt: Date.now(), startedBy };
     cardJobs.set(slug, job);
     room.broadcast({ type: "card_job", job });
+    noteAction(room, a, "card", `🖼️ ${actorName(a.session)} is generating a new title card`);
 
     // Fire-and-forget: the HTTP req returns now, the actual generation
     // runs server-side independent of the connection. Peers learn about
@@ -2384,6 +2421,7 @@ app.delete("/v1/card", async (req, reply) => {
     /* already gone */
   }
   room.broadcast({ type: "card_state", state: null });
+  noteAction(room, a, "card", `🗑️ ${actorName(a.session)} cleared the title card`);
   return { ok: true };
 });
 
@@ -2414,6 +2452,7 @@ app.post(
       req.log.error({ err }, "card publish failed");
       return reply.code(500).send({ error: "write-failed" });
     }
+    noteAction(room, a, "card", `🖼️ ${actorName(a.session)} published the title card`);
     return { ok: true, bytes: body.length };
   },
 );
@@ -3196,6 +3235,7 @@ app.post<{ Body: GuestLookupBody }>("/v1/guest-lookup", async (req, reply) => {
     error: null,
     job,
   });
+  noteAction(room, a, "research", `🔎 ${actorName(a.session)} looked up “${query}”`, { query });
 
   // Fire and forget. The HTTP response returns immediately; result
   // delivery happens through the `research_state` broadcast.
@@ -3259,6 +3299,7 @@ app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) =
     error: null,
     job,
   });
+  noteAction(room, a, "research", `🔎 ${actorName(a.session)} started deep research on ${name}`, { name });
 
   void (async () => {
     try {
@@ -3425,6 +3466,11 @@ app.post<{ Body: LeftclawStartBody }>("/v1/leftclaw/start", async (req, reply) =
     txHash: null,
     error: null,
     job: { startedAt: Date.now(), startedBy: startedByLabel(a) },
+  });
+  const svc = LEFTCLAW_SERVICE_LABEL[serviceTypeId] ?? "job";
+  noteAction(room, a, "leftclaw", `💼 ${actorName(a.session)} posted a Leftclaw ${svc} job: “${description.slice(0, 120)}”`, {
+    serviceTypeId,
+    paymentMethod,
   });
   reply.header("cache-control", "no-store");
   return reply.code(202).send({ ok: true, state: next });
@@ -3854,7 +3900,14 @@ app.post<{ Body: SetGenreBody }>("/v1/music/genre", async (req, reply) => {
   if (incoming !== null && typeof incoming !== "string") return reply.code(400).send({ error: "bad-genre" });
   if (incoming !== null && !isGenre(incoming)) return reply.code(400).send({ error: "unknown-genre" });
   try {
-    const out = await roomFromReq(req).jamendo.setCurrentGenre(incoming as string | null);
+    const room = roomFromReq(req);
+    const prevGenre = room.jamendo.getCurrentGenre();
+    const out = await room.jamendo.setCurrentGenre(incoming as string | null);
+    if (out.genre !== prevGenre) {
+      const label =
+        out.genre === null ? "the legacy playlist" : (GENRES[out.genre as keyof typeof GENRES]?.label ?? out.genre);
+      noteAction(room, a, "music", `🎵 ${actorName(a.session)} switched the music to ${label}`, { genre: out.genre });
+    }
     // Intentionally do NOT reset musicState here. If someone is in the
     // middle of a song from genre A and a peer switches to genre B,
     // the currently-playing song should keep playing — only an
@@ -4366,6 +4419,15 @@ app.post<{ Body: RoomCreateBody }>("/v1/rooms", async (req, reply) => {
   const room = getOrCreateRoom(slug);
   if (room.auth.hasPassword()) return reply.code(409).send({ error: "room-already-exists" });
   room.auth.setPassword(password);
+  // First line of the new room's archive: who opened it. Host-scoped
+  // (requireHost), so we only have the address — handle isn't resolved here.
+  room.transcript.appendAction({
+    kind: "room",
+    address: auth.address.toLowerCase(),
+    handle: null,
+    text: `🚪 ${actorName({ address: auth.address })} created this room`,
+    meta: { slug },
+  });
   return { ok: true, slug };
 });
 
@@ -4458,6 +4520,15 @@ app.post<{ Params: { slug: string }; Body: ReviveBody }>("/v1/rooms/:slug/revive
   if (!result) return reply.code(402).send({ error: "payment-required" });
   const room = getOrCreateRoom(req.params.slug);
   room.meta.setPaidUntil(result.paidUntil);
+  // Revive is payment-proof gated, not session-authed — no actor identity
+  // to attribute, so this lands as an anonymous "room came back" marker.
+  room.transcript.appendAction({
+    kind: "room",
+    address: null,
+    handle: null,
+    text: "🚪 this room was revived",
+    meta: { paidUntil: result.paidUntil },
+  });
   return { ok: true, slug: req.params.slug, paidUntil: result.paidUntil };
 });
 

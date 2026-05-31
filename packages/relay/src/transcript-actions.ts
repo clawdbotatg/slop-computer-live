@@ -76,6 +76,18 @@ export function ownerKeyActor(ownerKey: string, label: string): ActionActor {
   };
 }
 
+/** Hostname for a URL, used when narrating where a browser was pointed.
+ *  Falls back to a trimmed raw string when it isn't a parseable URL. */
+export function urlHostLabel(raw: string): string {
+  try {
+    const host = new URL(raw).host;
+    if (host) return host;
+  } catch {
+    /* not a URL — fall through */
+  }
+  return raw.slice(0, 60);
+}
+
 /** Best-effort track name for a music snapshot. Genres/playlists don't
  *  carry a title, so fall back to the 1-based index; a real filename in
  *  the URL gets quoted. */

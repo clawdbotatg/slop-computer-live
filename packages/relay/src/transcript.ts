@@ -26,7 +26,21 @@ const MAX_HISTORY = 500;
 // pong, set the on-screen chyron banner, added/removed a desktop app).
 // Action rows are archive/poll-only — see room.ts, they're kept out of the
 // live `transcript_seg` caption broadcast.
-export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm" | "chyron" | "app";
+export type TranscriptKind =
+  | "speech"
+  | "music"
+  | "file"
+  | "wallet"
+  | "chess"
+  | "pong"
+  | "worm"
+  | "chyron"
+  | "app"
+  | "browser"
+  | "card"
+  | "research"
+  | "leftclaw"
+  | "room";
 
 // Structured bits for an action row (track index, filename, tx target, SAN,
 // pong score, …). The rendered one-liner lives in `text`; this is the raw
