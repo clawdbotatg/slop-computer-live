@@ -61,6 +61,7 @@ import {
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { useAudioBusOwner } from "~~/hooks/useAudioBus";
+import { useAutoplayBlocked } from "~~/hooks/useAutoplayBlocked";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
 import { useGodModeStt } from "~~/hooks/useGodModeStt";
@@ -626,6 +627,10 @@ function DesktopInner({ slug }: { slug: string }) {
   // the global "slop:activated" event lets MusicPlayerWindow (and any
   // future autoplay-blocked component) retry their .play() call.
   const { gestured, trip: tripGesture } = useUserGesture();
+  // Whether the browser will actually refuse unmuted autoplay this load.
+  // `false`/`null` (allowed / still probing) → skip the gate; only a hard
+  // `true` surfaces it. See useAutoplayBlocked for the detection.
+  const autoplayBlocked = useAutoplayBlocked();
   const [streams, setStreams] = useState<LocalStreamHandle[]>([]);
 
   const myLabel = session.authenticated
@@ -3744,12 +3749,15 @@ function DesktopInner({ slug }: { slug: string }) {
         </div>
       ) : null}
 
-      {/* Third-layer gate: authenticated, room cookie set, but no user
-          gesture yet this page-load. Forces a tap so audio/AudioContext
-          start. Sign-in flow trips the gesture incidentally (the click
-          on Continue / Use Passkey), so this only appears on reload-
-          with-valid-session. */}
-      {!loading && session.authenticated && roomAuthed === true && !gestured ? (
+      {/* Third-layer gate: authenticated, room cookie set, no user
+          gesture yet this page-load, AND the browser is actually blocking
+          unmuted autoplay. Forces a tap so audio/AudioContext start.
+          Sign-in flow trips the gesture incidentally (the click on
+          Continue / Use Passkey), so this only appears on reload-with-
+          valid-session — and now only when the browser truly needs a
+          gesture (e.g. a low-engagement first load), not when Chrome's
+          autoplay policy already says "allowed" (reload-into-active-music). */}
+      {!loading && session.authenticated && roomAuthed === true && !gestured && autoplayBlocked === true ? (
         <div
           style={{
             position: "fixed",
