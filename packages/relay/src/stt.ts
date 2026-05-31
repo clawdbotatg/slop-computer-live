@@ -11,11 +11,23 @@
 import OpenAI, { toFile } from "openai";
 import { config } from "./config.js";
 
-// gpt-4o-mini-transcribe is roughly 10× cheaper than whisper-1 with
-// comparable accuracy on short conversational segments. Keep it
-// configurable so a switch to gpt-4o-transcribe (higher quality) or
-// whisper-1 (longer language list) is one env var away.
-const MODEL = process.env.STT_MODEL ?? "gpt-4o-mini-transcribe";
+// gpt-4o-transcribe is OpenAI's highest-accuracy transcription model.
+// We previously ran gpt-4o-mini-transcribe (cheaper) but it was the
+// worst of the family at honoring the `language` hint — short
+// utterances auto-detected per-chunk and drifted into Spanish/Danish/
+// etc. The full model is more accurate AND steers far harder when we
+// pair `language` with an English priming `prompt` (see below). Keep
+// it configurable so a switch back to mini (cost) or to whisper-1
+// (hard language lock, lower raw accuracy) is one env var away.
+const MODEL = process.env.STT_MODEL ?? "gpt-4o-transcribe";
+
+// In-language priming sentences. The prompt's own language is the strong
+// signal — a sentence written in English makes the model far less likely
+// to transcribe an utterance as Spanish/Danish/etc. Keyed by the 2-letter
+// primary subtag of the BCP-47 `lang` hint ("en-US" -> "en").
+const LANG_PRIMING_PROMPT: Record<string, string> = {
+  en: "The following is a transcript of an English-language conversation.",
+};
 
 let cachedClient: OpenAI | null = null;
 function getClient(): OpenAI {
@@ -50,10 +62,17 @@ export async function transcribeAudio(
           ? "wav"
           : "webm";
   const file = await toFile(bytes, `chunk.${ext}`, { type: mime || `audio/${ext}` });
+  // `language` is only a soft hint to the gpt-4o transcribe models — on
+  // short/near-silent chunks they still auto-detect and drift into other
+  // languages. The `prompt` field steers much harder, so when the caller
+  // pins a language we also feed an in-language priming sentence. This is
+  // the combination that actually keeps an all-English show all-English.
+  const prompt = lang ? LANG_PRIMING_PROMPT[lang.slice(0, 2).toLowerCase()] : undefined;
   const result = await getClient().audio.transcriptions.create({
     model: MODEL,
     file,
     language: lang,
+    ...(prompt ? { prompt } : {}),
     // Plain text response is the smallest payload — we just want the
     // string, not the verbose timestamped JSON.
     response_format: "text",
