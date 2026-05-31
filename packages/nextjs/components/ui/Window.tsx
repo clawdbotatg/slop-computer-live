@@ -429,6 +429,19 @@ export const Window = ({
         // Dragged the bottom edge well past its resting spot → minimize (the
         // mirror of drag-up-to-restore). Pill lands at the drop x.
         if (!isDocked && vh > 0 && overshoot > dropThreshold) {
+          // Swallow the synthetic click the browser fires after this drag's
+          // mouseup. The instant we minimize, the titlebar becomes the docked
+          // pill whose click handler RESTORES — and because you drag toward
+          // the bottom to dock, the drop leaves the cursor right over where
+          // the pill now sits, so that trailing click immediately un-minimizes
+          // it (the flicker: drag down → minimize → restore → "didn't
+          // minimize"). Same guard the pill-drag path uses. Cleared on the
+          // next macrotask so it only eats THIS click, never a later genuine
+          // restore-click (the cursor may not even land on the pill).
+          dockSuppressClickRef.current = true;
+          setTimeout(() => {
+            dockSuppressClickRef.current = false;
+          }, 0);
           handleMinimize(d.x);
           return;
         }
