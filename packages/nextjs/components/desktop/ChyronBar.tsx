@@ -149,7 +149,7 @@ export const ChyronBar = ({ mesh }: ChyronBarProps) => {
           }}
           placeholder="chyron…"
           style={{
-            width: "min(90vw, 1400px)",
+            width: "min(96vw, 1800px)",
             background: "transparent",
             border: "none",
             outline: "none",
@@ -183,7 +183,7 @@ export const ChyronBar = ({ mesh }: ChyronBarProps) => {
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            maxWidth: "min(90vw, 1400px)",
+            maxWidth: "min(96vw, 1800px)",
             cursor: isHost ? "text" : "default",
             pointerEvents: "auto",
             appearance: "none",
