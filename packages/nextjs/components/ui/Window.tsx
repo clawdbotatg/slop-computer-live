@@ -181,19 +181,24 @@ export const Window = ({
         restored = true;
         const nx = ev.clientX - grabDX;
         const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
-        onMove?.({ x: nx, y: ny });
+        // Drive position via onResize, NOT onMove: SlotWindow's onMove
+        // closure still carries the docked 200×36 size captured at
+        // mousedown, so calling it here would re-minimize us every frame.
+        // onResize takes explicit dims, so it keeps us full-size.
         onResize?.({ x: nx, y: ny, width: restoredW, height: restoredH });
         setSavedRect(null);
         setMode("normal");
         return;
       }
       if (restored) {
-        // Keep the restored window glued to the cursor.
+        // Keep the restored window glued to the cursor — still via onResize
+        // (full dims) so each frame doesn't snap back to the docked size.
         const nx = ev.clientX - grabDX;
         const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
-        onMove?.({ x: nx, y: ny });
+        onResize?.({ x: nx, y: ny, width: restoredW, height: restoredH });
       } else {
         // Still docked → slide horizontally, stay pinned to the dock edge.
+        // (onMove's docked 200×36 size is correct while we're docked.)
         onMove?.({ x: pillX + dx, y: dockedY });
       }
     };

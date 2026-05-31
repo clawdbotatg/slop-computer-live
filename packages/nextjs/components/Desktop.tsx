@@ -812,6 +812,13 @@ function DesktopInner({ slug }: { slug: string }) {
   // synchronously, regardless of whether we're actively sharing or just have
   // a post-reload resume placeholder up.
   const [wantScreenResume, setWantScreenResume] = useState(false);
+  // True when localStorage says we WERE sharing camera but no live own
+  // camera publication is up yet AND the device isn't already acquired —
+  // i.e. the post-reload reconnect window. Drives the "reconnecting video"
+  // placeholder. The `!activeCamera` half suppresses a flash on a fresh
+  // in-session share (where the flag is written a beat before the pub
+  // echoes back, but activeCamera is already true).
+  const [wantCameraResume, setWantCameraResume] = useState(false);
 
   // Audio + video share both use a pre-share dialog where the user picks
   // a device and watches a live preview before committing. The same dialog
@@ -1805,6 +1812,39 @@ function DesktopInner({ slug }: { slug: string }) {
     void prewarmDenoise();
   }, [gestured, session]);
 
+  // Release the camera/mic the instant this tab starts going away (the
+  // UpgradeModal autoreload, a manual refresh, tab close). THE big win for
+  // reload latency: browsers do NOT synchronously hand the device back
+  // when the old document is torn down, so the freshly-loaded tab's
+  // getUserMedia hits NotReadableError and falls into the multi-second
+  // resume backoff before the video reappears. Stopping the tracks here
+  // frees the device immediately, so the reloaded tab grabs it on the
+  // FIRST try. We call track.stop() directly (not stopStream) — stop()
+  // does NOT fire the "ended" event, so the resume flag in localStorage is
+  // left intact for the reloaded tab to read. dispose() kills the upstream
+  // mic behind a denoise-wrapped stream. pagehide covers reload + close +
+  // bfcache; it's the reliable "page is leaving" hook.
+  useEffect(() => {
+    const release = () => {
+      for (const s of streamsRef.current) {
+        try {
+          s.dispose?.();
+        } catch {
+          /* best-effort */
+        }
+        for (const t of s.stream.getTracks()) {
+          try {
+            t.stop();
+          } catch {
+            /* already stopped */
+          }
+        }
+      }
+    };
+    window.addEventListener("pagehide", release);
+    return () => window.removeEventListener("pagehide", release);
+  }, []);
+
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
   // live before the reload silently re-attach. Screen share is
@@ -1857,9 +1897,15 @@ function DesktopInner({ slug }: { slug: string }) {
         void start(mediaRefForLayouts.current).then(ok => {
           if (ok || cancelled) return;
           if (attempt >= RESUME_RETRY_MS.length) {
-            const cur = readResume(slug);
-            delete cur[kind];
-            writeResume(slug, cur);
+            // Give up auto-retrying. For audio (no placeholder) drop the
+            // flag so a revoked mic doesn't loop every reload. For camera
+            // KEEP the flag: the reconnect placeholder below stays up with
+            // a manual "Resume video" button, and a future reload retries.
+            if (kind === "audio") {
+              const cur = readResume(slug);
+              delete cur.audio;
+              writeResume(slug, cur);
+            }
             return;
           }
           const delay = RESUME_RETRY_MS[attempt++]!;
@@ -1920,6 +1966,29 @@ function DesktopInner({ slug }: { slug: string }) {
     screenResumeSlotId && mesh.slots[screenResumeSlotId]
       ? mesh.slots[screenResumeSlotId]
       : { id: screenResumeSlotId ?? "screen-resume", x: 80, y: 280, width: DEFAULT_W, height: DEFAULT_H, z: 4 };
+
+  // Camera reconnect placeholder (post-reload). Unlike screen, camera
+  // re-acquires automatically — this just gives the user a visible window
+  // ("reconnecting video…" + progress bar) so the video tile doesn't blink
+  // out and reappear silently, and a manual Resume button if the auto
+  // retries gave up.
+  const hasOwnCameraPub = mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "camera");
+  useEffect(() => {
+    setWantCameraResume(Boolean(readResume(slug).camera) && !hasOwnCameraPub && !media.activeCamera);
+  }, [hasOwnCameraPub, media.activeCamera, slug]);
+
+  const cameraResumeSlotId = myOwnerKey ? `owner-${myOwnerKey}-camera` : null;
+  const cameraResumeSlot =
+    cameraResumeSlotId && mesh.slots[cameraResumeSlotId]
+      ? mesh.slots[cameraResumeSlotId]
+      : { id: cameraResumeSlotId ?? "camera-resume", x: 80, y: 80, width: DEFAULT_W, height: DEFAULT_H, z: 4 };
+
+  // Manual fallback if the auto-retries gave up: re-acquire the camera.
+  // Idempotent + swallows its own error; on success the own-camera pub
+  // appears, activeCamera flips true, and the placeholder hides itself.
+  const resumeCameraShare = useCallback(async () => {
+    await media.startCamera();
+  }, [media]);
 
   // Default slot position for a new publication that doesn't have one yet.
   // New windows land on top of any existing windows. baseZ is taken at the
@@ -2461,6 +2530,7 @@ function DesktopInner({ slug }: { slug: string }) {
     for (const id of mesh.openWindowIds) visible.add(`app-${id}`);
     for (const browser of Object.values(mesh.browsers)) visible.add(`browser-${browser.id}`);
     if (wantScreenResume && screenResumeSlotId) visible.add(screenResumeSlotId);
+    if (wantCameraResume && cameraResumeSlotId) visible.add(cameraResumeSlotId);
 
     if (!visibilityBaselineRef.current) {
       prevVisibleSlotIdsRef.current = visible;
@@ -2486,6 +2556,8 @@ function DesktopInner({ slug }: { slug: string }) {
     mesh.browsers,
     wantScreenResume,
     screenResumeSlotId,
+    wantCameraResume,
+    cameraResumeSlotId,
     meshUpdateSlotForVis,
   ]);
 
@@ -3372,6 +3444,61 @@ function DesktopInner({ slug }: { slug: string }) {
               </span>
               <Button variant="primary" onClick={startScreenShare}>
                 Resume screen share
+              </Button>
+            </div>
+          </Window>
+        ) : null}
+
+        {/* Camera reconnect placeholder — sits in the camera slot after a
+            reload so the video tile doesn't vanish while the device is
+            re-acquired. The timed LoadingBar creeps toward ~95% over ~9s
+            and holds; the whole window unmounts the moment the real
+            own-camera pub arrives (activeCamera flips true). The Resume
+            button is the manual fallback if auto-retries gave up. */}
+        {wantCameraResume && cameraResumeSlotId ? (
+          <Window
+            title={`VIDEO — ${myLabel} (reconnecting…)`}
+            x={cameraResumeSlot.x}
+            y={cameraResumeSlot.y}
+            width={cameraResumeSlot.width}
+            height={cameraResumeSlot.height}
+            zIndex={cameraResumeSlot.z}
+            onClose={() => {
+              const cur = readResume(slug);
+              delete cur.camera;
+              writeResume(slug, cur);
+              setWantCameraResume(false);
+            }}
+            onMove={({ x, y }) => moveSlot(cameraResumeSlotId, x, y)}
+            onResize={({ x, y, width, height }) => resizeSlot(cameraResumeSlotId, x, y, width, height)}
+            bodyStyle={{ padding: 0, overflow: "hidden" }}
+            containerInset={{ top: 38 }}
+          >
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                background: "#000",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 14,
+                color: "var(--slop-text)",
+                fontSize: 12,
+                textAlign: "center",
+                padding: 16,
+              }}
+            >
+              <span style={{ color: "var(--slop-text-muted)" }}>reconnecting video…</span>
+              <LoadingBar
+                cells={12}
+                estimateMs={9000}
+                caption=""
+                style={{ fontSize: 13, color: "var(--slop-cyan, #5bf0ff)" }}
+              />
+              <Button variant="default" onClick={resumeCameraShare}>
+                Resume now
               </Button>
             </div>
           </Window>

@@ -79,6 +79,9 @@ const DEFAULT_SNAPSHOT: LeftclawSnapshot = {
 // recorded it's done; otherwise drop the dead lock back to idle but keep
 // the typed form so the host can retry.
 function reconcileLoaded(s: LeftclawSnapshot): LeftclawSnapshot {
+  // A persisted `error` is noise on next load — don't make a stale failure
+  // greet the next visitor / survive a relay restart. Drop it to idle.
+  if (s.phase === "error") return { ...DEFAULT_SNAPSHOT };
   if (s.phase !== "posting") return s;
   if (s.jobId != null) return { ...s, phase: "done", job: null, step: null };
   return { ...s, phase: "idle", job: null, step: null, error: null };

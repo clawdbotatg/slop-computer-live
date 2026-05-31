@@ -30,7 +30,11 @@ const LEFTCLAW_CONTRACT = "0xb2fb486a9569ad2c97d9c73936b46ef7fdaa413a" as const;
 const LEFTCLAW_ABI = parseAbi([
   "function serviceTypes(uint256) view returns (uint256 id, string name, string slug, uint256 priceUsd, uint256 cvDivisor, string status)",
   "function postJobWithCV(uint256 serviceTypeId, uint256 cvAmount, string description)",
-  "event JobPosted(uint256 indexed jobId, address indexed client, uint256 indexed serviceTypeId, uint256 clawdAmount, uint256 priceUsd, uint8 paymentMethod, uint256 cvAmount)",
+  // serviceTypeId is NOT indexed on-chain — only jobId + client are. Marking
+  // it indexed makes viem's strict parseEventLogs fail to decode the log and
+  // silently skip it (→ "could not read jobId"). Keep this matching the
+  // contract exactly. PaymentMethod enum decodes as uint8.
+  "event JobPosted(uint256 indexed jobId, address indexed client, uint256 serviceTypeId, uint256 paymentClawd, uint256 priceUsd, uint8 paymentMethod, uint256 cvAmount)",
 ]);
 
 type Service = {
@@ -353,7 +357,37 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         </div>
 
         {errored && st.error && (
-          <div style={{ fontSize: 12, color: "#ff6b6b", marginBottom: 10, wordBreak: "break-word" }}>⚠ {st.error}</div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              fontSize: 12,
+              color: "#ff6b6b",
+              marginBottom: 10,
+              wordBreak: "break-word",
+            }}
+          >
+            <span style={{ flex: 1 }}>⚠ {st.error}</span>
+            {/* The error lives in the shared relay snapshot, so it persists
+                across reloads until cleared — give an explicit dismiss
+                (broadcasts idle to everyone) instead of a stuck banner. */}
+            <button
+              onClick={() => mesh.leftclawReset()}
+              title="Dismiss"
+              style={{
+                cursor: "pointer",
+                background: "transparent",
+                border: "1px solid rgba(255,107,107,0.5)",
+                borderRadius: 4,
+                color: "#ff6b6b",
+                padding: "1px 7px",
+                lineHeight: 1.4,
+              }}
+            >
+              ✕
+            </button>
+          </div>
         )}
 
         {posting ? (
