@@ -61,6 +61,34 @@ async function loadWasmOnce(
   return cachedWasmPromise;
 }
 
+/**
+ * Warm the dynamic import + WASM binary off the critical path. The first
+ * denoiseStream() after a cold page load (e.g. the UpgradeModal reload)
+ * otherwise pays the chunk import + ~150KB WASM fetch/compile WHILE the
+ * camera publish waits on it — denoiseStream is awaited before the video
+ * track is published, so audio-pipeline setup delays the video window
+ * appearing. Calling this during idle time (e.g. while the entry gate is
+ * up, before the user clicks Enter) means startCamera finds both layers
+ * cached and returns fast.
+ *
+ * Best-effort and idempotent: bails if already warmed/warming, swallows
+ * failures (denoiseStream falls back to the raw stream if init truly
+ * fails). Creates NO AudioContext — the per-context worklet addModule
+ * still happens lazily in denoiseStream, but the import + WASM are the
+ * bulk of the cold cost.
+ */
+export async function prewarmDenoise(): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (cachedWasm || cachedWasmPromise) return;
+  if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") return;
+  try {
+    const { loadRnnoise } = await import("@sapphi-red/web-noise-suppressor");
+    await loadWasmOnce(loadRnnoise);
+  } catch {
+    /* prewarm is best-effort — denoiseStream handles real failures */
+  }
+}
+
 export type DenoisedStream = {
   /** Stream to publish — synthetic audio track + original video tracks. */
   stream: MediaStream;

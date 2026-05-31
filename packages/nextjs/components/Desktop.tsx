@@ -66,7 +66,7 @@ import { useGodModeStt } from "~~/hooks/useGodModeStt";
 import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import type { UseLocalMedia } from "~~/hooks/useLocalMedia";
-import { resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
+import { readDenoisePref, resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
@@ -74,6 +74,7 @@ import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHeal
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
+import { prewarmDenoise } from "~~/utils/noiseSuppression";
 
 export const dynamic = "force-dynamic";
 
@@ -1605,6 +1606,22 @@ function DesktopInner({ slug }: { slug: string }) {
     };
   }, [isGodMode, meshConnectedForGodViewport, meshSetGodViewport]);
 
+  // Prewarm the RNNoise pipeline BEFORE the gesture, while the entry
+  // gate is still up. On a cold UpgradeModal reload the first camera
+  // grab otherwise blocks the video publish on a chunk import + ~150KB
+  // WASM fetch (denoiseStream is awaited before the track publishes).
+  // Doing it here overlaps that cost with the user reading the gate, so
+  // startCamera below finds it cached and the video window pops in fast.
+  // Gated on a pending camera/audio resume + denoise actually being on.
+  useEffect(() => {
+    if (!session.authenticated) return;
+    if (session.spectator) return;
+    if (!readDenoisePref()) return;
+    const r = readResume(slug);
+    if (!r.camera && !r.audio) return;
+    void prewarmDenoise();
+  }, [session, slug]);
+
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
   // live before the reload silently re-attach. Screen share is
@@ -1642,7 +1659,11 @@ function DesktopInner({ slug }: { slug: string }) {
     // live — previously start* always resolved and the .catch never ran.
     // Calls route through the live media ref so a retry that fires after
     // the user manually started the device sees activeIds and no-ops.
-    const RESUME_RETRY_MS = [1500, 3000, 5000];
+    // Front-loaded: a fast first retry (500ms) catches the common case
+    // where the device frees a beat after the Enter click, instead of
+    // making the user stare at an empty window for 1.5s. Later gaps widen
+    // to still span ~7s for a slow device release before giving up.
+    const RESUME_RETRY_MS = [500, 1000, 2000, 3500];
     let cancelled = false;
     const timers = new Set<number>();
 
