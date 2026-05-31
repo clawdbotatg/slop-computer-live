@@ -355,6 +355,41 @@ function broadcastChessState(room: Room, game: ChessGame | null): void {
   });
 }
 
+// Resume an AI turn that nothing else will trigger. The AI mover is only
+// nudged by broadcastChessState (a state CHANGE), so a game that was
+// mid-AI-turn when the relay restarted — or a room loaded lazily after a
+// restart — would sit forever with the clock ticking but no model call.
+// This force-nudges the mover for the current position; tick() is a no-op
+// if there's no active game, it's a human's turn, or a move is already in
+// flight. Called on peer-join, at startup, and from the watchdog below.
+function kickChessAI(room: Room): void {
+  const game = room.chess.getCurrentGame();
+  if (!game || game.status !== "active") return;
+  room.aiMover
+    .tick(
+      room.chess.getVersion(),
+      () => {
+        const next = room.chess.getCurrentGame();
+        broadcastChessState(room, next);
+        if (next && next.status !== "active") {
+          room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
+        }
+      },
+      { force: true },
+    )
+    .catch(err => console.error("[ai-mover] kick failed:", err));
+}
+
+// Watchdog: every 30s, re-nudge any hot room's AI turn. This is the
+// safety net the user asked for — a stuck game (restart orphan, wedged
+// request, anything unforeseen) self-heals within 30s instead of
+// "counting forever". tick()'s own guards (no active game / human turn /
+// in-flight) make this cheap and idempotent; a genuinely thinking model
+// (in flight) is left alone until it answers or the move ceiling fires.
+setInterval(() => {
+  for (const room of listRooms()) kickChessAI(room);
+}, 30_000).unref();
+
 // Push the current escrow session to every peer. Call this after any
 // escrow mutation (WS handler, settle hook, payout-executed hook) so all
 // clients converge on the same funding/settling/settled state.
@@ -5404,6 +5439,11 @@ app.register(async function signalRoutes(fastify) {
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
+    // If this room was loaded lazily after a restart and a game is sitting
+    // on an AI's turn, nothing has nudged the mover — do it now so a
+    // reconnecting viewer doesn't stare at a frozen clock. No-op otherwise.
+    kickChessAI(room);
+
     socket.on("message", (raw: Buffer | string) => {
       let msg: any;
       try {
@@ -6573,11 +6613,9 @@ app
     // chess state at that time via the Room constructor + ChessState
     // load. If we ever need to resume every persistent room on boot
     // we'd glob the .slop-data/rooms dir here.
-    const mainRoom = getOrCreateRoom(DEFAULT_SLUG);
-    const resumed = mainRoom.chess.getCurrentGame();
-    if (resumed && resumed.status === "active") {
-      broadcastChessState(mainRoom, resumed);
-    }
+    // Main room resumes immediately on boot; other rooms resume when they
+    // load (peer-join nudge) or within 30s via the watchdog above.
+    kickChessAI(getOrCreateRoom(DEFAULT_SLUG));
     // Restore any fanouts the admin had running before this restart.
     // One attempt per destination — see fanout.ts/restoreFanouts.
     restoreFanouts(line => app.log.info(line));

@@ -38,6 +38,10 @@ const RELOAD_PAINT_MS = 100;
 // Safety net: if /health never comes back (deploy hung, server died),
 // reload anyway after this long.
 const MAX_WAIT_MS = 45000;
+// How long to wait on the /api/client-rev check before falling back to a
+// reload. Short — the server is already back by recovery time; a slow/failed
+// probe just means "reload" (the safe default), never "skip".
+const REV_FETCH_TIMEOUT_MS = 1200;
 
 /**
  * Detects a production deploy in progress and forces a hard reload so
@@ -190,12 +194,61 @@ export function UpgradeModal() {
     // between the modal showing and the subscribe call below.
     let recovered = useBootstrappedSignal && snapAtShow.bootstrapped;
     let reloading = false;
+    // Set the instant we commit to an outcome (reload OR skip), so the
+    // 100ms tick can't fire the async decision twice.
+    let decided = false;
 
     const reloadOnce = () => {
       if (reloading) return;
       reloading = true;
+      decided = true;
       setProgress(100);
       window.setTimeout(() => window.location.reload(), RELOAD_PAINT_MS);
+    };
+
+    // Recovery reached — decide whether to hard-reload or just dismiss.
+    // Reload iff the CLIENT bundle actually changed; for a relay-only
+    // deploy (bundle byte-identical) we keep the page alive so live
+    // camera/mic shares aren't torn down — the WS already reconnected and
+    // re-announced them. CONSERVATIVE BY DESIGN: we skip the reload only
+    // when we can prove the bundle is unchanged (both revs present, real,
+    // and equal). Any uncertainty — fetch failed, either side missing or
+    // "dev"/"unknown" — falls through to reload. A needed reload is never
+    // skipped; the worst case is an unnecessary one.
+    const decideAndFinish = async () => {
+      if (decided || reloading) return;
+      decided = true;
+      const baked = process.env.NEXT_PUBLIC_CLIENT_REV;
+      let serverRev: string | null = null;
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), REV_FETCH_TIMEOUT_MS);
+        const res = await fetch("/api/client-rev", { signal: ctl.signal, cache: "no-store" });
+        clearTimeout(timer);
+        if (res.ok) serverRev = ((await res.json()) as { rev?: string }).rev ?? null;
+      } catch {
+        /* server still bouncing / network blip — fall through to reload */
+      }
+      if (cancelled) return;
+      const clientUnchanged =
+        !!baked &&
+        !!serverRev &&
+        baked !== "dev" &&
+        serverRev !== "dev" &&
+        serverRev !== "unknown" &&
+        baked === serverRev;
+      if (clientUnchanged) {
+        // Relay-only deploy: dismiss the modal, keep the page (and its
+        // live media) running. The reconnected WS re-published our streams.
+        setProgress(100);
+        setShowing(false);
+      } else {
+        // Force a fresh reloadOnce(): `decided` is already true, so reset
+        // the guard it shares before delegating.
+        reloading = true;
+        setProgress(100);
+        window.setTimeout(() => window.location.reload(), RELOAD_PAINT_MS);
+      }
     };
 
     // Subscribe to relayHealth: for mesh users, wait for bootstrapped
@@ -233,14 +286,16 @@ export function UpgradeModal() {
     }
 
     const tickTimer = setInterval(() => {
-      if (reloading) return;
+      if (reloading || decided) return;
       const elapsed = performance.now() - startedAt;
       if (elapsed >= MAX_WAIT_MS) {
+        // Recovery never confirmed — reload unconditionally (can't reach
+        // the rev check, so default to the safe behavior).
         reloadOnce();
         return;
       }
       if (recovered && elapsed >= MIN_VISIBLE_MS) {
-        reloadOnce();
+        void decideAndFinish();
         return;
       }
       // Cap visible progress at 95% until the recovery signal fires;

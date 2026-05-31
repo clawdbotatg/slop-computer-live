@@ -341,7 +341,11 @@ export const Window = ({
       // this never fights a user gesture.
       position={{ x, y: isDocked ? dockedY : y }}
       size={{ width, height }}
-      bounds="parent"
+      // No bounds clamp: the window must be free to follow the cursor BELOW
+      // the bottom edge during a drag (it slides off, clipped by the
+      // desktop's overflow:hidden — exactly the look we want for
+      // drag-to-minimize). A non-minimized drop is snapped back fully
+      // on-screen in onDragStop instead, so windows can't get lost.
       minWidth={minWidth}
       minHeight={minHeight}
       dragHandleClassName="slop-titlebar"
@@ -392,22 +396,24 @@ export const Window = ({
         if (d.x === x && d.y === y) return;
         // Dropped with the cursor in the bottom dock band → minimize (the
         // mirror of drag-up-to-restore). Read the cursor's Y from the
-        // mouseup event, not the window's: bounds clamp a tall window so it
-        // can't reach the bottom, but the cursor can be shoved down there
-        // as a deliberate "dock it" gesture. The pill lands at the drop x.
+        // mouseup event, not the window's: the window can now slide below
+        // the bottom, but it's the cursor reaching the dock band that
+        // signals the deliberate "dock it" gesture. Pill lands at drop x.
         const cursorY =
           "clientY" in e ? (e as MouseEvent).clientY : ((e as TouchEvent).changedTouches?.[0]?.clientY ?? d.y);
         if (!isDocked && viewportH > 0 && cursorY >= viewportH - insets.bottom - DOCK_SNAP_BAND) {
           handleMinimize(d.x);
           return;
         }
-        // Clamp y so the titlebar can't slide under the menubar — the
-        // <Rnd bounds="parent"> constraint binds to the wrapper's
-        // bounding rect (which still spans 0..viewportH), so without
-        // this a fast drag past the top edge would pin the window
-        // behind the menubar with no way to grab it back.
-        const clampedY = Math.max(insets.top, d.y);
-        onMove?.({ x: d.x, y: clampedY });
+        // Not minimized → snap fully back on-screen. With bounds removed,
+        // a drag can leave the window partly past any edge; clamp so the
+        // titlebar never hides under the menubar (top) or off the bottom,
+        // and at least part stays grabbable horizontally.
+        const vw = typeof window !== "undefined" ? window.innerWidth : width;
+        const vh = viewportH || (typeof window !== "undefined" ? window.innerHeight : height);
+        const clampedY = Math.min(Math.max(d.y, insets.top), Math.max(insets.top, vh - insets.bottom - height));
+        const clampedX = Math.min(Math.max(d.x, 0), Math.max(0, vw - width));
+        onMove?.({ x: clampedX, y: clampedY });
         // Dragging out of max → revert to normal. (Dragging is disabled
         // while docked so the docked case can't fire here.)
         if (mode === "max") {

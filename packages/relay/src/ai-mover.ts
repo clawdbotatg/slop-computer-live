@@ -11,21 +11,42 @@ import { Chess } from "chess.js";
 import type { ChessState } from "./chess.js";
 import { getAIPlayer, isAIKey } from "./ai-players.js";
 
+// Per-move HTTP ceiling — see askForMove. Bounds genuine deep thinking
+// without ever blocking forever (two attempts = 2× this, then resign).
+const MOVE_TIMEOUT_MS = 120_000;
+// If a move has been "in flight" longer than this, treat it as wedged
+// (a finally that never ran, an await that never settled) and allow a
+// fresh attempt. Must exceed the worst-case legit duration (2 attempts).
+const INFLIGHT_MAX_MS = 280_000;
+
 export class AIMover {
   private inFlight = false;
+  private inFlightSince = 0;
   private lastVersionHandled = -1;
 
   constructor(private readonly chess: ChessState) {}
 
   /** Called from the broadcastChessState wrapper after every state
-   *  change. Cheap when it's not an AI's turn — we only kick off the
-   *  model call if the side-to-move's ownerKey is one of ours. */
-  async tick(version: number, notifyAfterMove: () => void): Promise<void> {
-    // Coalesce: if we already started a move for this version, skip.
-    // The new state from our own move will bump the version again,
-    // which re-runs us — that's how AI-vs-AI keeps stepping forward.
-    if (this.inFlight) return;
-    if (version <= this.lastVersionHandled) return;
+   *  change, and from the periodic watchdog (with force=true) to recover
+   *  an orphaned AI turn — e.g. a game that was mid-think when the relay
+   *  restarted, which nothing else would ever nudge. Cheap when it's not
+   *  an AI's turn — we only call the model if the side-to-move is ours.
+   *
+   *  `force` bypasses the per-version coalescing guard (so the watchdog
+   *  can re-attempt a position that's been handled but produced no move)
+   *  while still respecting in-flight, so we never run two requests for
+   *  the same game at once. */
+  async tick(version: number, notifyAfterMove: () => void, opts?: { force?: boolean }): Promise<void> {
+    if (this.inFlight) {
+      if (Date.now() - this.inFlightSince < INFLIGHT_MAX_MS) return;
+      console.warn(`[ai-mover] previous move wedged >${Math.round(INFLIGHT_MAX_MS / 1000)}s — forcing a fresh attempt`);
+      this.inFlight = false;
+    }
+    // Coalesce normal triggers: if we already started a move for this
+    // version, skip (the next state change bumps the version and re-runs
+    // us — that's how AI-vs-AI steps forward). The watchdog passes
+    // force=true to bypass this and re-kick a stuck turn.
+    if (!opts?.force && version <= this.lastVersionHandled) return;
     this.lastVersionHandled = version;
 
     const game = this.chess.getCurrentGame();
@@ -55,6 +76,7 @@ export class AIMover {
     }
 
     this.inFlight = true;
+    this.inFlightSince = Date.now();
     try {
       await this.playOneTurn(ai, sideKey, notifyAfterMove);
     } catch (err) {
@@ -224,11 +246,13 @@ async function askForMove(
 
   let res: Response;
   try {
-    // 30s timeout — most providers respond in 1–10s. Anything beyond
-    // is effectively a hung connection; better to fall through to
-    // the retry logic than block the game indefinitely.
+    // Per-move ceiling. Fast models answer in 1–10s, but strong reasoners
+    // (Grok, DeepSeek V4, GPT-5) legitimately think for tens of seconds on
+    // a complex midgame — 30s was cutting them off and forcing a resign.
+    // 120s gives real thinking room while still bounding a hung connection
+    // (two attempts = 240s worst case, then auto-resign — never infinite).
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 30_000);
+    const t = setTimeout(() => ctrl.abort(), MOVE_TIMEOUT_MS);
     try {
       // Most providers want `Authorization: Bearer …`; Bankr's OpenClaw
       // wants `X-API-Key: …`. Pick based on the registry config.

@@ -1882,11 +1882,12 @@ function DesktopInner({ slug }: { slug: string }) {
     // live — previously start* always resolved and the .catch never ran.
     // Calls route through the live media ref so a retry that fires after
     // the user manually started the device sees activeIds and no-ops.
-    // Front-loaded: a fast first retry (500ms) catches the common case
-    // where the device frees a beat after the Enter click, instead of
-    // making the user stare at an empty window for 1.5s. Later gaps widen
-    // to still span ~7s for a slow device release before giving up.
-    const RESUME_RETRY_MS = [500, 1000, 2000, 3500];
+    // Tight early poll so we grab the camera the instant the OS frees it
+    // (after pagehide's track.stop the release still takes a beat). Wide
+    // gaps used to waste up to ~2s of dead air sitting between retries
+    // after the device was already free; this catches it fast, then backs
+    // off to still span ~7s before giving up on a genuinely stuck device.
+    const RESUME_RETRY_MS = [250, 400, 600, 900, 1300, 1800, 2500];
     let cancelled = false;
     const timers = new Set<number>();
 
