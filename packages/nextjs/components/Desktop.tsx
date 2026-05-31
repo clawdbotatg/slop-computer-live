@@ -1897,15 +1897,14 @@ function DesktopInner({ slug }: { slug: string }) {
         void start(mediaRefForLayouts.current).then(ok => {
           if (ok || cancelled) return;
           if (attempt >= RESUME_RETRY_MS.length) {
-            // Give up auto-retrying. For audio (no placeholder) drop the
-            // flag so a revoked mic doesn't loop every reload. For camera
-            // KEEP the flag: the reconnect placeholder below stays up with
-            // a manual "Resume video" button, and a future reload retries.
-            if (kind === "audio") {
-              const cur = readResume(slug);
-              delete cur.audio;
-              writeResume(slug, cur);
-            }
+            // All retries exhausted — drop the resume flag so we stop
+            // trying (a genuinely revoked permission shouldn't loop) and
+            // the "reconnecting" placeholder hides itself rather than
+            // hanging forever. With the pagehide device-release this path
+            // is rarely hit; the first attempt normally just succeeds.
+            const cur = readResume(slug);
+            delete cur[kind];
+            writeResume(slug, cur);
             return;
           }
           const delay = RESUME_RETRY_MS[attempt++]!;
@@ -1982,13 +1981,6 @@ function DesktopInner({ slug }: { slug: string }) {
     cameraResumeSlotId && mesh.slots[cameraResumeSlotId]
       ? mesh.slots[cameraResumeSlotId]
       : { id: cameraResumeSlotId ?? "camera-resume", x: 80, y: 80, width: DEFAULT_W, height: DEFAULT_H, z: 4 };
-
-  // Manual fallback if the auto-retries gave up: re-acquire the camera.
-  // Idempotent + swallows its own error; on success the own-camera pub
-  // appears, activeCamera flips true, and the placeholder hides itself.
-  const resumeCameraShare = useCallback(async () => {
-    await media.startCamera();
-  }, [media]);
 
   // Default slot position for a new publication that doesn't have one yet.
   // New windows land on top of any existing windows. baseZ is taken at the
@@ -3493,13 +3485,10 @@ function DesktopInner({ slug }: { slug: string }) {
               <span style={{ color: "var(--slop-text-muted)" }}>reconnecting video…</span>
               <LoadingBar
                 cells={12}
-                estimateMs={9000}
+                estimateMs={4000}
                 caption=""
                 style={{ fontSize: 13, color: "var(--slop-cyan, #5bf0ff)" }}
               />
-              <Button variant="default" onClick={resumeCameraShare}>
-                Resume now
-              </Button>
             </div>
           </Window>
         ) : null}
