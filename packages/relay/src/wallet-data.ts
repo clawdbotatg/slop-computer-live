@@ -526,6 +526,47 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[] = []): 
   return data.result;
 }
 
+// ─── Deposit verification (money-chess escrow) ──────────────────────────────
+//
+// The relay confirms a buy-in landed in escrow by reading the funder's
+// own tx back from chain — never by trusting the client's "I paid"
+// claim. We assert the tx came FROM the player, went TO the multisig,
+// carried at least the buy-in, and is mined+successful. `not_mined` is a
+// soft failure the client can retry on (the tx may simply be pending).
+
+export type DepositCheck =
+  | { ok: true; valueWei: string }
+  | { ok: false; reason: "not_found" | "not_mined" | "reverted" | "wrong_from" | "wrong_to" | "underpaid" | "rpc_error" };
+
+export async function verifyEthDeposit(opts: {
+  chainId: number;
+  txHash: string;
+  from: string; // expected sender, lowercased
+  to: string; // expected recipient (the multisig), lowercased
+  minValueWei: bigint;
+}): Promise<DepositCheck> {
+  const url = alchemyUrl(opts.chainId);
+  try {
+    const [tx, receipt] = await Promise.all([
+      rpcCall(url, "eth_getTransactionByHash", [opts.txHash]),
+      rpcCall(url, "eth_getTransactionReceipt", [opts.txHash]),
+    ]);
+    if (!tx || typeof tx !== "object") return { ok: false, reason: "not_found" };
+    const t = tx as { from?: string; to?: string | null; value?: string; blockNumber?: string | null };
+    // Mined? Both the tx and its receipt must have a block.
+    const r = receipt as { status?: string; blockNumber?: string | null } | null;
+    if (!t.blockNumber || !r || !r.blockNumber) return { ok: false, reason: "not_mined" };
+    if (r.status !== undefined && r.status !== null && BigInt(r.status) === 0n) return { ok: false, reason: "reverted" };
+    if ((t.from ?? "").toLowerCase() !== opts.from.toLowerCase()) return { ok: false, reason: "wrong_from" };
+    if ((t.to ?? "").toLowerCase() !== opts.to.toLowerCase()) return { ok: false, reason: "wrong_to" };
+    const value = BigInt(t.value ?? "0x0");
+    if (value < opts.minValueWei) return { ok: false, reason: "underpaid" };
+    return { ok: true, valueWei: value.toString() };
+  } catch {
+    return { ok: false, reason: "rpc_error" };
+  }
+}
+
 export async function fetchAssetModal(symbol: string): Promise<Record<string, unknown>> {
   if (!ZERION_KEY) return { error: "ZERION_API_KEY not configured" };
   const res = await fetch(

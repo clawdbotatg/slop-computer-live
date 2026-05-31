@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
+import { WagerBanner, WagerProposeCard, WagerStage } from "~~/components/desktop/chess/WagerPanel";
 import type { ChessGame, ChessResult, Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 
@@ -29,6 +30,18 @@ type Props = {
 
 export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
   const game = mesh.chessGame;
+  const wager = mesh.wager;
+  // The wager takes over the whole window for everything except the
+  // actual play phase: pre-game funding/arming, and the post-game payout
+  // "screen" the user described. During `playing` we show the board with
+  // a thin pot banner; with no wager, the normal lobby + a propose card.
+  const wagerTakesOver =
+    !!wager &&
+    (wager.status === "funding" ||
+      wager.status === "armed" ||
+      wager.status === "settling" ||
+      wager.status === "refunding" ||
+      wager.status === "settled");
   return (
     <div
       style={{
@@ -40,10 +53,22 @@ export const ChessWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
         fontFamily: "var(--slop-font-display)",
       }}
     >
-      {game ? (
-        <ActiveOrEnded mesh={mesh} game={game} myOwnerKey={myOwnerKey} />
+      {wagerTakesOver ? (
+        <WagerStage mesh={mesh} wager={wager} />
       ) : (
-        <Lobby mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+        <>
+          {wager?.status === "playing" && <WagerBanner wager={wager} />}
+          {game ? (
+            <ActiveOrEnded mesh={mesh} game={game} myOwnerKey={myOwnerKey} />
+          ) : (
+            <Lobby
+              mesh={mesh}
+              myOwnerKey={myOwnerKey}
+              myLabel={myLabel}
+              proposeCard={<WagerProposeCard mesh={mesh} />}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -57,10 +82,14 @@ const Lobby = ({
   mesh,
   myOwnerKey,
   myLabel,
+  proposeCard,
 }: {
   mesh: PeerMeshState;
   myOwnerKey: string | null;
   myLabel: string | null;
+  /** Money-chess "Play for ETH" card, injected so the lobby stays
+   *  agnostic about the wager subsystem. */
+  proposeCard?: React.ReactNode;
 }) => {
   // Build a "selectable identities" list = every connected peer + me +
   // every server-side AI player. Dedupe by ownerKey so a peer whose
@@ -135,6 +164,8 @@ const Lobby = ({
       >
         Start Game
       </button>
+
+      {proposeCard}
 
       <div
         style={{

@@ -18,6 +18,14 @@ import { writeFileAtomic } from "./fs-atomic.js";
 export const JAMENDO_DIR = process.env.JAMENDO_DIR ?? "./.slop-data/jamendo-music";
 const GLOBAL_STATE_FILE = `${JAMENDO_DIR}/state.json`;
 const TRACKS_PER_GENRE = 20;
+// Blend: half genuinely-new releases, half proven-popular. Jamendo's
+// `popularity_week` chart barely moves (small CC catalog, low weekly
+// listening volume), so leaning on it alone froze every genre to the
+// same ~20 tracks for months. The `releasedate_desc` half rotates on
+// its own as artists upload, so the list actually changes week to week;
+// the popularity half keeps reliable bangers in the mix.
+const NEW_SHARE = TRACKS_PER_GENRE / 2;
+const POPULAR_SHARE = TRACKS_PER_GENRE - NEW_SHARE;
 const REFRESH_TTL_MS = 60 * 60 * 1000; // re-poll Jamendo at most once per hour
 const FETCH_TIMEOUT_MS = 30_000;
 
@@ -123,6 +131,67 @@ export function readPlaylist(genre: string): GenrePlaylist | null {
 
 const inFlight = new Map<string, Promise<GenrePlaylist>>();
 
+type RawTrack = {
+  id?: unknown;
+  name?: unknown;
+  artist_name?: unknown;
+  audiodownload?: unknown;
+  audiodownload_allowed?: unknown;
+  duration?: unknown;
+  license_ccurl?: unknown;
+  shareurl?: unknown;
+};
+
+// One Jamendo `/tracks` query for a given ordering. Returns the raw
+// result rows (parsing/filtering happens in doRefresh).
+async function fetchListing(tag: string, order: string, limit: number): Promise<RawTrack[]> {
+  const params = new URLSearchParams({
+    client_id: config.jamendoClientId,
+    format: "json",
+    tags: tag,
+    order,
+    limit: String(limit),
+    audioformat: "mp32",
+    audiodownload_allowed: "true",
+    include: "musicinfo",
+  });
+  const url = `https://api.jamendo.com/v3.0/tracks/?${params.toString()}`;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  let listing: { results?: unknown[]; headers?: { status?: string; error_message?: string } };
+  try {
+    const res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) throw new Error(`jamendo-http-${res.status}`);
+    listing = (await res.json()) as typeof listing;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (listing.headers?.status && listing.headers.status !== "success") {
+    throw new Error(`jamendo-api-${listing.headers.error_message ?? "error"}`);
+  }
+  return Array.isArray(listing.results) ? (listing.results as RawTrack[]) : [];
+}
+
+// Interleave two ordered lists (fresh, popular) into one candidate list,
+// alternating between them and dropping ids already seen. Alternating —
+// rather than fresh-then-popular — keeps new uploads visible without
+// burying the proven tracks below them.
+function interleaveDedupe(a: RawTrack[], b: RawTrack[]): RawTrack[] {
+  const out: RawTrack[] = [];
+  const seen = new Set<string>();
+  const push = (t: RawTrack) => {
+    if (typeof t.id !== "string" || seen.has(t.id)) return;
+    seen.add(t.id);
+    out.push(t);
+  };
+  const max = Math.max(a.length, b.length);
+  for (let i = 0; i < max; i++) {
+    if (i < a.length) push(a[i]!);
+    if (i < b.length) push(b[i]!);
+  }
+  return out;
+}
+
 export async function refreshGenre(genre: string, opts: { force?: boolean } = {}): Promise<GenrePlaylist> {
   if (!isGenre(genre)) throw new Error(`unknown-genre:${genre}`);
   if (isCustom(genre)) throw new Error("custom-genre-not-refreshable");
@@ -147,48 +216,29 @@ async function doRefresh(genre: string, opts: { force?: boolean }): Promise<Genr
     return existing;
   }
 
-  const params = new URLSearchParams({
-    client_id: config.jamendoClientId,
-    format: "json",
-    tags: entry.tag,
-    order: "popularity_week",
-    limit: String(TRACKS_PER_GENRE),
-    audioformat: "mp32",
-    audiodownload_allowed: "true",
-    include: "musicinfo",
-  });
-  const url = `https://api.jamendo.com/v3.0/tracks/?${params.toString()}`;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-  let listing: { results?: unknown[]; headers?: { status?: string; error_message?: string } };
-  try {
-    const res = await fetch(url, { signal: ctl.signal });
-    if (!res.ok) throw new Error(`jamendo-http-${res.status}`);
-    listing = (await res.json()) as typeof listing;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (listing.headers?.status && listing.headers.status !== "success") {
-    throw new Error(`jamendo-api-${listing.headers.error_message ?? "error"}`);
-  }
-  const raw = Array.isArray(listing.results) ? listing.results : [];
+  // Over-fetch each half (2x its share) so dedupe + per-track download
+  // failures still leave enough to fill TRACKS_PER_GENRE. A failed half
+  // (e.g. Jamendo hiccup on one ordering) degrades to the other rather
+  // than aborting the whole refresh.
+  const [freshRaw, popularRaw] = await Promise.all([
+    fetchListing(entry.tag, "releasedate_desc", NEW_SHARE * 2).catch(err => {
+      console.warn(`[jamendo] fresh listing failed for ${genre}:`, (err as Error).message);
+      return [] as RawTrack[];
+    }),
+    fetchListing(entry.tag, "popularity_week", POPULAR_SHARE * 2).catch(err => {
+      console.warn(`[jamendo] popular listing failed for ${genre}:`, (err as Error).message);
+      return [] as RawTrack[];
+    }),
+  ]);
+  const candidates = interleaveDedupe(freshRaw, popularRaw);
+  if (candidates.length === 0) throw new Error("jamendo-empty-result");
 
   mkdirSync(`${JAMENDO_DIR}/${genre}`, { recursive: true });
 
-  type RawTrack = {
-    id?: unknown;
-    name?: unknown;
-    artist_name?: unknown;
-    audiodownload?: unknown;
-    audiodownload_allowed?: unknown;
-    duration?: unknown;
-    license_ccurl?: unknown;
-    shareurl?: unknown;
-  };
   const tracks: JamendoTrack[] = [];
 
-  for (const rawTrack of raw) {
-    const t = rawTrack as RawTrack;
+  for (const t of candidates) {
+    if (tracks.length >= TRACKS_PER_GENRE) break;
     if (typeof t.id !== "string") continue;
     if (t.audiodownload_allowed === false) continue;
     if (typeof t.audiodownload !== "string") continue;

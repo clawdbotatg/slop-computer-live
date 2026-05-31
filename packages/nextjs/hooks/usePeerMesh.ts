@@ -869,6 +869,41 @@ export type ChessResult = {
   moveCount: number;
 };
 
+/** Money chess: an ETH wager escrowed in the room multisig. Mirrors the
+ *  relay's Wager type (packages/relay/src/wager.ts). The relay owns every
+ *  transition — clients render this snapshot and drive UI off it. */
+export type WagerStatus = "funding" | "armed" | "playing" | "settling" | "settled" | "refunding" | "cancelled";
+
+export type WagerSide = "white" | "black";
+
+export type WagerDeposit = {
+  txHash: string;
+  amountWei: string;
+  confirmedAt: number;
+};
+
+export type Wager = {
+  id: string;
+  status: WagerStatus;
+  chainId: number;
+  multisig: string;
+  buyinWei: string;
+  whiteKey: string;
+  whiteLabel: string;
+  blackKey: string;
+  blackLabel: string;
+  whiteDeposit: WagerDeposit | null;
+  blackDeposit: WagerDeposit | null;
+  outcome: ChessGameStatus | null;
+  winner: WagerSide | "draw" | null;
+  payoutTxId: string | null;
+  payoutTxHash: string | null;
+  settledAt: number | null;
+  proposedBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 /** Server-side AI player available as a chess opponent. The lobby
  *  shows these alongside the live human peers in the player picker.
  *  The relay is responsible for actually playing their moves. */
@@ -967,6 +1002,17 @@ export type PeerMeshState = {
   chessMove: (from: string, to: string, promotion?: string) => void;
   chessResign: () => void;
   chessCloseGame: () => void;
+  /** Money chess: the current ETH wager escrowed in the room multisig. */
+  wager: Wager | null;
+  /** Latest deposit-verification result from the relay (per reported tx),
+   *  so the Send-buy-in UI can show "confirming…/retry" feedback. */
+  wagerFundResult: { ok: boolean; txHash: string; reason?: string } | null;
+  wagerPropose: (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => void;
+  wagerFund: (txHash: string) => void;
+  wagerStart: () => void;
+  wagerLinkPayout: (txId: string) => void;
+  wagerCancel: () => void;
+  wagerClear: () => void;
   /** Shared todo list. Full-state replace from server on every change. */
   todos: TodoItem[];
   todoAdd: (text: string) => void;
@@ -1341,6 +1387,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
+  const [wager, setWager] = useState<Wager | null>(null);
+  const [wagerFundResult, setWagerFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(null);
   const [aiPlayers, setAiPlayers] = useState<AIPlayer[]>([]);
   const [wallet, setWallet] = useState<WalletRecord | null>(null);
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
@@ -1758,6 +1806,36 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   }, [send]);
   const chessCloseGame = useCallback(() => {
     send({ type: "chess_close_game" });
+  }, [send]);
+
+  // Money chess. The relay owns every transition; these just post intent.
+  const wagerPropose = useCallback(
+    (args: { opponentKey: string; opponentLabel: string; buyinWei: string; chainId: number }) => {
+      send({ type: "wager_propose", ...args });
+    },
+    [send],
+  );
+  const wagerFund = useCallback(
+    (txHash: string) => {
+      setWagerFundResult(null);
+      send({ type: "wager_fund", txHash });
+    },
+    [send],
+  );
+  const wagerStart = useCallback(() => {
+    send({ type: "wager_start" });
+  }, [send]);
+  const wagerLinkPayout = useCallback(
+    (txId: string) => {
+      send({ type: "wager_link_payout", txId });
+    },
+    [send],
+  );
+  const wagerCancel = useCallback(() => {
+    send({ type: "wager_cancel" });
+  }, [send]);
+  const wagerClear = useCallback(() => {
+    send({ type: "wager_clear" });
   }, [send]);
 
   // Reconcile myPongSeat against the authoritative seats map. Catches
@@ -2482,6 +2560,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.chessHistory)) {
             setChessHistory(msg.chessHistory as ChessResult[]);
           }
+          if (msg.wager === null || (msg.wager && typeof msg.wager === "object")) {
+            setWager((msg.wager ?? null) as Wager | null);
+          }
           if (Array.isArray(msg.aiPlayers)) {
             setAiPlayers(msg.aiPlayers as AIPlayer[]);
           }
@@ -2889,6 +2970,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "chess_history" && Array.isArray(msg.history)) {
           setChessHistory(msg.history as ChessResult[]);
+          return;
+        }
+
+        if (msg.type === "wager_state") {
+          setWager((msg.wager ?? null) as Wager | null);
+          return;
+        }
+
+        if (msg.type === "wager_fund_result") {
+          setWagerFundResult({
+            ok: !!msg.ok,
+            txHash: typeof msg.txHash === "string" ? msg.txHash : "",
+            reason: typeof msg.reason === "string" ? msg.reason : undefined,
+          });
           return;
         }
 
@@ -3339,6 +3434,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     chessMove,
     chessResign,
     chessCloseGame,
+    wager,
+    wagerFundResult,
+    wagerPropose,
+    wagerFund,
+    wagerStart,
+    wagerLinkPayout,
+    wagerCancel,
+    wagerClear,
     todos,
     todoAdd,
     todoToggle,

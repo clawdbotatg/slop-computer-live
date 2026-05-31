@@ -119,8 +119,10 @@ import {
   fetchPrices,
   fetchTransactionModal,
   simulateCalldata,
+  verifyEthDeposit,
 } from "./wallet-data.js";
 import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
+import type { Wager } from "./wager.js";
 
 // Shared cookie options for the slop_session cookie. The session cookie
 // gates both live.slop.computer (host/guest desktop) and slop.computer
@@ -340,6 +342,7 @@ function broadcastChessState(room: Room, game: ChessGame | null): void {
   room.broadcast({ type: "chess_state", game });
   room.chess.bumpVersion();
   noteChessTranscript(room, game);
+  noteWagerOutcome(room, game);
   setImmediate(() => {
     room.aiMover.tick(room.chess.getVersion(), () => {
       const next = room.chess.getCurrentGame();
@@ -348,6 +351,73 @@ function broadcastChessState(room: Room, game: ChessGame | null): void {
         room.broadcast({ type: "chess_history", history: room.chess.getHistory() });
       }
     }).catch(err => console.error("[ai-mover] tick failed:", err));
+  });
+}
+
+// Push the current wager snapshot to every peer. Call this after any
+// wager mutation (WS handler, chess-settle hook, payout-executed hook)
+// so all clients converge on the same funding/settling/settled state.
+function broadcastWagerState(room: Room): void {
+  room.broadcast({ type: "wager_state", wager: room.wager.get() });
+}
+
+// Does a freshly-proposed WalletTx pay out the wager's settlement plan?
+// Winner-takes-pot is a single send to the winner for >= the pot; a draw
+// (or any refund) is a batch returning each player at least their buy-in.
+// Used both to auto-link a payout proposal and to validate an explicit
+// link request — we never track a tx that doesn't actually settle.
+function payoutTxMatches(wager: Wager, tx: WalletTx): boolean {
+  const buyin = BigInt(wager.buyinWei);
+  const pot = buyin * 2n;
+  if (wager.winner === "draw" || wager.status === "refunding") {
+    // Refund batch: return their buy-in to every side that ACTUALLY
+    // funded — never an unfunded side (that would over-pay from other
+    // escrow funds or revert). And every call must target a funded
+    // player, so an auto-linked refund can't smuggle in a drain.
+    const calls = tx.calls ?? [];
+    if (calls.length === 0) return false;
+    const funded: string[] = [];
+    if (wager.whiteDeposit) funded.push(wager.whiteKey);
+    if (wager.blackDeposit) funded.push(wager.blackKey);
+    if (funded.length === 0) return false;
+    const everyCallToFunded = calls.every(c => funded.includes(c.target.toLowerCase()));
+    const everyFundedRefunded = funded.every(addr =>
+      calls.some(c => c.target.toLowerCase() === addr && BigInt(c.value) === buyin),
+    );
+    return everyCallToFunded && everyFundedRefunded;
+  }
+  const winnerAddr = wager.winner === "white" ? wager.whiteKey : wager.blackKey;
+  return tx.target.toLowerCase() === winnerAddr && tx.value === pot.toString();
+}
+
+// Settle the money-chess wager off the back of a chess result. Driven
+// from broadcastChessState (the one chokepoint all chess endings pass
+// through — human moves, AI moves, resigns). Only fires when a wager is
+// actively `playing` and the ended game's players match the wager, so a
+// casual (non-wager) chess game never moves any money.
+function noteWagerOutcome(room: Room, game: ChessGame | null): void {
+  if (!game || game.status === "active") return;
+  const wager = room.wager.get();
+  if (!wager || wager.status !== "playing") return;
+  if (game.whiteKey.toLowerCase() !== wager.whiteKey || game.blackKey.toLowerCase() !== wager.blackKey) return;
+  const res = room.wager.settle(game.status);
+  if (!res.ok) return;
+  broadcastWagerState(room);
+  const w = res.wager;
+  const potEth = formatEth((BigInt(w.buyinWei) * 2n).toString());
+  let text: string;
+  if (w.winner === "draw") {
+    text = `🤝 Money chess drawn — ${formatEth(w.buyinWei)} ETH refunded to each player`;
+  } else {
+    const who = w.winner === "white" ? w.whiteLabel : w.blackLabel;
+    text = `🏆 ${who} won ${potEth} ETH at chess — pot ready to claim`;
+  }
+  room.transcript.appendAction({
+    kind: "wallet",
+    address: w.winner === "black" ? w.blackKey : w.whiteKey,
+    handle: null,
+    text,
+    meta: { wagerId: w.id, outcome: w.outcome, winner: w.winner, potWei: (BigInt(w.buyinWei) * 2n).toString() },
   });
 }
 
@@ -5140,6 +5210,7 @@ app.register(async function signalRoutes(fastify) {
       uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
       chyronState: room.chyron.getState(),
+      wager: room.wager.get(),
       godViewport: room.getGodViewport(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
@@ -5647,8 +5718,178 @@ app.register(async function signalRoutes(fastify) {
           // Clearing an active game is an "abort" (no winner recorded,
           // nothing appended to history). Same any-peer-can-close model
           // as the rest of the singleton windows.
+          //
+          // EXCEPT during a live money-chess wager: aborting would strand
+          // the escrowed pot with no settlement. Force the game to a real
+          // ending (play it out or resign) so the payout path can run.
+          if (room.wager.get()?.status === "playing") {
+            return send(socket, { type: "error", error: "wager_in_progress_resign_instead" });
+          }
           room.chess.clearGame();
           broadcastChessState(room, null);
+          return;
+        }
+        case "wager_propose": {
+          // Money chess: the proposer challenges an opponent for ETH.
+          // Proposer plays white, opponent plays black. Both must be
+          // real addresses (they have to fund + sign). The escrow is the
+          // room's existing multisig — buy-ins are sent there, the pot is
+          // paid out from there.
+          if (!info.address) return send(socket, { type: "error", error: "wager_needs_address" });
+          if (typeof msg.opponentKey !== "string" || typeof msg.buyinWei !== "string") {
+            return send(socket, { type: "error", error: "bad_wager_propose" });
+          }
+          const cur = room.wallet.getCurrent();
+          if (!cur) return send(socket, { type: "error", error: "no_escrow_wallet" });
+          if (room.chess.getCurrentGame()?.status === "active") {
+            return send(socket, { type: "error", error: "chess_in_progress" });
+          }
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : 8453;
+          const whiteAddr = info.address.toLowerCase();
+          const blackAddr = msg.opponentKey.toLowerCase();
+          const result = room.wager.propose({
+            chainId,
+            multisig: cur.address,
+            buyinWei: msg.buyinWei,
+            whiteKey: whiteAddr,
+            whiteLabel: info.handle ?? shortHex(whiteAddr) ?? whiteAddr,
+            blackKey: blackAddr,
+            blackLabel: typeof msg.opponentLabel === "string" ? msg.opponentLabel : (shortHex(blackAddr) ?? blackAddr),
+            proposedBy: whiteAddr,
+          });
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          broadcastWagerState(room);
+          room.transcript.appendAction({
+            kind: "wallet",
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            text: `♟️ ${actorName(info)} proposed a ${formatEth(result.wager.buyinWei)} ETH chess wager vs ${result.wager.blackLabel}`,
+            meta: { wagerId: result.wager.id, buyinWei: result.wager.buyinWei, chainId },
+          });
+          return;
+        }
+        case "wager_fund": {
+          // A player reports the tx hash of their buy-in deposit. The
+          // relay reads it back on-chain before counting it — a client
+          // can't claim "funded" without actually paying into escrow.
+          if (!info.address) return send(socket, { type: "error", error: "wager_needs_address" });
+          if (typeof msg.txHash !== "string") return send(socket, { type: "error", error: "bad_wager_fund" });
+          const wager = room.wager.get();
+          if (!wager || wager.status !== "funding") return send(socket, { type: "error", error: "not_funding" });
+          const funder = info.address.toLowerCase();
+          const side = room.wager.sideOf(funder);
+          if (!side) return send(socket, { type: "error", error: "not_a_player" });
+          const txHash = msg.txHash;
+          const fundInfo = info;
+          void (async () => {
+            const check = await verifyEthDeposit({
+              chainId: wager.chainId,
+              txHash,
+              from: funder,
+              to: wager.multisig,
+              minValueWei: BigInt(wager.buyinWei),
+            });
+            if (!check.ok) {
+              return send(socket, { type: "wager_fund_result", ok: false, reason: check.reason, txHash });
+            }
+            const res = room.wager.recordDeposit(side, { txHash, amountWei: check.valueWei, confirmedAt: Date.now() });
+            if (!res.ok) return send(socket, { type: "wager_fund_result", ok: false, reason: res.error, txHash });
+            broadcastWagerState(room);
+            send(socket, { type: "wager_fund_result", ok: true, txHash });
+            room.transcript.appendAction({
+              kind: "wallet",
+              address: fundInfo.address,
+              handle: fundInfo.handle,
+              anonId: fundInfo.anonId,
+              text: `💰 ${actorName(fundInfo)} funded their ${formatEth(wager.buyinWei)} ETH chess buy-in`,
+              meta: { wagerId: wager.id, side, txHash },
+            });
+            if (res.wager.status === "armed") {
+              room.transcript.appendAction({
+                kind: "wallet",
+                address: null,
+                handle: null,
+                text: `♟️ Both buy-ins are in — ${formatEth((BigInt(wager.buyinWei) * 2n).toString())} ETH pot escrowed. Ready to play.`,
+                meta: { wagerId: wager.id },
+              });
+            }
+          })().catch(err => console.error("[wager] fund verify failed:", err));
+          return;
+        }
+        case "wager_start": {
+          // Kick off the chess game once both buy-ins are escrowed. Only
+          // a player can start. Creates the chess game with the wager's
+          // white/black keys, then flips the wager to `playing`.
+          if (!info.address) return send(socket, { type: "error", error: "wager_needs_address" });
+          const wager = room.wager.get();
+          if (!wager || wager.status !== "armed") return send(socket, { type: "error", error: "not_armed" });
+          if (!room.wager.sideOf(info.address.toLowerCase())) {
+            return send(socket, { type: "error", error: "not_a_player" });
+          }
+          const created = room.chess.createGame({
+            whiteKey: wager.whiteKey,
+            blackKey: wager.blackKey,
+            whiteLabel: wager.whiteLabel,
+            blackLabel: wager.blackLabel,
+          });
+          if (!created.ok) return send(socket, { type: "error", error: created.error });
+          const started = room.wager.start();
+          if (!started.ok) {
+            room.chess.clearGame();
+            return send(socket, { type: "error", error: started.error });
+          }
+          broadcastChessState(room, created.game);
+          broadcastWagerState(room);
+          return;
+        }
+        case "wager_link_payout": {
+          // The winner (or a player, for a draw refund) proposed the
+          // settlement tx via the normal wallet flow; link it so the
+          // relay watches it execute. Validate it actually pays the right
+          // recipient(s) the right amount — we won't track a bogus drain.
+          if (typeof msg.txId !== "string") return send(socket, { type: "error", error: "bad_wager_link" });
+          const wager = room.wager.get();
+          if (!wager) return send(socket, { type: "error", error: "no_wager" });
+          if (wager.status !== "settling" && wager.status !== "refunding") {
+            return send(socket, { type: "error", error: "not_settling" });
+          }
+          const tx = room.wallet.findTx(msg.txId);
+          if (!tx) return send(socket, { type: "error", error: "tx_not_found" });
+          if (!payoutTxMatches(wager, tx)) return send(socket, { type: "error", error: "payout_mismatch" });
+          const res = room.wager.linkPayout(msg.txId);
+          if (!res.ok) return send(socket, { type: "error", error: res.error });
+          broadcastWagerState(room);
+          return;
+        }
+        case "wager_cancel": {
+          // Abort a wager that hasn't started. Before any deposit →
+          // cancelled. After a deposit → refunding (the UI then proposes
+          // the refund batch, same as a draw).
+          const res = room.wager.cancel();
+          if (!res.ok) return send(socket, { type: "error", error: res.error });
+          room.transcript.appendAction({
+            kind: "wallet",
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            text: res.needsRefund
+              ? `↩️ ${actorName(info)} cancelled the chess wager — buy-ins will be refunded`
+              : `✖️ ${actorName(info)} cancelled the chess wager`,
+            meta: { wagerId: res.wager.id },
+          });
+          // No deposits to return → drop the wager entirely so the lobby
+          // reopens. A funded cancel stays in `refunding` until the
+          // refund batch executes.
+          if (!res.needsRefund) room.wager.clear();
+          broadcastWagerState(room);
+          return;
+        }
+        case "wager_clear": {
+          // Reset the wager slot so the lobby reopens (after a settled or
+          // cancelled wager). Any peer can clear, mirroring chess_close.
+          room.wager.clear();
+          broadcastWagerState(room);
           return;
         }
         case "pong_claim": {
@@ -5967,6 +6208,16 @@ app.register(async function signalRoutes(fastify) {
             execHash: msg.execHash,
             ...(batchCalls ? { calls: batchCalls } : {}),
           });
+          // Money chess: if a wager is awaiting settlement and this tx
+          // pays out the plan (winner gets pot, or a refund batch), adopt
+          // it as the payout we watch — no separate link round-trip. The
+          // user just signs+executes it in the normal Transactions tab.
+          {
+            const w = room.wager.get();
+            if (w && (w.status === "settling" || w.status === "refunding") && !w.payoutTxId && payoutTxMatches(w, tx)) {
+              if (room.wager.linkPayout(tx.id).ok) broadcastWagerState(room);
+            }
+          }
           // Fire-and-forget AI analysis — broadcasts when it lands.
           // Fills `aiAnalysis` (proposer-blind second opinion) and
           // mirrors into `summary` since browser proposals carry no
@@ -6035,7 +6286,32 @@ app.register(async function signalRoutes(fastify) {
           }
           const allowed: WalletTx["status"][] = ["pending", "executing", "executed", "failed", "expired", "cancelled"];
           if (!allowed.includes(msg.status as WalletTx["status"])) return;
-          room.wallet.setTxStatus(msg.id, msg.status as WalletTx["status"], typeof msg.txHash === "string" ? msg.txHash : null);
+          const txHash = typeof msg.txHash === "string" ? msg.txHash : null;
+          room.wallet.setTxStatus(msg.id, msg.status as WalletTx["status"], txHash);
+          // Money-chess settlement: if this is the wager's linked payout
+          // (or refund) and it just executed on-chain, close out the
+          // wager. This is the "watch for it to go out" the whole payout
+          // window waits on.
+          if (msg.status === "executed" && room.wager.isPayoutTx(msg.id)) {
+            const settled = room.wager.markSettled(txHash);
+            if (settled.ok) {
+              broadcastWagerState(room);
+              const w = settled.wager;
+              const text =
+                w.winner === "draw"
+                  ? `↩️ Chess wager refunded — ${formatEth(w.buyinWei)} ETH returned to each player`
+                  : `🏆 Chess pot paid out — ${formatEth((BigInt(w.buyinWei) * 2n).toString())} ETH to ${
+                      w.winner === "white" ? w.whiteLabel : w.blackLabel
+                    }`;
+              room.transcript.appendAction({
+                kind: "wallet",
+                address: w.winner === "black" ? w.blackKey : w.whiteKey,
+                handle: null,
+                text,
+                meta: { wagerId: w.id, txHash: w.payoutTxHash },
+              });
+            }
+          }
           return;
         }
         case "wallet_tx_remove": {

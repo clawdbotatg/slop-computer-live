@@ -987,6 +987,20 @@ function DesktopInner({ slug }: { slug: string }) {
   const ownerKeyRefForLayouts = useRef(ownerKeyForLayouts);
   ownerKeyRefForLayouts.current = ownerKeyForLayouts;
 
+  // What the MOST RECENT loadLayout asked for, camera/mic-wise (null when
+  // no load is being reconciled). startCamera/startAudio are async — the
+  // stream doesn't publish, and md.active* doesn't flip true, until
+  // getUserMedia + the denoise WASM pipeline finish (~1s). So a second Load
+  // fired before the first's share comes up can't see the in-flight stream
+  // to stop it, and that earlier share then publishes into a layout that
+  // never saved it (the "audio sneaks into every layout" bug). The veto
+  // effect below reads this intent against fresh media state and tears down
+  // any share that surfaces but isn't wanted. pendingMediaStartsRef counts
+  // load-initiated starts still in flight, so the veto only lives as long as
+  // a race is actually possible — a later *manual* Share is never touched.
+  const mediaIntentRef = useRef<{ camera: boolean; audio: boolean } | null>(null);
+  const pendingMediaStartsRef = useRef(0);
+
   const geomFromSlot = useCallback((slotId: string): SlotGeom => {
     const s = meshRefForLayouts.current.slots[slotId];
     return s
@@ -1060,14 +1074,63 @@ function DesktopInner({ slug }: { slug: string }) {
     // Chrome perms mean these usually re-publish without a prompt). The
     // publish/stop lifecycle keeps the localStorage resume flags honest,
     // so a later reload matches too.
+    //
+    // Record this load's wanted set so the veto effect can cancel any share
+    // that comes up late but isn't in it (see mediaIntentRef). The
+    // synchronous stops below still handle the common, non-racy case
+    // immediately; the effect is the safety net for in-flight starts that a
+    // newer load superseded.
     const wantCamera = layout.media.some(x => x.kind === "camera");
     const wantAudio = layout.media.some(x => x.kind === "audio");
+    mediaIntentRef.current = { camera: wantCamera, audio: wantAudio };
     if (md.activeCamera && !wantCamera) md.stop("camera");
     if (md.activeAudio && !wantAudio) md.stop("audio");
-    if (wantCamera && !md.activeCamera) void md.startCamera().catch(() => {});
-    if (wantAudio && !md.activeAudio) void md.startAudio().catch(() => {});
+    if (wantCamera && !md.activeCamera) {
+      pendingMediaStartsRef.current++;
+      void md
+        .startCamera()
+        .catch(() => false)
+        .finally(() => {
+          pendingMediaStartsRef.current--;
+        });
+    }
+    if (wantAudio && !md.activeAudio) {
+      pendingMediaStartsRef.current++;
+      void md
+        .startAudio()
+        .catch(() => false)
+        .finally(() => {
+          pendingMediaStartsRef.current--;
+        });
+    }
+    // No start is in flight → the synchronous stops above already settled
+    // everything, so drop the veto now (a lingering intent would shadow a
+    // later manual Share). When a start IS pending, the effect clears the
+    // intent once that start resolves and any unwanted share is torn down.
+    if (pendingMediaStartsRef.current === 0) mediaIntentRef.current = null;
     if (key) for (const x of layout.media) m.updateSlot({ id: `owner-${key}-${x.kind}`, ...x.geom });
   }, []);
+
+  // Veto a camera/mic share that surfaces but wasn't requested by the most
+  // recent Load Layout (see mediaIntentRef). Runs on every media on/off
+  // transition; `media` here is the current render's value, so stop()
+  // reliably targets the live stream — doing this from loadLayout's async
+  // start callback instead would close over a stale `activeIds` and no-op.
+  // The intent is dropped once no load-initiated start is still in flight
+  // and nothing unwanted remains live, so a later manual Share is untouched.
+  useEffect(() => {
+    const want = mediaIntentRef.current;
+    if (!want) return;
+    if (media.activeAudio && !want.audio) media.stop("audio");
+    if (media.activeCamera && !want.camera) media.stop("camera");
+    if (
+      pendingMediaStartsRef.current === 0 &&
+      !(media.activeAudio && !want.audio) &&
+      !(media.activeCamera && !want.camera)
+    ) {
+      mediaIntentRef.current = null;
+    }
+  }, [media]);
 
   const deleteLayout = useCallback((name: string) => {
     setSavedLayouts(prev => {
@@ -1621,6 +1684,26 @@ function DesktopInner({ slug }: { slug: string }) {
     if (!r.camera && !r.audio) return;
     void prewarmDenoise();
   }, [session, slug]);
+
+  // Catch-all warm: the first user gesture warms the pipeline so NO share
+  // path ever blocks its publish on the cold chunk import + ~150KB WASM
+  // fetch. acquire() awaits denoiseStream before publishing the track for
+  // BOTH camera AND audio (line ~161 in useLocalMedia), so a cold first
+  // share — video OR audio, via the Share dialogs OR a saved-layout apply
+  // OR the keyboard — is otherwise slow. A gesture always precedes any
+  // share (the desktop isn't interactive until the entry gate is clicked),
+  // so this single chokepoint covers every path, present and future. The
+  // resume-gated effect above stays because it fires PRE-gesture (during
+  // the entry-gate dwell) to give the reload-resume a head start.
+  // Idempotent + denoise-pref-gated; spectators never publish, so skip the
+  // fetch for them.
+  useEffect(() => {
+    if (!gestured) return;
+    if (!session.authenticated) return;
+    if (session.spectator) return;
+    if (!readDenoisePref()) return;
+    void prewarmDenoise();
+  }, [gestured, session]);
 
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
