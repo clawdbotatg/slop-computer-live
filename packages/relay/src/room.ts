@@ -31,6 +31,7 @@ import { ScrollSync } from "./scroll-sync.js";
 import { UIState } from "./ui-state.js";
 import { QrState } from "./qr-state.js";
 import { ResearchState } from "./research-state.js";
+import { LeftclawState } from "./leftclaw-state.js";
 import { RoomAuth } from "./room-auth.js";
 import { WalletChatState } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
@@ -111,6 +112,7 @@ function roomPaths(id: string): {
   wallet: SubsystemPath;
   escrow: { path: string };
   research: { path: string };
+  leftclaw: { path: string };
   walletChat: { path: string };
   auth: { path: string };
   meta: { path: string };
@@ -197,6 +199,10 @@ function roomPaths(id: string): {
       // DEFAULT_SLUG room has nothing to inherit. Cold start = empty.
       path: `${dir}/research.json`,
     },
+    leftclaw: {
+      // No legacy path — the Hire app is new; cold start = idle.
+      path: `${dir}/leftclaw.json`,
+    },
     walletChat: {
       // No legacy path — the AI wallet chat was per-iframe localStorage
       // before this port, never relay-persisted. Cold start = empty.
@@ -281,6 +287,7 @@ export class Room {
   readonly pong = new Pong();
   readonly worm = new Worm();
   readonly research: ResearchState;
+  readonly leftclaw: LeftclawState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
   readonly tldr = new TldrState();
@@ -336,6 +343,7 @@ export class Room {
     this.escrow = new EscrowState(paths.escrow.path);
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
+    this.leftclaw = new LeftclawState(paths.leftclaw.path);
     this.auth = new RoomAuth(paths.auth.path);
     this.chyron = new Chyron(paths.chyron.path);
     this.apps = new RoomApps(paths.apps.path);
@@ -352,6 +360,7 @@ export class Room {
     this.jamendo.subscribe(event => this.broadcast({ type: "music_genre", genre: event.genre }));
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
+    this.leftclaw.subscribe(state => this.broadcast({ type: "leftclaw_state", state }));
     this.walletChat.subscribe(state => this.broadcast({ type: "wallet_chat", state }));
     this.chyron.subscribe(state => this.broadcast({ type: "chyron", state }));
     // Live transcript fan-out to mesh peers. Previously the desktop's

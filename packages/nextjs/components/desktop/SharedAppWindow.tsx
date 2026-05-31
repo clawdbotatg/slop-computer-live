@@ -41,6 +41,11 @@ export type SharedAppWindowProps = {
   minHeight?: number;
   bodyClassName?: string;
   bodyStyle?: CSSProperties;
+  /** Keep the body mounted (hidden) while minimized instead of unmounting
+   *  it. Opt in for apps with live state that must survive minimize —
+   *  e.g. SLOPAMP, whose <audio> element keeps playing only while in the
+   *  DOM. Off by default: most apps are fine to tear down + rebuild. */
+  keepMountedWhenDocked?: boolean;
   children: ReactNode;
 };
 
@@ -56,6 +61,7 @@ export const SharedAppWindow = ({
   // on the chrome) — they paint their own UI edge to edge. Callers can
   // still override.
   bodyStyle = { padding: 0, overflow: "hidden" },
+  keepMountedWhenDocked,
   children,
 }: SharedAppWindowProps) => {
   if (!mesh.openWindowIds.has(id)) return null;
@@ -77,6 +83,7 @@ export const SharedAppWindow = ({
       minHeight={minHeight}
       bodyClassName={bodyClassName}
       bodyStyle={bodyStyle}
+      keepMountedWhenDocked={keepMountedWhenDocked}
       onClose={() => mesh.closeWindow(id)}
     >
       {children}

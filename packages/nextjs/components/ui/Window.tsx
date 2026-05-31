@@ -29,6 +29,13 @@ export type WindowProps = {
   // Inset within the viewport that maximize should respect (e.g. 26px top
   // for the menubar in production). Defaults to 0 on all sides.
   containerInset?: { top?: number; right?: number; bottom?: number; left?: number };
+  // Keep the body (children) mounted while docked instead of unmounting
+  // it. Default false: docked windows render titlebar-only and drop their
+  // body to save work. Opt in for windows whose body owns live state that
+  // must survive minimize — e.g. SLOPAMP's <audio> element keeps playing
+  // when minimized only because it stays in the DOM. The hidden body is
+  // `display:none` so it neither paints nor inflates the docked pill.
+  keepMountedWhenDocked?: boolean;
 };
 
 type WindowMode = "normal" | "max" | "dock";
@@ -54,6 +61,7 @@ export const Window = ({
   bodyStyle,
   children,
   containerInset,
+  keepMountedWhenDocked = false,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
   // Track THIS viewer's viewport height. The docked "pill" pins to the
@@ -168,7 +176,7 @@ export const Window = ({
         onZoom={isDocked ? undefined : handleZoom}
         onTitleClick={isDocked ? restore : undefined}
       />
-      {isDocked ? null : (
+      {isDocked && !keepMountedWhenDocked ? null : (
         <div
           className={bodyClassName}
           style={{
@@ -179,6 +187,10 @@ export const Window = ({
             padding: 8,
             overflow: "auto",
             ...bodyStyle,
+            // Docked + kept-mounted: stay in the DOM (so live state like
+            // an <audio> element keeps running) but render nothing and
+            // take no space, so the pill stays titlebar-only.
+            ...(isDocked ? { display: "none" } : null),
           }}
         >
           {children}

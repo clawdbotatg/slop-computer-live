@@ -149,7 +149,16 @@ export const VideoView = ({
   useEffect(() => {
     if (!isMine) return;
     for (const t of stream.getAudioTracks()) t.enabled = !micMuted;
-  }, [stream, micMuted, isMine]);
+    // Notify Desktop's useLiveTranscript gate so local Web Speech STT
+    // shuts off when the camera-sharer mutes their mic. Web Speech opens
+    // its own internal mic capture and ignores track.enabled, so without
+    // this signal the recognizer keeps broadcasting captions for someone
+    // who muted themselves. Mirrors AudioVisualizer's dispatch — a camera
+    // publication bundles the mic, so this tile owns the mute affordance.
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("slop-audio-muted-change", { detail: { slug, muted: micMuted } }));
+    }
+  }, [stream, micMuted, isMine, slug]);
 
   // Audio-only: stop sending video frames but keep the mic. Disabling
   // (vs. unpublishing) means flipping back is instant and the audio

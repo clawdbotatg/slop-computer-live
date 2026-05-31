@@ -37,6 +37,9 @@ export type SlotWindowProps = {
    *  the titlebar can never slip behind it. Override for windows that
    *  share space with other chrome. */
   menubarInset?: number;
+  /** Keep the body mounted (hidden) while docked — for windows with live
+   *  state that must survive minimize, e.g. SLOPAMP's audio. */
+  keepMountedWhenDocked?: boolean;
   children?: ReactNode;
 };
 
@@ -51,6 +54,7 @@ export const SlotWindow = ({
   bodyClassName,
   bodyStyle,
   menubarInset = 38,
+  keepMountedWhenDocked,
   children,
 }: SlotWindowProps) => {
   const slot = mesh.slots[slotId] ?? defaultSlot;
@@ -100,6 +104,7 @@ export const SlotWindow = ({
       onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: slot.width, height: slot.height })}
       onResize={({ x, y, width, height }) => mesh.updateSlot({ id: slotId, x, y, width, height })}
       containerInset={{ top: menubarInset }}
+      keepMountedWhenDocked={keepMountedWhenDocked}
     >
       {children}
     </Window>

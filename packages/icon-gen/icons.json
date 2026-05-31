@@ -253,6 +253,10 @@
     {
       "name": "worm",
       "prompt": "A chunky segmented arcade worm coiled in an S-shape, made of glowing rounded cube segments alternating hot magenta and cyan, with two big friendly cartoon eyes on the head, reaching toward a single bright glowing yellow food orb."
+    },
+    {
+      "name": "leftclaw",
+      "prompt": "An isometric chunky left-facing robotic crab claw pincer, hot magenta and cyan accents on deep purple, glossy cyberdelic Mac OS 9 style, no text."
     }
   ],
   "sheet": {

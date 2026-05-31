@@ -25,6 +25,7 @@ import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
 import { HeadlinesBar } from "~~/components/desktop/HeadlinesBar";
 import { IncomingTxModal } from "~~/components/desktop/IncomingTxModal";
+import { LeftclawWindow } from "~~/components/desktop/LeftclawWindow";
 import { MusicPlayerWindow } from "~~/components/desktop/MusicPlayerWindow";
 import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NewsWindow } from "~~/components/desktop/NewsWindow";
@@ -175,6 +176,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "research"
+    | "leftclaw"
     | "news"
     | "transcript"
     | "card"
@@ -2326,6 +2328,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "wallet":
         case "ens":
         case "research":
+        case "leftclaw":
         case "news":
         case "transcript":
         case "card":
@@ -3411,6 +3414,9 @@ function DesktopInner({ slug }: { slug: string }) {
               defaultSlot={{ x: 120, y: 120, width: 380, height: 440 }}
               minWidth={300}
               minHeight={300}
+              // Keep the player mounted while minimized so its <audio>
+              // element stays in the DOM and music keeps playing.
+              keepMountedWhenDocked
             >
               <MusicPlayerWindow mesh={mesh} audioBusEnabled={isGodMode} />
             </SharedAppWindow>
@@ -3533,6 +3539,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={420}
             >
               <ResearchWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="leftclaw"
+              title="HIRE"
+              defaultSlot={{ x: 440, y: 130, width: 540, height: 640 }}
+              minWidth={420}
+              minHeight={460}
+            >
+              <LeftclawWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

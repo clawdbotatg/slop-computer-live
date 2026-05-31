@@ -670,6 +670,49 @@ const DEFAULT_RESEARCH_STATE: ResearchState = {
   error: null,
 };
 
+// --- Leftclaw "Hire" app ----------------------------------------------------
+// Multiplayer job-posting to Leftclaw Services. The phase machine lives on
+// the relay (leftclaw-state.ts); we render whatever the latest broadcast
+// said. Form edits stay local in LeftclawWindow — only start/done/error/
+// reset transitions broadcast. The signing + on-chain tx run in the
+// driver's browser; these intents just keep spectators in sync.
+export type LeftclawPhase = "idle" | "posting" | "done" | "error";
+export type LeftclawServiceId = 4 | 6 | 7;
+export type LeftclawPayment = "cv" | "usdc";
+
+export type LeftclawJob = {
+  startedAt: number;
+  startedBy: string | null;
+};
+
+export type LeftclawState = {
+  phase: LeftclawPhase;
+  serviceTypeId: LeftclawServiceId | null;
+  description: string;
+  context: string;
+  paymentMethod: LeftclawPayment | null;
+  step: string | null;
+  job: LeftclawJob | null;
+  jobId: number | null;
+  jobUrl: string | null;
+  txHash: string | null;
+  error: string | null;
+};
+
+const DEFAULT_LEFTCLAW_STATE: LeftclawState = {
+  phase: "idle",
+  serviceTypeId: null,
+  description: "",
+  context: "",
+  paymentMethod: null,
+  step: null,
+  job: null,
+  jobId: null,
+  jobUrl: null,
+  txHash: null,
+  error: null,
+};
+
 // --- Transcript TLDR --------------------------------------------------------
 // Shared "catch me up" summary for the Transcript app. Anyone hits the TLDR
 // button; the relay summarizes the recent transcript and broadcasts the same
@@ -1173,6 +1216,27 @@ export type PeerMeshState = {
    *  Refused server-side while a job is in flight (avoids orphaning a
    *  running AI call). */
   researchReset: () => void;
+  /** Shared Leftclaw "Hire" job-posting state — service type + form +
+   *  posting phase/step + result. Broadcast wholesale (last-writer-wins).
+   *  See leftclaw-state.ts on the relay. */
+  leftclawState: LeftclawState;
+  /** Take the post lock + broadcast `posting`. Returns the relay response
+   *  so the driver can detect a 409 (someone else is mid-post). The actual
+   *  signing/tx happen in the caller's browser afterwards. */
+  leftclawStart: (args: {
+    serviceTypeId: LeftclawServiceId;
+    description: string;
+    context?: string;
+    paymentMethod: LeftclawPayment;
+  }) => Promise<Response>;
+  /** Push a human-readable progress label spectators see while posting. */
+  leftclawUpdate: (step: string) => void;
+  /** Mark the post done — broadcasts the job link + narrates the transcript. */
+  leftclawDone: (args: { jobId: number; jobUrl?: string; txHash?: string }) => void;
+  /** Mark the post failed with a message. */
+  leftclawError: (message: string) => void;
+  /** Reset the Hire app back to an editable empty form for the room. */
+  leftclawReset: () => void;
   /** Shared "catch me up" TLDR for the Transcript app. Status + summary
    *  are broadcast to every peer, so one click recaps the whole room.
    *  See tldr-state.ts on the relay. */
@@ -1423,6 +1487,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
+  const [leftclawState, setLeftclawStateLocal] = useState<LeftclawState>(DEFAULT_LEFTCLAW_STATE);
   const [tldrState, setTldrStateLocal] = useState<TldrState>(DEFAULT_TLDR_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [pongState, setPongStateLocal] = useState<PongState>(DEFAULT_PONG_STATE);
@@ -2204,6 +2269,64 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("researchReset failed", err));
   }, [slug]);
 
+  // Leftclaw "Hire" mutators. start() returns the relay Response so the
+  // driver can bail on a 409 before touching the wallet; the rest are
+  // fire-and-forget — the `leftclaw_state` broadcast is authoritative.
+  const leftclawStart = useCallback(
+    (args: {
+      serviceTypeId: LeftclawServiceId;
+      description: string;
+      context?: string;
+      paymentMethod: LeftclawPayment;
+    }) =>
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw/start`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args),
+      }),
+    [slug],
+  );
+  const leftclawUpdate = useCallback(
+    (step: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw/update`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ step }),
+      }).catch(err => console.warn("leftclawUpdate failed", err));
+    },
+    [slug],
+  );
+  const leftclawDone = useCallback(
+    (args: { jobId: number; jobUrl?: string; txHash?: string }) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw/done`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args),
+      }).catch(err => console.warn("leftclawDone failed", err));
+    },
+    [slug],
+  );
+  const leftclawError = useCallback(
+    (message: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw/error`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: message }),
+      }).catch(err => console.warn("leftclawError failed", err));
+    },
+    [slug],
+  );
+  const leftclawReset = useCallback(() => {
+    fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw`, slug), {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("leftclawReset failed", err));
+  }, [slug]);
+
   // "Catch me up" — ask the relay to summarize the recent transcript. The
   // relay broadcasts `tldr_state` (pending, then ready) back to every peer,
   // so one click recaps the whole room. No-op if a job is already in flight
@@ -2700,6 +2823,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.researchState && typeof msg.researchState === "object") {
             setResearchStateLocal(msg.researchState as ResearchState);
           }
+          if (msg.leftclawState && typeof msg.leftclawState === "object") {
+            setLeftclawStateLocal(msg.leftclawState as LeftclawState);
+          }
           if (msg.tldrState && typeof msg.tldrState === "object") {
             setTldrStateLocal(msg.tldrState as TldrState);
           }
@@ -2957,6 +3083,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "research_state" && msg.state && typeof msg.state === "object") {
           setResearchStateLocal(msg.state as ResearchState);
+          return;
+        }
+
+        if (msg.type === "leftclaw_state" && msg.state && typeof msg.state === "object") {
+          setLeftclawStateLocal(msg.state as LeftclawState);
           return;
         }
 
@@ -3553,6 +3684,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     researchLookup,
     researchStart,
     researchReset,
+    leftclawState,
+    leftclawStart,
+    leftclawUpdate,
+    leftclawDone,
+    leftclawError,
+    leftclawReset,
     tldrState,
     requestTldr,
     qrState,

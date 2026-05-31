@@ -562,6 +562,11 @@ app.addContentTypeParser(/^audio\/(webm|ogg|mp4|mpeg|wav)/, { parseAs: "buffer" 
 await app.register(cors, {
   origin: config.corsOrigins.includes("*") ? true : config.corsOrigins,
   credentials: true,
+  // Expose the x402 payment headers so the browser @x402 SDK can read
+  // the 402 challenge / settlement through the Leftclaw relay proxy
+  // (/v1/leftclaw/x402/*). Browsers hide non-safelisted response headers
+  // unless they're explicitly exposed.
+  exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"],
 });
 await app.register(cookie, { secret: config.sessionSecret });
 // global: false so only the password endpoints opt in via per-route
@@ -640,6 +645,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "research"
+    | "leftclaw"
     | "news"
     | "transcript"
     | "card"
@@ -782,6 +788,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Research",
     icon: "/icons/research.png",
     kind: "research",
+  },
+  {
+    id: "leftclaw",
+    label: "Hire",
+    icon: "/icons/leftclaw.png",
+    kind: "leftclaw",
   },
   {
     id: "news",
@@ -1042,6 +1054,7 @@ app.get("/v1/state", async (req, reply) => {
     cardJob: readCardJob(roomFromReq(req).id),
     cardTitle: readCardTitle(roomFromReq(req).id),
     researchState: roomFromReq(req).research.current().state,
+    leftclawState: roomFromReq(req).leftclaw.current().state,
     tldrState: roomFromReq(req).tldr.current().state,
     qrState: roomFromReq(req).qr.current().state,
     pongState: roomFromReq(req).pong.current().state,
@@ -3230,6 +3243,201 @@ app.delete("/v1/research", async (req, reply) => {
   return { ok: true, state: next };
 });
 
+// --- Leftclaw "Hire" app ---------------------------------------------------
+// Post a Research / Build / Audit job to Leftclaw Services. The shared
+// phase machine lives on room.leftclaw (leftclaw-state.ts) and broadcasts
+// `leftclaw_state` so spectators watch the post go out. The actual signing
+// + on-chain tx happen in the DRIVER'S BROWSER; the relay only (a) proxies
+// the CORS-blocked Leftclaw/larv.ai HTTP, and (b) tracks the advisory
+// phase/step the driver POSTs as it progresses.
+//
+// Leftclaw's own /api/* endpoints send no CORS headers, so a browser can't
+// call them directly — every Leftclaw HTTP call goes through these proxies.
+
+const LEFTCLAW_BASE = "https://leftclaw.services";
+const LARV_BASE = "https://larv.ai";
+const LEFTCLAW_X402_TYPES = new Set(["research", "audit", "build"]);
+const LEFTCLAW_SERVICE_IDS = new Set([4, 6, 7]);
+const LEFTCLAW_SERVICE_LABEL: Record<number, string> = { 4: "Audit", 6: "Build", 7: "Research" };
+
+// Read-only proxy: highest CV balance ticker (larv.ai is CORS-* but we
+// proxy for consistency / to avoid mixed-origin surprises).
+app.get("/v1/leftclaw/cv-highest", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  try {
+    const upstream = await fetch(`${LARV_BASE}/api/cv/highest`);
+    const body = await upstream.text();
+    reply.code(upstream.status).header("cache-control", "no-store").type("application/json");
+    return reply.send(body);
+  } catch (err) {
+    return reply.code(502).send({ error: "cv-highest-proxy-failed", detail: String(err).slice(0, 200) });
+  }
+});
+
+// Proxy the off-chain CV burn. The browser signs "larv.ai CV Spend" and
+// posts {wallet, signature, amount}; the relay forwards verbatim and
+// returns Leftclaw's JSON ({success, newBalance} or an error).
+app.post<{ Body: { wallet?: unknown; signature?: unknown; amount?: unknown } }>(
+  "/v1/leftclaw/cv-spend",
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const { wallet, signature, amount } = req.body ?? {};
+    if (typeof wallet !== "string" || typeof signature !== "string" || typeof amount !== "number") {
+      return reply.code(400).send({ error: "bad-cv-spend", detail: "need wallet, signature, amount(number)" });
+    }
+    try {
+      const upstream = await fetch(`${LEFTCLAW_BASE}/api/cv-spend`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ wallet, signature, amount }),
+      });
+      const body = await upstream.text();
+      reply.code(upstream.status).header("cache-control", "no-store").type("application/json");
+      return reply.send(body);
+    } catch (err) {
+      return reply.code(502).send({ error: "cv-spend-proxy-failed", detail: String(err).slice(0, 200) });
+    }
+  },
+);
+
+// Transparent x402 pass-through for the USDC path. The browser @x402 SDK
+// drives the 402 → sign → retry handshake; this just relays bytes:
+// forward the body + the PAYMENT-SIGNATURE/X-PAYMENT request header on the
+// retry, and copy back the status (402/200) + the payment headers + body.
+// (CORS exposedHeaders for PAYMENT-* is set on the cors plugin above.)
+app.post<{ Params: { type: string } }>("/v1/leftclaw/x402/:type", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const type = req.params.type;
+  if (!LEFTCLAW_X402_TYPES.has(type)) return reply.code(400).send({ error: "bad-service-type" });
+
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const paySig = req.headers["payment-signature"];
+  const xPayment = req.headers["x-payment"];
+  if (typeof paySig === "string") headers["payment-signature"] = paySig;
+  if (typeof xPayment === "string") headers["x-payment"] = xPayment;
+
+  try {
+    const upstream = await fetch(`${LEFTCLAW_BASE}/api/${type}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req.body ?? {}),
+    });
+    const body = await upstream.text();
+    reply.code(upstream.status).header("cache-control", "no-store").type("application/json");
+    for (const h of ["payment-required", "payment-response", "x-payment-response"]) {
+      const v = upstream.headers.get(h);
+      if (v) reply.header(h, v);
+    }
+    return reply.send(body);
+  } catch (err) {
+    return reply.code(502).send({ error: "x402-proxy-failed", detail: String(err).slice(0, 200) });
+  }
+});
+
+// --- Leftclaw shared-state intents (advisory; the driver POSTs these) ----
+type LeftclawStartBody = {
+  serviceTypeId?: unknown;
+  description?: unknown;
+  context?: unknown;
+  paymentMethod?: unknown;
+};
+
+app.post<{ Body: LeftclawStartBody }>("/v1/leftclaw/start", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const current = room.leftclaw.current().state;
+  if (current.job) return reply.code(409).send({ error: "already-in-flight", state: current });
+
+  const serviceTypeId = Number(req.body?.serviceTypeId);
+  if (!LEFTCLAW_SERVICE_IDS.has(serviceTypeId)) return reply.code(400).send({ error: "bad-service-type" });
+  const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
+  if (!description) return reply.code(400).send({ error: "missing-description" });
+  const context = typeof req.body?.context === "string" ? req.body.context.trim() : "";
+  const paymentMethod = req.body?.paymentMethod === "usdc" ? "usdc" : "cv";
+
+  const next = room.leftclaw.setPatch({
+    phase: "posting",
+    serviceTypeId: serviceTypeId as 4 | 6 | 7,
+    description,
+    context,
+    paymentMethod,
+    step: "Preparing…",
+    jobId: null,
+    jobUrl: null,
+    txHash: null,
+    error: null,
+    job: { startedAt: Date.now(), startedBy: startedByLabel(a) },
+  });
+  reply.header("cache-control", "no-store");
+  return reply.code(202).send({ ok: true, state: next });
+});
+
+app.post<{ Body: { step?: unknown } }>("/v1/leftclaw/update", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const step = typeof req.body?.step === "string" ? req.body.step.slice(0, 80) : null;
+  const next = room.leftclaw.setPatch({ step });
+  return { ok: true, state: next };
+});
+
+app.post<{ Body: { jobId?: unknown; jobUrl?: unknown; txHash?: unknown } }>(
+  "/v1/leftclaw/done",
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const room = roomFromReq(req);
+    const jobId = Number(req.body?.jobId);
+    if (!Number.isFinite(jobId)) return reply.code(400).send({ error: "missing-jobId" });
+    const jobUrl =
+      typeof req.body?.jobUrl === "string" && req.body.jobUrl
+        ? req.body.jobUrl
+        : `${LEFTCLAW_BASE}/jobs/${jobId}`;
+    const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : null;
+    const before = room.leftclaw.current().state;
+    const next = room.leftclaw.setPatch({
+      phase: "done",
+      step: null,
+      job: null,
+      jobId,
+      jobUrl,
+      txHash,
+      error: null,
+    });
+    // Narrate into the transcript (archive/poll row, not a caption).
+    const label = LEFTCLAW_SERVICE_LABEL[before.serviceTypeId ?? 0] ?? "job";
+    room.transcript.appendAction({
+      kind: "wallet",
+      address: a.session.address ?? null,
+      handle: a.session.handle ?? null,
+      text: `posted a Leftclaw ${label} job → ${jobUrl}`,
+      meta: { jobId, service: label, ...(txHash ? { txHash } : {}) },
+    });
+    return { ok: true, state: next };
+  },
+);
+
+app.post<{ Body: { error?: unknown } }>("/v1/leftclaw/error", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const error = typeof req.body?.error === "string" ? req.body.error.slice(0, 300) : "post failed";
+  const next = room.leftclaw.setPatch({ phase: "error", step: null, job: null, error });
+  return { ok: true, state: next };
+});
+
+app.delete("/v1/leftclaw", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const next = room.leftclaw.reset();
+  return { ok: true, state: next };
+});
+
 // --- QR code window --------------------------------------------------------
 // Multiplayer QR text + center logo. Anyone in the room can write the
 // text or replace the logo. The relay broadcasts `qr_state` so every
@@ -5181,6 +5389,7 @@ app.register(async function signalRoutes(fastify) {
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
       researchState: room.research.current().state,
+      leftclawState: room.leftclaw.current().state,
       tldrState: room.tldr.current().state,
       qrState: room.qr.current().state,
       pongState: room.pong.current().state,
