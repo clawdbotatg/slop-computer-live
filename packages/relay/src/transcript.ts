@@ -40,7 +40,15 @@ export type TranscriptKind =
   | "card"
   | "research"
   | "leftclaw"
-  | "room";
+  | "room"
+  | "window"
+  | "todo"
+  | "note"
+  | "glossary"
+  | "clock"
+  | "qr"
+  | "avatar"
+  | "name";
 
 // Structured bits for an action row (track index, filename, tx target, SAN,
 // pong score, …). The rendered one-liner lives in `text`; this is the raw

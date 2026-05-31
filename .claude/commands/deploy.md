@@ -10,6 +10,25 @@ just added). The pre-commit hook is the safety net.
 
 ---
 
+## Step 0: Confirm you're in slop-computer-live
+
+This command targets slop-computer-live specifically (it shells out to
+`./ops/deploy.sh` and SSHes to the `slopcomputer` prod box). Verify
+first — `/deploy` is a global slash command and the user might fire
+it from another project by accident.
+
+```bash
+test -x ./ops/deploy.sh && grep -q "slop-live" ./ops/deploy.sh && echo OK
+```
+
+If that doesn't print `OK`, exit cleanly with:
+> `/deploy` is wired for slop-computer-live; the current directory
+> doesn't have `./ops/deploy.sh`. cd into the project and re-invoke.
+
+Do not improvise an alternative deploy path.
+
+---
+
 ## The four hard rules (read these first)
 
 1. **Never fix another agent's broken code.** If the pre-commit hook

@@ -2191,6 +2191,7 @@ app.post(
     // room so a user changing their avatar in ep0 immediately reflects
     // for spectators sitting in ep1.
     broadcastToAllRooms({ type: "avatar", ownerKey: key, url });
+    noteAction(roomFromReq(req), a, "avatar", `🖼️ ${actorName(a.session)} set a new avatar`);
     return { ok: true, url, key };
   },
 );
@@ -2221,6 +2222,7 @@ app.post("/v1/avatars/hide", async (req, reply) => {
   await _writeFile(`${AVATARS_DIR}/${key}.hidden`, "");
 
   broadcastToAllRooms({ type: "avatar_hidden", ownerKey: key });
+  noteAction(roomFromReq(req), a, "avatar", `🙈 ${actorName(a.session)} hid their avatar`);
   return { ok: true, hidden: true, key };
 });
 
@@ -3005,7 +3007,13 @@ app.post<{ Body: OpenWindowBody }>("/v1/windows", async (req, reply) => {
   const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
   if (!id) return reply.code(400).send({ error: "missing-id" });
   const room = roomFromReq(req);
-  if (room.windows.open(id)) room.broadcast({ type: "window_opened", id });
+  // `open` returns true only on a real state change, so re-opening an
+  // already-open window (common as a music/chess precondition step) is a
+  // no-op here and produces no transcript noise.
+  if (room.windows.open(id)) {
+    room.broadcast({ type: "window_opened", id });
+    noteAction(room, a, "window", `🪟 ${actorName(a.session)} opened the ${id} window`, { id });
+  }
   return { ok: true, id };
 });
 
@@ -3014,7 +3022,10 @@ app.delete<{ Params: { id: string } }>("/v1/windows/:id", async (req, reply) => 
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const id = req.params.id;
   const room = roomFromReq(req);
-  if (room.windows.close(id)) room.broadcast({ type: "window_closed", id });
+  if (room.windows.close(id)) {
+    room.broadcast({ type: "window_closed", id });
+    noteAction(room, a, "window", `🪟 ${actorName(a.session)} closed the ${id} window`, { id });
+  }
   return { ok: true, id };
 });
 
@@ -3038,13 +3049,15 @@ app.post<{ Body: TodoTextBody }>("/v1/todos", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
   if (!text.trim()) return reply.code(400).send({ error: "empty" });
-  const item = roomFromReq(req).todos.add({
+  const room = roomFromReq(req);
+  const item = room.todos.add({
     address: a.session.address,
     handle: a.session.handle,
     anonId: a.session.anonId ?? null,
     text,
   });
   if (!item) return reply.code(400).send({ error: "empty" });
+  noteAction(room, a, "todo", `✅ ${actorName(a.session)} added a todo: “${text.trim().slice(0, 120)}”`);
   return { ok: true, item };
 });
 
@@ -3102,13 +3115,15 @@ app.post<{ Body: NoteTextBody }>("/v1/notes", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const note = roomFromReq(req).notes.create({
+  const room = roomFromReq(req);
+  const note = room.notes.create({
     address: a.session.address,
     handle: a.session.handle,
     anonId: a.session.anonId ?? null,
     text,
   });
   if (!note) return reply.code(400).send({ error: "create-failed" });
+  noteAction(room, a, "note", `📝 ${actorName(a.session)} added a note`);
   return { ok: true, note };
 });
 
@@ -3151,6 +3166,7 @@ app.post<{ Body: GlossaryTermBody }>("/v1/glossary", async (req, reply) => {
     anonId: a.session.anonId ?? null,
   });
   if (!entry) return reply.code(400).send({ error: "empty-term" });
+  noteAction(roomFromReq(req), a, "glossary", `📖 ${actorName(a.session)} added “${term.trim().slice(0, 80)}” to the glossary`);
   return { ok: true, item: entry };
 });
 
@@ -3604,6 +3620,12 @@ app.post<{ Body: QrPatchBody }>("/v1/qr", { bodyLimit: QR_ROUTE_BODY_LIMIT }, as
     patch.logoDataUrl = body.logoDataUrl;
   }
   const next = room.qr.setPatch(patch);
+  // Narrate a deliberate code change, not a logo-only tweak.
+  if (patch.text !== undefined) {
+    noteAction(room, a, "qr", `🔳 ${actorName(a.session)} set the room QR code → ${urlHostLabel(patch.text)}`, {
+      text: patch.text,
+    });
+  }
   reply.header("cache-control", "no-store");
   return { ok: true, state: next };
 });
@@ -4237,7 +4259,14 @@ app.post<{ Body: ClockBody }>("/v1/clock", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!req.body || typeof req.body !== "object") return reply.code(400).send({ error: "bad-body" });
-  const next = roomFromReq(req).clock.setState(req.body);
+  const room = roomFromReq(req);
+  const prevPhase = room.clock.getState().countdown.phase;
+  const next = room.clock.setState(req.body);
+  // Clock patches are mostly low-signal (tab/timezone switches). The one
+  // archive-worthy moment is a countdown actually starting to run.
+  if (next.countdown.phase === "running" && prevPhase !== "running") {
+    noteAction(room, a, "clock", `⏱️ ${actorName(a.session)} started a countdown`);
+  }
   return { ok: true, state: next };
 });
 
@@ -4704,6 +4733,18 @@ app.post<{ Body: HandleBody }>("/auth/handle", async (req, reply) => {
   // null if the result is empty — which we reject as a bad rename.
   const next = peerNames.set(session.anonId, handle);
   if (next == null) return reply.code(400).send({ error: "empty-handle" });
+
+  // Anon renames are global (peerNames fans out to every room), but land the
+  // marker in the room this session is scoped to so its archive shows who
+  // picked which name. Keyed by anonId so SlopAddress colours it consistently.
+  const room = getOrCreateRoom(session.roomSlug ?? DEFAULT_SLUG);
+  room.transcript.appendAction({
+    kind: "name",
+    address: null,
+    handle: next,
+    anonId: session.anonId,
+    text: `🪪 ${next} set their display name`,
+  });
 
   return { ok: true, handle: next };
 });
@@ -5264,7 +5305,14 @@ app.post<{ Params: { slug: string }; Body: RoomDeleteBody }>(
 app.post("/admin/wallet/reset", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  roomFromReq(req).wallet.wipeAll();
+  const room = roomFromReq(req);
+  room.wallet.wipeAll();
+  room.transcript.appendAction({
+    kind: "wallet",
+    address: auth.address.toLowerCase(),
+    handle: null,
+    text: `🔁 ${actorName({ address: auth.address })} reset the room wallet`,
+  });
   return { ok: true };
 });
 

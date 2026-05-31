@@ -1662,7 +1662,9 @@ agent flows.**${adminNote}
 GET ${BASE}/v1/transcript?slug=${slugStr(slug)}
 # → { segments: [{
 #       id, ts, address, handle, anonId, text,
-#       source: "live" | "spectator" | "agent"
+#       source: "live" | "spectator" | "agent",
+#       kind?: "speech" | "music" | "chyron" | "app" | "browser" | ...,
+#       meta?: { ... }            # structured data for action rows
 #     }, ...] }
 \`\`\`
 
@@ -1673,6 +1675,37 @@ GET ${BASE}/v1/transcript?slug=${slugStr(slug)}
 
 Also embedded in \`GET /v1/state\` is NOT a thing for transcript —
 read this endpoint instead.
+
+### Action rows — your own actions show up here automatically
+
+A segment with no \`kind\` (or \`kind: "speech"\`) is a spoken/typed line.
+A segment **with** a \`kind\` is an **action row** the relay narrates on
+your behalf whenever you take a deliberate, room-visible action — you do
+NOT post these, they happen as a side effect of the action's endpoint:
+
+| When you… | Endpoint | Row kind |
+| --- | --- | --- |
+| Set / clear the chyron | \`POST /v1/chyron\` | \`chyron\` |
+| Add / remove / promote an app | \`POST/DELETE /v1/apps\` | \`app\` |
+| Open / navigate a shared browser | \`POST /v1/browsers\` | \`browser\` |
+| Open / close a singleton window | \`POST/DELETE /v1/windows\` | \`window\` |
+| Switch the music genre | \`POST /v1/music/genre\` | \`music\` |
+| Play / pause / change track | \`POST /v1/music/state\` | \`music\` |
+| Generate / publish / clear the card | \`POST/DELETE /v1/card\` | \`card\` |
+| Look up / deep-research a guest | \`POST /v1/guest-lookup\`, \`/v1/guest-research\` | \`research\` |
+| Post a Leftclaw job | \`POST /v1/leftclaw/start\` | \`leftclaw\` |
+| Add a todo / note / glossary term | \`POST /v1/todos\`, \`/v1/notes\`, \`/v1/glossary\` | \`todo\`/\`note\`/\`glossary\` |
+| Start a countdown | \`POST /v1/clock\` | \`clock\` |
+| Set the room QR | \`POST /v1/qr\` | \`qr\` |
+| Set / hide your avatar | \`POST /v1/avatars\`, \`/v1/avatars/hide\` | \`avatar\` |
+| Propose a tx / set a wager / win pong | (wallet/chess/pong) | \`wallet\`/\`chess\`/\`pong\` |
+
+The actor's name + an emoji are baked into the row's \`text\`, so it reads
+on its own (e.g. \`📺 alice.eth set the chyron: "live now"\`). Action rows
+are archive/poll-only — they're deliberately kept OUT of the live caption
+overlay, so narrating an action never spams the on-screen subtitles. When
+summarizing a show, these rows tell you *what happened on the desktop*,
+not just what was said.
 
 ### Append a segment
 
