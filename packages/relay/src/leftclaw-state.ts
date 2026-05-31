@@ -44,6 +44,21 @@ export type LeftclawJob = {
   startedBy: string | null;
 };
 
+// A finished job, kept in the room's history list so the link is still
+// reachable after the host posts another / closes and reopens the app.
+// Newest-first; capped at HISTORY_LIMIT.
+export type LeftclawJobRecord = {
+  jobId: number;
+  jobUrl: string;
+  serviceTypeId: LeftclawServiceId | null;
+  paymentMethod: LeftclawPayment | null;
+  txHash: string | null;
+  postedAt: number;
+  postedBy: string | null;
+};
+
+const HISTORY_LIMIT = 50;
+
 export type LeftclawSnapshot = {
   phase: LeftclawPhase;
   serviceTypeId: LeftclawServiceId | null;
@@ -58,6 +73,9 @@ export type LeftclawSnapshot = {
   jobUrl: string | null;
   txHash: string | null;
   error: string | null;
+  /** Newest-first list of every job posted in this room — survives reset
+   *  ("Post another") and relay restarts so the links stay reachable. */
+  history: LeftclawJobRecord[];
 };
 
 const DEFAULT_SNAPSHOT: LeftclawSnapshot = {
@@ -72,6 +90,7 @@ const DEFAULT_SNAPSHOT: LeftclawSnapshot = {
   jobUrl: null,
   txHash: null,
   error: null,
+  history: [],
 };
 
 // The post runs in the driver's browser, so a relay restart can't tell us
@@ -80,8 +99,9 @@ const DEFAULT_SNAPSHOT: LeftclawSnapshot = {
 // the typed form so the host can retry.
 function reconcileLoaded(s: LeftclawSnapshot): LeftclawSnapshot {
   // A persisted `error` is noise on next load — don't make a stale failure
-  // greet the next visitor / survive a relay restart. Drop it to idle.
-  if (s.phase === "error") return { ...DEFAULT_SNAPSHOT };
+  // greet the next visitor / survive a relay restart. Drop it to idle, but
+  // keep the posted-jobs history.
+  if (s.phase === "error") return { ...DEFAULT_SNAPSHOT, history: s.history ?? [] };
   if (s.phase !== "posting") return s;
   if (s.jobId != null) return { ...s, phase: "done", job: null, step: null };
   return { ...s, phase: "idle", job: null, step: null, error: null };
@@ -130,8 +150,29 @@ export class LeftclawState {
   }
 
   reset(): LeftclawSnapshot {
-    this.loaded = true;
-    this.snapshot = { ...DEFAULT_SNAPSHOT };
+    this.load();
+    // "Post another" / dismiss-error route through reset — keep the posted-jobs
+    // history so the links survive going back to the empty form.
+    this.snapshot = { ...DEFAULT_SNAPSHOT, history: this.snapshot.history };
+    this.persist();
+    this.notify();
+    return this.snapshot;
+  }
+
+  /** Prepend a finished job to the history (dedup by jobId, capped). */
+  appendHistory(record: LeftclawJobRecord): LeftclawSnapshot {
+    this.load();
+    const history = [record, ...this.snapshot.history.filter(h => h.jobId !== record.jobId)].slice(0, HISTORY_LIMIT);
+    this.snapshot = { ...this.snapshot, history };
+    this.persist();
+    this.notify();
+    return this.snapshot;
+  }
+
+  /** Wipe the posted-jobs history (and the rest of the snapshot). */
+  clearHistory(): LeftclawSnapshot {
+    this.load();
+    this.snapshot = { ...this.snapshot, history: [] };
     this.persist();
     this.notify();
     return this.snapshot;

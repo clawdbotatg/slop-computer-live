@@ -685,6 +685,16 @@ export type LeftclawJob = {
   startedBy: string | null;
 };
 
+export type LeftclawJobRecord = {
+  jobId: number;
+  jobUrl: string;
+  serviceTypeId: LeftclawServiceId | null;
+  paymentMethod: LeftclawPayment | null;
+  txHash: string | null;
+  postedAt: number;
+  postedBy: string | null;
+};
+
 export type LeftclawState = {
   phase: LeftclawPhase;
   serviceTypeId: LeftclawServiceId | null;
@@ -697,6 +707,8 @@ export type LeftclawState = {
   jobUrl: string | null;
   txHash: string | null;
   error: string | null;
+  /** Newest-first list of jobs posted in this room (survives reset/reload). */
+  history: LeftclawJobRecord[];
 };
 
 const DEFAULT_LEFTCLAW_STATE: LeftclawState = {
@@ -711,6 +723,7 @@ const DEFAULT_LEFTCLAW_STATE: LeftclawState = {
   jobUrl: null,
   txHash: null,
   error: null,
+  history: [],
 };
 
 // --- Transcript TLDR --------------------------------------------------------
@@ -1246,6 +1259,8 @@ export type PeerMeshState = {
   leftclawError: (message: string) => void;
   /** Reset the Hire app back to an editable empty form for the room. */
   leftclawReset: () => void;
+  /** Wipe the room's posted-jobs history list. */
+  leftclawClearHistory: () => void;
   /** Shared "catch me up" TLDR for the Transcript app. Status + summary
    *  are broadcast to every peer, so one click recaps the whole room.
    *  See tldr-state.ts on the relay. */
@@ -2341,6 +2356,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       method: "DELETE",
       credentials: "include",
     }).catch(err => console.warn("leftclawReset failed", err));
+  }, [slug]);
+  const leftclawClearHistory = useCallback(() => {
+    fetch(withSlug(`${RELAY_HTTP_URL}/v1/leftclaw/history`, slug), {
+      method: "DELETE",
+      credentials: "include",
+    }).catch(err => console.warn("leftclawClearHistory failed", err));
   }, [slug]);
 
   // "Catch me up" — ask the relay to summarize the recent transcript. The
@@ -3706,6 +3727,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     leftclawDone,
     leftclawError,
     leftclawReset,
+    leftclawClearHistory,
     tldrState,
     requestTldr,
     qrState,

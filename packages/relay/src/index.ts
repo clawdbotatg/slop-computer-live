@@ -3434,6 +3434,18 @@ app.post<{ Body: { jobId?: unknown; jobUrl?: unknown; txHash?: unknown } }>(
         : `${LEFTCLAW_BASE}/jobs/${jobId}`;
     const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : null;
     const before = room.leftclaw.current().state;
+    // Prepend to the room's posted-jobs history (dedup by jobId, capped) so
+    // the link stays reachable after "Post another" / closing the app.
+    const record = {
+      jobId,
+      jobUrl,
+      serviceTypeId: before.serviceTypeId,
+      paymentMethod: before.paymentMethod,
+      txHash,
+      postedAt: Date.now(),
+      postedBy: startedByLabel(a),
+    };
+    const history = [record, ...before.history.filter(h => h.jobId !== jobId)].slice(0, 50);
     const next = room.leftclaw.setPatch({
       phase: "done",
       step: null,
@@ -3442,6 +3454,7 @@ app.post<{ Body: { jobId?: unknown; jobUrl?: unknown; txHash?: unknown } }>(
       jobUrl,
       txHash,
       error: null,
+      history,
     });
     // Narrate into the transcript (archive/poll row, not a caption).
     const label = LEFTCLAW_SERVICE_LABEL[before.serviceTypeId ?? 0] ?? "job";
@@ -3470,6 +3483,14 @@ app.delete("/v1/leftclaw", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const room = roomFromReq(req);
   const next = room.leftclaw.reset();
+  return { ok: true, state: next };
+});
+
+app.delete("/v1/leftclaw/history", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const next = room.leftclaw.clearHistory();
   return { ok: true, state: next };
 });
 

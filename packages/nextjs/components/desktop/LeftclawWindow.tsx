@@ -6,7 +6,7 @@ import { parseAbi, parseEventLogs } from "viem";
 import { base } from "viem/chains";
 import { useAccount, usePublicClient, useSignMessage, useSwitchChain, useWalletClient, useWriteContract } from "wagmi";
 import { Button, LoadingBar } from "~~/components/ui";
-import type { LeftclawPayment, LeftclawServiceId, PeerMeshState } from "~~/hooks/usePeerMesh";
+import type { LeftclawJobRecord, LeftclawPayment, LeftclawServiceId, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 
@@ -61,6 +61,105 @@ const PANEL_BG = "#0a061a";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const CYAN = "var(--slop-cyan, #38f9f9)";
 const BORDER = "1px solid rgba(255,62,201,0.25)";
+
+const serviceLabel = (id: LeftclawServiceId | null) => SERVICES.find(s => s.id === id)?.label ?? "Job";
+
+const timeAgo = (ts: number) => {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+
+// Persisted, newest-first list of jobs posted in this room — the relay keeps
+// it in leftclaw.json so the links stay reachable after "Post another" or
+// closing/reopening the app. Shown under both the form and the done screen.
+const HistoryList = ({ jobs, onClear }: { jobs: LeftclawJobRecord[]; onClear: () => void }) => {
+  if (!jobs.length) return null;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ fontSize: 11, color: CYAN, letterSpacing: 1, textTransform: "uppercase" }}>
+          Posted jobs ({jobs.length})
+        </div>
+        <button
+          onClick={onClear}
+          title="Clear history"
+          style={{
+            cursor: "pointer",
+            background: "transparent",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: 4,
+            color: "rgba(255,255,255,0.5)",
+            fontSize: 10,
+            padding: "2px 8px",
+          }}
+        >
+          clear
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {jobs.map(j => (
+          <div
+            key={j.jobId}
+            style={{
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 6,
+              padding: "8px 10px",
+              background: "rgba(255,255,255,0.02)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontWeight: 700, fontSize: 12, color: ACCENT }}>{serviceLabel(j.serviceTypeId)}</span>
+              <a
+                href={j.jobUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: CYAN, fontSize: 12, fontWeight: 600 }}
+              >
+                #{j.jobId} ↗
+              </a>
+              <span style={{ marginLeft: "auto", fontSize: 10, color: "rgba(255,255,255,0.4)" }}>
+                {timeAgo(j.postedAt)}
+              </span>
+            </div>
+            <a
+              href={j.jobUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "rgba(56,249,249,0.7)", fontSize: 11, wordBreak: "break-all" }}
+            >
+              {j.jobUrl}
+            </a>
+            <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "rgba(255,255,255,0.4)" }}>
+              {j.paymentMethod && <span>{j.paymentMethod === "cv" ? "CV" : "USDC"}</span>}
+              {j.txHash && (
+                <a
+                  href={`https://basescan.org/tx/${j.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "rgba(255,255,255,0.5)" }}
+                >
+                  tx ↗
+                </a>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const st = mesh.leftclawState;
@@ -269,6 +368,9 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
             </Button>
           </div>
         </div>
+        <div style={{ textAlign: "left" }}>
+          <HistoryList jobs={st.history} onClear={() => mesh.leftclawClearHistory()} />
+        </div>
       </div>
     );
   }
@@ -409,6 +511,7 @@ export const LeftclawWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           </Button>
         )}
       </div>
+      <HistoryList jobs={st.history} onClear={() => mesh.leftclawClearHistory()} />
     </div>
   );
 };
