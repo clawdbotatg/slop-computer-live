@@ -1496,7 +1496,26 @@ app.post<{ Body: { text?: unknown } }>("/v1/chyron", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!a.isHost) return reply.code(403).send({ error: "host-only" });
-  const state = roomFromReq(req).chyron.setText(req.body?.text);
+  const room = roomFromReq(req);
+  const before = room.chyron.getState().text;
+  const state = room.chyron.setText(req.body?.text);
+  // Narrate only a real change (setText no-ops on identical text). Setting
+  // the lower-third banner is a deliberate, on-screen host act — it belongs
+  // in the archive next to the speech it's captioning.
+  if (state.text !== before) {
+    const who = a.session;
+    room.transcript.appendAction({
+      kind: "chyron",
+      address: who.address,
+      handle: who.handle,
+      anonId: who.anonId ?? null,
+      text: state.text
+        ? `📺 ${actorName(who)} set the chyron: “${state.text}”`
+        : `📺 ${actorName(who)} cleared the chyron`,
+      meta: { text: state.text },
+      source: a.via === "bearer" ? "agent" : "live",
+    });
+  }
   return { ok: true, state };
 });
 

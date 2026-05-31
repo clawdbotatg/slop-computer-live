@@ -14,11 +14,18 @@ const UNDOCK_DRAG_THRESHOLD = 24;
 // Movement (px) below which a docked press is a click (→ restore), not a
 // drag — used to decide whether to swallow the trailing click.
 const DOCK_DRAG_EPS = 3;
-// Dragging a normal window down until the CURSOR enters this bottom band
-// (px from the dock edge) drops it into the minimized pill on release —
-// the mirror of drag-up-to-restore. Cursor-based, not window-based: bounds
-// clamp a tall window so it can't reach the bottom, but the cursor can.
-const DOCK_SNAP_BAND = 56;
+// Dragging a normal window DOWN so its bottom edge passes its on-screen
+// resting spot (bottom flush with the dock) by more than this drops it
+// into the minimized pill on release — the mirror of drag-up-to-restore.
+// Measured against the window's lowest resting y, NOT the cursor: the
+// cursor sits on the titlebar at the TOP of the window, so a cursor-band
+// test made a tall window impossible to dock and demanded a huge drag for
+// short ones. Overshoot is `max(MIN px, FRAC × height)` so the gesture
+// feels the same regardless of window size: a small overshoot just snaps
+// the window fully back on-screen (a little wobble near the bottom won't
+// minimize), a bigger one means "drop it."
+const DOCK_DROP_OVERSHOOT_MIN = 50;
+const DOCK_DROP_OVERSHOOT_FRAC = 0.18;
 
 export type WindowProps = {
   title: string;
@@ -175,6 +182,10 @@ export const Window = ({
     const grabDX = Math.min(Math.max(startX - pillX, 8), restoredW - 8);
     let restored = false;
     let moved = false;
+    // Track the last position we drove the restored window to, so `finish`
+    // can snap it fully on-screen on release.
+    let lastNx = pillX;
+    let lastNy = dockedY;
 
     const onMouseMove = (ev: MouseEvent) => {
       const dx = ev.clientX - startX;
@@ -184,13 +195,13 @@ export const Window = ({
       if (!restored && draggedUp > UNDOCK_DRAG_THRESHOLD) {
         // Cross the threshold → restore full-size, titlebar under cursor.
         restored = true;
-        const nx = ev.clientX - grabDX;
-        const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
+        lastNx = ev.clientX - grabDX;
+        lastNy = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
         // Drive position via onResize, NOT onMove: SlotWindow's onMove
         // closure still carries the docked 200×36 size captured at
         // mousedown, so calling it here would re-minimize us every frame.
         // onResize takes explicit dims, so it keeps us full-size.
-        onResize?.({ x: nx, y: ny, width: restoredW, height: restoredH });
+        onResize?.({ x: lastNx, y: lastNy, width: restoredW, height: restoredH });
         setSavedRect(null);
         setMode("normal");
         return;
@@ -198,9 +209,9 @@ export const Window = ({
       if (restored) {
         // Keep the restored window glued to the cursor — still via onResize
         // (full dims) so each frame doesn't snap back to the docked size.
-        const nx = ev.clientX - grabDX;
-        const ny = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
-        onResize?.({ x: nx, y: ny, width: restoredW, height: restoredH });
+        lastNx = ev.clientX - grabDX;
+        lastNy = Math.max(insets.top, ev.clientY - TITLEBAR_HEIGHT / 2);
+        onResize?.({ x: lastNx, y: lastNy, width: restoredW, height: restoredH });
       } else {
         // Still docked → slide horizontally, stay pinned to the dock edge.
         // (onMove's docked 200×36 size is correct while we're docked.)
@@ -216,6 +227,19 @@ export const Window = ({
       // also toggle restore). A no-move press leaves this false and falls
       // through to handleDockClick → restore.
       dockSuppressClickRef.current = moved;
+      if (restored) {
+        // Just undocked → make sure the freshly-restored window lands fully
+        // on-screen, not hanging off the bottom after a minimal pull-up
+        // (its titlebar can be near the dock edge with the body below it).
+        // Mirror of onDragStop's snap-back clamp.
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const cx = Math.min(Math.max(lastNx, 0), Math.max(0, vw - restoredW));
+        const cy = Math.min(Math.max(lastNy, insets.top), Math.max(insets.top, vh - insets.bottom - restoredH));
+        if (cx !== lastNx || cy !== lastNy) {
+          onResize?.({ x: cx, y: cy, width: restoredW, height: restoredH });
+        }
+      }
     };
 
     window.addEventListener("mousemove", onMouseMove);
@@ -388,20 +412,23 @@ export const Window = ({
         overflow: "hidden",
       }}
       onMouseDown={onFocus}
-      onDragStop={(e, d) => {
+      onDragStop={(_e, d) => {
         // react-rnd fires onDragStop on every mouseup, even when the user
         // didn't actually move the window (e.g. a click on a titlebar dot).
         // Only treat this as a manual move if something changed — otherwise
         // we'd nuke the saved restore-rect on every click of max/min.
         if (d.x === x && d.y === y) return;
-        // Dropped with the cursor in the bottom dock band → minimize (the
-        // mirror of drag-up-to-restore). Read the cursor's Y from the
-        // mouseup event, not the window's: the window can now slide below
-        // the bottom, but it's the cursor reaching the dock band that
-        // signals the deliberate "dock it" gesture. Pill lands at drop x.
-        const cursorY =
-          "clientY" in e ? (e as MouseEvent).clientY : ((e as TouchEvent).changedTouches?.[0]?.clientY ?? d.y);
-        if (!isDocked && viewportH > 0 && cursorY >= viewportH - insets.bottom - DOCK_SNAP_BAND) {
+        const vw = typeof window !== "undefined" ? window.innerWidth : width;
+        const vh = viewportH || (typeof window !== "undefined" ? window.innerHeight : height);
+        // Lowest the window can rest with its bottom flush against the dock
+        // edge (clamped so it never tucks under the top menubar). How far the
+        // drop dragged the window BELOW that resting spot is the dock gesture.
+        const maxRestY = Math.max(insets.top, vh - insets.bottom - height);
+        const overshoot = d.y - maxRestY;
+        const dropThreshold = Math.max(DOCK_DROP_OVERSHOOT_MIN, height * DOCK_DROP_OVERSHOOT_FRAC);
+        // Dragged the bottom edge well past its resting spot → minimize (the
+        // mirror of drag-up-to-restore). Pill lands at the drop x.
+        if (!isDocked && vh > 0 && overshoot > dropThreshold) {
           handleMinimize(d.x);
           return;
         }
@@ -409,9 +436,7 @@ export const Window = ({
         // a drag can leave the window partly past any edge; clamp so the
         // titlebar never hides under the menubar (top) or off the bottom,
         // and at least part stays grabbable horizontally.
-        const vw = typeof window !== "undefined" ? window.innerWidth : width;
-        const vh = viewportH || (typeof window !== "undefined" ? window.innerHeight : height);
-        const clampedY = Math.min(Math.max(d.y, insets.top), Math.max(insets.top, vh - insets.bottom - height));
+        const clampedY = Math.min(Math.max(d.y, insets.top), maxRestY);
         const clampedX = Math.min(Math.max(d.x, 0), Math.max(0, vw - width));
         onMove?.({ x: clampedX, y: clampedY });
         // Dragging out of max → revert to normal. (Dragging is disabled

@@ -77,6 +77,7 @@ export const SKILL_TOPICS = [
   "files",
   "transcript",
   "research",
+  "leftclaw",
   "news",
   "feeds",
   "wallet",
@@ -206,6 +207,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`cardJob\` | \`CardJob \\| null\` | In-flight card-generation job (this room) |
 | \`cardTitle\` | \`CardTitle \\| null\` | Shared title overlay text + position |
 | \`researchState\` | \`ResearchSnapshot\` | Per-room shared guest-research dossier + phase machine (see \`/v1/skill/research\`) |
+| \`leftclawState\` | \`LeftclawSnapshot\` | Per-room "Hire" job-posting machine + posted-jobs history (see \`/v1/skill/leftclaw\`) |
 | \`qrState\` | \`{ text, logoDataUrl } \\| null\` | Room-shared QR code content (see \`/v1/skill/windows\`) |
 | \`pongState\` | \`PongSnapshot\` | Live pong match for this room (see \`/v1/skill/pong\`) |
 | \`wormState\` | \`WormSnapshot\` | Live worm (multiplayer snake) match for this room (see \`/v1/skill/worm\`) |
@@ -309,6 +311,7 @@ rules and recommended loops that aren't repeated here.
 | **Files** (drag-and-drop desktop files) | \`GET ${BASE}/v1/skill/files\` |  |
 | **Transcript** (live STT — read for TLDR + post + clear) | \`GET ${BASE}/v1/skill/transcript\` | core for AI use cases |
 | **Research** (AI dossier for a guest — name, socials → questions) | \`GET ${BASE}/v1/skill/research\` | AI-backed, key use case |
+| **Hire / Leftclaw** (post Research/Build/Audit jobs to Leftclaw Services) | \`GET ${BASE}/v1/skill/leftclaw\` | read + narrate; posting needs a browser wallet |
 | **News** (interleaved + AI-curated crypto/AI/tweets/Polymarket) | \`GET ${BASE}/v1/skill/news\` | read-only |
 | **Feeds** (ticker / headlines / timeline / polymarket details) | \`GET ${BASE}/v1/skill/feeds\` | read-only + host refresh |
 | **Wallet** (per-room multisig + tx queue) | \`GET ${BASE}/v1/skill/wallet\` | mostly read for agents |

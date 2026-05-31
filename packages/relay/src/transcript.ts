@@ -23,9 +23,10 @@ const MAX_HISTORY = 500;
 // What produced a segment. Absent ⇒ a spoken line (the original behaviour);
 // the rest are in-room *actions* narrated by the relay (someone played a
 // track, uploaded a file, proposed a tx, made a notable chess move, won at
-// pong). Action rows are archive/poll-only — see room.ts, they're kept out
-// of the live `transcript_seg` caption broadcast.
-export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm";
+// pong, set the on-screen chyron banner, added/removed a desktop app).
+// Action rows are archive/poll-only — see room.ts, they're kept out of the
+// live `transcript_seg` caption broadcast.
+export type TranscriptKind = "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm" | "chyron" | "app";
 
 // Structured bits for an action row (track index, filename, tx target, SAN,
 // pong score, …). The rendered one-liner lives in `text`; this is the raw
