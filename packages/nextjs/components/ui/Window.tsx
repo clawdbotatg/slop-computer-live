@@ -15,6 +15,14 @@ const UNDOCK_DRAG_THRESHOLD = 24;
 // not a drag-reposition.
 const DOCK_DRAG_EPS = 3;
 
+// Viewport Y of a mouse/touch event. mouseup carries it on the event;
+// touchend carries it on changedTouches (touches is empty by then).
+const pointerY = (e: MouseEvent | TouchEvent): number => {
+  if ("changedTouches" in e && e.changedTouches.length) return e.changedTouches[0].clientY;
+  if ("touches" in e && e.touches.length) return e.touches[0].clientY;
+  return (e as MouseEvent).clientY;
+};
+
 export type WindowProps = {
   title: string;
   x?: number;
@@ -92,6 +100,11 @@ export const Window = ({
   // restore the window. Reset at the start of every gesture so it can't
   // get stuck across gestures.
   const dockSuppressClickRef = useRef(false);
+  // Pointer Y (viewport px) where a docked drag began. We lock the docked
+  // drag to the X axis (the pill physically can't leave the dock edge), so
+  // "pull up to restore" is detected from the raw pointer delta instead of
+  // react-rnd's reported y — which is locked and would never change.
+  const dockStartPointerYRef = useRef(0);
 
   const insets = {
     top: containerInset?.top ?? 0,
@@ -267,6 +280,11 @@ export const Window = ({
       // Docked windows ARE draggable (slide sideways / drag up to open) —
       // the docked-vs-normal behavior is sorted out in onDragStop.
       disableDragging={false}
+      // While docked, lock dragging to the X axis so the pill physically
+      // stays glued to the dock edge — it can only slide left/right, never
+      // lift off. "Pull up to restore" is detected separately from the raw
+      // pointer delta in onDragStart/onDragStop, not from y movement.
+      dragAxis={isDocked ? "x" : "both"}
       // Only allow resizing from the bottom + right edges and the
       // bottom-right grip. react-rnd's default top/left/topLeft/topRight
       // handles are positioned at -10px and span 20px, so their inner
@@ -295,15 +313,17 @@ export const Window = ({
       }}
       onMouseDown={onFocus}
       // Fresh gesture — clear any stale click-suppression from a prior
-      // drag whose synthetic click never landed.
-      onDragStart={() => {
+      // drag whose synthetic click never landed, and record the pointer's
+      // start Y so the docked branch below can measure a real pull-up.
+      onDragStart={e => {
         dockSuppressClickRef.current = false;
+        dockStartPointerYRef.current = pointerY(e as MouseEvent | TouchEvent);
       }}
-      onDragStop={(_e, d) => {
+      onDragStop={(e, d) => {
         if (isDocked) {
-          // While docked the controlled position is { x, y: dockedY }, so
-          // measure the drag against those, not the synced slot y.
-          const draggedUp = dockedY - d.y;
+          // Drag is X-locked, so the pill never moved vertically. Measure
+          // the pull-up from the raw pointer delta (start → release).
+          const draggedUp = dockStartPointerYRef.current - pointerY(e as MouseEvent | TouchEvent);
           const movedX = Math.abs(d.x - x);
           // Genuine drag (vs. a click): suppress the trailing click so it
           // can't double-fire restore / un-minimize a horizontal slide.
@@ -311,12 +331,11 @@ export const Window = ({
             dockSuppressClickRef.current = true;
           }
           if (draggedUp > UNDOCK_DRAG_THRESHOLD) {
-            // Dragged up far enough → pop back open.
+            // Pulled up far enough → pop back open.
             restore();
           } else if (movedX > DOCK_DRAG_EPS) {
-            // Mostly-horizontal → slide the pill, stay docked. y snaps
-            // back to the dock edge (the controlled position re-applies
-            // dockedY on the next render).
+            // Horizontal slide → reposition the pill, stay docked. y stays
+            // pinned to the dock edge (it was X-locked the whole drag).
             onMove?.({ x: d.x, y: dockedY });
           }
           // Pure click (no real movement) falls through to handleDockClick.
