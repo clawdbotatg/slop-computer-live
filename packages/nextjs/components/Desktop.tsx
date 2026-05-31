@@ -218,10 +218,18 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["glossary", "notes", "todo", "qr"],
   ["nifty-ink", "abi-ninja", "gas", "news"],
   ["browser", "wallet", "ens", "music"],
-  ["pong", "chess", "worm"],
+  ["pong", "chess", "worm", "leftclaw"],
 ];
 
-function defaultIconPosition(appId: string, i: number): { x: number; y: number } {
+// Is this app placed explicitly in the curated grid above?
+const isCuratedIcon = (id: string): boolean => AUTO_ARRANGE_COLUMNS.some(c => c.includes(id));
+
+// `unlistedRank` is the 0-based position of this app among the apps NOT in
+// the grid above (curated apps pass 0 — it's ignored for them). Unlisted
+// apps take the next free slot, continuing column-major right after the
+// last curated column and wrapping every ICONS_PER_COL rows — so a newly
+// added app lands at the bottom of the last column, NOT dumped mid-screen.
+function defaultIconPosition(appId: string, unlistedRank: number): { x: number; y: number } {
   for (let colIdx = 0; colIdx < AUTO_ARRANGE_COLUMNS.length; colIdx++) {
     const rowIdx = AUTO_ARRANGE_COLUMNS[colIdx].indexOf(appId);
     if (rowIdx !== -1) {
@@ -231,9 +239,11 @@ function defaultIconPosition(appId: string, i: number): { x: number; y: number }
       };
     }
   }
-  const cascadeIdx = AUTO_ARRANGE_COLUMNS.length * ICONS_PER_COL + i;
-  const col = Math.floor(cascadeIdx / ICONS_PER_COL);
-  const row = cascadeIdx % ICONS_PER_COL;
+  const lastCol = AUTO_ARRANGE_COLUMNS.length - 1;
+  const lastColLen = AUTO_ARRANGE_COLUMNS[lastCol]!.length;
+  const flat = lastCol * ICONS_PER_COL + lastColLen + unlistedRank;
+  const col = Math.floor(flat / ICONS_PER_COL);
+  const row = flat % ICONS_PER_COL;
   return {
     x: ICON_DEFAULT_X + col * ICON_COL_PITCH,
     y: ICON_DEFAULT_Y0 + row * ICON_ROW_PITCH,
@@ -1314,8 +1324,9 @@ function DesktopInner({ slug }: { slug: string }) {
   // lockstep: clicking Auto Arrange always produces the layout a brand-new
   // room would have shown.
   const autoArrangeIcons = useCallback(() => {
-    apps.forEach((app, i) => {
-      const { x, y } = defaultIconPosition(app.id, i);
+    let unlistedRank = 0;
+    apps.forEach(app => {
+      const { x, y } = defaultIconPosition(app.id, isCuratedIcon(app.id) ? 0 : unlistedRank++);
       mesh.updateSlot({ id: `icon-${app.id}`, x, y });
     });
   }, [apps, mesh]);
@@ -2884,7 +2895,13 @@ function DesktopInner({ slug }: { slug: string }) {
               const hidden = hintActive && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
               if (hidden) return null;
               const slotId = `icon-${app.id}`;
-              const fallback = defaultIconPosition(app.id, i);
+              // Match autoArrangeIcons' unlisted-rank counting so a new
+              // (non-grid) app's fallback slot is identical whether it
+              // arrives via first paint or Auto Arrange.
+              const unlistedRank = isCuratedIcon(app.id)
+                ? 0
+                : apps.slice(0, i).filter(a => !isCuratedIcon(a.id)).length;
+              const fallback = defaultIconPosition(app.id, unlistedRank);
               const slot = mesh.slots[slotId] ?? {
                 id: slotId,
                 x: fallback.x,
