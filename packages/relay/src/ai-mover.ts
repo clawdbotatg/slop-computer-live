@@ -121,8 +121,52 @@ function buildSystemPrompt(ai: ReturnType<typeof getAIPlayer> & object, color: "
     `  - NO analysis, NO commentary, NO "I'll play", NO explanation.`,
     `  - Do not echo the position. Do not list candidates.`,
     `  - Just the move. One token. Done.`,
+    ``,
+    // Few-shot framing: the next two turns are examples from UNRELATED
+    // games (both with ${color} to move) so the model locks onto the exact
+    // "position in → one bare UCI move out" shape. Chess-LLM research shows
+    // this few-shot priming is the single biggest lever for cutting illegal
+    // / unparseable replies. The real position arrives in the final turn —
+    // always authoritative via its FEN; the examples are not this game.
+    `The next 2 turns are FORMAT EXAMPLES from other games. Your actual game is the LAST position — play from its FEN.`,
   ].join("\n");
   return ai.systemPromptExtra ? `${base}\n\n${ai.systemPromptExtra}` : base;
+}
+
+// Two opening example turns per side, used as few-shot priming. Each is a
+// real, legal position with the model's color to move and a sound reply
+// in UCI — teaching the reply format without nudging toward any line in
+// the actual game. (extractMove still validates the real move against the
+// live FEN, so a confused model is caught + retried regardless.)
+type ShotEx = { fen: string; history: string[]; answer: string };
+const FEW_SHOT: Record<"white" | "black", ShotEx[]> = {
+  white: [
+    { fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", history: [], answer: "e2e4" },
+    {
+      fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
+      history: ["e4", "e5"],
+      answer: "g1f3",
+    },
+  ],
+  black: [
+    { fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1", history: ["e4"], answer: "c7c5" },
+    {
+      fen: "rnbqkb1r/pppppppp/5n2/8/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2",
+      history: ["d4", "Nf6", "c4"],
+      answer: "g7g6",
+    },
+  ],
+};
+
+/** Few-shot message pairs (user position → assistant move) for the side
+ *  to move. Inserted between the system prompt and the real position. */
+function buildFewShot(color: "white" | "black"): { role: "user" | "assistant"; content: string }[] {
+  const out: { role: "user" | "assistant"; content: string }[] = [];
+  for (const ex of FEW_SHOT[color]) {
+    out.push({ role: "user", content: buildUserPrompt(ex.fen, ex.history, [], false) });
+    out.push({ role: "assistant", content: ex.answer });
+  }
+  return out;
 }
 
 function buildUserPrompt(fen: string, history: string[], legal: string[], strict: boolean): string {
@@ -165,6 +209,8 @@ async function askForMove(
     model: ai.model,
     messages: [
       { role: "system" as const, content: buildSystemPrompt(ai, color) },
+      // Few-shot format priming (2 example turns, same side to move).
+      ...buildFewShot(color),
       { role: "user" as const, content: buildUserPrompt(fen, history, legal, strict) },
     ],
     // Reasoning models (Kimi K2, MiniMax M2.7) emit hundreds of tokens

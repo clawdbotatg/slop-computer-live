@@ -14,6 +14,11 @@ const UNDOCK_DRAG_THRESHOLD = 24;
 // Movement (px) below which a docked press is a click (→ restore), not a
 // drag — used to decide whether to swallow the trailing click.
 const DOCK_DRAG_EPS = 3;
+// Dragging a normal window down until the CURSOR enters this bottom band
+// (px from the dock edge) drops it into the minimized pill on release —
+// the mirror of drag-up-to-restore. Cursor-based, not window-based: bounds
+// clamp a tall window so it can't reach the bottom, but the cursor can.
+const DOCK_SNAP_BAND = 56;
 
 export type WindowProps = {
   title: string;
@@ -232,7 +237,10 @@ export const Window = ({
     setMode("max");
   };
 
-  const handleMinimize = () => {
+  // dockXOverride: where to place the pill horizontally (used by
+  // drag-down-to-minimize so the pill lands at the drop x). Omitted for
+  // the minimize button, which keeps the window's current x.
+  const handleMinimize = (dockXOverride?: number) => {
     onMinimize?.();
     if (mode === "dock") {
       restore();
@@ -245,10 +253,11 @@ export const Window = ({
     // Width also collapses to ~the docked title's natural display size
     // (~200px). The body div isn't rendered in dock mode below, so
     // size here is what react-rnd's wrapper actually paints.
-    let dockX = x;
-    if (mode === "max" && savedRect) {
+    let dockX = dockXOverride ?? x;
+    if (dockXOverride === undefined && mode === "max" && savedRect) {
       dockX = savedRect.x;
-    } else if (mode === "normal") {
+    }
+    if (mode === "normal") {
       setSavedRect({ x, y, width, height });
     }
     const dockW = 200;
@@ -375,12 +384,23 @@ export const Window = ({
         overflow: "hidden",
       }}
       onMouseDown={onFocus}
-      onDragStop={(_e, d) => {
+      onDragStop={(e, d) => {
         // react-rnd fires onDragStop on every mouseup, even when the user
         // didn't actually move the window (e.g. a click on a titlebar dot).
         // Only treat this as a manual move if something changed — otherwise
         // we'd nuke the saved restore-rect on every click of max/min.
         if (d.x === x && d.y === y) return;
+        // Dropped with the cursor in the bottom dock band → minimize (the
+        // mirror of drag-up-to-restore). Read the cursor's Y from the
+        // mouseup event, not the window's: bounds clamp a tall window so it
+        // can't reach the bottom, but the cursor can be shoved down there
+        // as a deliberate "dock it" gesture. The pill lands at the drop x.
+        const cursorY =
+          "clientY" in e ? (e as MouseEvent).clientY : ((e as TouchEvent).changedTouches?.[0]?.clientY ?? d.y);
+        if (!isDocked && viewportH > 0 && cursorY >= viewportH - insets.bottom - DOCK_SNAP_BAND) {
+          handleMinimize(d.x);
+          return;
+        }
         // Clamp y so the titlebar can't slide under the menubar — the
         // <Rnd bounds="parent"> constraint binds to the wrapper's
         // bounding rect (which still spans 0..viewportH), so without
