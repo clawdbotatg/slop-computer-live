@@ -131,27 +131,30 @@ export function layoutFor(
   // both portrait phones and squat OBS windows look sane.
   const singleTileH = Math.min(H * 0.6, (W * 9) / 16);
 
+  // For the single-tile case we also center the tile vertically so the
+  // icon backdrop peeks through ABOVE and below — "tiny floating
+  // video on the desktop" vibe. yOffset is 0 for stacks (tile 0 at
+  // the top), recentred for the single-tile case.
   if (kind === "all-people") {
-    const h = people.length === 1 ? singleTileH : H / people.length;
-    // Caption sits at the first seam (between tile 0 and tile 1) so
-    // the words don't cover the top talker's face. Single-tile case
-    // drops it just below the (capped) tile — chip centered on the
-    // boundary, partially over the tile's bottom edge, partially
-    // over the desktop backdrop below.
-    const captionY = h;
+    const single = people.length === 1;
+    const h = single ? singleTileH : H / people.length;
+    const yOffset = single ? (H - h) / 2 : 0;
+    const captionY = yOffset + h;
     return {
       kind,
-      boxes: people.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
+      boxes: people.map((pub, i) => boxFor(pub, 0, yOffset + i * h, W, h)),
       captionY,
     };
   }
 
   if (kind === "screen-hero") {
-    const h = screens.length === 1 ? singleTileH : H / screens.length;
+    const single = screens.length === 1;
+    const h = single ? singleTileH : H / screens.length;
+    const yOffset = single ? (H - h) / 2 : 0;
     return {
       kind,
-      boxes: screens.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
-      captionY: h,
+      boxes: screens.map((pub, i) => boxFor(pub, 0, yOffset + i * h, W, h)),
+      captionY: yOffset + h,
     };
   }
 
