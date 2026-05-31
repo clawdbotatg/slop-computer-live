@@ -1,11 +1,11 @@
 // "Catch me up" summarizer for the Transcript app's TLDR button. Takes
 // the recent transcript segments and asks Claude for a few punchy lines
-// covering what a newcomer missed. Shares the same Anthropic plumbing as
-// glossary-ai.ts / wallet-ai.ts and falls back to a useful-but-dumb
-// response when ANTHROPIC_API_KEY isn't set so local dev keeps working.
+// covering what a newcomer missed. Routes through the Bankr LLM gateway
+// (bankr-llm.ts) — no web search needed, so it bills through Bankr instead
+// of a raw Anthropic key. Falls back to a useful-but-dumb response when
+// BANKR_LLM_API_KEY isn't set so local dev keeps working.
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+import { bankrChat, hasBankrLlm } from "./bankr-llm.js";
 
 // Cap how much transcript we feed the model. The relay keeps a 500-row
 // ring; even a busy room rarely needs more than the last chunk to give a
@@ -21,7 +21,7 @@ export type TldrSegment = {
 };
 
 function fallbackTldr(): string {
-  return "no AI key set — set ANTHROPIC_API_KEY on the relay for an AI-written TLDR.";
+  return "no AI key set — set BANKR_LLM_API_KEY on the relay for an AI-written TLDR.";
 }
 
 export type TldrResult = {
@@ -50,7 +50,7 @@ export async function summarizeTranscript(segments: TldrSegment[]): Promise<Tldr
   if (!transcript.trim()) {
     return { summary: "Nothing's been said yet — the transcript is empty so far.", used };
   }
-  if (!ANTHROPIC_API_KEY) return { summary: fallbackTldr(), used };
+  if (!hasBankrLlm()) return { summary: fallbackTldr(), used };
 
   const prompt = `You are catching up a viewer who just walked into a live show / call. Below is the recent transcript (speech + a few narrated room actions like file uploads or chess moves).
 
@@ -59,32 +59,9 @@ Write a TLDR of what they missed: 3–5 short, punchy bullet points, each on its
 TRANSCRIPT:
 ${transcript}`.trim();
 
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 600,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { summary: `(AI TLDR failed: ${res.status}) ${text.slice(0, 120)}`, used };
-    }
-    const json = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-    const out = (json.content ?? [])
-      .filter(c => c.type === "text")
-      .map(c => c.text ?? "")
-      .join("\n")
-      .trim();
-    return { summary: out || fallbackTldr(), used };
-  } catch (err) {
-    return { summary: `(AI TLDR error: ${String(err).slice(0, 100)})`, used };
+  const res = await bankrChat([{ role: "user", content: prompt }], { maxTokens: 600 });
+  if (!res.ok) {
+    return { summary: `(AI TLDR failed: ${res.error})`, used };
   }
+  return { summary: res.text || fallbackTldr(), used };
 }

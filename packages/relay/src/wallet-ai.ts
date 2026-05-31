@@ -7,8 +7,11 @@
 // The returned string is a JSON object (see TxSummaryCard schema in
 // the prompt below) — the client parses it; if parsing fails it
 // renders the raw string as plain text. Falls back to a calldata-only
-// plain-text string when ANTHROPIC_API_KEY is unset or the request
+// plain-text string when BANKR_LLM_API_KEY is unset or the request
 // fails — so local dev without a key still surfaces something useful.
+//
+// Routes through the Bankr LLM gateway (bankr-llm.ts) — no web search
+// needed, so it bills through Bankr rather than a raw Anthropic key.
 //
 // Token flow is GROUND TRUTH from on-chain simulation, not an AI guess.
 // We `eth_simulateV1` the call(s) as the multisig (from=multisig), decode
@@ -24,9 +27,7 @@
 import { formatUnits } from "viem";
 import { simulateTransfers, type SimTransfer } from "./wallet-data.js";
 import { NATIVE_ADDRESS, resolveTokenByAddress, type ResolvedToken } from "./wallet-tokens.js";
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+import { bankrChat, hasBankrLlm } from "./bankr-llm.js";
 
 export type SummarizeCall = {
   target: string;
@@ -47,12 +48,12 @@ export type SummarizeArgs = {
 
 function fallbackSummary(args: SummarizeArgs): string {
   if (args.calls && args.calls.length > 0) {
-    return `Batched tx: ${args.calls.length} call${args.calls.length === 1 ? "" : "s"} via execBatchTransaction. (Set ANTHROPIC_API_KEY on the relay for an AI summary.)`;
+    return `Batched tx: ${args.calls.length} call${args.calls.length === 1 ? "" : "s"} via execBatchTransaction. (Set BANKR_LLM_API_KEY on the relay for an AI summary.)`;
   }
   const sel = args.data.length >= 10 ? args.data.slice(0, 10) : "0x";
   const targetShort = `${args.target.slice(0, 10)}…${args.target.slice(-4)}`;
   const valueWei = args.value === "0" ? "no value" : `${args.value} wei`;
-  return `Calls selector ${sel} on ${targetShort} with ${valueWei}. (Set ANTHROPIC_API_KEY on the relay for an AI summary.)`;
+  return `Calls selector ${sel} on ${targetShort} with ${valueWei}. (Set BANKR_LLM_API_KEY on the relay for an AI summary.)`;
 }
 
 // Strip ``` fences, leading "json" tags, and any prose before the
@@ -301,7 +302,7 @@ async function buildSimChips(
 }
 
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
-  if (!ANTHROPIC_API_KEY) return fallbackSummary(args);
+  if (!hasBankrLlm()) return fallbackSummary(args);
 
   // ── Pre-resolve every address we can see in the calldata. This is the
   //    core fix for "swap to CLAWD shows UNI": the AI now sees the
@@ -416,29 +417,11 @@ Rules:
 - Output the JSON object and nothing else. No code fences. No leading or trailing text.`;
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 700,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const res = await bankrChat([{ role: "user", content: prompt }], { maxTokens: 700 });
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return `(AI summary failed: ${res.status}) ${fallbackSummary(args)} — ${text.slice(0, 120)}`;
+      return `(AI summary failed: ${res.error}) ${fallbackSummary(args)}`;
     }
-    const json = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-    const raw = (json.content ?? [])
-      .filter(c => c.type === "text")
-      .map(c => c.text ?? "")
-      .join("\n")
-      .trim();
+    const raw = res.text;
     if (!raw) return fallbackSummary(args);
     const candidate = extractJson(raw);
     let parsed: CardFromAI | null = null;
