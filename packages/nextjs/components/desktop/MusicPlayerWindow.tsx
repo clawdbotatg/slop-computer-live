@@ -101,13 +101,38 @@ export const MusicPlayerWindow = ({
   // release still fires an immediate broadcast as the flush. localStorage
   // seeds the initial value when the shared state is null (relay just
   // restarted, no one playing).
-  const [volumeDraft, setVolumeDraft] = useState(0.7);
+  // Seed synchronously from localStorage in the initializer (not a mount
+  // effect) so the first render already has the persisted value. A mount
+  // effect would leave a window where the persist effect below runs with
+  // the default and clobbers the saved value before the read lands —
+  // exactly how the mute flag used to get wiped on reload. This component
+  // only ever mounts client-side (gated by openWindowIds), so reading
+  // `window` in the initializer is safe and can't hydration-mismatch.
+  const [volumeDraft, setVolumeDraft] = useState<number>(() => {
+    try {
+      const raw = typeof window !== "undefined" ? window.localStorage.getItem(VOLUME_KEY) : null;
+      const parsed = raw ? parseFloat(raw) : NaN;
+      // Floor at 0.1: a stale near-silent value would otherwise put the
+      // god-mode auto-leveler into crush-mode (see setSourceTargetScale
+      // below) the moment music starts, killing playback after ~1s.
+      if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return Math.max(0.1, parsed);
+    } catch {
+      /* ignore */
+    }
+    return 0.7;
+  });
   const [volumeDragging, setVolumeDragging] = useState(false);
   const volumeBroadcastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-user local mute. Doesn't touch the shared volume or playback —
   // just silences this peer's <audio> element so they can step away
   // without making everyone else stop. Persisted across reloads.
-  const [selfMuted, setSelfMuted] = useState(false);
+  const [selfMuted, setSelfMuted] = useState<boolean>(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem(MUTE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   // Smooth display tick — re-render every 100ms while playing so the LCD
   // and seek thumb advance without us having to spam the network.
   const [displayPosition, setDisplayPosition] = useState(0);
@@ -134,28 +159,12 @@ export const MusicPlayerWindow = ({
   const playing = !!ms?.playing;
   const index = ms?.index ?? 0;
 
-  // Seed the volume draft from localStorage so a fresh peer who joins
-  // when the mesh has no music state has a sensible slider position.
-  // Same idea for the per-user mute flag.
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(VOLUME_KEY);
-      if (raw) {
-        const parsed = parseFloat(raw);
-        // Floor at 0.1: a stale near-silent value would otherwise put the
-        // god-mode auto-leveler into crush-mode (see setSourceTargetScale
-        // below) the moment music starts, killing playback after ~1s.
-        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) setVolumeDraft(Math.max(0.1, parsed));
-      }
-      if (window.localStorage.getItem(MUTE_KEY) === "1") setSelfMuted(true);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   // Push the per-user mute into the live audio element + persist.
   // audio.muted is independent of audio.volume — toggling this on
-  // silences playback without changing the shared loudness.
+  // silences playback without changing the shared loudness. selfMuted is
+  // seeded from localStorage in its initializer above, so this effect's
+  // first run already holds the persisted value — it writes the saved
+  // state straight back rather than clobbering it with a default.
   useEffect(() => {
     if (audioRef.current) audioRef.current.muted = selfMuted;
     try {
