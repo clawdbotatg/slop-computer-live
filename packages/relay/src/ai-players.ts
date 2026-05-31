@@ -59,13 +59,22 @@ export type AIPlayerConfig = {
 // The 🤖 from earlier rosters was upgraded to 🧠 / ⚡ so users can
 // see the trade-off in the dropdown without opening a doc.
 //
+// Curation is research-driven (chess-LLM benchmarks: LLM CHESS / Kaggle
+// Game Arena / dubesor). The dominant variable is REASONING: reasoning
+// models win ~45% vs ~0.7% for non-reasoning ones, which mostly lose by
+// emitting ILLEGAL moves, not by bad strategy. Family strength at chess
+// (best→worst): OpenAI GPT-5 reasoning ≳ Grok 4 > Gemini Pro > DeepSeek
+// (volatile) > Claude (only with thinking) > Kimi / GLM / MiniMax / Qwen
+// (weak / no track record). So the 🧠 tier leans on those top families;
+// the ⚡ tier keeps small fast models purely for lively, low-stakes games.
+//
 // Rotated out:
+//   - Kimi K2.6 — the WORST model at the Kaggle chess tournament (lost
+//     every game in under 8 moves, misplacing pieces). Dropped entirely.
 //   - MiniMax M2.7 / M2.7 highspeed — chronically resigned 1–4 moves in
 //   - Venice Uncensored — chatty roleplay model, terrible at chess
 //   - Qwen 3 235B Thinking (Venice) — 20s on opening moves, replaced
 //     with the Instruct (non-thinking) variant of the same family
-//   - Grok 4.20 / Gemini 3.1 Pro (Bankr) — superseded by their Fast
-//     siblings; the slow tier is already covered by Opus + GPT 5.5
 const AI_PLAYERS: AIPlayerConfig[] = [
   // ---- Bankr — ⚡ fast non-reasoning ------------------------------
   // Smoke-tested for actual move latency (a "fast" name in the catalog
@@ -98,14 +107,10 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     authStyle: "x-api-key",
   },
   // ---- Bankr — 🧠 flagship reasoners ------------------------------
-  {
-    id: "bankr-claude-opus-4.7",
-    label: "Claude Opus 4.7 (Bankr) 🧠",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "claude-opus-4.7",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
+  // Ordered by chess-playing track record of the family (strongest first).
+  // GPT-5 reasoning and Grok 4 went 1st/2nd at the Kaggle chess arena;
+  // Gemini Pro is top-3; Opus is strong but only with its reasoning on;
+  // DeepSeek is a capable-but-volatile wildcard (early collapses seen).
   {
     id: "bankr-gpt-5.5",
     label: "GPT 5.5 (Bankr) 🧠",
@@ -115,10 +120,26 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     authStyle: "x-api-key",
   },
   {
-    id: "bankr-kimi-k2.6",
-    label: "Kimi K2.6 (Bankr) 🧠",
+    id: "bankr-grok-4.3",
+    label: "Grok 4.3 (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
-    model: "kimi-k2.6",
+    model: "grok-4.3",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-gemini-3.1-pro",
+    label: "Gemini 3.1 Pro (Bankr) 🧠",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "gemini-3.1-pro",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  {
+    id: "bankr-claude-opus-4.8",
+    label: "Claude Opus 4.8 (Bankr) 🧠",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "claude-opus-4.8",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
@@ -131,14 +152,14 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     authStyle: "x-api-key",
   },
   // ---- Venice — Anthropic via Venice's gateway --------------------
-  // Same models Bankr exposes, slightly more expensive ($6/$30 vs
-  // $5/$25 for Opus 4.7), kept for the comparison + so Venice users
-  // can pit two providers' "Claude Opus" against each other.
+  // Same flagship Bankr exposes, via a second provider — kept so users
+  // can pit two gateways' "Claude Opus 4.8" against each other (latency /
+  // routing differ even though the underlying model is the same).
   {
-    id: "venice-claude-opus-4.7",
-    label: "Claude Opus 4.7 (Venice) 🧠",
+    id: "venice-claude-opus-4.8",
+    label: "Claude Opus 4.8 (Venice) 🧠",
     baseURL: "https://api.venice.ai/api/v1",
-    model: "claude-opus-4-7",
+    model: "claude-opus-4-8",
     envVar: "VENICE_API_KEY",
   },
   {
