@@ -18,12 +18,15 @@ export const metadata = getMetadata({
   description: "Live, interactive desktop podcast at live.slop.computer",
 });
 
-// Mobile/tablet browsers (notably iPad Safari) zoom out ~10% so more
-// of the desktop fits on-screen. Desktop browsers ignore the viewport
-// meta, so this is naturally tablet/phone-only.
+// Phones/tablets aren't a real entry path for slop — but rather than
+// build a full mobile UI, we just zoom the desktop out to ~60% so the
+// whole thing fits on a small screen. With width=device-width the
+// browser reports the (wider) layout viewport, so the desktop lays
+// itself out larger and gets scaled down to fit. Desktop browsers
+// ignore the viewport meta, so this is naturally tablet/phone-only.
 export const viewport: Viewport = {
   width: "device-width",
-  initialScale: 0.9,
+  initialScale: 0.6,
 };
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {

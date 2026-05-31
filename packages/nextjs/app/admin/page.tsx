@@ -83,6 +83,7 @@ type Peer = {
   address: string | null;
   handle: string | null;
   connectedAt?: number;
+  slug?: string;
 };
 
 const formatConnectedAt = (ts?: number) => {
@@ -1595,6 +1596,7 @@ const AdminPage: NextPage = () => {
             <thead>
               <tr style={{ textAlign: "left", color: "var(--slop-text-muted)" }}>
                 <th style={{ padding: "4px 8px" }}>Peer</th>
+                <th style={{ padding: "4px 8px" }}>Room</th>
                 <th style={{ padding: "4px 8px" }}>Identity</th>
                 <th style={{ padding: "4px 8px" }}>Connected</th>
                 <th style={{ padding: "4px 8px" }} />
@@ -1605,6 +1607,9 @@ const AdminPage: NextPage = () => {
                 <tr key={p.id}>
                   <td style={{ padding: "4px 8px" }}>
                     <code>{p.id.slice(0, 8)}</code> · {p.role}
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    {p.slug ? <code>{p.slug}</code> : <span style={{ color: "var(--slop-text-muted)" }}>—</span>}
                   </td>
                   <td style={{ padding: "4px 8px" }}>
                     {p.address ? (

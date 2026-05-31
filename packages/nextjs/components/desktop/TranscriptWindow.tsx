@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SlopAddress } from "~~/components/ui";
-import type { PeerMeshState } from "~~/hooks/usePeerMesh";
+import { LoadingBar, SlopAddress } from "~~/components/ui";
+import type { PeerMeshState, TldrState } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
@@ -63,6 +63,30 @@ export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh, captionsOn }
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Shared "catch me up" TLDR. The panel auto-opens whenever a job starts
+  // or a fresh summary lands — so when ANY peer hits TLDR, it pops open for
+  // everyone in the room, not just the clicker. The × only dismisses it
+  // until the next TLDR.
+  const tldr = mesh.tldrState;
+  const [showTldr, setShowTldr] = useState(false);
+  const prevTldrAtRef = useRef<number | null>(tldr.generatedAt);
+  const prevTldrStatusRef = useRef(tldr.status);
+  useEffect(() => {
+    const startedJob = tldr.status === "pending" && prevTldrStatusRef.current !== "pending";
+    const newSummary = tldr.generatedAt != null && tldr.generatedAt !== prevTldrAtRef.current;
+    // Reopen on error too — a job that fails after the panel was dismissed
+    // (generatedAt never moves on error) would otherwise stay silent.
+    const failed = tldr.status === "error" && prevTldrStatusRef.current !== "error";
+    if (startedJob || newSummary || failed) setShowTldr(true);
+    prevTldrStatusRef.current = tldr.status;
+    prevTldrAtRef.current = tldr.generatedAt;
+  }, [tldr.status, tldr.generatedAt]);
+
+  const onTldrClick = () => {
+    setShowTldr(true);
+    mesh.requestTldr();
+  };
+
   // Same auto-stick-to-bottom pattern as ChatWindow: only yank to the
   // bottom on a new segment if the user was already near it; mid-scroll
   // users keep their place.
@@ -120,6 +144,14 @@ export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh, captionsOn }
         fontFamily: "var(--slop-font-body)",
       }}
     >
+      {showTldr && tldr.status !== "idle" ? (
+        <TldrPanel
+          tldr={tldr}
+          customNames={customNames}
+          onClose={() => setShowTldr(false)}
+          onRegenerate={onTldrClick}
+        />
+      ) : null}
       <div
         ref={listRef}
         onScroll={onScroll}
@@ -177,12 +209,160 @@ export const TranscriptWindow = ({ relayHttpUrl, customNames, mesh, captionsOn }
         >
           {captionsOn ? "On" : "Off"}
         </button>
+        <button
+          type="button"
+          onClick={onTldrClick}
+          disabled={tldr.status === "pending"}
+          title="Generate a shared 'what you missed' summary of the recent transcript — everyone in the room sees it"
+          style={{
+            cursor: tldr.status === "pending" ? "wait" : "pointer",
+            padding: "2px 10px",
+            border: "1px solid var(--slop-bevel-light, #4a4a4a)",
+            fontFamily: "var(--slop-font-display)",
+            fontSize: 11,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            background: showTldr && tldr.status !== "idle" ? "var(--slop-cyan, #3ee8ff)" : "transparent",
+            color: showTldr && tldr.status !== "idle" ? "var(--slop-bg, #06030d)" : "var(--slop-text)",
+          }}
+        >
+          {tldr.status === "pending" ? "TLDR…" : "TLDR"}
+        </button>
         <span style={{ flex: 1 }} />
         {error ? (
           <span style={{ color: "var(--slop-accent-warn, #f66)", textTransform: "none", letterSpacing: 0 }}>
             fetch error: {error}
           </span>
         ) : null}
+      </div>
+    </div>
+  );
+};
+
+const TldrPanel = ({
+  tldr,
+  customNames,
+  onClose,
+  onRegenerate,
+}: {
+  tldr: TldrState;
+  customNames: Record<string, string>;
+  onClose: () => void;
+  onRegenerate: () => void;
+}) => {
+  const by = tldr.requestedBy;
+  return (
+    <div
+      style={{
+        margin: 8,
+        marginBottom: 0,
+        border: "1px solid var(--slop-cyan, #3ee8ff)",
+        background: "rgba(62, 232, 255, 0.06)",
+        borderRadius: 3,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "5px 8px",
+          borderBottom: "1px solid var(--slop-bevel-light, #4a4a4a)",
+          fontFamily: "var(--slop-font-display)",
+          fontSize: 11,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--slop-cyan, #3ee8ff)",
+        }}
+      >
+        <span>📟 catch me up</span>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={tldr.status === "pending"}
+          title="Regenerate the summary from the latest transcript"
+          style={{
+            cursor: tldr.status === "pending" ? "wait" : "pointer",
+            background: "transparent",
+            border: "none",
+            color: "var(--slop-text-muted)",
+            fontFamily: "var(--slop-font-display)",
+            fontSize: 11,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            padding: "0 4px",
+          }}
+        >
+          ↻ redo
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          title="Hide the summary"
+          style={{
+            cursor: "pointer",
+            background: "transparent",
+            border: "none",
+            color: "var(--slop-text-muted)",
+            fontSize: 14,
+            lineHeight: 1,
+            padding: "0 2px",
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <div style={{ padding: 10 }}>
+        {tldr.status === "pending" && !tldr.summary ? (
+          <LoadingBar cells={20} caption="summarizing" />
+        ) : (
+          <>
+            {tldr.status === "pending" ? (
+              <div style={{ marginBottom: 8 }}>
+                <LoadingBar cells={20} caption="refreshing" />
+              </div>
+            ) : null}
+            <div
+              style={{
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: tldr.status === "error" ? "var(--slop-accent-warn, #f66)" : "var(--slop-text)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {tldr.summary || "(no summary yet)"}
+            </div>
+            {tldr.status === "ready" ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 10.5,
+                  color: "var(--slop-text-muted)",
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.04em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span>requested by</span>
+                <SlopAddress
+                  address={by?.address ?? null}
+                  handle={by?.handle ?? null}
+                  anonId={by?.anonId ?? null}
+                  fallback="someone"
+                  customNames={customNames}
+                />
+                <span>· {tldr.segmentCount} lines</span>
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );

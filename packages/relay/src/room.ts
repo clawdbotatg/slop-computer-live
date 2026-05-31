@@ -34,6 +34,7 @@ import { ResearchState } from "./research-state.js";
 import { RoomAuth } from "./room-auth.js";
 import { WalletChatState } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
+import { TldrState } from "./tldr-state.js";
 import { TodoList } from "./todos.js";
 import { Transcript } from "./transcript.js";
 import { formatBytes, ownerKeyActor } from "./transcript-actions.js";
@@ -282,6 +283,7 @@ export class Room {
   readonly research: ResearchState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
+  readonly tldr = new TldrState();
   readonly scrollSync = new ScrollSync();
   readonly uiState = new UIState();
   readonly chess: ChessState;
@@ -375,6 +377,7 @@ export class Room {
       this.broadcast({ type: "transcript_seg", seg });
     });
     this.qr.subscribe(state => this.broadcast({ type: "qr_state", state }));
+    this.tldr.subscribe(state => this.broadcast({ type: "tldr_state", state }));
     // Narrate a pong win once, on the null→winner edge. `lastPongWinner`
     // resets when the snapshot goes back to no-winner (reset / new match) so
     // the next decisive game logs again. The 30Hz physics ticks re-broadcast

@@ -670,6 +670,35 @@ const DEFAULT_RESEARCH_STATE: ResearchState = {
   error: null,
 };
 
+// --- Transcript TLDR --------------------------------------------------------
+// Shared "catch me up" summary for the Transcript app. Anyone hits the TLDR
+// button; the relay summarizes the recent transcript and broadcasts the same
+// result + the in-flight pending flag to every peer. See tldr-state.ts on the
+// relay. In-memory on both ends — a relay restart resets it to idle.
+export type TldrStatus = "idle" | "pending" | "ready" | "error";
+
+export type TldrRequester = {
+  address: string | null;
+  handle: string | null;
+  anonId: string | null;
+};
+
+export type TldrState = {
+  status: TldrStatus;
+  summary: string;
+  generatedAt: number | null;
+  requestedBy: TldrRequester | null;
+  segmentCount: number;
+};
+
+const DEFAULT_TLDR_STATE: TldrState = {
+  status: "idle",
+  summary: "",
+  generatedAt: null,
+  requestedBy: null,
+  segmentCount: 0,
+};
+
 // --- QR code window ---------------------------------------------------------
 // Shared text + center logo for the room's QR generator. logoDataUrl
 // is a data:image/png base64 URL (caller downscales to 256×256 before
@@ -1131,6 +1160,13 @@ export type PeerMeshState = {
    *  Refused server-side while a job is in flight (avoids orphaning a
    *  running AI call). */
   researchReset: () => void;
+  /** Shared "catch me up" TLDR for the Transcript app. Status + summary
+   *  are broadcast to every peer, so one click recaps the whole room.
+   *  See tldr-state.ts on the relay. */
+  tldrState: TldrState;
+  /** Ask the relay to summarize the recent transcript. No-op if a TLDR
+   *  job is already in flight (relay drops the duplicate). */
+  requestTldr: () => void;
   /** Server-authoritative pong snapshot. Ball + scores update at 30Hz
    *  when both seats are filled; paddle positions reflect the last
    *  `pong_paddle` from each side. */
@@ -1374,6 +1410,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
+  const [tldrState, setTldrStateLocal] = useState<TldrState>(DEFAULT_TLDR_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
   const [pongState, setPongStateLocal] = useState<PongState>(DEFAULT_PONG_STATE);
   const [myPongSeat, setMyPongSeat] = useState<PongSide | null>(null);
@@ -2156,6 +2193,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("researchReset failed", err));
   }, [slug]);
 
+  // "Catch me up" — ask the relay to summarize the recent transcript. The
+  // relay broadcasts `tldr_state` (pending, then ready) back to every peer,
+  // so one click recaps the whole room. No-op if a job is already in flight
+  // (relay drops the duplicate).
+  const requestTldr = useCallback(() => {
+    send({ type: "tldr_request" });
+  }, [send]);
+
   // QR text + logo broadcast. Low frequency (host types occasionally,
   // logo replaced rarely) — REST POST is fine; the relay broadcasts
   // `qr_state` back to every peer including us. Returns a result so
@@ -2644,6 +2689,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.researchState && typeof msg.researchState === "object") {
             setResearchStateLocal(msg.researchState as ResearchState);
           }
+          if (msg.tldrState && typeof msg.tldrState === "object") {
+            setTldrStateLocal(msg.tldrState as TldrState);
+          }
           if (msg.qrState && typeof msg.qrState === "object") {
             setQrStateLocal(msg.qrState as QrState);
           }
@@ -2898,6 +2946,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "research_state" && msg.state && typeof msg.state === "object") {
           setResearchStateLocal(msg.state as ResearchState);
+          return;
+        }
+
+        if (msg.type === "tldr_state" && msg.state && typeof msg.state === "object") {
+          setTldrStateLocal(msg.state as TldrState);
           return;
         }
 
@@ -3490,6 +3543,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     researchLookup,
     researchStart,
     researchReset,
+    tldrState,
+    requestTldr,
     qrState,
     setQrPatch,
     pongState,

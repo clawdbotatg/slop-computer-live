@@ -109,6 +109,7 @@ import {
 import { type ClockState } from "./clock.js";
 import type { WalletRecord, WalletSigner, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
+import { summarizeTranscript } from "./transcript-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
 import {
   fetchActivity,
@@ -1065,6 +1066,7 @@ app.get("/v1/state", async (req, reply) => {
     cardJob: readCardJob(roomFromReq(req).id),
     cardTitle: readCardTitle(roomFromReq(req).id),
     researchState: roomFromReq(req).research.current().state,
+    tldrState: roomFromReq(req).tldr.current().state,
     qrState: roomFromReq(req).qr.current().state,
     pongState: roomFromReq(req).pong.current().state,
     wormState: roomFromReq(req).worm.current().state,
@@ -5202,6 +5204,7 @@ app.register(async function signalRoutes(fastify) {
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
       researchState: room.research.current().state,
+      tldrState: room.tldr.current().state,
       qrState: room.qr.current().state,
       pongState: room.pong.current().state,
       wormState: room.worm.current().state,
@@ -5457,6 +5460,33 @@ app.register(async function signalRoutes(fastify) {
         case "glossary_delete": {
           if (typeof msg.id !== "string") return;
           glossaryRemove(msg.id);
+          return;
+        }
+        case "tldr_request": {
+          // "Catch me up": read the recent transcript, ask Claude for a
+          // summary, broadcast the same result to the whole room. setPending
+          // returns false (and we bail) if a job is already in flight, so two
+          // peers clicking at once never run overlapping AI calls.
+          const started = room.tldr.setPending({
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+          });
+          if (!started) return;
+          // Pass speech AND narrated action rows (file/chess/wallet/etc.) —
+          // those events are exactly the stuff a "catch me up" wants, and
+          // summarizeTranscript formats both.
+          const segs = room.transcript
+            .recent()
+            .map(s => ({ handle: s.handle, text: s.text, kind: s.kind }));
+          void (async () => {
+            try {
+              const { summary, used } = await summarizeTranscript(segs);
+              room.tldr.setReady(summary, used, Date.now());
+            } catch (err) {
+              room.tldr.setError(`(TLDR error: ${String(err).slice(0, 100)})`);
+            }
+          })();
           return;
         }
         case "publish": {
