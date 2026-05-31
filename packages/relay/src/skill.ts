@@ -3136,6 +3136,8 @@ export function skillForTopic(
       return skillTranscript(token, isHost, slug);
     case "research":
       return skillResearch(token, isHost, slug);
+    case "leftclaw":
+      return skillLeftclaw(token, isHost, slug);
     case "news":
       return skillNews(token, isHost, slug);
     case "feeds":
