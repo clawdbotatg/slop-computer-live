@@ -21,7 +21,14 @@ id_rsa
 id_ed25519
 .ssh/
 .claude-prompt.txt
-.claude/
+# Ignore local .claude scratch (settings.local.json, caches) but COMMIT the
+# shareable team config: slash commands, subagents, and project skills.
+# These must be tracked or a fresh clone / git worktree won't know about
+# /deploy, /skill, etc. — see the "Unknown command" trap.
+.claude/*
+!.claude/commands/
+!.claude/agents/
+!.claude/skills/
 
 # Out-of-band tooling lives in ~/clawd/slop-scripts (its own repo).
 # Anything that lands here is local scratch and should not be committed.
