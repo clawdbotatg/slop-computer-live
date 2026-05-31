@@ -34,10 +34,13 @@ type TranscriptSegment = {
   anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
-  // Set ⇒ a relay-narrated in-room action (music/file/wallet/chess/pong).
-  // The actor's name is baked into `text`, so action rows render as a
-  // single accent-coloured line instead of the speech name+body layout.
-  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong";
+  // Set ⇒ a relay-narrated in-room action (music/file/wallet/chess/pong/
+  // chyron/app/browser/card/research/leftclaw/room/…). Rendering is
+  // kind-agnostic — the actor's name + an emoji are baked into `text`, so
+  // every non-"speech" kind renders as one accent-coloured line. Kept as a
+  // broad string (not a closed union) so new relay action kinds render
+  // without a frontend change; see TranscriptKind in relay/src/transcript.ts.
+  kind?: string;
   meta?: Record<string, string | number | boolean | null>;
 };
 

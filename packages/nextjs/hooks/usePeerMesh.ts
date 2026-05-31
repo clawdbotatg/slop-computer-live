@@ -482,8 +482,10 @@ export type TranscriptSegment = {
   text: string;
   source: "live" | "spectator" | "agent";
   /** Absent ⇒ a spoken line. Set ⇒ a relay-narrated in-room action
-   *  (music/file/wallet/chess/pong/worm) — archive + poll only, never a caption. */
-  kind?: "speech" | "music" | "file" | "wallet" | "chess" | "pong" | "worm";
+   *  (music/file/wallet/chess/pong/worm/chyron/app/browser/card/research/…) —
+   *  archive + poll only, never a caption. Broad string so new relay action
+   *  kinds flow through without a frontend change. */
+  kind?: string;
   /** Structured action metadata; only set on action rows. */
   meta?: Record<string, string | number | boolean | null>;
 };
