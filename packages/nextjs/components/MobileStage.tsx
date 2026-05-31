@@ -230,7 +230,8 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
 
       <VariantHud variant={variant} layoutKind={layout.kind} fakePreset={fakePreset} />
       <AudioMuteHud muted={audioMuted} />
-      <Watermark />
+      <MobileChyron mesh={mesh} />
+      <Watermark chyronVisible={!!mesh.chyronState?.text} />
     </div>
   );
 };
@@ -350,11 +351,12 @@ const TileContent = ({ box, stream, mesh, bands, isFake, isBrowser, muted }: Til
   const pub = box.pub;
   if (isFake && pub) return <FakeTile box={box} pub={pub} bands={bands} />;
   // Shared browsers come in as synthetic "screen" pubs with the URL
-  // stashed in `label`. They never have a MediaStream so this branch
-  // has to run BEFORE the !stream early return.
+  // in `label` and the browser id in `streamId` (prefix stripped).
+  // No MediaStream — branch BEFORE the !stream early return.
   if (isBrowser && pub) {
     const url = pub.label ?? "";
-    return <MobileBrowserTile url={url} showBadge={false} />;
+    const id = pub.streamId.slice("mobile-browser-".length);
+    return <MobileBrowserTile id={id} url={url} showBadge={false} />;
   }
   if (!stream || !pub) {
     return <Placeholder label="connecting…" bands={bands} />;
@@ -593,13 +595,77 @@ const SLOP_ASCII = `███████╗██╗      ██████╗
 ███████║███████╗╚██████╔╝██║██╗  ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ╚██████╔╝   ██║   ███████╗██║  ██║
 ╚══════╝╚══════╝ ╚═════╝ ╚═╝╚═╝   ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝      ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝`;
 
-const Watermark = () => (
+// Mobile-tuned chyron — same data source as desktop ChyronBar but
+// 2-line capable since portrait viewports are narrow. Renders nothing
+// when the host hasn't set a message. Full-width strip at the bottom
+// of the viewport so it reads even on a tiny phone clip.
+const MOBILE_CHYRON_H = 56;
+
+type MobileChyronProps = {
+  mesh: PeerMeshState;
+};
+
+const MobileChyron = ({ mesh }: MobileChyronProps) => {
+  const text = mesh.chyronState?.text ?? "";
+  if (!text) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: MOBILE_CHYRON_H,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "6px 14px",
+        background: "linear-gradient(180deg, rgba(20,10,40,0.92) 0%, rgba(6,3,13,0.95) 100%)",
+        borderTop: "1px solid rgba(255,62,201,0.55)",
+        boxShadow: "0 -4px 12px rgba(255,62,201,0.25)",
+        pointerEvents: "none",
+        zIndex: 70,
+      }}
+    >
+      <span
+        style={{
+          color: "#fff",
+          fontFamily: "var(--slop-font-display)",
+          fontSize: 18,
+          letterSpacing: "0.05em",
+          textAlign: "center",
+          textShadow: "0 1px 2px rgba(0,0,0,0.85), 0 0 8px rgba(255,62,201,0.45)",
+          // Two-line wrap with ellipsis. line-clamp keeps a long
+          // chyron from pushing the bar height around mid-clip.
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          lineHeight: 1.2,
+          maxWidth: "100%",
+        }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+};
+
+type WatermarkProps = {
+  chyronVisible: boolean;
+};
+
+const Watermark = ({ chyronVisible }: WatermarkProps) => (
   <pre
     aria-hidden
     style={{
       position: "fixed",
       right: 8,
-      bottom: 8,
+      // Lift above the chyron bar when one is set so the ASCII art
+      // doesn't get covered by the host's message.
+      bottom: chyronVisible ? MOBILE_CHYRON_H + 8 : 8,
+      transition: "bottom 200ms ease-out",
       display: "inline-block",
       width: "auto",
       margin: 0,
