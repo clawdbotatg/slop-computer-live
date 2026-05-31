@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { MobileBrowserTile } from "~~/components/mobile/MobileBrowserTile";
 import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
 import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
 import { type Box, LAYOUT_VARIANTS, type LayoutVariant, layoutFor } from "~~/components/mobile/layouts";
@@ -105,8 +106,28 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // Wrap shared browsers as synthetic "screen" publications so the
+  // existing layout dispatcher places them like screen shares. The
+  // `mobile-browser-` streamId prefix is the marker that MobileTile
+  // uses to dispatch to MobileBrowserTile instead of the video
+  // element. Other shared apps (glossary, notes, etc.) come in a
+  // follow-up — the wrapping pattern is the same shape.
   const realPubs = mesh.publications;
-  const pubs = useMemo(() => (fakePreset ? fakePubsFor(fakePreset) : realPubs), [fakePreset, realPubs]);
+  const browserPubs: Publication[] = useMemo(
+    () =>
+      Object.values(mesh.browsers).map(b => ({
+        streamId: `mobile-browser-${b.id}`,
+        peerId: `mobile-browser-${b.id}`,
+        ownerKey: b.openedBy,
+        kind: "screen" as const,
+        label: b.url,
+      })),
+    [mesh.browsers],
+  );
+  const pubs = useMemo(
+    () => (fakePreset ? fakePubsFor(fakePreset) : [...realPubs, ...browserPubs]),
+    [fakePreset, realPubs, browserPubs],
+  );
 
   // Music ticker eats 32px out of the video area when its variant is
   // active. Wallet pill is overlay-only (doesn't claim layout space).
@@ -223,14 +244,24 @@ type MobileTileProps = {
 const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
   const pub = box.pub;
   const isFake = pub?.streamId.startsWith("fake-") === true;
+  const isBrowser = pub?.streamId.startsWith("mobile-browser-") === true;
   // streamFor logic — spectators only ever see remote streams, so we
   // skip the local-stream branch entirely. Fake pubs intentionally
-  // have no stream and render a placeholder block.
-  const stream = pub && !isFake ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
+  // have no stream and render a placeholder block. Browser pubs are
+  // synthetic — they render via MobileBrowserTile, no MediaStream.
+  const stream = pub && !isFake && !isBrowser ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
   const peer = pub ? mesh.peers.find(p => p.id === pub.peerId) : null;
   const label = useMemo(() => {
     if (!pub) return "";
     if (isFake) return pub.label ?? pub.streamId;
+    if (isBrowser) {
+      // pub.label is the URL for synthetic browser pubs.
+      try {
+        return new URL(pub.label ?? "").host;
+      } catch {
+        return "browser";
+      }
+    }
     const key = pub.ownerKey.toLowerCase();
     return (
       mesh.customNames[key] ??
@@ -239,7 +270,7 @@ const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
       pub.label ??
       pub.ownerKey.slice(0, 8)
     );
-  }, [pub, peer, mesh.customNames, isFake]);
+  }, [pub, peer, mesh.customNames, isFake, isBrowser]);
 
   const bands = useMemo(
     () =>
@@ -264,7 +295,15 @@ const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
         overflow: "hidden",
       }}
     >
-      <TileContent box={box} stream={stream} mesh={mesh} bands={bands} isFake={isFake} muted={muted} />
+      <TileContent
+        box={box}
+        stream={stream}
+        mesh={mesh}
+        bands={bands}
+        isFake={isFake}
+        isBrowser={isBrowser}
+        muted={muted}
+      />
       {/* Speaker label, bottom-left, small. Useful for clip attribution
           when the same tile crops the publisher's face. */}
       {pub ? (
@@ -303,12 +342,20 @@ type TileContentProps = {
   mesh: PeerMeshState;
   bands: ReturnType<typeof bandsFromIdentity>;
   isFake: boolean;
+  isBrowser: boolean;
   muted: boolean;
 };
 
-const TileContent = ({ box, stream, mesh, bands, isFake, muted }: TileContentProps) => {
+const TileContent = ({ box, stream, mesh, bands, isFake, isBrowser, muted }: TileContentProps) => {
   const pub = box.pub;
   if (isFake && pub) return <FakeTile box={box} pub={pub} bands={bands} />;
+  // Shared browsers come in as synthetic "screen" pubs with the URL
+  // stashed in `label`. They never have a MediaStream so this branch
+  // has to run BEFORE the !stream early return.
+  if (isBrowser && pub) {
+    const url = pub.label ?? "";
+    return <MobileBrowserTile url={url} showBadge={false} />;
+  }
   if (!stream || !pub) {
     return <Placeholder label="connecting…" bands={bands} />;
   }
