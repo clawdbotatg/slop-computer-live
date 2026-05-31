@@ -186,13 +186,14 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
           flexShrink: 0,
         }}
       >
-        {layout.kind === "idle" ? (
-          <IdleMiniIcons />
-        ) : (
-          layout.boxes.map((box, i) => (
-            <MobileTile key={`${box.pub?.streamId ?? i}`} box={box} mesh={mesh} muted={audioMuted} />
-          ))
-        )}
+        {/* Icon backdrop always renders behind the tiles — tiles paint
+            over wherever they cover, and the icons stay visible in any
+            slack space (idle, single-tile cap, screen-share letterbox).
+            Mirrors how the desktop's icons sit under floating windows. */}
+        <IdleMiniIcons />
+        {layout.boxes.map((box, i) => (
+          <MobileTile key={`${box.pub?.streamId ?? i}`} box={box} mesh={mesh} muted={audioMuted} />
+        ))}
       </div>
 
       {/* Caption chip floats over the video area at the layout's seam

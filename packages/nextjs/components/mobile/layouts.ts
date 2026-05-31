@@ -123,13 +123,22 @@ export function layoutFor(
     return { kind, boxes: [], captionY: H / 2 };
   }
 
+  // Single-tile cap: when only one publisher is on the stage, don't
+  // let the tile fill the entire video area. That used to push the
+  // caption chip off the bottom of the viewport and left zero room for
+  // the desktop-icon backdrop to peek through. Cap at the smaller of
+  // 60% of available height OR a 16:9 frame at viewport width, so
+  // both portrait phones and squat OBS windows look sane.
+  const singleTileH = Math.min(H * 0.6, (W * 9) / 16);
+
   if (kind === "all-people") {
-    // Equal vertical stack. 1 person → fullscreen; 2 → 50/50; N → 100/N.
-    const h = H / people.length;
+    const h = people.length === 1 ? singleTileH : H / people.length;
     // Caption sits at the first seam (between tile 0 and tile 1) so
-    // the words don't cover the top talker's face. Single tile has no
-    // seam — drop it at the bottom edge instead.
-    const captionY = people.length >= 2 ? h : H;
+    // the words don't cover the top talker's face. Single-tile case
+    // drops it just below the (capped) tile — chip centered on the
+    // boundary, partially over the tile's bottom edge, partially
+    // over the desktop backdrop below.
+    const captionY = h;
     return {
       kind,
       boxes: people.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
@@ -138,11 +147,11 @@ export function layoutFor(
   }
 
   if (kind === "screen-hero") {
-    const h = H / screens.length;
+    const h = screens.length === 1 ? singleTileH : H / screens.length;
     return {
       kind,
       boxes: screens.map((pub, i) => boxFor(pub, 0, i * h, W, h)),
-      captionY: screens.length >= 2 ? h : H,
+      captionY: h,
     };
   }
 
