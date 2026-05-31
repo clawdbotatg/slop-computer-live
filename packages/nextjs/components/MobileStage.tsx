@@ -579,8 +579,10 @@ const Watermark = () => (
 // Mini desktop-icon grid for the idle state. Mirrors the desktop's
 // AUTO_ARRANGE_COLUMNS layout — same apps, same column order — so the
 // mobile clip's empty stage looks like a tiny snapshot of the slop
-// desktop. Anchored to the TOP-RIGHT of the video area (icons hug the
-// right edge the way they would on a real desktop monitor).
+// desktop. Anchored to the TOP-LEFT of the video area to match where
+// the desktop puts its icons; a viewer should be able to glance
+// between desktop and mobile clip and see the same grid in the same
+// corner instead of a left/right flip.
 //
 // Icon paths mirror DEFAULT_APPS in packages/relay/src/index.ts. If you
 // add an app there, add it here too — there's no shared frontend
@@ -633,9 +635,9 @@ const IdleMiniIcons = () => (
     style={{
       position: "absolute",
       top: 16,
-      right: 12,
+      left: 12,
       display: "flex",
-      flexDirection: "row-reverse",
+      flexDirection: "row",
       alignItems: "flex-start",
       gap: MOBILE_ICON_COL_PITCH - MOBILE_ICON_SIZE,
     }}
