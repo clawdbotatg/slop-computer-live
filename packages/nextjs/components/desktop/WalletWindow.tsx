@@ -259,12 +259,12 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
 
   // A spectator tip just flew into the vault. Tips are incoming transfers
   // — they never show up in mesh.walletTxs (those are multisig-initiated)
-  // — so the executed-tx refresh above won't catch them. Pull fresh
-  // balances on the same 5s/15s Zerion-lag schedule so the bumped total
-  // lands shortly after the animation does.
+  // — so the executed-tx refresh above won't catch them. Pull immediately
+  // when the card lands (catches already-indexed / fast chains), then at
+  // 5s and 15s to cover Zerion's indexer lag.
   useEffect(() => {
     if (!walletAddress) return;
-    const onTipLanded = () => schedulePortfolioRefresh([5_000, 15_000]);
+    const onTipLanded = () => schedulePortfolioRefresh([0, 5_000, 15_000]);
     window.addEventListener("slop-tip-landed", onTipLanded);
     return () => window.removeEventListener("slop-tip-landed", onTipLanded);
   }, [walletAddress, schedulePortfolioRefresh]);

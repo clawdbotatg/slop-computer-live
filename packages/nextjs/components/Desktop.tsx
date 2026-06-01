@@ -2634,12 +2634,12 @@ function DesktopInner({ slug }: { slug: string }) {
       if (document.visibilityState === "visible") void fetchBalance();
     };
     document.addEventListener("visibilitychange", onVis);
-    // When a tip card lands on the vault, re-pull on the same 5s/15s
-    // Zerion-lag schedule WalletWindow uses, so the chip ticks up to the
-    // new total just after the animation finishes.
+    // When a tip card lands on the vault, re-pull immediately (catches
+    // already-indexed / fast chains) then at 5s and 15s to cover Zerion's
+    // indexer lag, so the chip ticks up to the new total.
     const tipTimers = new Set<ReturnType<typeof setTimeout>>();
     const onTipLanded = () => {
-      for (const delayMs of [5_000, 15_000]) {
+      for (const delayMs of [0, 5_000, 15_000]) {
         const handle = setTimeout(() => {
           tipTimers.delete(handle);
           void fetchBalance();
