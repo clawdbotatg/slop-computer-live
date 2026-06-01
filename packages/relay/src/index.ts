@@ -1839,6 +1839,60 @@ app.post<{ Body: TipParseBody }>("/v1/tip/parse", async (req, reply) => {
   return parseTipIntent(text);
 });
 
+type TipAnnounceBody = { amountEth?: unknown; chainId?: unknown };
+
+// HTTP twin of the WS `tip_announce` case below. slop.computer spectators
+// aren't on the mesh, so they POST here AFTER their wallet broadcast the tip
+// tx. Same two outputs as the WS path: a persistent attributed chat line
+// (fans out over SSE so the front page sees it) and — for 0.001+ ETH — the
+// ephemeral `tip` event that drives the flying card on the live stream. We
+// don't verify on-chain (it's a chat flourish, not accounting) but format
+// the text ourselves so the amount/chain can't be forged into prose, and
+// rate-limit via the chat bucket. Skip the room gate like /v1/chat so a
+// SIWE-only spectator can tip without the room password.
+app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ ok: false, error: "unauthenticated" });
+  const amountEth = typeof req.body?.amountEth === "string" ? req.body.amountEth : "";
+  const chainId = typeof req.body?.chainId === "number" ? req.body.chainId : 0;
+  const label = TIP_CHAIN_LABELS[chainId];
+  if (!label || !/^[0-9]*\.?[0-9]+$/.test(amountEth) || Number(amountEth) <= 0) {
+    return reply.code(400).send({ ok: false, error: "specify an ETH amount, e.g. /tip 0.001 base eth" });
+  }
+  const room = roomFromReq(req);
+  if (!room.chat.allow(a.session.token)) return reply.code(429).send({ ok: false, error: "rate-limited" });
+  const inMesh = findPeersBySessionToken(a.session.token).length > 0;
+  const source: ChatMessage["source"] = inMesh ? "live" : "spectator";
+  room.chat.append({
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+    text: `tipped ${amountEth} ETH on ${label} to the room 🎉`,
+    source,
+    kind: "emote",
+  });
+  if (Number(amountEth) >= 0.001) {
+    room.broadcast({
+      type: "tip",
+      from: { address: a.session.address, handle: a.session.handle, anonId: a.session.anonId ?? null },
+      amountEth,
+      chainId,
+    });
+  }
+  return { ok: true };
+});
+
+// Just the room multisig address — what a `/tip` needs to know where to send.
+// slop.computer spectators can't read /v1/state (room-gated), so expose the
+// address (public on-chain data, shown on the live stream anyway) on its own
+// chat-gated route. Null when no wallet has been deployed yet.
+app.get("/v1/wallet", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { address: roomFromReq(req).wallet.getCurrent()?.address ?? null };
+});
+
 // --- Live transcript ---------------------------------------------------------
 // Browsers run Web Speech locally and POST final-result segments here. Server
 // stamps `ts` + identity (so a peer can't forge another peer's words) and
