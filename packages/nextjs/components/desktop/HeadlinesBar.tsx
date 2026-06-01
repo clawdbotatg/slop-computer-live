@@ -18,12 +18,18 @@ const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 
 export const HEADLINES_HEIGHT = 24;
 
-// Headlines duration sits at the arithmetic midpoint between the
-// ticker (120s) and the timeline (~400s) so the three bars feel like
-// an evenly-spaced cadence cascade rather than two slow + one fast.
-// Timeline (above) auto-scales by item count via its own per-item
-// budget; this constant is hand-tuned.
-const SCROLL_DURATION_S = 260;
+// Pixel-speed, NOT duration, is what the eye reads — and speed is
+// (single-track width) / duration. The headlines track is ~2.17× wider
+// than the price ticker's (more text per item), so matching the
+// ticker's 120s duration midpoint (260s) made the two bars scroll at
+// the *same* pixels/sec — they looked locked together. We want a
+// three-tier cascade: ticker slowest, headlines mid, timeline fastest.
+// At ~2.17× the ticker's track width, 175s puts headlines ~1.5× the
+// ticker's pixel-speed: visibly brisker than the prices, still a
+// comfortable read, still slower than the timeline. Timeline (above)
+// auto-scales by item count via its own per-item budget; this is
+// hand-tuned.
+const SCROLL_DURATION_S = 175;
 
 export type HeadlinesBarProps = {
   mesh: PeerMeshState;
