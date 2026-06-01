@@ -113,7 +113,8 @@ function BottomVisualizer({ active }: { active: boolean }) {
           const norm = peak > 0.01 ? 0.96 / peak : 0;
           for (let i = 0; i < BARS; i++) {
             const v = Math.min(1, raw[i] * norm);
-            const h = Math.max(dpr, v * H);
+            // ~2/3 max height — keeps bar width unchanged.
+            const h = Math.max(dpr, v * H * 0.66);
             const x = gap + i * (barW + gap);
             const grad = ctx.createLinearGradient(0, H, 0, H - h);
             grad.addColorStop(0, "rgba(188,255,91,0.85)"); // lime
