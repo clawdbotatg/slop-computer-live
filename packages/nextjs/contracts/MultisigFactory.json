@@ -35,6 +35,11 @@
         "internalType": "bytes32[]"
       },
       {
+        "name": "contractSigners",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
         "name": "threshold",
         "type": "uint256",
         "internalType": "uint256"
@@ -115,6 +120,12 @@
       },
       {
         "name": "eoaSigners",
+        "type": "address[]",
+        "indexed": false,
+        "internalType": "address[]"
+      },
+      {
+        "name": "contractSigners",
         "type": "address[]",
         "indexed": false,
         "internalType": "address[]"

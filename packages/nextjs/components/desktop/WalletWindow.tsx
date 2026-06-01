@@ -1215,7 +1215,8 @@ const ChainRow = ({
         abi: MultisigFactoryAbi,
         functionName: "createMultisig",
         chainId,
-        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, BigInt(threshold), salt],
+        // args: eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, contractSigners, threshold, salt
+        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, [], BigInt(threshold), salt],
       });
       setTxHash(hash);
     } catch (e) {

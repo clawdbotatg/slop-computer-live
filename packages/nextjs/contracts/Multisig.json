@@ -10,6 +10,19 @@
   },
   {
     "type": "function",
+    "name": "addContractSigner",
+    "inputs": [
+      {
+        "name": "signer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "addEoaSigner",
     "inputs": [
       {
@@ -380,6 +393,11 @@
         "internalType": "bytes32[]"
       },
       {
+        "name": "contractSigners",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
         "name": "_threshold",
         "type": "uint256",
         "internalType": "uint256"
@@ -387,6 +405,25 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "isContractSigner",
+    "inputs": [
+      {
+        "name": "addr",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -599,6 +636,11 @@
         "internalType": "bool"
       },
       {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum Multisig.SignerType"
+      },
+      {
         "name": "qx",
         "type": "bytes32",
         "internalType": "bytes32"
@@ -686,10 +728,10 @@
         "internalType": "address"
       },
       {
-        "name": "isPasskey",
-        "type": "bool",
+        "name": "kind",
+        "type": "uint8",
         "indexed": false,
-        "internalType": "bool"
+        "internalType": "enum Multisig.SignerType"
       }
     ],
     "anonymous": false
@@ -723,6 +765,11 @@
   {
     "type": "error",
     "name": "AlreadySigner",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ContractSignerHasNoCode",
     "inputs": []
   },
   {
