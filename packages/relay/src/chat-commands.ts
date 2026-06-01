@@ -39,8 +39,19 @@ const HELP_TEXT = [
   "slop chat commands —",
   "/me <action> · /slap <name> · /roll [NdM] · /flip",
   "/who · /music · /url · /link · /address (/ca)",
-  "/tldr · /block <name> · /unblock <name> · /help",
+  "/code · /twitter · /tldr · /help",
+  "/block <name> · /unblock <name>",
 ].join("\n");
+
+const CODE_LINKS = [
+  "💾 slop.computer code —",
+  "https://github.com/clawdbotatg/slop-computer-live",
+  "https://github.com/clawdbotatg/slop-computer-frontpage",
+  "https://github.com/clawdbotatg/slop-computer-contracts",
+  "https://github.com/clawdbotatg/slop-computer-wallet",
+].join("\n");
+
+const TWITTER_LINKS = ["🐦 on X —", "https://x.com/austingriffith", "https://x.com/clawdbotatg"].join("\n");
 
 // Parse an "NdM" dice spec. Bare "d20"/"20" → one 20-sided die; "" → d20.
 // Clamped to keep a troll from asking for 9999d9999 worth of output.
@@ -142,6 +153,15 @@ export function handleChatCommand(room: Room, raw: string, ctx: ChatCommandCtx):
     }
     case "link":
       system(`🔗 ${PUBLIC_BASE}/${room.id}`);
+      return true;
+    case "code":
+    case "github":
+    case "repos":
+      system(CODE_LINKS);
+      return true;
+    case "twitter":
+    case "x":
+      system(TWITTER_LINKS);
       return true;
     case "music":
       system(describeMusic(room));

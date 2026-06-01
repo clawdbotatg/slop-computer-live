@@ -27,7 +27,8 @@ const CLIENT_HELP = [
   "/me <action> · /slap <name> · /roll [NdM] · /flip",
   "/tip 0.001 base eth · /who · /music",
   "/url · /link · /address (/ca) · /tldr",
-  "/block <name> · /unblock <name> · /help",
+  "/code · /twitter · /help",
+  "/block <name> · /unblock <name>",
   "(/block hides someone for you only)",
 ].join("\n");
 
