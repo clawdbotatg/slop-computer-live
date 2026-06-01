@@ -123,8 +123,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown }: Prop
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: 28,
-          padding: "3vh 4vw 4vh",
+          gap: 20,
+          padding: "1.5vh 2vw 2vh",
           minHeight: 0,
         }}
       >
@@ -134,8 +134,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown }: Prop
             alt=""
             onError={() => setCardBroke(true)}
             style={{
-              maxWidth: "82vw",
-              maxHeight: showCountdown ? "56vh" : "72vh",
+              maxWidth: "96vw",
+              maxHeight: showCountdown ? "68vh" : "88vh",
               objectFit: "contain",
               borderRadius: 18,
               boxShadow: "0 24px 80px #000b, 0 0 60px rgba(255,62,201,0.28)",
@@ -146,9 +146,9 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown }: Prop
           // No artifact yet → a template panel so standby still looks staged.
           <div
             style={{
-              width: "min(70vw, 900px)",
+              width: "min(92vw, 1320px)",
               aspectRatio: "16 / 9",
-              maxHeight: showCountdown ? "56vh" : "72vh",
+              maxHeight: showCountdown ? "68vh" : "88vh",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
