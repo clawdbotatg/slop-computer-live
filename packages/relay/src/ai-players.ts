@@ -187,6 +187,17 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "qwen3-235b-a22b-instruct-2507",
     envVar: "VENICE_API_KEY",
   },
+  // MiniMax M3 — new frontier reasoning model (supersedes the M2.7 we
+  // rotated out for resigning 1–4 moves in). Reasoning-capable, so it's
+  // 🧠 tier; watch its first few games — the M2.x line had a weak chess
+  // track record, but M3 is a fresh generation.
+  {
+    id: "venice-minimax-m3",
+    label: "MiniMax M3 (Venice) 🧠",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "minimax-m3",
+    envVar: "VENICE_API_KEY",
+  },
 ];
 
 const PREFIX = "ai:";
