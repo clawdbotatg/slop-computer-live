@@ -76,7 +76,7 @@ import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
-import { DEFAULT_SLUG } from "~~/lib/slug";
+import { DEFAULT_SLUG, withSlug } from "~~/lib/slug";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 import { prewarmDenoise } from "~~/utils/noiseSuppression";
 
@@ -2589,6 +2589,47 @@ function DesktopInner({ slug }: { slug: string }) {
     lastWalletAttentionRef.current = at;
   }, [walletAttention, focusApp]);
 
+  // Top-right menubar balance. When the multisig is actually deployed
+  // on-chain (≥1 entry in wallet.deployments), pull its total USD value
+  // from the relay's Zerion proxy so the chip can show it just left of
+  // the address. WalletWindow keeps the authoritative, polling copy;
+  // this is a lightweight standalone fetch so the number shows even
+  // with the wallet window closed. Fetch on mount + whenever the tab
+  // regains visibility — cheap on the Zerion quota, mirrors WalletWindow.
+  // A plain (counterfactual, undeployed) wallet has nothing to show, so
+  // we skip the fetch and clear the number entirely.
+  const menubarWalletAddr = mesh.wallet?.address ?? null;
+  const menubarWalletDeployed = !!mesh.wallet && Object.keys(mesh.wallet.deployments).length > 0;
+  const [menubarWalletBalanceUsd, setMenubarWalletBalanceUsd] = useState<string | null>(null);
+  useEffect(() => {
+    if (!menubarWalletAddr || !menubarWalletDeployed) {
+      setMenubarWalletBalanceUsd(null);
+      return;
+    }
+    let cancelled = false;
+    const fetchBalance = async () => {
+      try {
+        const res = await fetch(withSlug(`${RELAY_HTTP}/v1/wallet/portfolio?address=${menubarWalletAddr}`, slug), {
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const p = (await res.json()) as { totalBalanceUsd?: string };
+        if (!cancelled) setMenubarWalletBalanceUsd(p.totalBalanceUsd ?? null);
+      } catch {
+        /* network blip — keep the last known number */
+      }
+    };
+    void fetchBalance();
+    const onVis = () => {
+      if (document.visibilityState === "visible") void fetchBalance();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [menubarWalletAddr, menubarWalletDeployed, slug]);
+
   // Find the slot id of the currently-topmost visible window — what
   // a "close top window" / "minimize top window" action should target.
   // Iterating mesh.publications + openWindowIds + browsers covers every
@@ -2904,6 +2945,7 @@ function DesktopInner({ slug }: { slug: string }) {
         localSttError={liveStt.lastError}
         localSttResultTick={liveStt.resultTick}
         walletAddress={mesh.wallet?.address ?? null}
+        walletBalanceUsd={menubarWalletBalanceUsd}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}
         // God-mode only: pop the audio mixer + EQ in a separate OS
         // window. Kept off-tab on purpose so the controls themselves
@@ -4107,6 +4149,7 @@ function DesktopInner({ slug }: { slug: string }) {
           slug={slug}
           cardVersion={mesh.cardState?.version ?? null}
           countdown={mesh.clockState.countdown}
+          mesh={mesh}
         />
       ) : null}
     </>

@@ -8,7 +8,9 @@
 // room (and iterates all rooms for cross-room ops like kick/find/close).
 // See ops/PLAN-rooms.md.
 
+import { readFileSync } from "node:fs";
 import type { Peer, PeerInfo } from "./peers.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 import { AIMover } from "./ai-mover.js";
 import { RoomApps } from "./apps.js";
 import { BrowserRegistry } from "./browsers.js";
@@ -118,6 +120,7 @@ function roomPaths(id: string): {
   meta: { path: string };
   chyron: { path: string };
   apps: { path: string };
+  greenRoom: { path: string };
 } {
   const dir = `./.slop-data/rooms/${id}`;
   const legacy = id === DEFAULT_SLUG;
@@ -225,6 +228,12 @@ function roomPaths(id: string): {
       // global. Cold start = no room-scoped apps.
       path: `${dir}/apps.json`,
     },
+    greenRoom: {
+      // Persist the standby flag so a relay restart (every deploy bounces
+      // slop-relay) doesn't yank the stream out of the green room and back
+      // to the live desktop mid-show. Cold start = not in the green room.
+      path: `${dir}/green-room.json`,
+    },
   };
 }
 
@@ -261,6 +270,9 @@ export class Room {
   private streamActive = false;
   private greenRoom = false;
   private airState: AirState = "off-air";
+  /** Disk path for the persisted green-room flag — survives relay restarts
+   *  so a deploy mid-show doesn't drop the stream back to the desktop. */
+  private readonly greenRoomPath: string;
 
   /** Per-speaker live-caption arbitration. Speakers running browser STT
    *  (useLiveTranscript) emit `live_caption_state {alive}` on connect
@@ -325,6 +337,15 @@ export class Room {
     this.id = id;
 
     const paths = roomPaths(id);
+    this.greenRoomPath = paths.greenRoom.path;
+    // Restore the standby flag from disk so a relay restart mid-show keeps
+    // the stream parked in the green room. Broadcast/derive happens lazily
+    // (no peers yet at construction); hello carries it to the first joiner.
+    try {
+      this.greenRoom = JSON.parse(readFileSync(this.greenRoomPath, "utf8"))?.on === true;
+    } catch {
+      this.greenRoom = false;
+    }
     this.meta = new RoomMeta(paths.meta.path, id);
     this.todos = new TodoList(paths.todos.path, paths.todos.legacy);
     this.notes = new NoteList(paths.notes.path, paths.notes.legacy);
@@ -527,19 +548,19 @@ export class Room {
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
     // everyone, so the dashed rectangle disappears for surviving peers.
-    if (wasSpectator) {
+    if (wasSpectator && this.godViewport !== null) {
       const stillHasSpectator = [...this.peers.values()].some(p => p.spectator);
       if (!stillHasSpectator) {
-        if (this.godViewport !== null) {
-          this.godViewport = null;
-          this.broadcast({ type: "god_viewport", viewport: null });
-        }
-        // Green room is a god-mode-only concept; without a streaming box it
-        // has no meaning. Drop it so the air sign can't get stuck on
-        // "standby" after the operator disconnects.
-        this.setGreenRoom(false);
+        this.godViewport = null;
+        this.broadcast({ type: "god_viewport", viewport: null });
       }
     }
+    // NB: we deliberately do NOT reset the green room when the last
+    // spectator leaves. A god-mode reload briefly drops the only
+    // spectator, and auto-resetting here would yank the stream out of
+    // standby on every refresh. Green room is a sticky manual toggle
+    // (spacebar) + persisted to disk; it only changes when someone flips
+    // it. air recomputes from the live-stream poll regardless.
   }
 
   setLiveCaptionAlive(speakerKey: string, alive: boolean): void {
@@ -586,6 +607,11 @@ export class Room {
   setGreenRoom(on: boolean): void {
     if (this.greenRoom === on) return;
     this.greenRoom = on;
+    try {
+      writeFileAtomic(this.greenRoomPath, JSON.stringify({ on }));
+    } catch {
+      /* best-effort — a lost write just means standby won't survive a restart */
+    }
     this.broadcast({ type: "green_room", on });
     this.recomputeAir();
   }

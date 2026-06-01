@@ -36,6 +36,21 @@ export type TimelineBarProps = {
   /** Route plain left-clicks into the shared slop browser instead of a
    *  new tab. Modifier-clicks fall through to the anchor's `_blank`. */
   onOpenUrl: (url: string) => void;
+  /** Placement overrides. Defaults reproduce the normal three-bar-stack
+   *  slot (bottom:52, 24px tall, z:60). The green room standby curtain
+   *  renders a bigger one pinned to the very bottom behind the wordmark. */
+  bottom?: number;
+  height?: number;
+  zIndex?: number;
+  /** Scale the item fonts/padding up for the bigger standby variant. */
+  fontScale?: number;
+  /** Hide the host-only TIMELINE refresh badge (no host interaction on a
+   *  broadcast curtain). */
+  hideBadge?: boolean;
+  /** Render the track non-interactive (no hover-pause, no clickable
+   *  links) — for the green room, where the bar is pure motion on the
+   *  stream and the operator's cursor is hidden anyway. */
+  nonInteractive?: boolean;
 };
 
 function truncate(s: string, n: number): string {
@@ -54,13 +69,27 @@ function compact(n: number): string {
   return String(n);
 }
 
-function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: string) => void }) {
+function Item({
+  tweet,
+  onOpenUrl,
+  fontScale = 1,
+  nonInteractive = false,
+}: {
+  tweet: TimelineItem;
+  onOpenUrl: (url: string) => void;
+  fontScale?: number;
+  nonInteractive?: boolean;
+}) {
   return (
     <a
       href={tweet.url}
       target="_blank"
       rel="noopener noreferrer"
       onClick={e => {
+        if (nonInteractive) {
+          e.preventDefault();
+          return;
+        }
         if (!shouldInterceptClick(e)) return;
         e.preventDefault();
         onOpenUrl(tweet.url);
@@ -69,20 +98,21 @@ function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: stri
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 10,
-        padding: "0 18px",
+        gap: 10 * fontScale,
+        padding: `0 ${18 * fontScale}px`,
         whiteSpace: "nowrap",
         textDecoration: "none",
-        // Outer bar is pointer-events: none — re-enable on the link.
-        pointerEvents: "auto",
-        cursor: "pointer",
+        // Outer bar is pointer-events: none — re-enable on the link, unless
+        // this is the non-interactive standby variant.
+        pointerEvents: nonInteractive ? "none" : "auto",
+        cursor: nonInteractive ? "default" : "pointer",
       }}
     >
       <span
         style={{
           color: "var(--slop-magenta)",
           fontFamily: "var(--slop-font-display)",
-          fontSize: 11,
+          fontSize: 11 * fontScale,
           letterSpacing: "0.04em",
         }}
       >
@@ -93,7 +123,7 @@ function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: stri
         style={{
           color: "var(--slop-text)",
           fontFamily: "var(--slop-font-body)",
-          fontSize: 12,
+          fontSize: 12 * fontScale,
         }}
       >
         {truncate(tweet.text.replace(/\s+/g, " "), MAX_TEXT_LEN)}
@@ -102,19 +132,31 @@ function Item({ tweet, onOpenUrl }: { tweet: TimelineItem; onOpenUrl: (url: stri
         style={{
           color: "var(--slop-text-muted)",
           fontFamily: "var(--slop-font-mono)",
-          fontSize: 10,
+          fontSize: 10 * fontScale,
         }}
       >
         ♥ {compact(tweet.likes)} · ⇄ {compact(tweet.retweets)}
       </span>
-      <span style={{ color: "rgba(63,207,255,0.35)", fontSize: 10, marginLeft: 4 }}>•</span>
+      <span style={{ color: "rgba(63,207,255,0.35)", fontSize: 10 * fontScale, marginLeft: 4 }}>•</span>
     </a>
   );
 }
 
-export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
+export const TimelineBar = ({
+  mesh,
+  onOpenUrl,
+  bottom = 52,
+  height = TIMELINE_HEIGHT,
+  zIndex = 60,
+  fontScale = 1,
+  hideBadge = false,
+  nonInteractive = false,
+}: TimelineBarProps) => {
   const items = mesh.timelineState?.items ?? [];
   const [refreshing, setRefreshing] = useState(false);
+  // Badge reserves the left gutter the marquee pads past; without it the
+  // track can start at the edge.
+  const trackPadLeft = hideBadge ? 24 * fontScale : 150;
 
   // Hidden host-only refresh: clicking the TIMELINE badge POSTs to the
   // relay, which runs a fresh Twitter pull and broadcasts the new state.
@@ -153,14 +195,14 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
           position: "fixed",
           left: 0,
           right: 0,
-          // Sits on top of the headlines bar (24px) which sits on top
-          // of the ticker bar (28px). 24 + 28 = 52.
-          bottom: 52,
-          height: TIMELINE_HEIGHT,
+          // Default sits on top of the headlines bar (24px) + ticker bar
+          // (28px) = bottom:52. Overridable for the green room standby bar.
+          bottom,
+          height,
           background: "linear-gradient(180deg, rgba(6,8,24,0.96) 0%, rgba(10,15,36,0.96) 100%)",
           borderTop: "1px solid rgba(63,207,255,0.22)",
           borderBottom: "1px solid rgba(63,207,255,0.10)",
-          zIndex: 60,
+          zIndex,
           overflow: "hidden",
           display: "flex",
           alignItems: "center",
@@ -168,68 +210,70 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
           pointerEvents: "none",
         }}
       >
-        <button
-          type="button"
-          onClick={onBadgeClick}
-          aria-label="Refresh timeline"
-          title="Refresh timeline"
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "0 24px 0 14px",
-            // Dark grey → transparent gradient, matching X's dark
-            // brand-mark vibe. The bar's own backdrop is already
-            // near-black, so the badge grey has to be noticeably
-            // lighter than the bar to be visible at all. (Earlier
-            // value rgba(20,20,22) was indistinguishable from the
-            // bar — bumped to rgba(60,60,66) for clear contrast.)
-            background:
-              "linear-gradient(90deg, rgba(60,60,66,0.98) 0%, rgba(60,60,66,0.75) 60%, rgba(60,60,66,0.0) 100%)",
-            color: "#fff",
-            fontFamily: "var(--slop-font-display)",
-            fontSize: 10,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            textShadow: "0 1px 0 rgba(0,0,0,0.45)",
-            zIndex: 2,
-            maskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
-            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
-            border: "none",
-            cursor: refreshing ? "wait" : "pointer",
-            pointerEvents: "auto",
-            appearance: "none",
-            WebkitAppearance: "none",
-            // The badge is hidden-on-purpose UI — no hover affordance,
-            // host knows it's clickable.
-          }}
-        >
-          TIMELINE
-          {refreshing && (
-            <span
-              aria-hidden
-              className="slop-timeline-refresh-glyph"
-              style={{
-                display: "inline-block",
-                fontFamily: "var(--slop-font-mono)",
-                fontSize: 12,
-                color: "var(--slop-magenta)",
-                letterSpacing: 0,
-              }}
-            >
-              ↻
-            </span>
-          )}
-        </button>
+        {hideBadge ? null : (
+          <button
+            type="button"
+            onClick={onBadgeClick}
+            aria-label="Refresh timeline"
+            title="Refresh timeline"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "0 24px 0 14px",
+              // Dark grey → transparent gradient, matching X's dark
+              // brand-mark vibe. The bar's own backdrop is already
+              // near-black, so the badge grey has to be noticeably
+              // lighter than the bar to be visible at all. (Earlier
+              // value rgba(20,20,22) was indistinguishable from the
+              // bar — bumped to rgba(60,60,66) for clear contrast.)
+              background:
+                "linear-gradient(90deg, rgba(60,60,66,0.98) 0%, rgba(60,60,66,0.75) 60%, rgba(60,60,66,0.0) 100%)",
+              color: "#fff",
+              fontFamily: "var(--slop-font-display)",
+              fontSize: 10,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              textShadow: "0 1px 0 rgba(0,0,0,0.45)",
+              zIndex: 2,
+              maskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
+              WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 85%, transparent 100%)",
+              border: "none",
+              cursor: refreshing ? "wait" : "pointer",
+              pointerEvents: "auto",
+              appearance: "none",
+              WebkitAppearance: "none",
+              // The badge is hidden-on-purpose UI — no hover affordance,
+              // host knows it's clickable.
+            }}
+          >
+            TIMELINE
+            {refreshing && (
+              <span
+                aria-hidden
+                className="slop-timeline-refresh-glyph"
+                style={{
+                  display: "inline-block",
+                  fontFamily: "var(--slop-font-mono)",
+                  fontSize: 12,
+                  color: "var(--slop-magenta)",
+                  letterSpacing: 0,
+                }}
+              >
+                ↻
+              </span>
+            )}
+          </button>
+        )}
 
         {items.length === 0 ? (
           <span
             style={{
-              marginLeft: 150,
+              marginLeft: trackPadLeft,
               color: "var(--slop-text-muted)",
               fontFamily: "var(--slop-font-mono)",
               fontSize: 11,
@@ -244,8 +288,10 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
             style={{
               display: "flex",
               alignItems: "center",
-              paddingLeft: 150,
+              paddingLeft: trackPadLeft,
               willChange: "transform",
+              // Standby variant is pure motion — no hover-pause / clicks.
+              ...(nonInteractive ? { pointerEvents: "none" as const } : {}),
             }}
           >
             {/* Two halves (-a / -b) keyed by tweet id, not by array
@@ -254,10 +300,22 @@ export const TimelineBar = ({ mesh, onOpenUrl }: TimelineBarProps) => {
                 every cell and restart the marquee. With id-based keys
                 React just shuffles the existing DOM nodes in place. */}
             {items.map(tw => (
-              <Item key={`${tw.id}-a`} tweet={tw} onOpenUrl={onOpenUrl} />
+              <Item
+                key={`${tw.id}-a`}
+                tweet={tw}
+                onOpenUrl={onOpenUrl}
+                fontScale={fontScale}
+                nonInteractive={nonInteractive}
+              />
             ))}
             {items.map(tw => (
-              <Item key={`${tw.id}-b`} tweet={tw} onOpenUrl={onOpenUrl} />
+              <Item
+                key={`${tw.id}-b`}
+                tweet={tw}
+                onOpenUrl={onOpenUrl}
+                fontScale={fontScale}
+                nonInteractive={nonInteractive}
+              />
             ))}
           </div>
         )}

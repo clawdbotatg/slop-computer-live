@@ -9,6 +9,14 @@ import type { AirState } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 import { readStoredRoomPassword } from "~~/utils/roomPassword";
 
+// Compact USD formatter for the menubar balance chip. Matches the
+// WalletHeader's format ($0.02) so the two read identically.
+const fmtUsd = (v: string): string => {
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return "$0.00";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
 export type MenuItem = {
   label: string;
   onClick?: () => void;
@@ -84,6 +92,11 @@ interface MenuBarProps {
    *  we render the Address component as a clickable chip; otherwise
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
   walletAddress?: string | null;
+  /** Multisig total USD balance (Zerion), shown just left of the
+   *  address chip. Only supplied when the multisig is actually
+   *  deployed on-chain; null/undefined hides it. Clicking it opens the
+   *  wallet window (same as the address), which re-fetches the balance. */
+  walletBalanceUsd?: string | null;
   onWalletClick?: () => void;
   /** God-mode only: when provided, render a 🔊 button on the far
    *  right that pops the audio-mixer / EQ panel in a separate window.
@@ -109,6 +122,7 @@ export const MenuBar = ({
   localSttError = null,
   localSttResultTick = 0,
   walletAddress,
+  walletBalanceUsd,
   onWalletClick,
   onEqClick = null,
   slug,
@@ -177,7 +191,25 @@ export const MenuBar = ({
               }}
             >
               {walletAddress ? (
-                <Address address={walletAddress as AddressType} size="xs" onlyEnsOrAddress />
+                <>
+                  {/* Zerion balance, just left of the address. Only set
+                      when the multisig is deployed on-chain. The whole
+                      button is the wallet-window trigger, so a click here
+                      opens the wallet and forces a fresh balance fetch. */}
+                  {walletBalanceUsd != null ? (
+                    <span
+                      style={{
+                        fontFamily: "var(--slop-font-display)",
+                        fontWeight: 700,
+                        color: "var(--slop-text)",
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      {fmtUsd(walletBalanceUsd)}
+                    </span>
+                  ) : null}
+                  <Address address={walletAddress as AddressType} size="xs" onlyEnsOrAddress />
+                </>
               ) : (
                 <span style={{ color: "var(--slop-magenta, #ff3ec9)" }}>[ deploy wallet ]</span>
               )}
