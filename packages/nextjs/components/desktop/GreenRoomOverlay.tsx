@@ -55,18 +55,17 @@ function fmtHMS(total: number): string {
  */
 function BottomVisualizer({ active }: { active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const frameRef = useRef(0);
   useEffect(() => {
     if (!active) return;
     let raf = 0;
     const BARS = 44;
     const loop = () => {
-      frameRef.current += 1;
-      const frame = frameRef.current;
-      // Re-grab each frame — the bus registers "music" lazily.
-      if (!analyserRef.current) analyserRef.current = audioBus().getAnalyser("music");
-      const analyser = analyserRef.current;
+      // Re-grab the live analyser EVERY frame — the bus replaces the
+      // "music" source's node when the track re-registers, and caching it
+      // once leaves us reading a stale, silent node (SlopAmp's own viz
+      // refreshes on each play event, which is why it stayed live and this
+      // didn't). Cheap Map lookup; always reads the node SlopAmp reads.
+      const analyser = audioBus().getAnalyser("music");
       const canvas = canvasRef.current;
       if (canvas) {
         const dpr = window.devicePixelRatio || 1;
@@ -84,21 +83,17 @@ function BottomVisualizer({ active }: { active: boolean }) {
           const gap = Math.max(1, dpr);
           const barW = (W - gap * (BARS + 1)) / BARS;
 
-          // Read the real spectrum (float dB — byte data floors to 0 when
-          // the bus levels music down). Map the active low range across the
-          // full width.
+          // Same byte read SlopAmp uses, mapped across the FULL width with
+          // 44 chunky bars and peak-normalized so the bars fill even when
+          // the bus levels music down to ~0.55.
           const raw = new Array<number>(BARS).fill(0);
           let peak = 0;
           if (analyser) {
             const bins = analyser.frequencyBinCount;
-            const data = new Float32Array(bins);
-            analyser.getFloatFrequencyData(data);
-            const MIN_DB = -100;
-            const MAX_DB = -25;
-            const db01 = (db: number) =>
-              Number.isFinite(db) ? Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB))) : 0;
-            const start = 1;
-            const usable = Math.max(8, Math.floor((bins - start) * 0.66));
+            const data = new Uint8Array(bins);
+            analyser.getByteFrequencyData(data);
+            const start = 1; // skip DC
+            const usable = Math.max(8, Math.floor((bins - start) * 0.7));
             for (let i = 0; i < BARS; i++) {
               const f = i / (BARS - 1);
               const center = start + f * (usable - 1);
@@ -107,28 +102,17 @@ function BottomVisualizer({ active }: { active: boolean }) {
               let sum = 0;
               let n = 0;
               for (let b = lo; b <= hi; b++) {
-                sum += db01(data[b] ?? -Infinity);
+                sum += data[b] ?? 0;
                 n++;
               }
-              const v = (sum / Math.max(1, n)) * (1 + f * 0.9);
+              const v = (sum / Math.max(1, n) / 255) * (1 + f * 0.8); // lift quieter highs
               raw[i] = v;
               if (v > peak) peak = v;
             }
           }
-
-          // Live signal → real normalized spectrum. No signal (muted tab /
-          // suspended context / music closed) → a gentle idle shimmer so the
-          // bottom is never a dead flat line. Either way: motion edge-to-edge.
-          const hasSignal = peak > 0.04;
-          const norm = hasSignal ? 0.96 / peak : 0;
+          const norm = peak > 0.01 ? 0.96 / peak : 0;
           for (let i = 0; i < BARS; i++) {
-            let v: number;
-            if (hasSignal) {
-              v = Math.min(1, raw[i] * norm);
-            } else {
-              const t = frame * 0.06;
-              v = 0.1 + 0.09 * (0.5 + 0.5 * Math.sin(t + i * 0.55)) + 0.05 * Math.sin(t * 0.6 + i * 0.27);
-            }
+            const v = Math.min(1, raw[i] * norm);
             const h = Math.max(dpr, v * H);
             const x = gap + i * (barW + gap);
             const grad = ctx.createLinearGradient(0, H, 0, H - h);
@@ -226,8 +210,9 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
   };
 
   const secs = countdownSecs(countdown, now || Date.now());
-  const showCountdown = secs !== null;
-  const countdownDone = countdown.phase === "done" || secs === 0;
+  // Hide the countdown once it hits zero (no "LIVE" flash) — only show
+  // while there's actually time left on the clock.
+  const showCountdown = secs !== null && secs > 0;
 
   return (
     <div
@@ -329,14 +314,13 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
               fontWeight: 800,
               lineHeight: 1,
               fontSize: "clamp(48px, 12vw, 180px)",
-              color: countdownDone ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-cyan, #3fcfff)",
-              textShadow: countdownDone ? "0 0 40px rgba(255,62,201,0.7)" : "0 0 40px rgba(63,207,255,0.55)",
+              color: "var(--slop-cyan, #3fcfff)",
+              textShadow: "0 0 40px rgba(63,207,255,0.55)",
               // Lifted ~15vh above center so it sits in the upper third.
-              transform: countdownDone ? "translateY(-15vh) scale(1.04)" : "translateY(-15vh)",
-              transition: "transform 300ms ease, color 300ms ease",
+              transform: "translateY(-15vh)",
             }}
           >
-            {countdownDone ? "LIVE" : fmtHMS(secs as number)}
+            {fmtHMS(secs as number)}
           </div>
         </div>
       ) : null}
