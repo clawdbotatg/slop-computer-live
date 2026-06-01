@@ -16,9 +16,9 @@ export type LayoutKind = "idle" | "all-people" | "screen-hero" | "interview" | "
  *  Each variant either reinterprets the publication set OR layers a
  *  secondary overlay (music ticker, wallet pill) on top of the default
  *  layout. Order matters — it's the cycle order. */
-export type LayoutVariant = "default" | "music" | "wallet" | "focus" | "people-only";
+export type LayoutVariant = "default" | "music" | "wallet" | "focus" | "people-only" | "with-apps";
 
-export const LAYOUT_VARIANTS: LayoutVariant[] = ["default", "music", "wallet", "focus", "people-only"];
+export const LAYOUT_VARIANTS: LayoutVariant[] = ["default", "music", "wallet", "focus", "people-only", "with-apps"];
 
 /** Per-tile render dispatch. `video` = live camera frame; `audio` =
  *  audio-only publication OR a camera that flipped cameraOff (render
@@ -53,24 +53,41 @@ export type LayoutResult = {
   captionY: number;
 };
 
-/** Categorise pubs into screen / video-camera / audio (incl. cameraOff). */
+// Synthetic "open-window" pubs wear this streamId prefix (set in
+// MobileStage). They look like kind=camera but they're a separate
+// tier: they always stack BELOW real people, and they're dropped
+// from the default layout when a screen/browser is hero so the
+// clip isn't cluttered. Keep in sync with MobileStage.tsx.
+const APP_STREAM_PREFIX = "mobile-app-";
+
+/** Categorise pubs into screen / video-camera / audio / app. App
+ *  pubs masquerade as kind=camera so the existing layout dispatcher
+ *  can route them through the people path, but we split them out
+ *  here so callers can control whether they're shown. */
 function partition(pubs: Publication[]): {
   screens: Publication[];
   videos: Publication[];
   audios: Publication[];
+  apps: Publication[];
 } {
   const screens = pubs.filter(p => p.kind === "screen");
-  const videos = pubs.filter(p => p.kind === "camera" && !p.cameraOff);
-  const audios = pubs.filter(p => p.kind === "audio" || (p.kind === "camera" && p.cameraOff));
-  return { screens, videos, audios };
+  const apps = pubs.filter(p => p.kind === "camera" && p.streamId.startsWith(APP_STREAM_PREFIX));
+  const videos = pubs.filter(p => p.kind === "camera" && !p.cameraOff && !p.streamId.startsWith(APP_STREAM_PREFIX));
+  const audios = pubs.filter(
+    p => p.kind === "audio" || (p.kind === "camera" && p.cameraOff && !p.streamId.startsWith(APP_STREAM_PREFIX)),
+  );
+  return { screens, videos, audios, apps };
 }
 
 /** Decide which layout best fits the current publisher set. People
  *  (video cameras + audio publications) are counted together since
  *  each gets an equal stage slot. */
 export function pickLayout(pubs: Publication[]): LayoutKind {
-  const { screens, videos, audios } = partition(pubs);
-  const people = videos.length + audios.length;
+  const { screens, videos, audios, apps } = partition(pubs);
+  // Apps count as people for layout decisions IF the caller decided
+  // to include them — applyVariant filters them out of `pubs` when
+  // they shouldn't appear. Here we trust whatever's in the bucket.
+  const people = videos.length + audios.length + apps.length;
   if (screens.length === 0 && people === 0) return "idle";
   if (screens.length === 0) return "all-people";
   if (people === 0) return "screen-hero";
@@ -84,21 +101,39 @@ function boxFor(pub: Publication, x: number, y: number, w: number, h: number): B
   return { pub, kind, x, y, width: w, height: h, fit: kind === "screen" ? "contain" : "cover" };
 }
 
-/** Filter publications per variant before they enter the layout
- *  dispatcher. Overlays (music/wallet) are pure layering and don't
- *  change the publisher set, so they pass through unchanged. */
+/** Filter + REORDER publications per variant before they enter the
+ *  layout dispatcher. The returned order matters — it's the stack
+ *  order tiles will appear in. Apps always trail cams + audios so
+ *  talking heads sit on top and the chat/todo/etc. tiles fall to
+ *  the bottom. Music/wallet variants are pure overlays — they
+ *  follow the default partition rules. */
 function applyVariant(pubs: Publication[], variant: LayoutVariant): Publication[] {
-  if (variant === "focus") {
-    // Pick the first publisher in canonical order (video > screen > audio).
-    // Falls back to the original list if no pubs at all.
-    const { videos, screens, audios } = partition(pubs);
-    const first = videos[0] ?? screens[0] ?? audios[0];
-    return first ? [first] : pubs;
+  const { videos, audios, apps, screens } = partition(pubs);
+  switch (variant) {
+    case "focus": {
+      // First publisher in canonical order (video > screen > audio > app).
+      const first = videos[0] ?? screens[0] ?? audios[0] ?? apps[0];
+      return first ? [first] : [];
+    }
+    case "people-only":
+      // Cams + audio + apps, no screens. Apps stay in the people stack
+      // (no screen present means the "drop apps when a screen is
+      // hero" rule doesn't apply).
+      return [...videos, ...audios, ...apps];
+    case "with-apps":
+      // Everything. Apps included even when a screen/browser is the
+      // hero — operator opted in via [ ] cycle.
+      return [...videos, ...audios, ...apps, ...screens];
+    default: {
+      // default / music / wallet (pure overlays): cams + audios
+      // always; apps included ONLY when there's no screen/browser
+      // competing for hero attention (otherwise clip gets cluttered).
+      // Then screens at the end so the layout dispatcher places them
+      // as the hero tier.
+      const showApps = screens.length === 0;
+      return [...videos, ...audios, ...(showApps ? apps : []), ...screens];
+    }
   }
-  if (variant === "people-only") {
-    return pubs.filter(p => p.kind !== "screen");
-  }
-  return pubs;
 }
 
 /** Compute tile boxes for a given viewport and publisher set. */
@@ -108,11 +143,13 @@ export function layoutFor(
   variant: LayoutVariant = "default",
 ): LayoutResult {
   const filtered = applyVariant(pubs, variant);
-  const { screens, videos, audios } = partition(filtered);
-  // Video cameras first, then audio publications — keeps a stable
-  // visual order across layout changes (a new audio guest doesn't push
-  // an existing talking head out of slot 0).
-  const people = [...videos, ...audios];
+  const { screens, videos, audios, apps } = partition(filtered);
+  // Stack order: real cams → audio publications → open-window apps.
+  // Apps always trail so talking heads sit on top and chat/todo/etc.
+  // tiles fall to the bottom of the people stack. Inclusion of apps
+  // is already decided by applyVariant — if it didn't put them in
+  // `filtered`, the apps bucket here is empty.
+  const people = [...videos, ...audios, ...apps];
 
   // Decide the layout based on the FILTERED set so "people-only" picks
   // all-people instead of trying to render a hidden screen.
