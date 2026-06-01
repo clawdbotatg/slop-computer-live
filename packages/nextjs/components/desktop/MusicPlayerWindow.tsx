@@ -453,6 +453,11 @@ export const MusicPlayerWindow = ({
   // (audioBus.setSourceTargetScale) so the auto aims for a lower
   // post-gain RMS when the user wants lower. End result: turning
   // music down actually turns music down in the mix.
+  // Green room: the god-mode streaming box pins music to FULL bus level
+  // regardless of the room's shared volume, so the standby card's audio
+  // reaches the stream at 100%. Only affects the god-mode box (the bus
+  // owner) — room participants keep the shared volume untouched.
+  const greenRoomFull = audioBusEnabled && mesh.greenRoom;
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = audioBusEnabled ? 1 : shownVolume;
@@ -462,15 +467,16 @@ export const MusicPlayerWindow = ({
       // near-silence. A low shownVolume (e.g. a stale 0.08 from
       // localStorage) would otherwise set the target RMS so low that the
       // gain lerps to ~zero within ~1s and the music dies on the
-      // god-mode box despite Slopamp still reading "playing".
-      audioBus().setSourceTargetScale("music", Math.max(0.1, shownVolume));
+      // god-mode box despite Slopamp still reading "playing". In the
+      // green room we ignore shownVolume entirely and aim for full.
+      audioBus().setSourceTargetScale("music", greenRoomFull ? 1 : Math.max(0.1, shownVolume));
     }
     try {
       window.localStorage.setItem(VOLUME_KEY, String(shownVolume));
     } catch {
       /* ignore */
     }
-  }, [shownVolume, audioBusEnabled]);
+  }, [shownVolume, audioBusEnabled, greenRoomFull]);
 
   // When the mesh-shared volume changes (someone else dragged + released
   // their slider), keep our local draft in sync so the slider thumb
