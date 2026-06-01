@@ -4030,38 +4030,41 @@ function DesktopInner({ slug }: { slug: string }) {
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +
-          zIndex 2^31 keeps them on top of every other layer. */}
-      {remoteCursors.map(({ peerId, x, y, handle, address, anonId }) => {
-        // anonId already resolved in remoteCursors: peer record wins,
-        // falls back to the cursor broadcast's inline value for HTTP
-        // agents that aren't in our roster.
-        const bands = bandsFromIdentity({ address, anonId, handle, fallback: peerId });
-        const lookupKey = (address ?? anonId)?.toLowerCase();
-        const customName = lookupKey ? mesh.customNames[lookupKey] : undefined;
-        return (
-          <Cursor
-            key={peerId}
-            x={x}
-            y={y}
-            dimmed
-            bands={bands}
-            label={
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                {customName ? (
-                  <span>{customName}</span>
-                ) : handle ? (
-                  <span>{handle}</span>
-                ) : address ? (
-                  <Address address={address as AddressType} size="xs" onlyEnsOrAddress />
-                ) : (
-                  <span>{peerId.slice(0, 6)}</span>
-                )}
-                <BandFlag bands={bands} />
-              </span>
-            }
-          />
-        );
-      })}
+          zIndex 2^31 keeps them on top of every other layer. Suppressed
+          entirely on god-mode views while in the green room — peer cursors
+          would otherwise float over the standby card on the stream. */}
+      {!(isGodMode && greenRoom) &&
+        remoteCursors.map(({ peerId, x, y, handle, address, anonId }) => {
+          // anonId already resolved in remoteCursors: peer record wins,
+          // falls back to the cursor broadcast's inline value for HTTP
+          // agents that aren't in our roster.
+          const bands = bandsFromIdentity({ address, anonId, handle, fallback: peerId });
+          const lookupKey = (address ?? anonId)?.toLowerCase();
+          const customName = lookupKey ? mesh.customNames[lookupKey] : undefined;
+          return (
+            <Cursor
+              key={peerId}
+              x={x}
+              y={y}
+              dimmed
+              bands={bands}
+              label={
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {customName ? (
+                    <span>{customName}</span>
+                  ) : handle ? (
+                    <span>{handle}</span>
+                  ) : address ? (
+                    <Address address={address as AddressType} size="xs" onlyEnsOrAddress />
+                  ) : (
+                    <span>{peerId.slice(0, 6)}</span>
+                  )}
+                  <BandFlag bands={bands} />
+                </span>
+              }
+            />
+          );
+        })}
 
       {/* God-mode (spectator) still renders its own local slop cursor so
           the operator can navigate — but usePeerMesh suppresses the
