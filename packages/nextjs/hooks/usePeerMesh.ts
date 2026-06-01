@@ -275,7 +275,7 @@ export type ForwardedTx = {
 export type WalletSigner = {
   address: string;
   label: string;
-  signerType: "eoa" | "passkey";
+  signerType: "eoa" | "passkey" | "erc1271";
   /** P-256 pubkey + credential-id hash. Populated for passkey signers
    *  so the multisig contract can verify their WebAuthn assertions,
    *  and so the local user can identify *their* passkey credential
@@ -309,9 +309,16 @@ export type WalletRecord = {
 };
 export type WalletTxSignature = {
   signer: string;
-  sigType: 0 | 1;
+  sigType: 0 | 1 | 2; // 0 = EOA, 1 = passkey, 2 = ERC-1271 contract signer (nested wallet)
   data: string;
   receivedAt: number;
+};
+// See packages/relay/src/wallet.ts — marks a tx as a nested-signature
+// attestation request rather than an executable transaction.
+export type WalletTxAttestation = {
+  outerSlug: string;
+  outerWalletAddress: string;
+  outerTxId: string;
 };
 export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
 // One sub-call inside a batched tx (Multisig.execBatchTransaction).
@@ -350,6 +357,11 @@ export type WalletTx = {
   // Multisig.execBatchTransaction call. The top-level target/value/data
   // are sentinels (self-address, "0", "0x") and ignored at exec time.
   calls?: WalletTxCall[];
+  // When present, this tx is a nested-signature attestation request: it
+  // lives in the CONTRACT SIGNER's room, is signed there over the outer
+  // wallet's execHash, and the assembled blob routes back to the outer tx.
+  // It is signable but never executed in this room.
+  attestationFor?: WalletTxAttestation;
 };
 
 export type ChatMessage = {
@@ -1481,10 +1493,29 @@ export type PeerMeshState = {
     /** When set + non-empty, becomes a batched execBatchTransaction. */
     calls?: WalletTxCall[];
   }) => void;
-  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => void;
+  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1 | 2; data: string }) => void;
   walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
   walletRemoveTx: (id: string) => void;
   walletResummarize: (id: string) => void;
+  /** Ask a contract-signer wallet (another slop wallet in its own room) to
+   *  attest to this wallet's execHash. The relay routes an attestation
+   *  proposal into that wallet's room. */
+  walletRequestNestedSig: (req: {
+    signerWallet: string; // the contract signer's multisig address (e.g. wallet A)
+    outerWallet: string; // this wallet's address (B)
+    outerLabel?: string | null;
+    outerTxId: string;
+    chainId: number;
+    execHash: string;
+    deadline: string;
+    target: string;
+    value: string;
+    data: string;
+    calls?: WalletTxCall[];
+  }) => void;
+  /** Route an assembled ERC-1271 blob back to the outer wallet's tx once
+   *  this (contract-signer) wallet has reached its own threshold. */
+  walletSendNestedResult: (req: { outerSlug: string; outerTxId: string; signerWallet: string; blob: string }) => void;
   /** User-chosen display names keyed by lowercased address. Wins over
    *  ENS handle when rendering peer labels — see `peerLabel`. */
   customNames: Record<string, string>;
@@ -2672,8 +2703,51 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
   const walletSignTx = useCallback(
-    (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => {
+    (id: string, sig: { signer: string; sigType: 0 | 1 | 2; data: string }) => {
       send({ type: "wallet_tx_sign", id, signer: sig.signer, sigType: sig.sigType, data: sig.data });
+    },
+    [send],
+  );
+  const walletRequestNestedSig = useCallback(
+    (req: {
+      signerWallet: string;
+      outerWallet: string;
+      outerLabel?: string | null;
+      outerTxId: string;
+      chainId: number;
+      execHash: string;
+      deadline: string;
+      target: string;
+      value: string;
+      data: string;
+      calls?: WalletTxCall[];
+    }) => {
+      send({
+        type: "wallet_nested_request",
+        signerWallet: req.signerWallet,
+        outerWallet: req.outerWallet,
+        outerLabel: req.outerLabel ?? null,
+        outerTxId: req.outerTxId,
+        chainId: req.chainId,
+        execHash: req.execHash,
+        deadline: req.deadline,
+        target: req.target,
+        value: req.value,
+        data: req.data,
+        ...(req.calls && req.calls.length > 0 ? { calls: req.calls } : {}),
+      });
+    },
+    [send],
+  );
+  const walletSendNestedResult = useCallback(
+    (req: { outerSlug: string; outerTxId: string; signerWallet: string; blob: string }) => {
+      send({
+        type: "wallet_nested_result",
+        outerSlug: req.outerSlug,
+        outerTxId: req.outerTxId,
+        signerWallet: req.signerWallet,
+        blob: req.blob,
+      });
     },
     [send],
   );
@@ -3905,6 +3979,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletNewEpisode,
     walletProposeTx,
     walletSignTx,
+    walletRequestNestedSig,
+    walletSendNestedResult,
     walletSetTxStatus,
     walletRemoveTx,
     walletResummarize,

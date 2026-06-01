@@ -24,6 +24,7 @@ import {
 import {
   DEFAULT_SLUG,
   findPeerRoom,
+  findRoomByWalletAddress,
   getOrCreateRoom,
   getRoom,
   hibernateRoom,
@@ -6642,7 +6643,7 @@ app.register(async function signalRoutes(fastify) {
               credentialIdHash?: unknown;
             };
             if (typeof s.address !== "string" || typeof s.label !== "string") continue;
-            if (s.signerType !== "eoa" && s.signerType !== "passkey") continue;
+            if (s.signerType !== "eoa" && s.signerType !== "passkey" && s.signerType !== "erc1271") continue;
             const signer: WalletSigner = {
               address: s.address.toLowerCase(),
               label: s.label,
@@ -6881,7 +6882,7 @@ app.register(async function signalRoutes(fastify) {
             typeof msg.id !== "string" ||
             typeof msg.signer !== "string" ||
             typeof msg.data !== "string" ||
-            (msg.sigType !== 0 && msg.sigType !== 1)
+            (msg.sigType !== 0 && msg.sigType !== 1 && msg.sigType !== 2)
           ) {
             return send(socket, { type: "error", error: "bad_sign" });
           }
@@ -6889,6 +6890,75 @@ app.register(async function signalRoutes(fastify) {
             signer: msg.signer,
             sigType: msg.sigType,
             data: msg.data,
+            receivedAt: Date.now(),
+          });
+          return;
+        }
+        case "wallet_nested_request": {
+          // Wallet B (in THIS room) has wallet A as an ERC-1271 signer and
+          // asks A to attest to B's execHash. Route an attestation proposal
+          // into A's room; A's signers sign it normally and the result
+          // bubbles back via `wallet_nested_result`.
+          const signerWallet = typeof msg.signerWallet === "string" ? msg.signerWallet.toLowerCase() : null;
+          const outerWallet = typeof msg.outerWallet === "string" ? msg.outerWallet.toLowerCase() : null;
+          const outerTxId = typeof msg.outerTxId === "string" ? msg.outerTxId : null;
+          const execHash = typeof msg.execHash === "string" ? msg.execHash : null;
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : null;
+          if (!signerWallet || !outerWallet || !outerTxId || !execHash || chainId === null) {
+            return send(socket, { type: "error", error: "bad_nested_request" });
+          }
+          const targetRoom = findRoomByWalletAddress(signerWallet);
+          if (!targetRoom) {
+            return send(socket, { type: "error", error: "nested_wallet_not_found", signerWallet });
+          }
+          const rawCalls = Array.isArray(msg.calls)
+            ? (msg.calls as unknown[])
+                .map(c => {
+                  if (!c || typeof c !== "object") return null;
+                  const call = c as { target?: unknown; value?: unknown; data?: unknown };
+                  if (typeof call.target !== "string" || typeof call.value !== "string" || typeof call.data !== "string")
+                    return null;
+                  return { target: call.target, value: call.value, data: call.data };
+                })
+                .filter((c): c is { target: string; value: string; data: string } => c !== null)
+            : undefined;
+          targetRoom.wallet.proposeTx({
+            multisigAddress: signerWallet,
+            chainId,
+            from: outerWallet,
+            fromLabel: typeof msg.outerLabel === "string" ? msg.outerLabel : null,
+            source: "manual",
+            browserId: null,
+            target: typeof msg.target === "string" ? msg.target : signerWallet,
+            value: typeof msg.value === "string" ? msg.value : "0",
+            data: typeof msg.data === "string" ? msg.data : "0x",
+            deadline: typeof msg.deadline === "string" ? msg.deadline : "0",
+            nonce: "0", // irrelevant: A attests, it does not execute
+            execHash,
+            ...(rawCalls && rawCalls.length > 0 ? { calls: rawCalls } : {}),
+            attestationFor: { outerSlug: room.id, outerWalletAddress: outerWallet, outerTxId },
+          });
+          return;
+        }
+        case "wallet_nested_result": {
+          // Wallet A's room reached threshold on an attestation and assembled
+          // the ERC-1271 blob. Add it to the outer wallet B's tx as a
+          // sigType-2 signature from A's address.
+          const outerSlug = typeof msg.outerSlug === "string" ? msg.outerSlug : null;
+          const outerTxId = typeof msg.outerTxId === "string" ? msg.outerTxId : null;
+          const signerWallet = typeof msg.signerWallet === "string" ? msg.signerWallet.toLowerCase() : null;
+          const blob = typeof msg.blob === "string" ? msg.blob : null;
+          if (!outerSlug || !outerTxId || !signerWallet || !blob) {
+            return send(socket, { type: "error", error: "bad_nested_result" });
+          }
+          const outerRoom = getRoom(outerSlug) ?? findRoomByWalletAddress(signerWallet);
+          if (!outerRoom) {
+            return send(socket, { type: "error", error: "outer_room_not_found", outerSlug });
+          }
+          outerRoom.wallet.addSignature(outerTxId, {
+            signer: signerWallet,
+            sigType: 2,
+            data: blob,
             receivedAt: Date.now(),
           });
           return;

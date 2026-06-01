@@ -14,7 +14,7 @@ import { writeFileAtomic } from "./fs-atomic.js";
 const MAX_HISTORY = 50;
 const MAX_TXS = 100;
 
-export type WalletSignerType = "eoa" | "passkey";
+export type WalletSignerType = "eoa" | "passkey" | "erc1271";
 
 export type WalletSigner = {
   address: string; // 0x-lowercased 20-byte address
@@ -56,9 +56,22 @@ export type WalletRecord = {
 
 export type WalletTxSignature = {
   signer: string; // 0x-lowercased 20-byte
-  sigType: 0 | 1; // 0 = EOA, 1 = passkey
-  data: string; // 0x-prefixed
+  sigType: 0 | 1 | 2; // 0 = EOA, 1 = passkey, 2 = ERC-1271 contract signer (e.g. a nested Multisig)
+  data: string; // 0x-prefixed (sigType 2: abi-encoded Signature[] blob from the nested wallet's signers)
   receivedAt: number;
+};
+
+// Marks a WalletTx as a nested-signature ATTESTATION request rather than an
+// executable transaction. When wallet B has wallet A as an ERC-1271 signer,
+// B's session asks A to attest to B's execHash: the relay injects an
+// attestation tx into A's room. A's signers sign it normally (over the raw
+// execHash); once A reaches its own threshold, A's session assembles the
+// ERC-1271 blob and routes it back to B's outer tx (`wallet_nested_result`).
+// An attestation tx is signable but NEVER executed on-chain in A's room.
+export type WalletTxAttestation = {
+  outerSlug: string; // room slug of the outer wallet (B) — where the result routes back
+  outerWalletAddress: string; // B's multisig address (lowercased)
+  outerTxId: string; // the outer tx id this attestation contributes a signature to
 };
 
 export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
@@ -106,6 +119,10 @@ export type WalletTx = {
   // 0, 0x) and ignored at execute time. The execHash is computed from
   // the batch instead of (target, value, data).
   calls?: WalletTxCall[];
+  // When present, this tx is a nested-signature attestation request (see
+  // WalletTxAttestation). Signable in this room, never executed here — on
+  // threshold the client routes the assembled blob back to the outer tx.
+  attestationFor?: WalletTxAttestation;
 };
 
 // Collaborative pre-deploy form state — replicated to every peer so
@@ -196,6 +213,8 @@ export type ProposeTxInput = {
   // target/value/data are still required (as sentinels) so the schema
   // stays uniform.
   calls?: WalletTxCall[];
+  // Optional: when set, this is a nested-signature attestation request.
+  attestationFor?: WalletTxAttestation;
 };
 
 export class WalletState {
@@ -401,6 +420,15 @@ export class WalletState {
       createdAt: now,
       updatedAt: now,
       ...(normalizedCalls ? { calls: normalizedCalls } : {}),
+      ...(input.attestationFor
+        ? {
+            attestationFor: {
+              outerSlug: input.attestationFor.outerSlug,
+              outerWalletAddress: input.attestationFor.outerWalletAddress.toLowerCase(),
+              outerTxId: input.attestationFor.outerTxId,
+            },
+          }
+        : {}),
     };
     this.state.txs.unshift(tx);
     if (this.state.txs.length > MAX_TXS) this.state.txs.length = MAX_TXS;

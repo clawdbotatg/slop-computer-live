@@ -696,6 +696,22 @@ export function findPeerRoom(peerId: string): Room | undefined {
   return undefined;
 }
 
+/** Find the room whose CURRENT wallet has the given on-chain address.
+ *  This is the cross-room bridge for nested multisig signing: when wallet
+ *  B (in one room) has wallet A as an ERC-1271 signer, the relay routes
+ *  B's attestation request to A's room by looking A's address up here.
+ *  Scans in-memory rooms only — both sessions are expected to be live
+ *  during a nested-signing flow. Returns undefined if A's room isn't
+ *  loaded (e.g. nobody is connected to it). */
+export function findRoomByWalletAddress(address: string): Room | undefined {
+  const target = address.toLowerCase();
+  for (const room of rooms.values()) {
+    const cur = room.wallet.getCurrent();
+    if (cur && cur.address.toLowerCase() === target) return room;
+  }
+  return undefined;
+}
+
 /**
  * Drop a room's in-memory slice. Persistent state (todos.json,
  * wallet.json, etc.) stays on disk and lazy-loads on the next

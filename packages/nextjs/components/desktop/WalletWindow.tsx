@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import { type Address as AddressType, type Hex, decodeEventLog, formatEther } from "viem";
+import {
+  type Address as AddressType,
+  type Hex,
+  decodeEventLog,
+  encodeAbiParameters,
+  formatEther,
+  parseAbiParameters,
+} from "viem";
 import { arbitrum, base, gnosis, mainnet, optimism, polygon } from "viem/chains";
 import {
   useAccount,
@@ -39,7 +46,7 @@ const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8
 type ResolvedSigner = {
   address: AddressType;
   label: string;
-  signerType: "eoa" | "passkey";
+  signerType: "eoa" | "passkey" | "erc1271";
   qx?: `0x${string}`;
   qy?: `0x${string}`;
   credentialIdHash?: `0x${string}`;
@@ -1092,6 +1099,49 @@ const ChainRow = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [probeKey]);
 
+  // Detect which non-passkey signers are contracts (have on-chain code) →
+  // they must be registered as ERC-1271 `contractSigners`, not EOAs, or the
+  // multisig can never verify their nested signatures. Only relevant
+  // pre-deploy (an `existing` wallet trusts its persisted signer types).
+  const [contractSignerAddrs, setContractSignerAddrs] = useState<Set<string>>(new Set());
+  const candidateContractAddrs = useMemo(
+    () => signers.filter(s => s.signerType !== "passkey").map(s => s.address.toLowerCase()),
+    [signers],
+  );
+  const contractProbeKey = `${chainId}:${candidateContractAddrs.join(",")}`;
+  useEffect(() => {
+    if (existing || !publicClient || candidateContractAddrs.length === 0) {
+      setContractSignerAddrs(new Set());
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      candidateContractAddrs.map(async addr => {
+        try {
+          const code = await publicClient.getBytecode({ address: addr as AddressType });
+          return code && code !== "0x" ? addr : null;
+        } catch {
+          return null;
+        }
+      }),
+    ).then(results => {
+      if (cancelled) return;
+      setContractSignerAddrs(new Set(results.filter((a): a is string => a !== null)));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contractProbeKey, existing]);
+
+  // Effective signer type for one signer, upgrading detected contracts to
+  // erc1271. Used by both the createMultisig partition and the WalletRecord.
+  const effectiveSignerType = useCallback(
+    (s: ResolvedSigner): ResolvedSigner["signerType"] =>
+      s.signerType !== "passkey" && contractSignerAddrs.has(s.address.toLowerCase()) ? "erc1271" : s.signerType,
+    [contractSignerAddrs],
+  );
+
   // Did we already record a deployment for this chain?
   const localDep = existing?.deployments[chainId] ?? null;
   const alreadyDeployedOnChain = !!localDep || hasCode === true;
@@ -1164,7 +1214,7 @@ const ChainRow = ({
           signers: signers.map(s => ({
             address: s.address.toLowerCase(),
             label: s.label,
-            signerType: s.signerType,
+            signerType: effectiveSignerType(s),
             ...(s.qx ? { qx: s.qx } : {}),
             ...(s.qy ? { qy: s.qy } : {}),
             ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
@@ -1214,11 +1264,17 @@ const ChainRow = ({
     const passkeyQxs: `0x${string}`[] = [];
     const passkeyQys: `0x${string}`[] = [];
     const credentialIdHashes: `0x${string}`[] = [];
+    const contractSigners: AddressType[] = [];
     for (const s of signers) {
-      if (s.signerType === "passkey" && s.qx && s.qy && s.credentialIdHash) {
+      const kind = effectiveSignerType(s);
+      if (kind === "passkey" && s.qx && s.qy && s.credentialIdHash) {
         passkeyQxs.push(s.qx);
         passkeyQys.push(s.qy);
         credentialIdHashes.push(s.credentialIdHash);
+      } else if (kind === "erc1271") {
+        // Another contract (e.g. a nested slop wallet) — registered as an
+        // ERC-1271 signer so the multisig verifies it via isValidSignature.
+        contractSigners.push(s.address);
       } else {
         eoaSigners.push(s.address);
       }
@@ -1233,13 +1289,24 @@ const ChainRow = ({
         functionName: "createMultisig",
         chainId,
         // args: eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, contractSigners, threshold, salt
-        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, [], BigInt(threshold), salt],
+        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, contractSigners, BigInt(threshold), salt],
       });
       setTxHash(hash);
     } catch (e) {
       setErr(String(e).slice(0, 200));
     }
-  }, [canDeploy, deployer, signers, connectedChainId, chainId, switchChainAsync, writeContractAsync, threshold, salt]);
+  }, [
+    canDeploy,
+    deployer,
+    signers,
+    connectedChainId,
+    chainId,
+    switchChainAsync,
+    writeContractAsync,
+    threshold,
+    salt,
+    effectiveSignerType,
+  ]);
 
   const busy = writePending || receiptLoading || switching;
 
@@ -1268,7 +1335,7 @@ const ChainRow = ({
       signers: signers.map(s => ({
         address: s.address.toLowerCase(),
         label: s.label,
-        signerType: s.signerType,
+        signerType: effectiveSignerType(s),
         ...(s.qx ? { qx: s.qx } : {}),
         ...(s.qy ? { qy: s.qy } : {}),
         ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
@@ -1279,7 +1346,19 @@ const ChainRow = ({
       label,
     };
     mesh.walletDeploy(record);
-  }, [canDeploy, localPredicted, deployer, existing, chainId, salt, signers, threshold, label, mesh]);
+  }, [
+    canDeploy,
+    localPredicted,
+    deployer,
+    existing,
+    chainId,
+    salt,
+    signers,
+    threshold,
+    label,
+    mesh,
+    effectiveSignerType,
+  ]);
 
   const statusNode = (() => {
     if (alreadyDeployedOnChain) {
@@ -2235,6 +2314,81 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   const hasMySig = !!myLowerAddress && tx.signatures.some(s => s.signer.toLowerCase() === myLowerAddress);
   const enoughSigs = tx.signatures.length >= wallet.threshold;
 
+  // Nested-multisig (ERC-1271) wiring.
+  // - This wallet's registered contract signers (e.g. another slop wallet).
+  const contractSignerEntries = wallet.signers.filter(s => s.signerType === "erc1271");
+  const unsignedContractSigners = contractSignerEntries.filter(
+    cs => !tx.signatures.some(sig => sig.signer.toLowerCase() === cs.address.toLowerCase()),
+  );
+  // - This tx is an ATTESTATION request: it lives in the contract signer's
+  //   room and, once threshold is met, its blob routes back to the outer tx.
+  //   Signable here, never executed here.
+  const isAttestation = !!tx.attestationFor;
+  // - Phase 1: a contract signer attests via its PASSKEY signer (raw-hash
+  //   signing). An EOA signer would need an un-prefixed raw signature, which
+  //   browser wallets don't expose — blocked until Phase 2.
+  const attestationEoaBlocked = isAttestation && isMySigner && !isPasskeySigner;
+
+  // Once an attestation reaches this wallet's threshold, assemble the
+  // ERC-1271 blob from the collected signatures and route it back to the
+  // outer wallet's tx. Guarded so we send exactly once per tx.
+  const nestedResultSentRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isAttestation || !tx.attestationFor) return;
+    if (tx.signatures.length < wallet.threshold) return;
+    if (nestedResultSentRef.current.has(tx.id)) return;
+    try {
+      const sorted = sortSignatures(
+        tx.signatures.map<WalletSignature>(s => ({
+          sigType: s.sigType,
+          signer: s.signer as `0x${string}`,
+          data: s.data as `0x${string}`,
+        })),
+      );
+      const blob = encodeAbiParameters(parseAbiParameters("(uint8 sigType, address signer, bytes data)[]"), [sorted]);
+      nestedResultSentRef.current.add(tx.id);
+      mesh.walletSendNestedResult({
+        outerSlug: tx.attestationFor.outerSlug,
+        outerTxId: tx.attestationFor.outerTxId,
+        signerWallet: wallet.address,
+        blob,
+      });
+    } catch (e) {
+      console.error("[wallet] nested result assembly failed", e);
+    }
+  }, [isAttestation, tx.attestationFor, tx.signatures, tx.id, wallet.threshold, wallet.address, mesh]);
+
+  const onRequestNested = useCallback(
+    (signerWallet: string) => {
+      mesh.walletRequestNestedSig({
+        signerWallet,
+        outerWallet: wallet.address,
+        outerLabel: wallet.label,
+        outerTxId: tx.id,
+        chainId: tx.chainId,
+        execHash: tx.execHash,
+        deadline: tx.deadline,
+        target: tx.target,
+        value: tx.value,
+        data: tx.data,
+        ...(tx.calls && tx.calls.length > 0 ? { calls: tx.calls } : {}),
+      });
+    },
+    [
+      mesh,
+      wallet.address,
+      wallet.label,
+      tx.id,
+      tx.chainId,
+      tx.execHash,
+      tx.deadline,
+      tx.target,
+      tx.value,
+      tx.data,
+      tx.calls,
+    ],
+  );
+
   useEffect(() => {
     if (execReceipt) {
       mesh.walletSetTxStatus(
@@ -2330,6 +2484,13 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       return;
     }
     // EOA path — needs the wagmi wallet.
+    if (isAttestation) {
+      // Attestation = this wallet co-signing another wallet's execHash via
+      // ERC-1271, which verifies the RAW hash. A wagmi EOA signature is
+      // personal_sign-prefixed and would fail. Phase 2 adds raw EOA signing.
+      setErr("EOA contract-signing isn't supported yet — co-sign with this wallet's passkey signer.");
+      return;
+    }
     if (!connectedAddress) {
       console.warn("[wallet] onSign abort: no connected EOA");
       setErr("connect your wallet to sign");
@@ -2344,7 +2505,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       console.error("[wallet] onSign EOA error", e);
       setErr(String(e).slice(0, 200));
     }
-  }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash]);
+  }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash, isAttestation]);
 
   // A tx with `calls` is a batched proposal — exec goes through
   // execBatchTransaction instead of execTransaction. The top-level
@@ -2737,12 +2898,27 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         </div>
       ) : null}
 
+      {isAttestation && tx.attestationFor ? (
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--slop-cyan, #3fcfff)",
+            padding: 6,
+            background: "rgba(63,207,255,0.07)",
+            borderRadius: 3,
+          }}
+        >
+          Co-signing for wallet {tx.attestationFor.outerWalletAddress.slice(0, 6)}…
+          {tx.attestationFor.outerWalletAddress.slice(-4)} · {tx.signatures.length}/{wallet.threshold} signed
+          {enoughSigs ? " · returned ✓" : ""}
+        </div>
+      ) : null}
       {tx.status === "pending" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <Button
             variant={enoughSigs ? undefined : "primary"}
             onClick={onSign}
-            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired}
+            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired || attestationEoaBlocked}
             title={
               !isMySigner
                 ? "You aren't a registered signer on this multisig."
@@ -2750,20 +2926,39 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
                   ? "You've already signed."
                   : expired
                     ? "Past deadline."
-                    : isPasskeySigner
-                      ? "Sign this transaction with your passkey."
-                      : "Sign this transaction."
+                    : attestationEoaBlocked
+                      ? "EOA contract-signing isn't supported yet — co-sign with this wallet's passkey signer."
+                      : isPasskeySigner
+                        ? "Sign this transaction with your passkey."
+                        : "Sign this transaction."
             }
           >
-            {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : "Sign"}
+            {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : isAttestation ? "Co-sign" : "Sign"}
           </Button>
-          <Button
-            variant={enoughSigs ? "primary" : undefined}
-            onClick={onExecute}
-            disabled={writing || execWaiting || !enoughSigs || expired}
-          >
-            {execWaiting ? "Waiting…" : writing ? "Submitting…" : "Execute"}
-          </Button>
+          {/* Attestation txs are never executed in this room — the blob
+           *  routes back to the outer wallet. So no Execute / nested-request
+           *  controls here; just the Sign button above. */}
+          {!isAttestation ? (
+            <>
+              <Button
+                variant={enoughSigs ? "primary" : undefined}
+                onClick={onExecute}
+                disabled={writing || execWaiting || !enoughSigs || expired}
+              >
+                {execWaiting ? "Waiting…" : writing ? "Submitting…" : "Execute"}
+              </Button>
+              {unsignedContractSigners.map(cs => (
+                <Button
+                  key={cs.address}
+                  onClick={() => onRequestNested(cs.address)}
+                  disabled={expired}
+                  title={`Ask wallet ${cs.address} (a contract signer) to co-sign in its own session.`}
+                >
+                  Request from {cs.label || `${cs.address.slice(0, 6)}…${cs.address.slice(-4)}`}
+                </Button>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : isStuckExecuting ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
