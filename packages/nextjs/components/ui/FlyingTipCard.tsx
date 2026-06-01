@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { EmojiConfetti } from "~~/components/ui/EmojiConfetti";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { EmojiConfetti, FallingEmoji, confettiForAmount } from "~~/components/ui/EmojiConfetti";
 import type { TipCard } from "~~/hooks/usePeerMesh";
 
 // How long the card takes to fly from the chat window to the vault. Slow +
 // deliberate so the tip reads as a real event, not a flicker. Confetti fires
 // the moment it lands. Keep mesh's tip-prune TTL comfortably above this.
-const FLY_MS = 3200;
+const FLY_MS = 6500;
+
+// How often (ms) we drip emoji off the card as it crosses the screen, and how
+// many to shed each tick — a dense trail that rains down as the card travels.
+const DRIP_EVERY_MS = 80;
+const DRIP_PER_TICK = 2;
+// How long a dripped emoji lives (covers its full fall + fade).
+const DRIP_TTL_MS = 3800;
+
+type Drip = { id: number; x: number; y: number; emoji: string };
 
 // Short chain tags to match the user's "0.001 base eth" phrasing.
 const CHAIN_TAGS: Record<number, string> = { 1: "eth", 8453: "base", 100: "gnosis" };
@@ -38,6 +47,9 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
   const [geom, setGeom] = useState<Geom | null>(null);
   const [flying, setFlying] = useState(false);
   const [landed, setLanded] = useState(false);
+  const [drips, setDrips] = useState<Drip[]>([]);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const dripIdRef = useRef(0);
 
   // Measure start (top of chat window) + end (multisig anchor) before paint.
   useLayoutEffect(() => {
@@ -65,6 +77,53 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
     };
   }, [geom]);
 
+  // While the card is in flight, sample its live position (getBoundingClientRect
+  // reflects the in-progress CSS transform) and shed an emoji every so often —
+  // a trail that drips off the card and falls down the screen, same gravity
+  // tween as the landing confetti. Emoji palette scales with tip size.
+  useEffect(() => {
+    if (!flying) return;
+    const { emojis } = confettiForAmount(tip.amountEth);
+    let raf = 0;
+    let last = 0;
+    let stopped = false;
+    const loop = (t: number) => {
+      if (stopped) return;
+      if (t - last >= DRIP_EVERY_MS) {
+        last = t;
+        const el = cardRef.current;
+        if (el) {
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const fresh: Drip[] = [];
+          for (let i = 0; i < DRIP_PER_TICK; i++) {
+            dripIdRef.current += 1;
+            const id = dripIdRef.current;
+            const emoji = emojis[Math.floor(Math.random() * emojis.length)] ?? "✨";
+            // scatter the spawn point across the card so the trail has width
+            const x = cx + (Math.random() - 0.5) * r.width;
+            const y = cy + (Math.random() - 0.5) * r.height;
+            fresh.push({ id, x, y, emoji });
+            setTimeout(() => setDrips(prev => prev.filter(d => d.id !== id)), DRIP_TTL_MS);
+          }
+          setDrips(prev => [...prev, ...fresh]);
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    const stop = setTimeout(() => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    }, FLY_MS);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(stop);
+    };
+  }, [flying, tip.amountEth]);
+
   if (!geom) return null;
 
   const endX = geom.startX + geom.dx;
@@ -73,6 +132,7 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
   return (
     <>
       <div
+        ref={cardRef}
         style={{
           position: "fixed",
           left: geom.startX,
@@ -108,6 +168,9 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
           🎉 {name} tipped {tip.amountEth} {chain} ETH
         </span>
       </div>
+      {drips.map(d => (
+        <FallingEmoji key={d.id} x={d.x} y={d.y} emoji={d.emoji} size={22} />
+      ))}
       {landed && <EmojiConfetti x={endX} y={endY} amountEth={tip.amountEth} />}
     </>
   );

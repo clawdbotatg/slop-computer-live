@@ -31,6 +31,51 @@ type Piece = {
   duration: number;
 };
 
+// A single emoji that drops from a point and falls down the viewport, fading
+// as it goes — the same gravity tween the confetti burst uses, but one piece
+// at a time. Used to "drip" emoji off the flying tip card as it crosses the
+// screen. Self-contained; the parent unmounts it when the drip's done.
+export const FallingEmoji = ({ x, y, emoji, size = 24 }: { x: number; y: number; emoji: string; size?: number }) => {
+  const target = useMemo(() => {
+    const fall = window.innerHeight - y + 100;
+    return {
+      dx: (Math.random() - 0.5) * 160,
+      dy: fall * (0.6 + Math.random() * 0.45),
+      rot: (Math.random() - 0.5) * 420,
+      duration: 2200 + Math.random() * 1300,
+    };
+    // x/y are the spawn origin — captured once; later parent re-renders
+    // (new drips) must not retarget an in-flight piece.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const [go, setGo] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setGo(true)));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  return (
+    <span
+      style={{
+        position: "fixed",
+        left: x,
+        top: y,
+        fontSize: size,
+        lineHeight: 1,
+        zIndex: 2147483646,
+        pointerEvents: "none",
+        willChange: "transform, opacity",
+        transform: go ? `translate(${target.dx}px, ${target.dy}px) rotate(${target.rot}deg)` : "translate(0px, 0px)",
+        opacity: go ? 0 : 1,
+        transition: `transform ${target.duration}ms cubic-bezier(0.5, 0, 0.85, 0.4), opacity ${Math.round(target.duration * 0.55)}ms ease-in ${Math.round(target.duration * 0.45)}ms`,
+      }}
+    >
+      {emoji}
+    </span>
+  );
+};
+
 // A burst of falling emoji that erupts from a point (the wallet anchor) and
 // rains down the full viewport so everyone on the stream sees the tip land.
 // Pure CSS transitions (matching FlyingTipCard / ClickRipple house style) —

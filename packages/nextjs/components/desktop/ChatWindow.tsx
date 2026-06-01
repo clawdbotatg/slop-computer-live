@@ -179,6 +179,19 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
     syncedOnScroll();
   };
 
+  // When *you* send anything — chat, command, or local notice — force the
+  // scrollback to the bottom so you see your own message land, even if you'd
+  // scrolled up. Distinct from the respectful stick-to-bottom default above,
+  // which only applies to *incoming* messages. Setting wasAtBottomRef also
+  // keeps the relay's round-tripped echo pinned when it arrives.
+  const forceScrollToBottom = () => {
+    wasAtBottomRef.current = true;
+    requestAnimationFrame(() => {
+      const el = listRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  };
+
   const submit = () => {
     const text = draft.trim();
     if (!text) return;
@@ -187,10 +200,12 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
     // goes to the relay.
     if (text.startsWith("/") && handleLocalCommand(text)) {
       setDraft("");
+      forceScrollToBottom();
       return;
     }
     sendChat(text);
     setDraft("");
+    forceScrollToBottom();
   };
 
   const myKey = (myAddress ?? myHandle ?? "").toLowerCase();
