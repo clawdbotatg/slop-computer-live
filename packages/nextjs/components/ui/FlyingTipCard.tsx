@@ -66,16 +66,25 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
   }, []);
 
   // Once mounted at the start position, kick the transition next frame.
-  // When it lands at the vault, fire the confetti.
+  // When it lands at the vault, fire the confetti — and announce the
+  // landing so the wallet surfaces (window portfolio + menubar chip)
+  // can pull the freshly-bumped balance. They debounce against Zerion's
+  // ~5-15s indexer lag themselves; this is just the "a tip just hit the
+  // vault" signal.
   useEffect(() => {
     if (!geom) return;
     const raf = requestAnimationFrame(() => requestAnimationFrame(() => setFlying(true)));
-    const land = setTimeout(() => setLanded(true), FLY_MS);
+    const land = setTimeout(() => {
+      setLanded(true);
+      window.dispatchEvent(
+        new CustomEvent("slop-tip-landed", { detail: { chainId: tip.chainId, amountEth: tip.amountEth } }),
+      );
+    }, FLY_MS);
     return () => {
       cancelAnimationFrame(raf);
       clearTimeout(land);
     };
-  }, [geom]);
+  }, [geom, tip.chainId, tip.amountEth]);
 
   // While the card is in flight, sample its live position (getBoundingClientRect
   // reflects the in-progress CSS transform) and shed an emoji every so often —

@@ -214,6 +214,21 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
   // user sees the new state without manually pulling refresh.
   const executedTxIdsRef = useRef<Set<string> | null>(null);
   const pendingRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Schedule one or more delayed portfolio refreshes (used to wait out
+  // Zerion's indexer lag after balances change). Timers are tracked so
+  // a wallet swap / unmount can cancel any still in flight.
+  const schedulePortfolioRefresh = useCallback(
+    (delaysMs: number[]) => {
+      for (const delayMs of delaysMs) {
+        const handle = setTimeout(() => {
+          pendingRefreshTimersRef.current.delete(handle);
+          void refreshPortfolio();
+        }, delayMs);
+        pendingRefreshTimersRef.current.add(handle);
+      }
+    },
+    [refreshPortfolio],
+  );
   useEffect(() => {
     executedTxIdsRef.current = null;
     // Drop any timers from the previous wallet — they'd refresh
@@ -239,18 +254,20 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
       }
     }
     executedTxIdsRef.current = current;
-    if (hasNew) {
-      const schedule = (delayMs: number) => {
-        const handle = setTimeout(() => {
-          pendingRefreshTimersRef.current.delete(handle);
-          void refreshPortfolio();
-        }, delayMs);
-        pendingRefreshTimersRef.current.add(handle);
-      };
-      schedule(5_000);
-      schedule(15_000);
-    }
-  }, [mesh.walletTxs, walletAddress, refreshPortfolio]);
+    if (hasNew) schedulePortfolioRefresh([5_000, 15_000]);
+  }, [mesh.walletTxs, walletAddress, schedulePortfolioRefresh]);
+
+  // A spectator tip just flew into the vault. Tips are incoming transfers
+  // — they never show up in mesh.walletTxs (those are multisig-initiated)
+  // — so the executed-tx refresh above won't catch them. Pull fresh
+  // balances on the same 5s/15s Zerion-lag schedule so the bumped total
+  // lands shortly after the animation does.
+  useEffect(() => {
+    if (!walletAddress) return;
+    const onTipLanded = () => schedulePortfolioRefresh([5_000, 15_000]);
+    window.addEventListener("slop-tip-landed", onTipLanded);
+    return () => window.removeEventListener("slop-tip-landed", onTipLanded);
+  }, [walletAddress, schedulePortfolioRefresh]);
   // Cancel any in-flight refresh timers when the window unmounts so
   // we don't fire setState into a torn-down component.
   useEffect(() => {
