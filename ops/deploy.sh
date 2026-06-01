@@ -12,24 +12,38 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCK_FILE="/tmp/slop-deploy.lock"
+# Atomic lock via mkdir — POSIX guarantees mkdir of an existing dir
+# fails with errno EEXIST, so the test+create is one syscall. The
+# previous file-based lock ([ -f ] check then `echo > file`) had a
+# race window where two terminals could both pass the existence check
+# before either wrote. The pid is stashed inside the lock dir so
+# stale-lock detection still works.
+LOCK_DIR="/tmp/slop-deploy.lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
 PROD_HOST="slopcomputer"
 PROD_PATH="/home/ubuntu/slop-computer-live"
 
 # --- Concurrency lock --------------------------------------------------------
 
-if [ -f "$LOCK_FILE" ]; then
-  pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  pid="$(cat "$LOCK_PID_FILE" 2>/dev/null || true)"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     echo "✗ Another deploy is running (PID $pid). Yielding."
-    echo "  Wait for it to finish, or force-clear with:  rm $LOCK_FILE"
+    echo "  Wait for it to finish, or force-clear with:  rm -rf $LOCK_DIR"
     exit 1
   fi
   echo "⚠ Stale lock from PID $pid (process gone); clearing."
-  rm -f "$LOCK_FILE"
+  rm -rf "$LOCK_DIR"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # Lost the race against another waiter while clearing the stale
+    # lock — they're now the rightful holder. Yield politely.
+    pid="$(cat "$LOCK_PID_FILE" 2>/dev/null || true)"
+    echo "✗ Another deploy claimed the lock (PID $pid). Yielding."
+    exit 1
+  fi
 fi
-echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
+echo $$ > "$LOCK_PID_FILE"
+trap 'rm -rf "$LOCK_DIR"' EXIT
 
 # --- Pre-flight checks -------------------------------------------------------
 
