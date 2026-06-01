@@ -79,12 +79,30 @@ function BottomVisualizer({ active }: { active: boolean }) {
           const bins = analyser.frequencyBinCount;
           const data = new Uint8Array(bins);
           analyser.getByteFrequencyData(data);
+          // Music energy lives in the lower FFT bins; the top end is dead
+          // air. Map only the active low range across the FULL width with
+          // a fixed count of chunky bars (instead of one bar per bin, which
+          // left the right ~20% flat). A gentle high-band lift keeps motion
+          // edge-to-edge since the upper bars are naturally quieter.
           const start = 1; // skip DC bin
-          const used = bins - start;
+          const usable = Math.max(8, Math.floor((bins - start) * 0.66));
+          const BARS = 44;
           const gap = Math.max(1, dpr);
-          const barW = (W - gap * (used + 1)) / used;
-          for (let i = 0; i < used; i++) {
-            const v = (data[i + start] ?? 0) / 255;
+          const barW = (W - gap * (BARS + 1)) / BARS;
+          for (let i = 0; i < BARS; i++) {
+            const f = i / (BARS - 1); // 0..1 across the width
+            // Average a small window of the usable range for this bar.
+            const center = start + f * (usable - 1);
+            const lo = Math.floor(center);
+            const hi = Math.min(start + usable - 1, lo + 1);
+            let sum = 0;
+            let n = 0;
+            for (let b = lo; b <= hi; b++) {
+              sum += data[b] ?? 0;
+              n++;
+            }
+            let v = sum / Math.max(1, n) / 255;
+            v = Math.min(1, v * (1 + f * 0.75)); // lift the quieter highs
             const h = Math.max(dpr, v * H);
             const x = gap + i * (barW + gap);
             const grad = ctx.createLinearGradient(0, H, 0, H - h);
