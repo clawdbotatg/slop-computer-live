@@ -1267,27 +1267,22 @@ const ChainRow = ({
       return;
     }
     // Partition the resolved signer set into the contract's two
-    // parallel arrays. A passkey signer is one we have full pubkey
-    // data for (qx + qy + credentialIdHash); fall back to EOA otherwise.
-    // The contract registers each kind into its own table, so getting
-    // this wrong reverts later with `SignerTypeMismatch` at sign time.
-    const eoaSigners: AddressType[] = [];
+    // parallel arrays. A passkey signer is one we have full pubkey data for
+    // (qx + qy + credentialIdHash); everything else (EOA, 7702 smart account,
+    // Safe, nested Multisig) is an "account" signer — v4 validates those
+    // polymorphically (ECDSA-or-ERC1271), so they all go in one array and the
+    // contract never needs to know which kind at registration.
+    const accounts: AddressType[] = [];
     const passkeyQxs: `0x${string}`[] = [];
     const passkeyQys: `0x${string}`[] = [];
     const credentialIdHashes: `0x${string}`[] = [];
-    const contractSigners: AddressType[] = [];
     for (const s of signers) {
-      const kind = effectiveSignerType(s);
-      if (kind === "passkey" && s.qx && s.qy && s.credentialIdHash) {
+      if (s.signerType === "passkey" && s.qx && s.qy && s.credentialIdHash) {
         passkeyQxs.push(s.qx);
         passkeyQys.push(s.qy);
         credentialIdHashes.push(s.credentialIdHash);
-      } else if (kind === "erc1271") {
-        // Another contract (e.g. a nested slop wallet) — registered as an
-        // ERC-1271 signer so the multisig verifies it via isValidSignature.
-        contractSigners.push(s.address);
       } else {
-        eoaSigners.push(s.address);
+        accounts.push(s.address);
       }
     }
     try {
@@ -1299,25 +1294,14 @@ const ChainRow = ({
         abi: MultisigFactoryAbi,
         functionName: "createMultisig",
         chainId,
-        // args: eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, contractSigners, threshold, salt
-        args: [eoaSigners, passkeyQxs, passkeyQys, credentialIdHashes, contractSigners, BigInt(threshold), salt],
+        // args: accounts, passkeyQxs, passkeyQys, credentialIdHashes, threshold, salt
+        args: [accounts, passkeyQxs, passkeyQys, credentialIdHashes, BigInt(threshold), salt],
       });
       setTxHash(hash);
     } catch (e) {
       setErr(String(e).slice(0, 200));
     }
-  }, [
-    canDeploy,
-    deployer,
-    signers,
-    connectedChainId,
-    chainId,
-    switchChainAsync,
-    writeContractAsync,
-    threshold,
-    salt,
-    effectiveSignerType,
-  ]);
+  }, [canDeploy, deployer, signers, connectedChainId, chainId, switchChainAsync, writeContractAsync, threshold, salt]);
 
   const busy = writePending || receiptLoading || switching;
 

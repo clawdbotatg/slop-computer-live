@@ -6882,7 +6882,7 @@ app.register(async function signalRoutes(fastify) {
             typeof msg.id !== "string" ||
             typeof msg.signer !== "string" ||
             typeof msg.data !== "string" ||
-            (msg.sigType !== 0 && msg.sigType !== 1 && msg.sigType !== 2)
+            (msg.sigType !== 0 && msg.sigType !== 1)
           ) {
             return send(socket, { type: "error", error: "bad_sign" });
           }
@@ -6957,7 +6957,9 @@ app.register(async function signalRoutes(fastify) {
           }
           outerRoom.wallet.addSignature(outerTxId, {
             signer: signerWallet,
-            sigType: 2,
+            // v4: a nested wallet is an Account signer (sigType 0); the contract validates the blob
+            // via ECDSA-or-ERC1271. (Was sigType 2 / ERC1271 in v2–v3.)
+            sigType: 0,
             data: blob,
             receivedAt: Date.now(),
           });

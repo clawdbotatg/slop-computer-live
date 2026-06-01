@@ -56,7 +56,7 @@ export type WalletRecord = {
 
 export type WalletTxSignature = {
   signer: string; // 0x-lowercased 20-byte
-  sigType: 0 | 1 | 2; // 0 = EOA, 1 = passkey, 2 = ERC-1271 contract signer (e.g. a nested Multisig)
+  sigType: 0 | 1; // 0 = Account (EOA / 7702 / Safe / Multisig / any ERC-1271), 1 = Passkey
   data: string; // 0x-prefixed (sigType 2: abi-encoded Signature[] blob from the nested wallet's signers)
   receivedAt: number;
 };

@@ -10,20 +10,7 @@
   },
   {
     "type": "function",
-    "name": "addContractSigner",
-    "inputs": [
-      {
-        "name": "signer",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "addEoaSigner",
+    "name": "addAccountSigner",
     "inputs": [
       {
         "name": "signer",
@@ -373,7 +360,7 @@
     "name": "initialize",
     "inputs": [
       {
-        "name": "eoaSigners",
+        "name": "accounts",
         "type": "address[]",
         "internalType": "address[]"
       },
@@ -393,11 +380,6 @@
         "internalType": "bytes32[]"
       },
       {
-        "name": "contractSigners",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
         "name": "_threshold",
         "type": "uint256",
         "internalType": "uint256"
@@ -408,7 +390,7 @@
   },
   {
     "type": "function",
-    "name": "isContractSigner",
+    "name": "isAccountSigner",
     "inputs": [
       {
         "name": "addr",
@@ -766,38 +748,6 @@
     "type": "error",
     "name": "AlreadySigner",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ContractSignerHasNoCode",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ECDSAInvalidSignature",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ECDSAInvalidSignatureLength",
-    "inputs": [
-      {
-        "name": "length",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "ECDSAInvalidSignatureS",
-    "inputs": [
-      {
-        "name": "s",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ]
   },
   {
     "type": "error",

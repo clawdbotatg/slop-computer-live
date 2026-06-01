@@ -15,7 +15,7 @@
     "name": "createMultisig",
     "inputs": [
       {
-        "name": "eoaSigners",
+        "name": "accounts",
         "type": "address[]",
         "internalType": "address[]"
       },
@@ -33,11 +33,6 @@
         "name": "credentialIdHashes",
         "type": "bytes32[]",
         "internalType": "bytes32[]"
-      },
-      {
-        "name": "contractSigners",
-        "type": "address[]",
-        "internalType": "address[]"
       },
       {
         "name": "threshold",
@@ -119,13 +114,7 @@
         "internalType": "bytes32"
       },
       {
-        "name": "eoaSigners",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
-      },
-      {
-        "name": "contractSigners",
+        "name": "accounts",
         "type": "address[]",
         "indexed": false,
         "internalType": "address[]"

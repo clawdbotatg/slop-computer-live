@@ -309,7 +309,7 @@ export type WalletRecord = {
 };
 export type WalletTxSignature = {
   signer: string;
-  sigType: 0 | 1 | 2; // 0 = EOA, 1 = passkey, 2 = ERC-1271 contract signer (nested wallet)
+  sigType: 0 | 1; // 0 = Account (EOA / 7702 / Safe / Multisig / any ERC-1271), 1 = Passkey
   data: string;
   receivedAt: number;
 };
@@ -1493,7 +1493,7 @@ export type PeerMeshState = {
     /** When set + non-empty, becomes a batched execBatchTransaction. */
     calls?: WalletTxCall[];
   }) => void;
-  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1 | 2; data: string }) => void;
+  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => void;
   walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
   walletRemoveTx: (id: string) => void;
   walletResummarize: (id: string) => void;
@@ -2703,7 +2703,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
   const walletSignTx = useCallback(
-    (id: string, sig: { signer: string; sigType: 0 | 1 | 2; data: string }) => {
+    (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => {
       send({ type: "wallet_tx_sign", id, signer: sig.signer, sigType: sig.sigType, data: sig.data });
     },
     [send],
