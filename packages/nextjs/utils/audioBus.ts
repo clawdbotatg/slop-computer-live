@@ -140,6 +140,10 @@ type SourceEntry = {
   userTargetScale: number;
 };
 
+/** Source id the music player registers under (MusicPlayerWindow). The
+ *  green room "solo music" mode keys off this. */
+const MUSIC_SOURCE_ID = "music";
+
 class AudioBusImpl {
   private ctx: AudioContext | null = null;
   /** Sum node: every source GainNode -> sumNode -> EQ chain -> master -> destination. */
@@ -152,6 +156,12 @@ class AudioBusImpl {
    *  match AUTO_TARGET_RMS. The popup checkbox toggles it; any manual
    *  set-source-gain (user dragging a slider) also flips it off. */
   private autoEnabled = true;
+  /** While true, every source EXCEPT "music" is forced to silent gain so
+   *  the broadcast mix carries ONLY the music bed. The god-mode green room
+   *  / standby curtain turns this on: the operator + guest chat backstage,
+   *  but the livestream only hears SlopAmp. Kept separate from per-source
+   *  mute so it never clobbers the operator's manual EQ mutes. */
+  private soloMusic = false;
   private sources = new Map<string, SourceEntry>();
   /** Anti-duplicate guard: once an element has been wrapped in a
    *  MediaElementSourceNode it must never be wrapped again (browser
@@ -264,6 +274,8 @@ class AudioBusImpl {
       lastEmittedGain: 1,
       userTargetScale: 1,
     });
+    // A peer joining mid-green-room must come up silenced on the mix.
+    this.applySoloGain(this.sources.get(id)!);
     this.emit();
     return true;
   }
@@ -321,6 +333,8 @@ class AudioBusImpl {
       lastEmittedGain: 1,
       userTargetScale: 1,
     });
+    // A peer joining mid-green-room must come up silenced on the mix.
+    this.applySoloGain(this.sources.get(id)!);
     this.emit();
     return true;
   }
@@ -367,7 +381,26 @@ class AudioBusImpl {
     if (!entry) return;
     const clamped = Math.max(0, Math.min(4, gain));
     entry.desiredGain = clamped;
-    if (!entry.muted) entry.gainNode.gain.value = clamped;
+    this.applySoloGain(entry);
+  }
+
+  /** Apply the current mute + solo-music state to one source's live gain.
+   *  Solo wins: a non-music source is silent while soloMusic is on, even
+   *  if the operator left it unmuted. */
+  private applySoloGain(entry: SourceEntry): void {
+    const silenced = entry.muted || (this.soloMusic && entry.id !== MUSIC_SOURCE_ID);
+    entry.gainNode.gain.value = silenced ? 0 : entry.desiredGain;
+  }
+
+  /** Green room / standby: solo the music bed so the broadcast mix carries
+   *  only SlopAmp — peer voices (operator + guest chatting backstage) are
+   *  silenced on the god-mode mix WITHOUT muting them in the popup or
+   *  affecting the peer-to-peer audio the participants hear directly. */
+  setSoloMusic(enabled: boolean): void {
+    if (this.soloMusic === enabled) return;
+    this.soloMusic = enabled;
+    for (const entry of this.sources.values()) this.applySoloGain(entry);
+    this.emit();
   }
 
   /** Set the source's "I want to be this loud in the mix" preference
@@ -401,7 +434,7 @@ class AudioBusImpl {
     const entry = this.sources.get(id);
     if (!entry) return;
     entry.muted = muted;
-    entry.gainNode.gain.value = muted ? 0 : entry.desiredGain;
+    this.applySoloGain(entry);
     this.emit();
   }
 
@@ -453,7 +486,10 @@ class AudioBusImpl {
       }
       const postGainRms = Math.sqrt(sum / buf.length);
       out[entry.id] = postGainRms;
-      if (this.autoEnabled && !entry.muted) {
+      // Skip auto-level for solo-silenced sources — otherwise the loop
+      // would keep nudging their gain back up off zero.
+      const soloSilenced = this.soloMusic && entry.id !== MUSIC_SOURCE_ID;
+      if (this.autoEnabled && !entry.muted && !soloSilenced) {
         if (this.tickAuto(entry, postGainRms)) anyGainShifted = true;
       }
     }

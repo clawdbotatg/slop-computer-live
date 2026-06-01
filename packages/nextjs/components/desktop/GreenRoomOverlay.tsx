@@ -56,14 +56,19 @@ function fmtHMS(total: number): string {
 function BottomVisualizer({ active }: { active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const frameRef = useRef(0);
   useEffect(() => {
     if (!active) return;
     let raf = 0;
+    const BARS = 44;
     const loop = () => {
+      frameRef.current += 1;
+      const frame = frameRef.current;
+      // Re-grab each frame — the bus registers "music" lazily.
       if (!analyserRef.current) analyserRef.current = audioBus().getAnalyser("music");
       const analyser = analyserRef.current;
       const canvas = canvasRef.current;
-      if (analyser && canvas) {
+      if (canvas) {
         const dpr = window.devicePixelRatio || 1;
         const cssW = canvas.clientWidth;
         const cssH = canvas.clientHeight;
@@ -76,55 +81,54 @@ function BottomVisualizer({ active }: { active: boolean }) {
           const W = canvas.width;
           const H = canvas.height;
           ctx.clearRect(0, 0, W, H);
-          const bins = analyser.frequencyBinCount;
-          // Use FLOAT (dB) data, not byte. getByteFrequencyData maps a fixed
-          // dB window to 0–255 and floors anything quiet to 0 — and the bus
-          // levels the music down (~0.55), so the post-gain signal sat under
-          // that floor and every bar read dead. getFloatFrequencyData gives
-          // raw dB regardless, so we pick our own sensitive floor and the
-          // bars come alive even at low output. Reflects the MUSIC, not the
-          // output volume.
-          const data = new Float32Array(bins);
-          analyser.getFloatFrequencyData(data);
-          const MIN_DB = -85;
-          const MAX_DB = -25;
-          const db01 = (db: number) => {
-            if (!Number.isFinite(db)) return 0;
-            return Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB)));
-          };
-          // Music energy lives in the lower FFT bins; the top end is dead
-          // air. Map only the active low range across the FULL width with a
-          // fixed count of chunky bars + a gentle high-band lift so there's
-          // motion edge-to-edge.
-          const start = 1; // skip DC bin
-          const usable = Math.max(8, Math.floor((bins - start) * 0.66));
-          const BARS = 44;
           const gap = Math.max(1, dpr);
           const barW = (W - gap * (BARS + 1)) / BARS;
-          const raw = new Array<number>(BARS);
+
+          // Read the real spectrum (float dB — byte data floors to 0 when
+          // the bus levels music down). Map the active low range across the
+          // full width.
+          const raw = new Array<number>(BARS).fill(0);
           let peak = 0;
-          for (let i = 0; i < BARS; i++) {
-            const f = i / (BARS - 1); // 0..1 across the width
-            const center = start + f * (usable - 1);
-            const lo = Math.floor(center);
-            const hi = Math.min(start + usable - 1, lo + 1);
-            let sum = 0;
-            let n = 0;
-            for (let b = lo; b <= hi; b++) {
-              sum += db01(data[b] ?? -Infinity);
-              n++;
+          if (analyser) {
+            const bins = analyser.frequencyBinCount;
+            const data = new Float32Array(bins);
+            analyser.getFloatFrequencyData(data);
+            const MIN_DB = -100;
+            const MAX_DB = -25;
+            const db01 = (db: number) =>
+              Number.isFinite(db) ? Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB))) : 0;
+            const start = 1;
+            const usable = Math.max(8, Math.floor((bins - start) * 0.66));
+            for (let i = 0; i < BARS; i++) {
+              const f = i / (BARS - 1);
+              const center = start + f * (usable - 1);
+              const lo = Math.floor(center);
+              const hi = Math.min(start + usable - 1, lo + 1);
+              let sum = 0;
+              let n = 0;
+              for (let b = lo; b <= hi; b++) {
+                sum += db01(data[b] ?? -Infinity);
+                n++;
+              }
+              const v = (sum / Math.max(1, n)) * (1 + f * 0.9);
+              raw[i] = v;
+              if (v > peak) peak = v;
             }
-            let v = sum / Math.max(1, n);
-            v = v * (1 + f * 0.9); // lift the quieter highs for edge-to-edge motion
-            raw[i] = v;
-            if (v > peak) peak = v;
           }
-          // Normalize to the frame peak so bars fill the height; only when
-          // there's real signal, so silence stays flat instead of
-          // amplifying noise into a full bar.
-          const norm = peak > 0.06 ? 0.96 / peak : 0;
+
+          // Live signal → real normalized spectrum. No signal (muted tab /
+          // suspended context / music closed) → a gentle idle shimmer so the
+          // bottom is never a dead flat line. Either way: motion edge-to-edge.
+          const hasSignal = peak > 0.04;
+          const norm = hasSignal ? 0.96 / peak : 0;
           for (let i = 0; i < BARS; i++) {
-            const v = Math.min(1, raw[i] * norm);
+            let v: number;
+            if (hasSignal) {
+              v = Math.min(1, raw[i] * norm);
+            } else {
+              const t = frame * 0.06;
+              v = 0.1 + 0.09 * (0.5 + 0.5 * Math.sin(t + i * 0.55)) + 0.05 * Math.sin(t * 0.6 + i * 0.27);
+            }
             const h = Math.max(dpr, v * H);
             const x = gap + i * (barW + gap);
             const grad = ctx.createLinearGradient(0, H, 0, H - h);
@@ -244,18 +248,6 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
       {/* Same ambient backdrop as the real desktop. */}
       <DesktopBackground />
 
-      {/* Top-left logo + empty menu bar — a believable but inert chrome. */}
-      <div className="slop-menubar" style={{ position: "relative", zIndex: 3 }}>
-        <span
-          className="slop-menubar__brand slop-menubar__item"
-          style={{ display: "inline-flex", alignItems: "center" }}
-        >
-          <img src="/logo-mark.png" alt="" className="slop-menubar__brand-icon" width={22} height={22} aria-hidden />
-          <span>slop.computer</span>
-        </span>
-        <span className="flex-1" />
-      </div>
-
       {/* The card — a near-fullscreen backdrop BEHIND everything else
           (countdown, wordmark, visualizer, ticker all sit on top). Prefers
           the saved unfurl (title baked in by the disk/save icon). */}
@@ -269,8 +261,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
             left: "50%",
             top: "50%",
             transform: "translate(-50%, -50%)",
-            maxWidth: "92vw",
-            maxHeight: "90vh",
+            maxWidth: "97vw",
+            maxHeight: "96vh",
             objectFit: "contain",
             zIndex: 0,
             borderRadius: 18,
@@ -286,9 +278,9 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
             left: "50%",
             top: "50%",
             transform: "translate(-50%, -50%)",
-            width: "min(92vw, 1600px)",
+            width: "min(97vw, 1700px)",
             aspectRatio: "16 / 9",
-            maxHeight: "90vh",
+            maxHeight: "96vh",
             zIndex: 0,
             display: "flex",
             flexDirection: "column",
@@ -339,7 +331,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
               fontSize: "clamp(48px, 12vw, 180px)",
               color: countdownDone ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-cyan, #3fcfff)",
               textShadow: countdownDone ? "0 0 40px rgba(255,62,201,0.7)" : "0 0 40px rgba(63,207,255,0.55)",
-              transform: countdownDone ? "scale(1.04)" : "none",
+              // Lifted ~15vh above center so it sits in the upper third.
+              transform: countdownDone ? "translateY(-15vh) scale(1.04)" : "translateY(-15vh)",
               transition: "transform 300ms ease, color 300ms ease",
             }}
           >

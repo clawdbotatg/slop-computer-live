@@ -77,6 +77,7 @@ import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG, withSlug } from "~~/lib/slug";
+import { audioBus } from "~~/utils/audioBus";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 import { prewarmDenoise } from "~~/utils/noiseSuppression";
 
@@ -753,6 +754,15 @@ function DesktopInner({ slug }: { slug: string }) {
   const toggleGreenRoom = useCallback(() => {
     meshSetGreenRoom(!greenRoom);
   }, [meshSetGreenRoom, greenRoom]);
+  // Green room = solo the music on the god-mode broadcast mix. The
+  // streaming box mixes every peer's audio for the stream; in standby we
+  // silence all of it EXCEPT SlopAmp so the operator + guest can talk
+  // backstage without the livestream hearing them. Only the god-mode box
+  // owns the bus, so this is a no-op elsewhere. Peer-to-peer audio (what
+  // the participants hear directly) is untouched.
+  useEffect(() => {
+    audioBus().setSoloMusic(isGodMode && greenRoom);
+  }, [isGodMode, greenRoom]);
   // God-mode server-side STT. Only the streaming box runs this. It
   // walks every other peer's audio track in the mesh, VAD-gates,
   // captures Opus segments, and POSTs them to /v1/transcript/relay
