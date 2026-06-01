@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Address } from "@scaffold-ui/components";
+import type { Address as AddressType } from "viem";
 import { Button, SlopAddress } from "~~/components/ui";
 import type { ChatMessage, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
+import { useTip } from "~~/hooks/useTip";
 import { type Bands, bandsFromIdentity } from "~~/utils/blockieBands";
 
 export type ChatWindowProps = {
@@ -22,8 +25,9 @@ type Notice = { id: string; ts: number; text: string };
 const CLIENT_HELP = [
   "slop chat commands —",
   "/me <action> · /slap <name> · /roll [NdM] · /flip",
-  "/who · /music · /url · /link · /address (/ca)",
-  "/tldr · /block <name> · /unblock <name> · /help",
+  "/tip 0.001 base eth · /who · /music",
+  "/url · /link · /address (/ca) · /tldr",
+  "/block <name> · /unblock <name> · /help",
   "(/block hides someone for you only)",
 ].join("\n");
 
@@ -74,11 +78,15 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
     saveBlocked(blocked);
   }, [blocked]);
 
-  // Local-only command output (/help, /block, …).
+  // Local-only command output (/help, /block, /tip progress, …).
   const [notices, setNotices] = useState<Notice[]>([]);
   const noticeSeq = useRef(0);
   const addNotice = (text: string) =>
     setNotices(prev => [...prev, { id: `n${noticeSeq.current++}`, ts: Date.now(), text }].slice(-50));
+
+  // /tip: parse → pop wallet → send to multisig → announce. Progress shows
+  // as local notices; the wallet popup + signing is all client-side.
+  const requestTip = useTip(mesh);
 
   // Resolve a typed /block target to every stable key it should mute: the
   // raw token (matches by name even for senders not currently visible) plus
@@ -131,6 +139,14 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
         const rm = new Set(deriveBlockKeys(arg));
         setBlocked(prev => prev.filter(b => !rm.has(b)));
         addNotice(`unblocked ${arg}`);
+        return true;
+      }
+      case "tip": {
+        if (!arg) {
+          addNotice("usage: /tip 0.001 base eth");
+          return true;
+        }
+        void requestTip(arg, addNotice);
         return true;
       }
       case "clear":
@@ -195,6 +211,7 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
 
   return (
     <div
+      id="slop-chat-window"
       style={{
         display: "flex",
         flexDirection: "column",
@@ -278,6 +295,34 @@ export const ChatWindow = ({ messages, sendChat, myAddress, myHandle, customName
   );
 };
 
+// Any full Ethereum address embedded in a system line (e.g. /address, /ca,
+// /who). 40 hex chars — narrower than a 64-hex tx/keccak hash, so no false
+// positives on those.
+const ETH_ADDR_RE = /0x[a-fA-F0-9]{40}/g;
+
+// Render a system line, swapping every 0x…address token for a proper
+// <Address/> chip (ENS / blockie / copy) and linkifying the rest.
+const renderSystemText = (text: string) => {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  ETH_ADDR_RE.lastIndex = 0;
+  while ((m = ETH_ADDR_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(<span key={`s${i}`}>{linkify(text.slice(last, m.index))}</span>);
+    parts.push(
+      <span key={`a${i}`} style={{ display: "inline-flex", verticalAlign: "middle" }}>
+        <Address address={m[0] as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
+      </span>,
+    );
+    last = m.index + m[0].length;
+    i++;
+  }
+  if (parts.length === 0) return linkify(text);
+  if (last < text.length) parts.push(<span key={`s${i}`}>{linkify(text.slice(last))}</span>);
+  return parts;
+};
+
 // Centered, dim italic line for /who, /music, /help, … and local notices.
 const SystemLine = ({ text }: { text: string }) => (
   <div
@@ -292,7 +337,7 @@ const SystemLine = ({ text }: { text: string }) => (
       padding: "2px 8px",
     }}
   >
-    {linkify(text)}
+    {renderSystemText(text)}
   </div>
 );
 

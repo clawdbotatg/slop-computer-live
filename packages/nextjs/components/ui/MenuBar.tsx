@@ -152,6 +152,8 @@ export const MenuBar = ({
               type="button"
               onClick={onWalletClick}
               className="slop-menubar__item"
+              // Anchor the flying /tip card animates toward (see FlyingTipCard).
+              id="slop-multisig-anchor"
               title={walletAddress ? "Open session wallet" : "No wallet deployed yet — click to deploy"}
               style={{
                 display: "inline-flex",

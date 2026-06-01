@@ -60,6 +60,7 @@ import {
   Window,
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
+import { FlyingTipCard } from "~~/components/ui/FlyingTipCard";
 import { useAudioBusOwner } from "~~/hooks/useAudioBus";
 import { useAutoplayBlocked } from "~~/hooks/useAutoplayBlocked";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
@@ -3981,6 +3982,12 @@ function DesktopInner({ slug }: { slug: string }) {
         });
         return <ClickRipple key={click.id} x={click.x} y={click.y} bands={bands} />;
       })}
+
+      {/* Tip cards (0.001+ ETH) fly from the chat window to the multisig in
+          the menu bar and fade as they land. Self-prune from mesh.tips. */}
+      {mesh.tips.map(tip => (
+        <FlyingTipCard key={tip.id} tip={tip} customNames={mesh.customNames} />
+      ))}
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +

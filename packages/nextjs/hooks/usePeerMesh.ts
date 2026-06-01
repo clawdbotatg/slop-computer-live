@@ -207,6 +207,20 @@ export type ClickEvent = {
   receivedAt: number;
 };
 
+/** A tip celebration (0.001+ ETH) broadcast to every peer — drives the
+ *  card that flies from the chat window to the multisig in the menu bar. */
+export type TipCard = {
+  id: number;
+  address?: string | null;
+  handle?: string | null;
+  anonId?: string | null;
+  amountEth: string;
+  chainId: number;
+  receivedAt: number;
+};
+
+export type TipParseResult = { ok: true; amountEth: string; chainId: number } | { ok: false; error: string };
+
 export type Browser = {
   id: string;
   url: string;
@@ -1052,6 +1066,12 @@ export type PeerMeshState = {
   /** Recent click ripples — auto-prune after the animation completes. */
   clicks: ClickEvent[];
   sendClick: (x: number, y: number) => void;
+  /** In-flight tip cards (0.001+ ETH) — auto-prune after the fly animation. */
+  tips: TipCard[];
+  /** AI fallback parse for fuzzy /tip phrasing (rate-limited server-side). */
+  tipParse: (text: string) => Promise<TipParseResult>;
+  /** Tell the room a tip just sent — relay formats + broadcasts the card. */
+  tipAnnounce: (amountEth: string, chainId: number) => void;
   // Shared browser windows.
   browsers: Record<string, Browser>;
   // Per-user avatar URLs keyed by ownerKey (lowercased address or
@@ -1489,6 +1509,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [clicks, setClicks] = useState<ClickEvent[]>([]);
   const clickIdRef = useRef(0);
+  const [tips, setTips] = useState<TipCard[]>([]);
+  const tipIdRef = useRef(0);
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [incomingForwards, setIncomingForwards] = useState<ForwardedTx[]>([]);
@@ -2466,6 +2488,36 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     }).catch(err => console.warn("walletChatReset failed", err));
   }, [slug]);
 
+  // AI fallback for fuzzy /tip phrasing (rate-limited server-side). The
+  // clean case is parsed client-side and never hits this.
+  const tipParse = useCallback(
+    async (text: string): Promise<TipParseResult> => {
+      try {
+        const res = await fetch(withSlug(`${RELAY_HTTP_URL}/v1/tip/parse`, slug), {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const json = (await res.json().catch(() => null)) as TipParseResult | null;
+        if (json && typeof json === "object" && "ok" in json) return json;
+        return { ok: false, error: "tip parser unavailable" };
+      } catch {
+        return { ok: false, error: "tip parser unavailable" };
+      }
+    },
+    [slug],
+  );
+
+  // Fired after the wallet broadcasts the tip tx. Relay formats the chat
+  // line + the flying card from amount/chain so neither can be forged.
+  const tipAnnounce = useCallback(
+    (amountEth: string, chainId: number) => {
+      send({ type: "tip_announce", amountEth, chainId });
+    },
+    [send],
+  );
+
   // Broadcast a new title overlay state. Updates local optimistically
   // so the dragging peer sees no lag; server fans the change out to
   // everyone else (excluding sender) and persists last-write-wins.
@@ -3048,6 +3100,28 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           setTimeout(() => {
             setClicks(prev => prev.filter(c => c.id !== evt.id));
           }, 1000);
+          return;
+        }
+
+        if (msg.type === "tip" && msg.from && typeof msg.amountEth === "string") {
+          const from = msg.from as { address?: string | null; handle?: string | null; anonId?: string | null };
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : 0;
+          tipIdRef.current += 1;
+          const card: TipCard = {
+            id: tipIdRef.current,
+            address: from.address ?? null,
+            handle: from.handle ?? null,
+            anonId: from.anonId ?? null,
+            amountEth: msg.amountEth as string,
+            chainId,
+            receivedAt: Date.now(),
+          };
+          // Cap in flight so a burst can't blow up the render tree; each card
+          // self-prunes once its ~2.4s fly-to-vault animation has finished.
+          setTips(prev => (prev.length >= 8 ? [...prev.slice(-7), card] : [...prev, card]));
+          setTimeout(() => {
+            setTips(prev => prev.filter(t => t.id !== card.id));
+          }, 2600);
           return;
         }
 
@@ -3759,6 +3833,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletChat,
     walletChatSend,
     walletChatReset,
+    tips,
+    tipParse,
+    tipAnnounce,
     broadcastTxRequest,
     incomingForwards,
     forwardTxToPeer,

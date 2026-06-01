@@ -74,15 +74,13 @@ function describeMusic(room: Room): string {
   return `🎵 music is ${state.playing ? "playing" : "paused"}.`;
 }
 
-function shortAddr(addr: string): string {
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
 function describeWho(room: Room): string {
   const peers = room.listPeers();
   const present = peers.filter(p => !p.spectator);
   const watching = peers.length - present.length;
-  const names = present.map(p => p.handle || (p.address ? shortAddr(p.address) : "anon")).slice(0, 25);
+  // Emit the FULL address for wallet-only peers — the chat client swaps any
+  // 0x…40hex token for a <Address/> chip (ENS/blockie/copy).
+  const names = present.map(p => p.handle || p.address || "anon").slice(0, 25);
   const more = present.length > names.length ? `, +${present.length - names.length} more` : "";
   const watchSuffix = watching > 0 ? ` (+${watching} watching)` : "";
   if (present.length === 0) return `👥 nobody's in the room${watchSuffix}.`;

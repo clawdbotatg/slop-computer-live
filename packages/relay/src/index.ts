@@ -37,6 +37,8 @@ import { hasAnyValidRoomCookie, roomCookieName, signRoomCookie, verifyRoomCookie
 import { generateCard } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import { handleChatCommand } from "./chat-commands.js";
+import { TokenBucket } from "./rate-limit.js";
+import { TIP_CHAIN_LABELS, parseTipIntent } from "./tip.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
   type TranscriptKind,
@@ -1764,6 +1766,28 @@ app.get("/v1/chat/stream", async (req, reply) => {
       /* already closed */
     }
   });
+});
+
+// --- Tips --------------------------------------------------------------------
+// `/tip` lets a viewer send ETH from their own wallet to the room multisig.
+// The client regex-parses the clean case ("0.001 base eth") itself; only
+// fuzzy phrasing falls back to this AI parser, which is rate-limited per
+// session token because it costs an LLM call. 3-token burst, then one token
+// every 3 minutes — matches "a couple quick tips, then slow down".
+const tipParseLimiter = new TokenBucket(3, 1 / 180);
+
+type TipParseBody = { text?: unknown };
+
+app.post<{ Body: TipParseBody }>("/v1/tip/parse", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ ok: false, error: "unauthenticated" });
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (!text) return reply.code(400).send({ ok: false, error: "empty" });
+  if (!tipParseLimiter.allow(a.session.token)) {
+    const secs = Math.ceil(tipParseLimiter.retryInMs(a.session.token) / 1000);
+    return reply.code(429).send({ ok: false, error: `slow down — try again in ${secs}s` });
+  }
+  return parseTipIntent(text);
 });
 
 // --- Live transcript ---------------------------------------------------------
@@ -5771,6 +5795,37 @@ app.register(async function signalRoutes(fastify) {
             text: msg.text,
             source: "live",
           });
+          return;
+        }
+        case "tip_announce": {
+          // Fired by the client AFTER its wallet broadcast the tip tx. We
+          // don't verify on-chain (it's a chat flourish, not accounting) but
+          // we format the text ourselves so the amount/chain can't be forged
+          // into arbitrary prose, and rate-limit via the chat bucket so it
+          // can't be spammed. Two outputs: a persistent attributed chat line
+          // and an ephemeral `tip` event that drives the flying card.
+          const amountEth = typeof msg.amountEth === "string" ? msg.amountEth : "";
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : 0;
+          const label = TIP_CHAIN_LABELS[chainId];
+          if (!label || !/^[0-9]*\.?[0-9]+$/.test(amountEth) || Number(amountEth) <= 0) return;
+          if (!room.chat.allow(session.token)) return;
+          room.chat.append({
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            text: `tipped ${amountEth} ETH on ${label} to the room 🎉`,
+            source: "live",
+            kind: "emote",
+          });
+          // The flying "tip → vault" card is reserved for tips of 0.001+ ETH.
+          if (Number(amountEth) >= 0.001) {
+            room.broadcast({
+              type: "tip",
+              from: { address: info.address, handle: info.handle, anonId: info.anonId },
+              amountEth,
+              chainId,
+            });
+          }
           return;
         }
         case "live_caption": {
