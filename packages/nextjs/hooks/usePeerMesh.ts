@@ -349,6 +349,10 @@ export type ChatMessage = {
   anonId?: string | null;
   text: string;
   source: "live" | "spectator" | "agent";
+  /** Slash-command output. "emote" = attributed action (renders italic but
+   *  keeps the sender's identity); "system" = unattributed info reply
+   *  (renders as a centered notice). Absent on a normal chat line. */
+  kind?: "emote" | "system";
 };
 
 /** Shared todo list item — server-authoritative, mirrors

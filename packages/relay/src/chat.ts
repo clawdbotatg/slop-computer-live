@@ -29,6 +29,12 @@ export type ChatMessage = {
   // sign-in from slop.computer, "agent" = bearer-token AI. Lets the UI
   // tag/style messages distinctly.
   source: "live" | "spectator" | "agent";
+  // Slash-command output. Absent on a normal chat line. "emote" is an
+  // attributed action (`/me`, `/roll`, …) — still shows the sender's
+  // identity but renders italic. "system" is an unattributed info reply
+  // (`/who`, `/music`, …) — address/handle are null and it renders as a
+  // centered notice. Optional so old persisted lines deserialize cleanly.
+  kind?: "emote" | "system";
 };
 
 export const MAX_TEXT_LEN = 500;
@@ -97,6 +103,7 @@ export class ChatHistory {
     anonId?: string | null;
     text: string;
     source: ChatMessage["source"];
+    kind?: ChatMessage["kind"];
   }): ChatMessage | null {
     this.load();
     const text = input.text.trim().slice(0, MAX_TEXT_LEN);
@@ -110,6 +117,7 @@ export class ChatHistory {
       text,
       source: input.source,
     };
+    if (input.kind) msg.kind = input.kind;
     this.buffer.push(msg);
     if (this.buffer.length > MAX_HISTORY) this.buffer = this.buffer.slice(-MAX_HISTORY);
     this.persist(msg);

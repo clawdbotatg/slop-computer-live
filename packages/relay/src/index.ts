@@ -36,6 +36,7 @@ import {
 import { hasAnyValidRoomCookie, roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
 import { generateCard } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
+import { handleChatCommand } from "./chat-commands.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
   type TranscriptKind,
@@ -1644,6 +1645,30 @@ peerNames.subscribe((address, name) => {
 
 type ChatBody = { text?: unknown };
 
+// "Catch me up": read the recent transcript, ask Claude for a summary,
+// broadcast the same result to the whole room. setPending returns false (and
+// we bail) if a job is already in flight, so two requests at once never run
+// overlapping AI calls. Shared by the `tldr_request` WS message and the
+// `/tldr` chat command.
+function triggerTldr(
+  room: Room,
+  requester: { address: string | null; handle: string | null; anonId: string | null },
+): void {
+  const started = room.tldr.setPending(requester);
+  if (!started) return;
+  // Pass speech AND narrated action rows (file/chess/wallet/etc.) — those
+  // events are exactly the stuff a "catch me up" wants.
+  const segs = room.transcript.recent().map(s => ({ handle: s.handle, text: s.text, kind: s.kind }));
+  void (async () => {
+    try {
+      const { summary, used } = await summarizeTranscript(segs);
+      room.tldr.setReady(summary, used, Date.now());
+    } catch (err) {
+      room.tldr.setError(`(TLDR error: ${String(err).slice(0, 100)})`);
+    }
+  })();
+}
+
 app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   // Chat is audience-facing — spectators on slop.computer/<slug> SIWE in
   // and post here without ever paying the room password to live.slop.computer.
@@ -1662,6 +1687,25 @@ app.post<{ Body: ChatBody }>("/v1/chat", async (req, reply) => {
   // those without an active WS are "spectator" (slop.computer SIWE).
   const inMesh = findPeersBySessionToken(a.session.token).length > 0;
   const source: ChatMessage["source"] = a.via === "bearer" ? "agent" : inMesh ? "live" : "spectator";
+  // Slash commands: a recognized command produces its own broadcast (or
+  // none) and isn't echoed as a normal line. Unknown `/foo` falls through.
+  const room = roomFromReq(req);
+  if (
+    handleChatCommand(room, raw, {
+      address: a.session.address,
+      handle: a.session.handle,
+      anonId: a.session.anonId ?? null,
+      source,
+      requestTldr: () =>
+        triggerTldr(room, {
+          address: a.session.address,
+          handle: a.session.handle,
+          anonId: a.session.anonId ?? null,
+        }),
+    })
+  ) {
+    return { ok: true };
+  }
   const msg = chat.append({
     address: a.session.address,
     handle: a.session.handle,
@@ -5703,6 +5747,20 @@ app.register(async function signalRoutes(fastify) {
           if (!room.chat.allow(session.token)) {
             return send(socket, { type: "error", error: "rate-limited" });
           }
+          // Slash commands produce their own broadcast (or trigger an
+          // action); unknown `/foo` falls through to a normal line.
+          if (
+            handleChatCommand(room, msg.text, {
+              address: info.address,
+              handle: info.handle,
+              anonId: info.anonId,
+              source: "live",
+              requestTldr: () =>
+                triggerTldr(room, { address: info.address, handle: info.handle, anonId: info.anonId }),
+            })
+          ) {
+            return;
+          }
           // Cookie-authed WS peer → "live". The chat subscriber relays
           // this back to everyone (including the sender) via broadcast,
           // so the local UI doesn't need an optimistic insert.
@@ -5848,30 +5906,7 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "tldr_request": {
-          // "Catch me up": read the recent transcript, ask Claude for a
-          // summary, broadcast the same result to the whole room. setPending
-          // returns false (and we bail) if a job is already in flight, so two
-          // peers clicking at once never run overlapping AI calls.
-          const started = room.tldr.setPending({
-            address: info.address,
-            handle: info.handle,
-            anonId: info.anonId,
-          });
-          if (!started) return;
-          // Pass speech AND narrated action rows (file/chess/wallet/etc.) —
-          // those events are exactly the stuff a "catch me up" wants, and
-          // summarizeTranscript formats both.
-          const segs = room.transcript
-            .recent()
-            .map(s => ({ handle: s.handle, text: s.text, kind: s.kind }));
-          void (async () => {
-            try {
-              const { summary, used } = await summarizeTranscript(segs);
-              room.tldr.setReady(summary, used, Date.now());
-            } catch (err) {
-              room.tldr.setError(`(TLDR error: ${String(err).slice(0, 100)})`);
-            }
-          })();
+          triggerTldr(room, { address: info.address, handle: info.handle, anonId: info.anonId });
           return;
         }
         case "publish": {

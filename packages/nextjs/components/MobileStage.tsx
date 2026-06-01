@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
+import { MobileAppTile } from "~~/components/mobile/MobileAppTile";
 import { MobileBrowserTile } from "~~/components/mobile/MobileBrowserTile";
 import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
 import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
@@ -106,12 +107,18 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Wrap shared browsers as synthetic "screen" publications so the
-  // existing layout dispatcher places them like screen shares. The
-  // `mobile-browser-` streamId prefix is the marker that MobileTile
-  // uses to dispatch to MobileBrowserTile instead of the video
-  // element. Other shared apps (glossary, notes, etc.) come in a
-  // follow-up — the wrapping pattern is the same shape.
+  // Wrap shared browsers as synthetic "screen" publications (hero
+  // weight in the layout dispatcher) and open app windows as
+  // synthetic "camera" publications (people-weight — equal-stacked
+  // with cams + audio). Marker prefixes on streamId let MobileTile
+  // dispatch to the right renderer:
+  //   mobile-browser-<id>  → MobileBrowserTile (Puppeteer WS stream)
+  //   mobile-app-<appId>   → MobileAppTile (chat / placeholder)
+  //
+  // Why apps are people-weight, not screen-weight: a session with
+  // me on cam + chat open should render 50/50 stacked, not chat-hero
+  // + cam-thumbnail. Apps aren't screen shares; they're collaborative
+  // surfaces the room is looking at together, same as a talking head.
   const realPubs = mesh.publications;
   const browserPubs: Publication[] = useMemo(
     () =>
@@ -124,9 +131,26 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
       })),
     [mesh.browsers],
   );
+  const appPubs: Publication[] = useMemo(() => {
+    const out: Publication[] = [];
+    for (const id of mesh.openWindowIds) {
+      // Skip file previews — they're per-room artifacts not durable
+      // apps. The prefix matches what Desktop.tsx uses to scope its
+      // own preview windows.
+      if (id.startsWith("preview-")) continue;
+      out.push({
+        streamId: `mobile-app-${id}`,
+        peerId: `mobile-app-${id}`,
+        ownerKey: `mobile-app-${id}`,
+        kind: "camera" as const,
+        label: id,
+      });
+    }
+    return out;
+  }, [mesh.openWindowIds]);
   const pubs = useMemo(
-    () => (fakePreset ? fakePubsFor(fakePreset) : [...realPubs, ...browserPubs]),
-    [fakePreset, realPubs, browserPubs],
+    () => (fakePreset ? fakePubsFor(fakePreset) : [...realPubs, ...appPubs, ...browserPubs]),
+    [fakePreset, realPubs, appPubs, browserPubs],
   );
 
   // Music ticker eats 32px out of the video area when its variant is
@@ -246,23 +270,23 @@ const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
   const pub = box.pub;
   const isFake = pub?.streamId.startsWith("fake-") === true;
   const isBrowser = pub?.streamId.startsWith("mobile-browser-") === true;
+  const isApp = pub?.streamId.startsWith("mobile-app-") === true;
   // streamFor logic — spectators only ever see remote streams, so we
-  // skip the local-stream branch entirely. Fake pubs intentionally
-  // have no stream and render a placeholder block. Browser pubs are
-  // synthetic — they render via MobileBrowserTile, no MediaStream.
-  const stream = pub && !isFake && !isBrowser ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
+  // skip the local-stream branch entirely. Fake/browser/app pubs are
+  // synthetic and never have a MediaStream.
+  const stream = pub && !isFake && !isBrowser && !isApp ? (mesh.remoteStreams.get(pub.streamId) ?? null) : null;
   const peer = pub ? mesh.peers.find(p => p.id === pub.peerId) : null;
   const label = useMemo(() => {
     if (!pub) return "";
     if (isFake) return pub.label ?? pub.streamId;
     if (isBrowser) {
-      // pub.label is the URL for synthetic browser pubs.
       try {
         return new URL(pub.label ?? "").host;
       } catch {
         return "browser";
       }
     }
+    if (isApp) return pub.label ?? pub.streamId.slice("mobile-app-".length);
     const key = pub.ownerKey.toLowerCase();
     return (
       mesh.customNames[key] ??
@@ -271,7 +295,7 @@ const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
       pub.label ??
       pub.ownerKey.slice(0, 8)
     );
-  }, [pub, peer, mesh.customNames, isFake, isBrowser]);
+  }, [pub, peer, mesh.customNames, isFake, isBrowser, isApp]);
 
   const bands = useMemo(
     () =>
@@ -303,6 +327,7 @@ const MobileTile = ({ box, mesh, muted }: MobileTileProps) => {
         bands={bands}
         isFake={isFake}
         isBrowser={isBrowser}
+        isApp={isApp}
         muted={muted}
       />
       {/* Speaker label, bottom-left, small. Useful for clip attribution
@@ -344,19 +369,23 @@ type TileContentProps = {
   bands: ReturnType<typeof bandsFromIdentity>;
   isFake: boolean;
   isBrowser: boolean;
+  isApp: boolean;
   muted: boolean;
 };
 
-const TileContent = ({ box, stream, mesh, bands, isFake, isBrowser, muted }: TileContentProps) => {
+const TileContent = ({ box, stream, mesh, bands, isFake, isBrowser, isApp, muted }: TileContentProps) => {
   const pub = box.pub;
   if (isFake && pub) return <FakeTile box={box} pub={pub} bands={bands} />;
-  // Shared browsers come in as synthetic "screen" pubs with the URL
-  // in `label` and the browser id in `streamId` (prefix stripped).
-  // No MediaStream — branch BEFORE the !stream early return.
+  // Shared browsers and open app windows are both synthetic pubs with
+  // no MediaStream — branch BEFORE the !stream early return.
   if (isBrowser && pub) {
     const url = pub.label ?? "";
     const id = pub.streamId.slice("mobile-browser-".length);
     return <MobileBrowserTile id={id} url={url} showBadge={false} />;
+  }
+  if (isApp && pub) {
+    const appId = pub.streamId.slice("mobile-app-".length);
+    return <MobileAppTile appId={appId} mesh={mesh} />;
   }
   if (!stream || !pub) {
     return <Placeholder label="connecting…" bands={bands} />;
