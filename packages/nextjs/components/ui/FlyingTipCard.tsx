@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { EmojiConfetti } from "~~/components/ui/EmojiConfetti";
 import type { TipCard } from "~~/hooks/usePeerMesh";
+
+// How long the card takes to fly from the chat window to the vault. Slow +
+// deliberate so the tip reads as a real event, not a flicker. Confetti fires
+// the moment it lands. Keep mesh's tip-prune TTL comfortably above this.
+const FLY_MS = 3200;
 
 // Short chain tags to match the user's "0.001 base eth" phrasing.
 const CHAIN_TAGS: Record<number, string> = { 1: "eth", 8453: "base", 100: "gnosis" };
@@ -31,6 +37,7 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
   const chain = CHAIN_TAGS[tip.chainId] ?? "";
   const [geom, setGeom] = useState<Geom | null>(null);
   const [flying, setFlying] = useState(false);
+  const [landed, setLanded] = useState(false);
 
   // Measure start (top of chat window) + end (multisig anchor) before paint.
   useLayoutEffect(() => {
@@ -47,51 +54,62 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
   }, []);
 
   // Once mounted at the start position, kick the transition next frame.
+  // When it lands at the vault, fire the confetti.
   useEffect(() => {
     if (!geom) return;
-    const id = requestAnimationFrame(() => requestAnimationFrame(() => setFlying(true)));
-    return () => cancelAnimationFrame(id);
+    const raf = requestAnimationFrame(() => requestAnimationFrame(() => setFlying(true)));
+    const land = setTimeout(() => setLanded(true), FLY_MS);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(land);
+    };
   }, [geom]);
 
   if (!geom) return null;
 
+  const endX = geom.startX + geom.dx;
+  const endY = geom.startY + geom.dy;
+
   return (
-    <div
-      style={{
-        position: "fixed",
-        left: geom.startX,
-        top: geom.startY,
-        zIndex: 2147483646,
-        pointerEvents: "none",
-        whiteSpace: "nowrap",
-        willChange: "transform, opacity",
-        transform: flying
-          ? `translate(calc(-50% + ${geom.dx}px), calc(-50% + ${geom.dy}px)) scale(0.35)`
-          : "translate(-50%, -50%) scale(1)",
-        opacity: flying ? 0 : 1,
-        transition: "transform 2200ms cubic-bezier(0.45, 0, 0.35, 1), opacity 700ms ease-in 1500ms",
-      }}
-    >
-      <span
+    <>
+      <div
         style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "6px 12px",
-          background: "linear-gradient(135deg, var(--slop-magenta, #ff3ec9), var(--slop-cyan, #00e5ff))",
-          color: "#06030d",
-          fontFamily: "var(--slop-font-display)",
-          fontSize: 13,
-          fontWeight: 700,
-          letterSpacing: "0.02em",
-          borderRadius: 6,
-          border: "1px solid rgba(255,255,255,0.45)",
-          boxShadow: "0 4px 22px rgba(255,62,201,0.55)",
+          position: "fixed",
+          left: geom.startX,
+          top: geom.startY,
+          zIndex: 2147483646,
+          pointerEvents: "none",
+          whiteSpace: "nowrap",
+          willChange: "transform, opacity",
+          transform: flying
+            ? `translate(calc(-50% + ${geom.dx}px), calc(-50% + ${geom.dy}px)) scale(0.45)`
+            : "translate(-50%, -50%) scale(1)",
+          opacity: flying ? 0 : 1,
+          transition: `transform ${FLY_MS}ms cubic-bezier(0.42, 0, 0.3, 1), opacity 900ms ease-in ${FLY_MS - 900}ms`,
         }}
       >
-        🎉 {name} tipped {tip.amountEth} {chain} ETH
-      </span>
-    </div>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 9,
+            padding: "11px 20px",
+            background: "linear-gradient(135deg, var(--slop-magenta, #ff3ec9), var(--slop-cyan, #00e5ff))",
+            color: "#06030d",
+            fontFamily: "var(--slop-font-display)",
+            fontSize: 20,
+            fontWeight: 700,
+            letterSpacing: "0.02em",
+            borderRadius: 9,
+            border: "1.5px solid rgba(255,255,255,0.5)",
+            boxShadow: "0 6px 34px rgba(255,62,201,0.6)",
+          }}
+        >
+          🎉 {name} tipped {tip.amountEth} {chain} ETH
+        </span>
+      </div>
+      {landed && <EmojiConfetti x={endX} y={endY} amountEth={tip.amountEth} />}
+    </>
   );
 };
 

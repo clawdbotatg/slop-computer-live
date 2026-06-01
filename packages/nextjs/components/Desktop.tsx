@@ -3749,7 +3749,12 @@ function DesktopInner({ slug }: { slug: string }) {
               minWidth={420}
               minHeight={460}
             >
-              <WalletWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
+              <WalletWindow
+                mesh={mesh}
+                myAddress={session.address}
+                myHandle={session.handle}
+                onBalanceUsd={setMenubarWalletBalanceUsd}
+              />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

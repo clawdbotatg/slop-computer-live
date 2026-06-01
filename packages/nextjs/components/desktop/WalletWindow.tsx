@@ -55,6 +55,12 @@ export type WalletWindowProps = {
   mesh: PeerMeshState;
   myAddress: string | null;
   myHandle: string | null;
+  /** Push the latest total USD balance up to the desktop so the
+   *  menubar chip stays in sync with this window's portfolio — fires
+   *  on every successful refresh (manual, tx-driven, focus). Only ever
+   *  reports non-null totals so a mid-refetch null doesn't blank the
+   *  menubar. */
+  onBalanceUsd?: (usd: string) => void;
 };
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -82,7 +88,7 @@ const chainMeta = (chainId: number) =>
 
 type WalletTab = "deploy" | "chat" | "assets" | "transactions";
 
-export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) => {
+export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: WalletWindowProps) => {
   const wallet = mesh.wallet;
   // Which tab is showing is multiplayer: pick a tab and every peer's
   // wallet follows (last-writer-wins via the relay's ui_state channel).
@@ -170,6 +176,15 @@ export const WalletWindow = ({ mesh, myAddress, myHandle }: WalletWindowProps) =
       setPortfolioLoading(false);
     }
   }, [wallet, slug]);
+
+  // Keep the menubar balance chip in lockstep with this window's
+  // portfolio: every time we land a fresh total, push it up. Guard on
+  // non-null so the transient null during an address-change refetch
+  // (below) doesn't blank the menubar — Desktop clears it on its own
+  // when the wallet undeploys.
+  useEffect(() => {
+    if (portfolio) onBalanceUsd?.(portfolio.totalBalanceUsd);
+  }, [portfolio, onBalanceUsd]);
 
   // Reset + refetch when the multisig address changes (new episode /
   // first deploy). Clearing the prior result avoids the header briefly

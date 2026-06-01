@@ -3154,11 +3154,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             receivedAt: Date.now(),
           };
           // Cap in flight so a burst can't blow up the render tree; each card
-          // self-prunes once its ~2.4s fly-to-vault animation has finished.
+          // self-prunes once its slow fly-to-vault (~3.2s) plus the emoji
+          // confetti rain (~4s) it triggers on landing have finished.
           setTips(prev => (prev.length >= 8 ? [...prev.slice(-7), card] : [...prev, card]));
           setTimeout(() => {
             setTips(prev => prev.filter(t => t.id !== card.id));
-          }, 2600);
+          }, 8000);
           return;
         }
 
