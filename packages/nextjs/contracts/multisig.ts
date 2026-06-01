@@ -4,7 +4,8 @@ import MultisigFactoryJson from "./MultisigFactory.json";
 export const MultisigAbi = MultisigJson as readonly unknown[];
 export const MultisigFactoryAbi = MultisigFactoryJson as readonly unknown[];
 
-// Same addresses on every chain we deploy to (mainnet + base today).
+// Same CREATE2 addresses on every chain we deploy to (Ethereum, Base,
+// Gnosis, Arbitrum, Optimism, Polygon today).
 // See packages/../slop-computer-wallet/INTEGRATION.md §1.
 // (The integration doc has the wrong EIP-55 checksum for the factory — these
 // strings are the viem-computed correct casings.)

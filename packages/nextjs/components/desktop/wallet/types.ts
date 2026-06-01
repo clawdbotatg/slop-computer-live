@@ -29,13 +29,16 @@ export type Portfolio = {
 
 // Map a Zerion chain slug (the `blockchain` field on PortfolioAsset)
 // to the viem chain id used by the multisig. Returns null when the
-// chain isn't one of the three the multisig factory deploys on — the
-// send UI uses that null to disable the send affordance.
+// chain isn't one the multisig factory deploys on — the send UI uses
+// that null to disable the send affordance.
 export function zerionChainToId(slug: string): number | null {
   const s = slug.toLowerCase();
   if (s === "ethereum") return 1;
   if (s === "base") return 8453;
   if (s === "gnosis" || s === "xdai") return 100;
+  if (s === "arbitrum") return 42161;
+  if (s === "optimism") return 10;
+  if (s === "polygon") return 137;
   return null;
 }
 

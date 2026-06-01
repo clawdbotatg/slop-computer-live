@@ -1,4 +1,11 @@
-import { base as baseBase, gnosis as gnosisBase, mainnet as mainnetBase } from "viem/chains";
+import {
+  arbitrum as arbitrumBase,
+  base as baseBase,
+  gnosis as gnosisBase,
+  mainnet as mainnetBase,
+  optimism as optimismBase,
+  polygon as polygonBase,
+} from "viem/chains";
 import type { Chain } from "viem/chains";
 
 export type ScaffoldConfig = {
@@ -13,6 +20,9 @@ export type ScaffoldConfig = {
 const ALCHEMY_MAINNET_RPC = `https://eth-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_BASE_RPC = `https://base-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_GNOSIS_RPC = `https://gnosis-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+const ALCHEMY_ARBITRUM_RPC = `https://arb-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+const ALCHEMY_OPTIMISM_RPC = `https://opt-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+const ALCHEMY_POLYGON_RPC = `https://polygon-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
@@ -44,13 +54,40 @@ export const gnosis = {
   },
 } as const satisfies Chain;
 
+// Same RPC-patching for the three chains the multisig factory was just
+// deployed to (Arbitrum, Optimism, Polygon). Same factory address as
+// every other chain — see contracts/multisig.ts.
+export const arbitrum = {
+  ...arbitrumBase,
+  rpcUrls: {
+    default: { http: [ALCHEMY_ARBITRUM_RPC] },
+    public: { http: [ALCHEMY_ARBITRUM_RPC] },
+  },
+} as const satisfies Chain;
+
+export const optimism = {
+  ...optimismBase,
+  rpcUrls: {
+    default: { http: [ALCHEMY_OPTIMISM_RPC] },
+    public: { http: [ALCHEMY_OPTIMISM_RPC] },
+  },
+} as const satisfies Chain;
+
+export const polygon = {
+  ...polygonBase,
+  rpcUrls: {
+    default: { http: [ALCHEMY_POLYGON_RPC] },
+    public: { http: [ALCHEMY_POLYGON_RPC] },
+  },
+} as const satisfies Chain;
+
 const scaffoldConfig = {
   // Base first — wallet deploys + multisig txs cost pennies vs. dollars.
   // Mainnet stays in the list so ENS resolution and the existing Frontpage
   // contract calls (which live on mainnet) keep working. Gnosis is the
   // third supported chain — the multisig factory is deployed at the same
   // address there.
-  targetNetworks: [base, mainnet, gnosis],
+  targetNetworks: [base, mainnet, gnosis, arbitrum, optimism, polygon],
 
   // The interval at which your front-end polls the RPC servers for new data
   // it has no effect if you only target the local network (default is 4000)
@@ -66,6 +103,9 @@ const scaffoldConfig = {
     [mainnet.id]: ALCHEMY_MAINNET_RPC,
     [base.id]: ALCHEMY_BASE_RPC,
     [gnosis.id]: ALCHEMY_GNOSIS_RPC,
+    [arbitrum.id]: ALCHEMY_ARBITRUM_RPC,
+    [optimism.id]: ALCHEMY_OPTIMISM_RPC,
+    [polygon.id]: ALCHEMY_POLYGON_RPC,
   },
 
   // This is ours WalletConnect's default project ID.

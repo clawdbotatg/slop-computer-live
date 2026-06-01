@@ -20,7 +20,19 @@ import { TOKEN_ADDRESSES } from "./wallet-tokens.js";
 
 const ALCHEMY_KEY = config.alchemyApiKey;
 const WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
-const WETH_BASE = "0x4200000000000000000000000000000000000006";
+
+// Address of the WETH9-style native-gas-token wrapper for a chain — the
+// deposit()/withdraw() ABI is identical across WETH, WMATIC and WXDAI, so
+// the wrap/unwrap tools just need the right contract. Polygon wraps MATIC
+// (WMATIC), Gnosis wraps xDAI (WXDAI); everything else wraps ETH (WETH).
+// Resolved from the shared TOKEN_ADDRESSES registry so new chains work
+// automatically once their tokens are listed there.
+function nativeWrapper(chainId: number): string {
+  const tokens = TOKEN_ADDRESSES[String(chainId)];
+  const symbol = chainId === 137 ? "WMATIC" : chainId === 100 ? "WXDAI" : "WETH";
+  return tokens?.[symbol]?.address ?? WETH_MAINNET;
+}
+
 const ENS_REGISTRAR = "0x253553366Da8546fC250F225fe3d25d0C782303b";
 const ENS_PUBLIC_RESOLVER = "0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63";
 
@@ -605,7 +617,7 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
     execute: async ({ amount, chainId }: any) => {
       const chain = chainId ?? 1;
       return {
-        to: chain === 8453 ? WETH_BASE : WETH_MAINNET,
+        to: nativeWrapper(chain),
         data: "0xd0e30db0",
         value: toHex(safeBigInt(amount, 18)),
         chainId: chain,
@@ -617,7 +629,7 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
     execute: async ({ amount, chainId }: any) => {
       const chain = chainId ?? 1;
       return {
-        to: chain === 8453 ? WETH_BASE : WETH_MAINNET,
+        to: nativeWrapper(chain),
         data: "0x2e1a7d4d" + padUint256(safeBigInt(amount, 18)),
         value: "0x0",
         chainId: chain,

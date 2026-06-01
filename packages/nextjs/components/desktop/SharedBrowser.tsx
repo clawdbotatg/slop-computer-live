@@ -23,6 +23,9 @@ const SUPPORTED_NETWORKS: { chainId: number; label: string }[] = [
   { chainId: 1, label: "Ethereum" },
   { chainId: 8453, label: "Base" },
   { chainId: 100, label: "Gnosis" },
+  { chainId: 42161, label: "Arbitrum" },
+  { chainId: 10, label: "Optimism" },
+  { chainId: 137, label: "Polygon" },
 ];
 const DEFAULT_CHAIN_ID = 1;
 
@@ -299,18 +302,24 @@ export const SharedBrowser = ({
   // is showing (Uniswap V4 has its own chain selector independent of
   // wallet_switchEthereumChain), so we can't pin to a single chain.
   // wagmi hooks must be called unconditionally, so fan out across all
-  // three supported chains and pick the right one at tx-capture time.
+  // supported chains and pick the right one at tx-capture time.
   const mainnetClient = usePublicClient({ chainId: 1 });
   const baseClient = usePublicClient({ chainId: 8453 });
   const gnosisClient = usePublicClient({ chainId: 100 });
+  const arbitrumClient = usePublicClient({ chainId: 42161 });
+  const optimismClient = usePublicClient({ chainId: 10 });
+  const polygonClient = usePublicClient({ chainId: 137 });
   const clientForChain = useCallback(
     (cid: number) => {
       if (cid === 1) return mainnetClient;
       if (cid === 8453) return baseClient;
       if (cid === 100) return gnosisClient;
+      if (cid === 42161) return arbitrumClient;
+      if (cid === 10) return optimismClient;
+      if (cid === 137) return polygonClient;
       return null;
     },
-    [mainnetClient, baseClient, gnosisClient],
+    [mainnetClient, baseClient, gnosisClient, arbitrumClient, optimismClient, polygonClient],
   );
 
   // ---- Impersonator picker --------------------------------------------------

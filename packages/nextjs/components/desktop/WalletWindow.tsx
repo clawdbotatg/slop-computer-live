@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex, decodeEventLog, formatEther } from "viem";
-import { base, gnosis, mainnet } from "viem/chains";
+import { arbitrum, base, gnosis, mainnet, optimism, polygon } from "viem/chains";
 import {
   useAccount,
   useChainId,
@@ -59,14 +59,17 @@ export type WalletWindowProps = {
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
-// The three chains the multisig factory is deployed on (same address
-// each). Order matters for the UI — cheap chains first since they're
+// The chains the multisig factory is deployed on (same address each).
+// Order matters for the UI — cheap chains first since they're
 // the recommended default. Adding a new chain here lights up a new row
 // in the deploy grid and a new option in the activity picker — provided
 // it's also in `scaffold.config.ts` `targetNetworks`.
 const SUPPORTED_CHAINS = [
   { id: base.id, label: "Base", explorer: "https://basescan.org" },
   { id: gnosis.id, label: "Gnosis", explorer: "https://gnosisscan.io" },
+  { id: arbitrum.id, label: "Arbitrum", explorer: "https://arbiscan.io" },
+  { id: optimism.id, label: "Optimism", explorer: "https://optimistic.etherscan.io" },
+  { id: polygon.id, label: "Polygon", explorer: "https://polygonscan.com" },
   { id: mainnet.id, label: "Ethereum", explorer: "https://etherscan.io" },
 ] as const;
 

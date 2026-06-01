@@ -64,6 +64,9 @@ export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label:
   1: { alchemySubdomain: "eth-mainnet", label: "Ethereum" },
   8453: { alchemySubdomain: "base-mainnet", label: "Base" },
   100: { alchemySubdomain: "gnosis-mainnet", label: "Gnosis" },
+  42161: { alchemySubdomain: "arb-mainnet", label: "Arbitrum" },
+  10: { alchemySubdomain: "opt-mainnet", label: "Optimism" },
+  137: { alchemySubdomain: "polygon-mainnet", label: "Polygon" },
   11155111: { alchemySubdomain: "eth-sepolia", label: "Sepolia" },
 };
 
