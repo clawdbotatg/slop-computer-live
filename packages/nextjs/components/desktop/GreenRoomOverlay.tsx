@@ -244,8 +244,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
           style={{
             position: "absolute",
             left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
+            top: 0,
+            transform: "translateX(-50%)",
             maxWidth: "97vw",
             maxHeight: "96vh",
             objectFit: "contain",
@@ -261,8 +261,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
           style={{
             position: "absolute",
             left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
+            top: 0,
+            transform: "translateX(-50%)",
             width: "min(97vw, 1700px)",
             aspectRatio: "16 / 9",
             maxHeight: "96vh",
@@ -341,12 +341,12 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
       />
 
       {/* Big bottom-right wordmark, matching the desktop's brand corner.
-          Raised above the ticker, on top of the viz. */}
+          Sits just above the ticker, on top of the viz. */}
       <div
         style={{
           position: "fixed",
           right: "3vw",
-          bottom: TICKER_H + 12,
+          bottom: TICKER_H - 8,
           zIndex: 5,
           fontSize: "clamp(28px, 6vw, 84px)",
           fontWeight: 900,
