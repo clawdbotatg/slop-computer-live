@@ -2324,10 +2324,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   //   room and, once threshold is met, its blob routes back to the outer tx.
   //   Signable here, never executed here.
   const isAttestation = !!tx.attestationFor;
-  // - Phase 1: a contract signer attests via its PASSKEY signer (raw-hash
-  //   signing). An EOA signer would need an un-prefixed raw signature, which
-  //   browser wallets don't expose — blocked until Phase 2.
-  const attestationEoaBlocked = isAttestation && isMySigner && !isPasskeySigner;
+  // v3: a contract signer can attest via EITHER its passkey OR its EOA signer.
+  // The EOA uses normal personal_sign (prefixed); the v3 contract's
+  // isValidSignature accepts that for nested signers, so no raw signing needed.
 
   // Once an attestation reaches this wallet's threshold, assemble the
   // ERC-1271 blob from the collected signatures and route it back to the
@@ -2483,14 +2482,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       }
       return;
     }
-    // EOA path — needs the wagmi wallet.
-    if (isAttestation) {
-      // Attestation = this wallet co-signing another wallet's execHash via
-      // ERC-1271, which verifies the RAW hash. A wagmi EOA signature is
-      // personal_sign-prefixed and would fail. Phase 2 adds raw EOA signing.
-      setErr("EOA contract-signing isn't supported yet — co-sign with this wallet's passkey signer.");
-      return;
-    }
+    // EOA path — needs the wagmi wallet. Works for both normal txs and
+    // attestations: signMessage produces a personal_sign-prefixed signature,
+    // which the v3 contract's isValidSignature accepts for nested signers
+    // (no raw / eth_sign — MetaMask-safe).
     if (!connectedAddress) {
       console.warn("[wallet] onSign abort: no connected EOA");
       setErr("connect your wallet to sign");
@@ -2918,7 +2913,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
           <Button
             variant={enoughSigs ? undefined : "primary"}
             onClick={onSign}
-            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired || attestationEoaBlocked}
+            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired}
             title={
               !isMySigner
                 ? "You aren't a registered signer on this multisig."
@@ -2926,11 +2921,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
                   ? "You've already signed."
                   : expired
                     ? "Past deadline."
-                    : attestationEoaBlocked
-                      ? "EOA contract-signing isn't supported yet — co-sign with this wallet's passkey signer."
-                      : isPasskeySigner
-                        ? "Sign this transaction with your passkey."
-                        : "Sign this transaction."
+                    : isPasskeySigner
+                      ? "Sign this transaction with your passkey."
+                      : "Sign this transaction."
             }
           >
             {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : isAttestation ? "Co-sign" : "Sign"}

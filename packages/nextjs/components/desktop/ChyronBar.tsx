@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BOTTOM_BAR_STACK_HEIGHT } from "~~/components/desktop/bottomBarLayout";
 import type { Peer, PeerMeshState } from "~~/hooks/usePeerMesh";
 
 // On-screen "chyron" — broadcast-TV term for the lower-third static
@@ -26,8 +27,8 @@ const BAR_HEIGHT = 60;
 // room to breathe inside the bar.
 const FONT_SIZE = 39;
 // TimelineBar (24) + HeadlinesBar (24) + TickerBar (28) = 76. Sit
-// directly on top.
-const STACK_BOTTOM = 76;
+// directly on top of the always-present bottom bar stack.
+const STACK_BOTTOM = BOTTOM_BAR_STACK_HEIGHT;
 
 export type ChyronBarProps = {
   mesh: PeerMeshState;

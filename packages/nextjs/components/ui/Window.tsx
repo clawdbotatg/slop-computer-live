@@ -49,6 +49,15 @@ export type WindowProps = {
   // Inset within the viewport that maximize should respect (e.g. 26px top
   // for the menubar in production). Defaults to 0 on all sides.
   containerInset?: { top?: number; right?: number; bottom?: number; left?: number };
+  // Extra gap (px) the minimized "pill" leaves at the bottom of the screen
+  // so it docks ABOVE bottom-pinned desktop chrome (the timeline/headlines/
+  // ticker stack) instead of behind it. Affects ONLY the docked pill's
+  // resting position — not maximize, which still uses containerInset. The
+  // bars sit at zIndex 60, far above any window's slot z, so without this
+  // gap a docked window is hidden behind the opaque ticker and looks gone.
+  // Default 0 (generic component); the slop desktop passes the bar-stack
+  // height.
+  dockBottomInset?: number;
   // Keep the body (children) mounted while docked instead of unmounting
   // it. Default false: docked windows render titlebar-only and drop their
   // body to save work. Opt in for windows whose body owns live state that
@@ -81,6 +90,7 @@ export const Window = ({
   bodyStyle,
   children,
   containerInset,
+  dockBottomInset = 0,
   keepMountedWhenDocked = false,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
@@ -120,8 +130,10 @@ export const Window = ({
   // THIS viewer's screen. Computed locally on every render (and on
   // resize) so a peer with a different screen height sees it on their
   // own bottom edge, not at the initiator's absolute coordinate. The
-  // synced slot y is deliberately ignored while docked.
-  const dockedY = Math.max(insets.top, viewportH - insets.bottom - TITLEBAR_HEIGHT);
+  // synced slot y is deliberately ignored while docked. dockBottomInset
+  // lifts the pill above the bottom bar stack (ticker etc.) so it isn't
+  // buried behind that z-60 chrome.
+  const dockedY = Math.max(insets.top, viewportH - insets.bottom - dockBottomInset - TITLEBAR_HEIGHT);
 
   const restore = () => {
     if (savedRect) {

@@ -50,6 +50,7 @@ import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/V
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
+import { BOTTOM_BAR_STACK_HEIGHT } from "~~/components/desktop/bottomBarLayout";
 import {
   BandFlag,
   Button,
@@ -3318,6 +3319,7 @@ function DesktopInner({ slug }: { slug: string }) {
               onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}
               containerInset={{ top: 38 }}
+              dockBottomInset={BOTTOM_BAR_STACK_HEIGHT}
             >
               <div style={{ position: "relative", width: "100%", height: "100%" }}>
                 {stream ? (
@@ -3482,6 +3484,7 @@ function DesktopInner({ slug }: { slug: string }) {
               onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
               bodyStyle={{ padding: 0, overflow: "hidden" }}
               containerInset={{ top: 38 }}
+              dockBottomInset={BOTTOM_BAR_STACK_HEIGHT}
             >
               <SharedBrowser
                 browser={browser}
@@ -3523,6 +3526,7 @@ function DesktopInner({ slug }: { slug: string }) {
             onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
             containerInset={{ top: 38 }}
+            dockBottomInset={BOTTOM_BAR_STACK_HEIGHT}
           >
             <div
               style={{
@@ -3574,6 +3578,7 @@ function DesktopInner({ slug }: { slug: string }) {
             onResize={({ x, y, width, height }) => resizeSlot(cameraResumeSlotId, x, y, width, height)}
             bodyStyle={{ padding: 0, overflow: "hidden" }}
             containerInset={{ top: 38 }}
+            dockBottomInset={BOTTOM_BAR_STACK_HEIGHT}
           >
             <div
               style={{

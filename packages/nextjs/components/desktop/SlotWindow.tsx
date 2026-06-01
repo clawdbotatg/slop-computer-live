@@ -1,6 +1,7 @@
 "use client";
 
 import { type CSSProperties, type ReactNode, useEffect, useRef } from "react";
+import { BOTTOM_BAR_STACK_HEIGHT } from "~~/components/desktop/bottomBarLayout";
 import { Window } from "~~/components/ui";
 import type { PeerMeshState, SlotPosition } from "~~/hooks/usePeerMesh";
 
@@ -104,6 +105,7 @@ export const SlotWindow = ({
       onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: slot.width, height: slot.height })}
       onResize={({ x, y, width, height }) => mesh.updateSlot({ id: slotId, x, y, width, height })}
       containerInset={{ top: menubarInset }}
+      dockBottomInset={BOTTOM_BAR_STACK_HEIGHT}
       keepMountedWhenDocked={keepMountedWhenDocked}
     >
       {children}
