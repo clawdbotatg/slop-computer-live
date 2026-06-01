@@ -228,6 +228,9 @@ function roomPaths(id: string): {
   };
 }
 
+/** Broadcast air sign shown to every viewer. See `airState` on Room. */
+export type AirState = "off-air" | "standby" | "on-air";
+
 export class Room {
   readonly id: string;
 
@@ -245,6 +248,19 @@ export class Room {
    *  the live-capture frame ends. Last-write-wins if multiple spectators
    *  are connected; cleared when the last spectator leaves. */
   private godViewport: { width: number; height: number } | null = null;
+
+  /** Broadcast "on-air" state, surfaced to every peer as a classic radio
+   *  sign in the menubar. Derived from two inputs:
+   *    - `streamActive`: is the headless RTMP broadcaster's systemd unit
+   *      running AND pointed at this room? (pushed by the air poller in
+   *      index.ts every few seconds)
+   *    - `greenRoom`: has the god-mode operator dropped into "green room"
+   *      / standby mode? (set via the spectator-only `green_room` message)
+   *  off-air = no live stream · standby = stream up but operator is in the
+   *  green room · on-air = stream up showing the real desktop. */
+  private streamActive = false;
+  private greenRoom = false;
+  private airState: AirState = "off-air";
 
   /** Per-speaker live-caption arbitration. Speakers running browser STT
    *  (useLiveTranscript) emit `live_caption_state {alive}` on connect
@@ -511,11 +527,17 @@ export class Room {
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
     // everyone, so the dashed rectangle disappears for surviving peers.
-    if (wasSpectator && this.godViewport !== null) {
+    if (wasSpectator) {
       const stillHasSpectator = [...this.peers.values()].some(p => p.spectator);
       if (!stillHasSpectator) {
-        this.godViewport = null;
-        this.broadcast({ type: "god_viewport", viewport: null });
+        if (this.godViewport !== null) {
+          this.godViewport = null;
+          this.broadcast({ type: "god_viewport", viewport: null });
+        }
+        // Green room is a god-mode-only concept; without a streaming box it
+        // has no meaning. Drop it so the air sign can't get stuck on
+        // "standby" after the operator disconnects.
+        this.setGreenRoom(false);
       }
     }
   }
@@ -539,6 +561,45 @@ export class Room {
     }
     this.godViewport = v;
     this.broadcast({ type: "god_viewport", viewport: v });
+  }
+
+  getAirState(): AirState {
+    return this.airState;
+  }
+
+  /** Pushed by the air poller: is the broadcaster live AND on this room? */
+  setStreamActive(active: boolean): void {
+    if (this.streamActive === active) return;
+    this.streamActive = active;
+    this.recomputeAir();
+  }
+
+  getGreenRoom(): boolean {
+    return this.greenRoom;
+  }
+
+  /** Spectator-only: god-mode operator entering/leaving the green room.
+   *  Broadcast the raw flag so EVERY god-mode client (the headless
+   *  broadcaster that feeds the stream AND any operator monitor tab)
+   *  renders the standby curtain in lockstep — not just whoever pressed
+   *  the key. Also folds into the air sign every viewer sees. */
+  setGreenRoom(on: boolean): void {
+    if (this.greenRoom === on) return;
+    this.greenRoom = on;
+    this.broadcast({ type: "green_room", on });
+    this.recomputeAir();
+  }
+
+  /** Collapse the two inputs into the air sign and fan out on any change. */
+  private recomputeAir(): void {
+    const next: AirState = !this.streamActive
+      ? "off-air"
+      : this.greenRoom
+        ? "standby"
+        : "on-air";
+    if (next === this.airState) return;
+    this.airState = next;
+    this.broadcast({ type: "air_state", state: next });
   }
 
   getPeer(id: string): Peer | undefined {

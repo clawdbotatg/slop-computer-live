@@ -108,6 +108,13 @@ async function getRecentLog(lines = 20): Promise<string[]> {
   return stdout.split("\n").filter((l) => l.trim().length > 0);
 }
 
+/** Lightweight active check — a single `systemctl is-active`, no journal
+ *  read. Used by the on-air poller which runs every few seconds; the full
+ *  getBroadcastStatus() (4 subprocesses) is reserved for the admin panel. */
+export async function isBroadcastActive(): Promise<boolean> {
+  return (await getActive()) === "active";
+}
+
 export async function getBroadcastStatus(): Promise<BroadcastStatus> {
   const [active, enabled, activeForSeconds, recentLog] = await Promise.all([
     getActive(),

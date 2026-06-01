@@ -11,7 +11,7 @@ import { writeFileAtomic } from "./fs-atomic.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
-import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
+import { broadcastAction, getBroadcastStatus, getBroadcastUrl, isBroadcastActive, setBroadcastUrl } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
   closeAllPeers,
@@ -329,6 +329,55 @@ setInterval(() => {
     }
   }
 }, LIFECYCLE_TICK_MS).unref();
+
+// --- On-air monitor --------------------------------------------------------
+// Poll the headless broadcaster's systemd state and push it into each room
+// so the menubar air sign (off-air / standby / on-air) reflects reality for
+// every viewer. "Active" only counts for the single room the broadcaster is
+// pointed at (parsed from SLOP_URL) — every other room stays off-air even
+// while the unit runs. On a dev box with no systemctl, getActive() returns
+// "unknown", so nothing ever goes on-air locally — that's fine.
+const AIR_POLL_MS = 4000;
+
+/** First path segment of the broadcaster's SLOP_URL, i.e. the room it joined.
+ *  A bare origin ("https://live.slop.computer/") maps to the default room. */
+function broadcastTargetSlug(url: string): string | null {
+  try {
+    const seg = new URL(url).pathname.split("/").filter(Boolean)[0];
+    if (!seg) return DEFAULT_SLUG;
+    return isValidSlug(seg) ? seg : null;
+  } catch {
+    return null;
+  }
+}
+
+async function pollBroadcastAir(): Promise<void> {
+  const rooms = [...listRooms()];
+  // Nobody connected anywhere → don't spawn systemctl/journalctl subprocesses
+  // on an idle relay. Make sure nothing is stuck on-air first, then bail.
+  if (!rooms.some(r => r.peerCount() > 0)) {
+    for (const room of rooms) room.setStreamActive(false);
+    return;
+  }
+  let active = false;
+  let targetSlug: string | null = null;
+  try {
+    active = await isBroadcastActive();
+    if (active) {
+      const url = await getBroadcastUrl();
+      targetSlug = url ? broadcastTargetSlug(url) : null;
+    }
+  } catch {
+    active = false;
+  }
+  for (const room of rooms) {
+    room.setStreamActive(active && room.id === targetSlug);
+  }
+}
+setInterval(() => {
+  void pollBroadcastAir();
+}, AIR_POLL_MS).unref();
+void pollBroadcastAir();
 
 // Music player state is now per-room — see room.music (MusicState class).
 
@@ -5663,6 +5712,8 @@ app.register(async function signalRoutes(fastify) {
       chyronState: room.chyron.getState(),
       escrow: room.escrow.get(),
       godViewport: room.getGodViewport(),
+      airState: room.getAirState(),
+      greenRoom: room.getGreenRoom(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -5691,7 +5742,8 @@ app.register(async function signalRoutes(fastify) {
           t === "offer" ||
           t === "answer" ||
           t === "ice" ||
-          t === "god_viewport";
+          t === "god_viewport" ||
+          t === "green_room";
         if (!allowed) return;
       }
       switch (msg?.type) {
@@ -5743,6 +5795,14 @@ app.register(async function signalRoutes(fastify) {
           if (!Number.isFinite(w) || !Number.isFinite(h)) return;
           if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
           room.setGodViewport({ width: Math.round(w), height: Math.round(h) });
+          return;
+        }
+        case "green_room": {
+          // Only the god-mode/spectator streaming box flips the green
+          // room. Combined with the live-stream poll, this drives the
+          // off-air / standby / on-air sign every viewer sees.
+          if (!isSpectator) return;
+          room.setGreenRoom(msg.on === true);
           return;
         }
         case "click": {

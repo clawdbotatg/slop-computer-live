@@ -23,6 +23,7 @@ import { EnsWindow } from "~~/components/desktop/EnsWindow";
 import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
+import { GreenRoomOverlay } from "~~/components/desktop/GreenRoomOverlay";
 import { HeadlinesBar } from "~~/components/desktop/HeadlinesBar";
 import { IncomingTxModal } from "~~/components/desktop/IncomingTxModal";
 import { LeftclawWindow } from "~~/components/desktop/LeftclawWindow";
@@ -737,6 +738,21 @@ function DesktopInner({ slug }: { slug: string }) {
   // be activated once so its AudioContext is built + resumed on the
   // first user gesture (otherwise registers race the context init).
   useAudioBusOwner(isGodMode);
+
+  // Green room / standby. God-mode only: the streaming box drops a
+  // full-screen preview curtain over the live desktop so the operator can
+  // chat + set up backstage (from their normal room session) without the
+  // world seeing the room. The flag is SHARED via the relay — pressing
+  // spacebar on any god-mode view flips it for the headless broadcaster
+  // (which feeds the stream) and every operator monitor at once. The relay
+  // also folds it into the air sign every viewer sees (off-air / standby /
+  // on-air). Defaults to OFF — god-mode loads straight into the real
+  // desktop.
+  const greenRoom = mesh.greenRoom;
+  const meshSetGreenRoom = mesh.setGreenRoom;
+  const toggleGreenRoom = useCallback(() => {
+    meshSetGreenRoom(!greenRoom);
+  }, [meshSetGreenRoom, greenRoom]);
   // God-mode server-side STT. Only the streaming box runs this. It
   // walks every other peer's audio track in the mesh, VAD-gates,
   // captures Opus segments, and POSTs them to /v1/transcript/relay
@@ -2719,6 +2735,28 @@ function DesktopInner({ slug }: { slug: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [sharingMic]);
 
+  // Spacebar in god-mode = toggle the green room (standby ⇄ live). The
+  // streaming box never publishes a mic, so the mute binding above is
+  // inert here and this is the only thing that owns Space. Skipped while
+  // a text field / button has focus so the operator can still type.
+  useEffect(() => {
+    if (!isGodMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t instanceof HTMLElement) {
+        if (t.isContentEditable) return;
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") return;
+        if (t.getAttribute("role") === "button") return;
+      }
+      e.preventDefault();
+      toggleGreenRoom();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isGodMode, toggleGreenRoom]);
+
   // File previews — opened on double-click of a desktop file. SHARED
   // across the mesh exactly like every other singleton window: the
   // open-state lives in `mesh.openWindowIds` keyed `preview-<fileId>`,
@@ -2858,6 +2896,7 @@ function DesktopInner({ slug }: { slug: string }) {
       <MenuBar
         menus={[fileMenu, editMenu, viewMenu]}
         meshConnected={mesh.connected}
+        airState={mesh.airState}
         godActive={isGodMode}
         godListening={isGodMode && godStt.listening}
         localSttSupported={!isGodMode && liveStt.supported}
@@ -4028,8 +4067,12 @@ function DesktopInner({ slug }: { slug: string }) {
           the operator can navigate — but usePeerMesh suppresses the
           mousemove broadcast for spectator sessions, so other peers
           (and the OBS-captured frame the world sees) don't get the
-          god-mode cursor overlaid on top of the live participants. */}
-      {localCursor.pos ? (
+          god-mode cursor overlaid on top of the live participants.
+          Hidden on god-mode views while in the green room so the standby
+          card stays clean on the stream — the curtain renders above
+          everything else. Normal participants keep their cursor; they're
+          in the real room, not behind the curtain. */}
+      {localCursor.pos && !(isGodMode && greenRoom) ? (
         <Cursor
           x={localCursor.pos.x}
           y={localCursor.pos.y}
@@ -4049,6 +4092,18 @@ function DesktopInner({ slug }: { slug: string }) {
               </span>
             ) : null
           }
+        />
+      ) : null}
+
+      {/* Green room / standby curtain — god-mode only. Mounted whenever
+          this is the streaming box so the fade plays both ways; `visible`
+          gates the opacity. Sits above every other layer. */}
+      {isGodMode ? (
+        <GreenRoomOverlay
+          visible={greenRoom}
+          slug={slug}
+          cardVersion={mesh.cardState?.version ?? null}
+          countdown={mesh.clockState.countdown}
         />
       ) : null}
     </>

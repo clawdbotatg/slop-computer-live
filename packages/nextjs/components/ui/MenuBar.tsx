@@ -5,6 +5,7 @@ import Link from "next/link";
 import { LivePulse } from "./LivePulse";
 import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
+import type { AirState } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
 import { readStoredRoomPassword } from "~~/utils/roomPassword";
 
@@ -46,6 +47,10 @@ interface MenuBarProps {
    *  itself moved out of the menubar — see `<PinnedPeers>` for the
    *  always-visible top-right HUD. */
   meshConnected?: boolean;
+  /** Broadcast air sign shown to every viewer between the STT mic and the
+   *  connection dot. Derived by the relay from the live RTMP stream + the
+   *  god-mode green-room toggle. `undefined` hides the sign entirely. */
+  airState?: AirState;
   /** True when this client is the god-mode streaming box. Renders 🛰️
    *  in the menubar at all times so the operator can confirm STT is
    *  wired up at a glance. */
@@ -96,6 +101,7 @@ export const MenuBar = ({
   className = "",
   menus = [],
   meshConnected,
+  airState,
   godActive = false,
   godListening = false,
   localSttSupported = false,
@@ -319,6 +325,7 @@ export const MenuBar = ({
               </span>
             </span>
           ) : null}
+          {airState ? <AirSign airState={airState} /> : null}
           <span
             className="slop-menubar__item"
             style={{ cursor: "help" }}
@@ -684,6 +691,68 @@ function PowerMenu({ onSignOut }: { onSignOut: () => void | Promise<void> }) {
 // opens the public slop.computer/<slug> URL, not the live. subdomain) and
 // is followed by [ copy skill ] which mints an agent token and copies a
 // fetchable skill URL to the clipboard for pasting into a local LLM.
+// Classic broadcast radio sign, between the STT mic and the connection
+// dot. Grey OFF AIR · amber STANDBY (pulsing) · red ON AIR (pulsing). The
+// state is derived server-side from the live RTMP stream + the god-mode
+// green-room toggle, so every viewer sees the same sign at once.
+const AIR_CONFIG: Record<AirState, { label: string; color: string; live: boolean; title: string }> = {
+  "off-air": {
+    label: "OFF AIR",
+    color: "#8b8498",
+    live: false,
+    title: "Off air — no live stream is going out right now.",
+  },
+  standby: {
+    label: "STANDBY",
+    color: "var(--slop-amber, #ffae00)",
+    live: true,
+    title:
+      "Standby — the stream is live but the operator is in the green room. Viewers see the preview card, not the room.",
+  },
+  "on-air": {
+    label: "ON AIR",
+    color: "var(--slop-red, #ff2e63)",
+    live: true,
+    title: "On Air — the stream is live and showing the real desktop. The room is being broadcast.",
+  },
+};
+
+function AirSign({ airState }: { airState: AirState }) {
+  const cfg = AIR_CONFIG[airState];
+  return (
+    <span
+      className="slop-menubar__item"
+      style={{
+        cursor: "help",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "0 6px",
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: "0.07em",
+        color: cfg.color,
+        opacity: cfg.live ? 1 : 0.55,
+      }}
+      title={cfg.title}
+      aria-label={cfg.label}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 9,
+          height: 9,
+          borderRadius: "50%",
+          background: cfg.color,
+          boxShadow: cfg.live ? `0 0 8px 1px ${cfg.color}` : "none",
+          animation: cfg.live ? "slop-pulse 1.4s ease-in-out infinite" : "none",
+        }}
+      />
+      {cfg.label}
+    </span>
+  );
+}
+
 function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");

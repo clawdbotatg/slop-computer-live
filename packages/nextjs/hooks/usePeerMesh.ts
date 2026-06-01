@@ -587,6 +587,12 @@ export type CardState = {
   version: number;
 };
 
+/** Broadcast air sign, derived by the relay from the live RTMP stream +
+ *  god-mode green-room toggle. Shown to every viewer in the menubar:
+ *  off-air (no stream) · standby (stream up, operator in green room) ·
+ *  on-air (stream up, real desktop showing). */
+export type AirState = "off-air" | "standby" | "on-air";
+
 /** A card generation in flight on the relay. Broadcast on POST /v1/card
  *  start and cleared (broadcast `card_job: null`) on completion or
  *  failure. Anyone in the room sees this and shows the shared progress
@@ -1192,6 +1198,18 @@ export type PeerMeshState = {
    *  (or `null` to clear). No-op for non-spectators — the relay drops
    *  the message either way. */
   setGodViewport: (v: { width: number; height: number } | null) => void;
+  /** Broadcast air sign for this room, derived by the relay. Every viewer
+   *  sees the same value; the menubar renders it as a radio sign. */
+  airState: AirState;
+  /** Shared green-room flag. Mirrors relay truth so EVERY god-mode client
+   *  (the headless broadcaster feeding the stream + any operator monitor)
+   *  shows the standby curtain together. Always false for the room at
+   *  large until a spectator flips it. */
+  greenRoom: boolean;
+  /** Spectator-only: god-mode operator enters (true) / leaves (false) the
+   *  green room. No-op for non-spectators — the relay drops the message,
+   *  and the shared `greenRoom` flag only updates on the relay's echo. */
+  setGreenRoom: (on: boolean) => void;
   /** Most recent STT segment, pushed by the room's WS broadcast when
    *  Whisper appends a new line. `null` until the first segment arrives
    *  in this session. Used by the on-screen subtitle caption. We don't
@@ -1527,6 +1545,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
   const [chyronState, setChyronState] = useState<ChyronState | null>(null);
   const [godViewport, setGodViewportState] = useState<{ width: number; height: number } | null>(null);
+  const [airState, setAirState] = useState<AirState>("off-air");
+  const [greenRoom, setGreenRoomFlag] = useState(false);
   const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
   const [liveCaption, setLiveCaption] = useState<LiveCaption | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
@@ -2285,6 +2305,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  // Spectator (god-mode) green-room toggle. Relay drops it for
+  // non-spectators. We don't set airState optimistically — it's a
+  // derived value the relay owns (it also folds in the live-stream
+  // state), so we wait for the `air_state` broadcast to echo back.
+  const setGreenRoom = useCallback(
+    (on: boolean) => {
+      send({ type: "green_room", on });
+    },
+    [send],
+  );
+
   // Clear the shared title card — anyone in the room may reset, which
   // hides the generated PNG and brings the template back. Relay
   // broadcasts `card_state: null` so every peer flips at once.
@@ -2872,6 +2903,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
               setGodViewportState({ width: gv.width, height: gv.height });
             }
           }
+          if (msg.airState === "off-air" || msg.airState === "standby" || msg.airState === "on-air") {
+            setAirState(msg.airState);
+          }
+          if (typeof msg.greenRoom === "boolean") {
+            setGreenRoomFlag(msg.greenRoom);
+          }
           if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
             setNewsDigestState(msg.newsDigestState as NewsDigestState);
           }
@@ -3412,6 +3449,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (
+          msg.type === "air_state" &&
+          (msg.state === "off-air" || msg.state === "standby" || msg.state === "on-air")
+        ) {
+          setAirState(msg.state);
+          return;
+        }
+
+        if (msg.type === "green_room" && typeof msg.on === "boolean") {
+          setGreenRoomFlag(msg.on);
+          return;
+        }
+
         if (msg.type === "transcript_seg" && msg.seg && typeof msg.seg === "object") {
           // Only the latest segment — the subtitle UI cross-fades on
           // each update and doesn't need history. The full transcript
@@ -3776,6 +3826,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setChyron,
     godViewport,
     setGodViewport,
+    airState,
+    greenRoom,
+    setGreenRoom,
     latestTranscriptSeg,
     liveCaption,
     sendLiveCaption,
