@@ -1099,9 +1099,15 @@ const ChainRow = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [probeKey]);
 
-  // Detect which non-passkey signers are contracts (have on-chain code) →
-  // they must be registered as ERC-1271 `contractSigners`, not EOAs, or the
-  // multisig can never verify their nested signatures. Only relevant
+  // Detect which non-passkey signers are nested Multisigs → they must be
+  // registered as ERC-1271 `contractSigners`, not EOAs, or the multisig can
+  // never verify their nested signatures.
+  //
+  // We probe `signerCount()` rather than just checking for on-chain code:
+  // an EIP-7702-delegated EOA (e.g. a MetaMask smart account) HAS code but is
+  // still an EOA that signs with ECDSA — `getBytecode` would misclassify it as
+  // a contract signer (and break EOA signing). A slop Multisig answers
+  // signerCount(); a 7702 EOA / random contract reverts. Only relevant
   // pre-deploy (an `existing` wallet trusts its persisted signer types).
   const [contractSignerAddrs, setContractSignerAddrs] = useState<Set<string>>(new Set());
   const candidateContractAddrs = useMemo(
@@ -1118,8 +1124,13 @@ const ChainRow = ({
     Promise.all(
       candidateContractAddrs.map(async addr => {
         try {
-          const code = await publicClient.getBytecode({ address: addr as AddressType });
-          return code && code !== "0x" ? addr : null;
+          // A slop Multisig responds to signerCount(); EOAs (incl. 7702) revert.
+          await publicClient.readContract({
+            address: addr as AddressType,
+            abi: MultisigAbi,
+            functionName: "signerCount",
+          });
+          return addr;
         } catch {
           return null;
         }
