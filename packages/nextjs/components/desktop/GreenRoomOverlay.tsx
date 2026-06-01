@@ -77,32 +77,54 @@ function BottomVisualizer({ active }: { active: boolean }) {
           const H = canvas.height;
           ctx.clearRect(0, 0, W, H);
           const bins = analyser.frequencyBinCount;
-          const data = new Uint8Array(bins);
-          analyser.getByteFrequencyData(data);
+          // Use FLOAT (dB) data, not byte. getByteFrequencyData maps a fixed
+          // dB window to 0–255 and floors anything quiet to 0 — and the bus
+          // levels the music down (~0.55), so the post-gain signal sat under
+          // that floor and every bar read dead. getFloatFrequencyData gives
+          // raw dB regardless, so we pick our own sensitive floor and the
+          // bars come alive even at low output. Reflects the MUSIC, not the
+          // output volume.
+          const data = new Float32Array(bins);
+          analyser.getFloatFrequencyData(data);
+          const MIN_DB = -85;
+          const MAX_DB = -25;
+          const db01 = (db: number) => {
+            if (!Number.isFinite(db)) return 0;
+            return Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB)));
+          };
           // Music energy lives in the lower FFT bins; the top end is dead
-          // air. Map only the active low range across the FULL width with
-          // a fixed count of chunky bars (instead of one bar per bin, which
-          // left the right ~20% flat). A gentle high-band lift keeps motion
-          // edge-to-edge since the upper bars are naturally quieter.
+          // air. Map only the active low range across the FULL width with a
+          // fixed count of chunky bars + a gentle high-band lift so there's
+          // motion edge-to-edge.
           const start = 1; // skip DC bin
           const usable = Math.max(8, Math.floor((bins - start) * 0.66));
           const BARS = 44;
           const gap = Math.max(1, dpr);
           const barW = (W - gap * (BARS + 1)) / BARS;
+          const raw = new Array<number>(BARS);
+          let peak = 0;
           for (let i = 0; i < BARS; i++) {
             const f = i / (BARS - 1); // 0..1 across the width
-            // Average a small window of the usable range for this bar.
             const center = start + f * (usable - 1);
             const lo = Math.floor(center);
             const hi = Math.min(start + usable - 1, lo + 1);
             let sum = 0;
             let n = 0;
             for (let b = lo; b <= hi; b++) {
-              sum += data[b] ?? 0;
+              sum += db01(data[b] ?? -Infinity);
               n++;
             }
-            let v = sum / Math.max(1, n) / 255;
-            v = Math.min(1, v * (1 + f * 0.75)); // lift the quieter highs
+            let v = sum / Math.max(1, n);
+            v = v * (1 + f * 0.9); // lift the quieter highs for edge-to-edge motion
+            raw[i] = v;
+            if (v > peak) peak = v;
+          }
+          // Normalize to the frame peak so bars fill the height; only when
+          // there's real signal, so silence stays flat instead of
+          // amplifying noise into a full bar.
+          const norm = peak > 0.06 ? 0.96 / peak : 0;
+          for (let i = 0; i < BARS; i++) {
+            const v = Math.min(1, raw[i] * norm);
             const h = Math.max(dpr, v * H);
             const x = gap + i * (barW + gap);
             const grad = ctx.createLinearGradient(0, H, 0, H - h);
@@ -234,71 +256,81 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
         <span className="flex-1" />
       </div>
 
-      {/* Card stage — big, sitting above the reserved bottom band (viz +
-          ticker). Prefers the saved unfurl (title baked in). */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 3,
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 20,
-          padding: "1.5vh 2vw",
-          paddingBottom: TICKER_H + VIZ_H + 16,
-          minHeight: 0,
-        }}
-      >
-        {cardUrl ? (
-          <img
-            src={cardUrl}
-            alt=""
-            onError={onCardError}
-            style={{
-              maxWidth: "96vw",
-              maxHeight: showCountdown ? "58vh" : "76vh",
-              objectFit: "contain",
-              borderRadius: 18,
-              boxShadow: "0 24px 80px #000b, 0 0 60px rgba(255,62,201,0.28)",
-              border: "1px solid rgba(255,62,201,0.35)",
-            }}
-          />
-        ) : (
-          // No artifact yet → a template panel so standby still looks staged.
+      {/* The card — a near-fullscreen backdrop BEHIND everything else
+          (countdown, wordmark, visualizer, ticker all sit on top). Prefers
+          the saved unfurl (title baked in by the disk/save icon). */}
+      {cardUrl ? (
+        <img
+          src={cardUrl}
+          alt=""
+          onError={onCardError}
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            maxWidth: "92vw",
+            maxHeight: "90vh",
+            objectFit: "contain",
+            zIndex: 0,
+            borderRadius: 18,
+            boxShadow: "0 24px 80px #000b, 0 0 60px rgba(255,62,201,0.28)",
+            border: "1px solid rgba(255,62,201,0.35)",
+          }}
+        />
+      ) : (
+        // No artifact yet → a template panel so standby still looks staged.
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "min(92vw, 1600px)",
+            aspectRatio: "16 / 9",
+            maxHeight: "90vh",
+            zIndex: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 18,
+            borderRadius: 18,
+            border: "1px solid rgba(255,62,201,0.35)",
+            background: "linear-gradient(160deg, rgba(40,18,70,0.85), rgba(8,4,16,0.92))",
+            boxShadow: "0 24px 80px #000b, 0 0 60px rgba(255,62,201,0.28)",
+          }}
+        >
+          <img src="/logo-mark.png" alt="" width={140} height={140} style={{ opacity: 0.95 }} aria-hidden />
           <div
             style={{
-              width: "min(92vw, 1320px)",
-              aspectRatio: "16 / 9",
-              maxHeight: showCountdown ? "58vh" : "76vh",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 18,
-              borderRadius: 18,
-              border: "1px solid rgba(255,62,201,0.35)",
-              background: "linear-gradient(160deg, rgba(40,18,70,0.85), rgba(8,4,16,0.92))",
-              boxShadow: "0 24px 80px #000b, 0 0 60px rgba(255,62,201,0.28)",
+              fontSize: "clamp(28px, 5vw, 72px)",
+              fontWeight: 800,
+              letterSpacing: "0.04em",
+              color: "var(--slop-text, #f4ecff)",
+              textShadow: "0 0 24px rgba(124,77,255,0.55)",
             }}
           >
-            <img src="/logo-mark.png" alt="" width={120} height={120} style={{ opacity: 0.95 }} aria-hidden />
-            <div
-              style={{
-                fontSize: "clamp(28px, 5vw, 64px)",
-                fontWeight: 800,
-                letterSpacing: "0.04em",
-                color: "var(--slop-text, #f4ecff)",
-                textShadow: "0 0 24px rgba(124,77,255,0.55)",
-              }}
-            >
-              {slug}
-            </div>
+            {slug}
           </div>
-        )}
+        </div>
+      )}
 
-        {showCountdown ? (
+      {/* Countdown — centered over the card, on top. Same flex slot it had
+          before (kept the bottom-band padding so it sits where it did). */}
+      {showCountdown ? (
+        <div
+          style={{
+            position: "relative",
+            zIndex: 3,
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            paddingBottom: TICKER_H + VIZ_H + 16,
+            minHeight: 0,
+          }}
+        >
           <div
             style={{
               fontVariantNumeric: "tabular-nums",
@@ -313,8 +345,8 @@ export function GreenRoomOverlay({ visible, slug, cardVersion, countdown, mesh }
           >
             {countdownDone ? "LIVE" : fmtHMS(secs as number)}
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {/* Bottom band: music spectrum (rising bars) above a slightly-bigger
           timeline ticker pinned to the very bottom. Both sit behind the

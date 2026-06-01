@@ -455,10 +455,10 @@ export const MusicPlayerWindow = ({
   // music down actually turns music down in the mix.
   // Green room: the god-mode streaming box pins music to a fixed level on
   // the bus regardless of the room's shared volume, so the standby card's
-  // audio reaches the stream at a consistent loudness. 0.65 — full was too
-  // hot (viewers had to turn down on arrival). Only affects the god-mode
-  // box (the bus owner); room participants keep the shared volume.
-  const greenRoomScale = audioBusEnabled && mesh.greenRoom ? 0.65 : null;
+  // audio reaches the stream at a consistent loudness. 0.55 — full / 0.65
+  // were too hot (viewers had to turn down on arrival). Only affects the
+  // god-mode box (the bus owner); room participants keep the shared volume.
+  const greenRoomScale = audioBusEnabled && mesh.greenRoom ? 0.55 : null;
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = audioBusEnabled ? 1 : shownVolume;
