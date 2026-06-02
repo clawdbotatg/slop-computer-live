@@ -352,6 +352,10 @@ function broadcastTargetSlug(url: string): string | null {
   }
 }
 
+// ⚠️ DORMANT path — this only ever flags a room LIVE when the server-side
+// `slop-broadcast.service` is active, which it never is in prod (we stream
+// from a second machine via OBS). Left in place with the rest of the dormant
+// broadcaster; see packages/relay/src/broadcast.ts. Effectively a no-op today.
 async function pollBroadcastAir(): Promise<void> {
   const rooms = [...listRooms()];
   // Nobody connected anywhere → don't spawn systemctl/journalctl subprocesses
@@ -5172,10 +5176,14 @@ app.post("/admin/stop", async (req, reply) => {
   return { ok: true };
 });
 
-// Server-side broadcaster control. The slop-broadcast.service unit runs
-// next to mediamtx on this box, capturing a Chromium --app window of
-// the live room and pushing it to mediamtx over loopback RTMP. These
-// endpoints control that unit so a host can start/stop the broadcast
+// ⚠️ DORMANT — server-side broadcaster control. NOT IN USE (2026-06-02).
+// The live stream is captured on a SECOND MACHINE via OBS, not from the
+// server. The slop-broadcast.service unit (Chromium --app + ffmpeg → RTMP)
+// was built to test and left wired up for "maybe one day"; it isn't running
+// in prod and the admin UI panel that drove these endpoints was removed.
+// See packages/relay/src/broadcast.ts for the full note. Kept so the feature
+// can be re-enabled, but don't assume these are doing anything live.
+// These endpoints control that unit so a host could start/stop the broadcast
 // from the admin panel without ssh.
 app.get("/admin/broadcast/status", async (req, reply) => {
   const auth = requireHost(req);

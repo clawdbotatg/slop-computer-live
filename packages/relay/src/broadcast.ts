@@ -1,3 +1,15 @@
+// ⚠️ DORMANT FEATURE — NOT IN USE (as of 2026-06-02).
+// We do NOT broadcast the live stream from the server. The real stream is
+// captured on a SECOND MACHINE running OBS. This headless server-side
+// broadcaster (Xvfb + Chromium + ffmpeg → RTMP) was built to test the idea
+// and left wired up in case we revisit it one day — but `slop-broadcast.service`
+// is not running in production, the admin UI panel that drove it has been
+// removed (see packages/nextjs/app/admin/page.tsx), and these endpoints sit
+// idle. If you (or a future agent) are reasoning about how the stream goes
+// live: it's OBS on a second box, NOT this. Don't assume this is active.
+//
+// ---
+//
 // Server-side broadcaster control. The relay shells out to systemctl to
 // start/stop the `slop-broadcast.service` unit which runs Xvfb + Chromium
 // + ffmpeg → RTMP loopback. See deploy/slop-broadcast.{sh,service}.

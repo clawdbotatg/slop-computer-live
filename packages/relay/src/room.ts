@@ -417,7 +417,23 @@ export class Room {
       // Action rows (music/file/wallet/chess/pong) live in the archive and
       // the polled TranscriptWindow only — never flash them as an on-screen
       // subtitle caption; that overlay stays reserved for actual speech.
-      if (seg.kind && seg.kind !== "speech") return;
+      if (seg.kind && seg.kind !== "speech") {
+        // …but DO mirror them into chat as a centered system notice. The
+        // rendered one-liner already bakes in the actor's name + emoji
+        // (see transcript-actions.ts), so it reads on its own the same way
+        // `/who` output does — no per-actor styling needed. This is the
+        // single fan-out point every appendAction passes through, so one
+        // mirror here covers music/file/wallet/chess/pong/worm/etc.
+        this.chat.append({
+          address: null,
+          handle: null,
+          anonId: null,
+          text: seg.text,
+          source: seg.source,
+          kind: "system",
+        });
+        return;
+      }
       const speakerKey = seg.address ?? seg.anonId ?? null;
       if (speakerKey && this.liveCaptionAlive.get(speakerKey) === true) return;
       this.broadcast({ type: "transcript_seg", seg });

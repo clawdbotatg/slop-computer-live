@@ -1,5 +1,14 @@
 # Server-side Broadcast Pipeline
 
+> ⚠️ **DORMANT — NOT IN USE (2026-06-02).** This was built to test the idea
+> and left wired up for "maybe one day." We do **not** broadcast from the
+> server. The live stream is captured on a **second machine running OBS**.
+> The admin UI panel that drove this has been removed; the backend
+> (`packages/relay/src/broadcast.ts`, the `/admin/broadcast/*` endpoints, and
+> `deploy/slop-broadcast.*`) stays in place but idle. If we ever revisit
+> server-side capture, this doc + that code are the starting point. Until
+> then: don't assume any of this is live.
+
 Replace host-side capture (OBS/SCK/ffmpeg) with a Chromium + ffmpeg pipeline
 running on the EC2 box right next to mediamtx and the relay. Server-side
 capture eliminates the host audio-routing nightmare (no human ears to protect),
