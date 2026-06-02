@@ -50,6 +50,23 @@
   --slop-font-display: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
   --slop-font-body: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
   --slop-font-mono: ui-monospace, "Menlo", "Monaco", "Consolas", monospace;
+
+  /* WalletConnect / AppKit modal stacking.
+     RainbowKit's `walletConnectWallet` option opens the official WalletConnect
+     (Reown AppKit) dialog as a separate web component — the "copy the WC code"
+     modal you reach on a device with no QR scanner. It defaults to
+     `--w3m-z-index: 999` (and legacy `--wcm-z-index`), which renders it UNDER
+     our entry gate (Desktop.tsx, z-index 10000) and even under the desktop
+     chrome (menubar, z-index 9000). Lowering the gate can't fix this: it must
+     stay above the chrome (>9000), so it can never sit below a 999 dialog.
+     Instead we lift the WC dialog to the top wallet layer — matching
+     RainbowKit's own modal (2147483646), just under the cursor (2147483647).
+     `!important` is required: AppKit injects its own `:root { --w3m-z-index:
+     999 }` stylesheet AT RUNTIME when the modal opens, so a plain same-
+     specificity declaration here would lose the cascade to the later-inserted
+     999. AppKit's injected value is not !important, so this wins. */
+  --w3m-z-index: 2147483646 !important;
+  --wcm-z-index: 2147483646 !important;
 }
 
 @theme {
