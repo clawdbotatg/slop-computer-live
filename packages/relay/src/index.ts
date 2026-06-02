@@ -595,12 +595,20 @@ function chessEndingLine(game: ChessGame): { text: string; who: string; key: str
 // track starting, or play↔pause. Position/volume/drift ticks (the bulk of
 // music_state traffic) produce no line. Diffs prev vs the just-applied
 // snapshot, so a retransmit of the same state is a no-op.
+//
+// `auto` ⇒ the client's audio element fired `ended` and auto-advanced to
+// the next track. That's not an intentional act by anyone, so we skip it
+// entirely — the transcript/chat are a log of "this person did this on
+// purpose", not a play-by-play of automated playlist churn. Only a human
+// clicking play/next/track narrates.
 function noteMusicTranscript(
   room: Room,
   prev: MusicSnapshot | null,
   next: MusicSnapshot,
   actor: { address: string | null; handle: string | null; anonId: string | null },
+  auto = false,
 ): void {
+  if (auto) return;
   const trackChanged = !prev || prev.src !== next.src || prev.index !== next.index;
   const playToggled = !!prev && prev.playing !== next.playing;
   let text: string | null = null;
@@ -6305,7 +6313,9 @@ app.register(async function signalRoutes(fastify) {
             volume: incomingVolume ?? room.music.cachedVolume() ?? 0.7,
           });
           room.broadcast({ type: "music_state", state: next });
-          noteMusicTranscript(room, prevMusic, next, info);
+          // `msg.auto` is set by the client's onEnded auto-advance — a hint
+          // for narration only, never stored in the snapshot.
+          noteMusicTranscript(room, prevMusic, next, info, msg.auto === true);
           return;
         }
         case "chess_create_game": {

@@ -1131,7 +1131,7 @@ export type PeerMeshState = {
   /** Shared music-player state. Last writer wins. Position drift is
    *  computed locally from `at` (Date.now() at capture). */
   musicState: MusicState | null;
-  setMusicState: (state: MusicState) => void;
+  setMusicState: (state: MusicState, opts?: { auto?: boolean }) => void;
   /** Server-authoritative chess game (singleton) + recent results. */
   chessGame: ChessGame | null;
   chessHistory: ChessResult[];
@@ -1996,11 +1996,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
 
   const setMusicState = useCallback(
-    (state: MusicState) => {
+    (state: MusicState, opts?: { auto?: boolean }) => {
       // Optimistic local apply so the local UI doesn't wait a round-trip
       // for its own click — the server echo will (harmlessly) re-apply.
       setMusicStateLocal(state);
-      send({ type: "music_state", ...state });
+      // `auto` flags an onEnded auto-advance so the relay can skip narrating
+      // it into the transcript/chat. Transient hint — not part of MusicState,
+      // never persisted in the shared snapshot.
+      send({ type: "music_state", ...state, ...(opts?.auto ? { auto: true } : {}) });
     },
     [send],
   );

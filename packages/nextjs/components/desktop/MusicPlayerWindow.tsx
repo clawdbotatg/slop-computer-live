@@ -595,14 +595,20 @@ export const MusicPlayerWindow = ({
       if (cur && stamp && stamp.src === cur.src && Date.now() - stamp.at < 1000) return;
       if (cur) lastEndedRef.current = { src: cur.src, at: Date.now() };
       const nextIndex = (idx + 1) % trks.length;
-      meshRef.current.setMusicState({
-        src: trks[nextIndex]?.src ?? null,
-        index: nextIndex,
-        playing: true,
-        position: 0,
-        at: Date.now(),
-        volume: meshRef.current.musicState?.volume ?? shownVolumeRef.current,
-      });
+      meshRef.current.setMusicState(
+        {
+          src: trks[nextIndex]?.src ?? null,
+          index: nextIndex,
+          playing: true,
+          position: 0,
+          at: Date.now(),
+          volume: meshRef.current.musicState?.volume ?? shownVolumeRef.current,
+        },
+        // Automatic track-end advance — not an intentional act, so the relay
+        // skips narrating it into the transcript/chat. The user's deliberate
+        // play/next/track clicks still go through the unflagged broadcast path.
+        { auto: true },
+      );
     };
     const onErr = () => {
       const m = a.error?.message || "unknown error";
