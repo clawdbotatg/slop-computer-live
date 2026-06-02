@@ -3,10 +3,10 @@
 ## What's Done ✅
 
 ### Contract — DEPLOYED TO MAINNET
-- **SlopComputerFrontpage.sol** deployed at `0x94D987a8057b7795522589E36383C87356217820` on Ethereum mainnet
-- Owner: `0x11ce532845ce0eacda41f72fdc1c88c335981442` (clawd.atg.eth)
-- Verified: `isLive()` → false, `owner()` → confirmed
-- Deployed via `forge create --broadcast` with freshly funded wallet
+- **SlopComputer.sol** (episode registry) deployed at `0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886` on Ethereum mainnet
+- Owner: `0x34aA3F359A9D614239015126635CE7732c18fDF3` (austingriffith.eth)
+- Verified: `liveEpisode()` → empty (off air), `owner()` → confirmed
+- ⚠️ Legacy `SlopComputerFrontpage.sol` (`0x94D987…7820`, owner clawdbotatg.eth) is deprecated/unused — superseded by the episode registry. Owner changed to austingriffith.eth on the new contract.
 
 ### slop-computer-live — LIVE ON VERCEL
 - **URL: https://nextjs-omega-bay-42.vercel.app**
@@ -38,7 +38,7 @@
 - Allowlist peer's addresses in relay admin
 
 ### Phase 4: Admin + Join Pages
-- `/admin`: host calls `goLive(title, hlsUrl)` or `goOffline()` via writeContract
+- `/admin`: host calls `goLive(name, slug, liveSlug, manifest, contractAddr, datetime)` or `goOffline()` via writeContract (now in the slop.computer/admin console)
 - `/join`: SIWE connect + password handle entry for WebRTC auth
 
 ### Phase 5: MediaMTX (OBS → HLS)
@@ -59,17 +59,18 @@
 
 | Service | URL | Status |
 |---------|-----|--------|
-| Contract | [0x94D987a8...7820](https://etherscan.io/address/0x94D987a8057b7795522589E36383C87356217820) | ✅ mainnet |
+| Contract | [0xf3ce36...4886](https://etherscan.io/address/0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886) (SlopComputer) | ✅ mainnet |
 | Live app | https://nextjs-omega-bay-42.vercel.app | ✅ Vercel |
 | Relay | relay.live.slop.computer | ❌ pending |
 | MediaMTX | media.slop.computer | ❌ pending |
 | Frontpage | slopcomputer.eth | ❌ pending |
 
 ## Owner Commands (for when you go live)
+Prefer the **slop.computer/admin** console. Raw cast against the new `SlopComputer` registry (owner = austingriffith.eth):
 ```bash
-# Go live
-cast send 0x94D987a8057b7795522589E36383C87356217820 "goLive(string,string)" "My Show Title" "https://media.slop.computer/stream.m3u8" --private-key <key>
+# Go live — full episode signature (name, slug, liveSlug, manifest, contractAddr, datetime)
+cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 "goLive(string,string,string,string,address,uint256)" "My Show Title" "my-show" "" "" 0x0000000000000000000000000000000000000000 $(date +%s) --private-key <key>
 
 # Go offline
-cast send 0x94D987a8057b7795522589E36383C87356217820 "goOffline()" --private-key <key>
+cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 "goOffline()" --private-key <key>
 ```

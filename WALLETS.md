@@ -9,8 +9,8 @@ or relay env. Don't conflate the two.
 
 | Wallet | Address | ENS | Role |
 |--------|---------|-----|------|
-| **clawdbotatg.eth** | `0x11ce532845cE0eAcdA41f72FDc1C88c335981442` | clawdbotatg.eth | **Admin / broadcaster** |
-| **atg.eth** | `0x34aA3F359A9D614239015126635CE7732c18fDF3` | austingriffith.eth | Regular participant |
+| **clawdbotatg.eth** | `0x11ce532845cE0eAcdA41f72FDc1C88c335981442` | clawdbotatg.eth | **Relay broadcaster / admin** |
+| **atg.eth** | `0x34aA3F359A9D614239015126635CE7732c18fDF3` | austingriffith.eth | Show participant **+ now the `SlopComputer` contract owner** (see Contract section) |
 
 ## Why two wallets
 
@@ -38,14 +38,25 @@ broadcast machine via OBS Multi-RTMP — keys never leave that box.
 
 ## Where this is enforced
 
-### Contract — `SlopComputerFrontpage.sol`
+### Contract — `SlopComputer.sol` (episode registry)
 
-Deployed at `0x94D987a8057b7795522589E36383C87356217820` on mainnet.
-`owner = 0x11ce…1442` (clawdbotatg.eth). `goLive()`, `goOffline()`,
-`addEpisode()` are all `onlyOwner`. Verify with:
+> ⚠️ **Ownership changed with the registry migration.** The live contract is
+> now `SlopComputer` at `0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886`, owned by
+> **austingriffith.eth** (`0x34aA3F…fDF3`) — *not* clawdbotatg.eth. This is
+> intentional: the contracts-repo deploy script reverts unless the owner is
+> atg.eth on live networks. The old `SlopComputerFrontpage.sol`
+> (`0x94D987…7820`, owned by clawdbotatg.eth) is deprecated/unused.
+>
+> Net effect: **the contract owner (registry writes: `goLive`, `addEpisode`,
+> `setName`, `execute`) is now Austin's wallet**, while the *relay* broadcast
+> admin below is still clawdbotatg.eth. Going live is driven from the
+> slop.computer/admin console signing as austingriffith.eth.
+
+`goLive()`, `goOffline()`, `addEpisode()`, `setName()`, `execute()` are all
+`onlyOwner`. Verify with:
 
 ```bash
-cast call 0x94D987a8057b7795522589E36383C87356217820 "owner()(address)" \
+cast call 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 "owner()(address)" \
   --rpc-url https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY
 ```
 
@@ -72,20 +83,19 @@ the relay session.
 
 ## If we redeploy the contract
 
-The deploy script
-(`slop-computer-frontpage/packages/hardhat/deploy/00_deploy_slop_computer_frontpage.ts`)
-uses the `deployer` named account as the constructor's `initialOwner`.
-`deployer` is whatever address is signed in via the
-`__RUNTIME_DEPLOYER_PRIVATE_KEY` env var.
+The `SlopComputer` registry now lives in the **slop-computer-contracts**
+repo (Foundry) and its deploy script reverts unless the resulting owner is
+**austingriffith.eth** on live networks. The constructor takes
+`initialOwner`; the deploy guard enforces atg.eth.
 
-**Make sure you're deploying with the clawdbotatg.eth key.** If you
-end up with a different owner, transfer it back immediately with
-`transferOwnership(0x11ce532845cE0eAcdA41f72FDc1C88c335981442)` from
-the new owner.
+**Deploy so the owner is austingriffith.eth (`0x34aA3F…fDF3`).** If you end
+up with a different owner, transfer it back immediately with
+`transferOwnership(0x34aA3F359A9D614239015126635CE7732c18fDF3)` from the new
+owner. (The old clawdbotatg.eth-owned `SlopComputerFrontpage` is retired.)
 
 ## What goes wrong if you swap them
 
-- atg.eth signing `goLive()` → tx reverts (`not owner`)
+- ~~atg.eth signing `goLive()` → tx reverts (`not owner`)~~ — **no longer true**: atg.eth now owns the `SlopComputer` registry and is the one who must sign `goLive`/`addEpisode`/`setName`/`execute`. clawdbotatg.eth signing those would revert on the new contract.
 - atg.eth as relay admin → atg.eth could move shared windows that
   clawdbotatg.eth thinks it controls — confused state, no source of
   truth
@@ -97,14 +107,14 @@ the new owner.
 
 Check current contract owner:
 ```bash
-cast call 0x94D987a8057b7795522589E36383C87356217820 "owner()(address)" \
+cast call 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 "owner()(address)" \
   --rpc-url https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY
 ```
 
-Transfer ownership (if it ever ends up wrong):
+Transfer ownership (if it ever ends up wrong — target austingriffith.eth):
 ```bash
-cast send 0x94D987a8057b7795522589E36383C87356217820 \
-  "transferOwnership(address)" 0x11ce532845cE0eAcdA41f72FDc1C88c335981442 \
+cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 \
+  "transferOwnership(address)" 0x34aA3F359A9D614239015126635CE7732c18fDF3 \
   --rpc-url https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY \
   --private-key $CURRENT_OWNER_KEY
 ```

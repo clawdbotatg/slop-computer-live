@@ -13,7 +13,7 @@ import { mainnet } from "viem/chains";
 // so a roomful of peers refreshing their QR windows doesn't multiply into
 // an Alchemy fan-out.
 
-const CONTRACT_ADDRESS = "0x733eb5447bc1ff5c95f2e84e1757fd25fb0420c7" as const;
+const CONTRACT_ADDRESS = "0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886" as const;
 const CACHE_TTL_MS = 10_000;
 
 const liveEpisodeAbi = [

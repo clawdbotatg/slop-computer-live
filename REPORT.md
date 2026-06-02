@@ -19,15 +19,17 @@ Date: 2026-05-03
 - Latest commit: `8b7f6e2` — fix: production relay URL + force-dynamic on /desktop
 
 **`clawdbotatg/slop-computer-frontpage`** — the static marketing site
-- Reads contract state (`isLive()`, `liveTitle()`, `liveHlsUrl()`)
+- Reads contract state (`liveEpisode()`, `getEpisodes()`)
 - HLS player when live
 - Ready to deploy
 - Latest commit: `35105f4` — fix(rpc): switch back to Alchemy mainnet
 
 ### Contract (mainnet)
-- `SlopComputerFrontpage.sol` deployed at `0x94D987a8057b7795522589E36383C87356217820`
-- Owner: `0x11ce532845ce0eacda41f72fdc1c88c335981442` (clawd.atg.eth)
-- Functions: `goLive(title, hlsUrl)`, `goOffline()`, `isLive()`, `liveTitle()`, `liveHlsUrl()`, `getEpisode()`
+- `SlopComputer.sol` (episode registry) deployed at `0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886`
+- Owner: `0x34aA3F359A9D614239015126635CE7732c18fDF3` (austingriffith.eth)
+- Functions: `goLive(name, slug, liveSlug, manifest, contractAddr, datetime)`, `goOffline()`, `liveEpisode()`, `getEpisodes()`, `addEpisode()`, `setLive()`, `setName()`, `execute()`
+- Going live is driven from the **slop.computer/admin** console (frontpage repo), not raw cast calls.
+- ⚠️ Legacy `SlopComputerFrontpage.sol` (`0x94D987…7820`, owner clawdbotatg.eth, `goLive(title,hlsUrl)`) is **deprecated/unused** — superseded by the episode registry above. Note the owner changed: the new contract is owned by austingriffith.eth, not the bot.
 
 ### Relay (EC2 at 98.82.26.233)
 - Node/Fastify WebSocket relay running on port 8080
@@ -75,7 +77,7 @@ But these need to be set in the Vercel project environment variables dashboard, 
 
 ### Phase 1 — Make it bulletproof (this week)
 1. **Confirm WS proxy works externally** — test `wss://slop.computer/signal` from outside EC2
-2. **Set Vercel env vars** — `NEXT_PUBLIC_RELAY_URL`, `NEXT_PUBLIC_RELAY_HTTP_URL`, `NEXT_PUBLIC_ALCHEMY_API_KEY`, `NEXT_PUBLIC_FRONTPAGE_ADDRESS=0x94D987a8057b7795522589E36383C87356217820`
+2. **Set Vercel env vars** — `NEXT_PUBLIC_RELAY_URL`, `NEXT_PUBLIC_RELAY_HTTP_URL`, `NEXT_PUBLIC_ALCHEMY_API_KEY` (contract address is now hardcoded to the canonical `SlopComputer` registry in `externalContracts.ts` / the live-slug route)
 3. **Deploy frontpage to Vercel** — `slop-computer-frontpage`, custom domain `slop.computer`
 4. **EC2 fallback build** — `yarn build` slop-computer-live on the box, configure Caddy to serve it if Vercel is down
 5. **Add custom domain to Vercel** — `slop.computer` → Vercel deployment
@@ -87,7 +89,7 @@ But these need to be set in the Vercel project environment variables dashboard, 
 4. **Test HLS playback** through Cloudflare `.link` as fallback
 
 ### Phase 3 — On-chain go-live
-1. Wire "Go Live" button on `/admin` to call `SlopComputerFrontpage.goLive(title, hlsUrl)` on mainnet
+1. Wire "Go Live" button on `/admin` to call `SlopComputer.goLive(name, slug, liveSlug, manifest, contractAddr, datetime)` on mainnet (this now lives in the slop.computer/admin console)
 2. Verify frontpage picks up the state change
 3. Set `ADMIN_ADDRESSES` env var on relay to Austin's wallet
 
@@ -104,7 +106,7 @@ But these need to be set in the Vercel project environment variables dashboard, 
 
 | Service | URL | Points to | Status |
 |---------|-----|-----------|--------|
-| Contract (mainnet) | `0x94D987a...7820` | Ethereum mainnet | ✅ live |
+| Contract (mainnet) | `0xf3ce36...4886` (SlopComputer) | Ethereum mainnet | ✅ live |
 | Live app (Vercel) | `vercel.app/...` | Vercel edge | ✅ deployed |
 | Relay (EC2) | `live.slop.computer:8080` | EC2 :8080 | ✅ running |
 | Caddy (EC2) | `live.slop.computer` | → :3000 (old) | ⚠️ needs update |
@@ -126,15 +128,18 @@ But these need to be set in the Vercel project environment variables dashboard, 
 
 ## Owner Commands (when you go live)
 
+Prefer the **slop.computer/admin** console (owner-gated UI). For raw cast calls against the new `SlopComputer` registry (owner must be austingriffith.eth):
+
 ```bash
-# Go live
-cast send 0x94D987a8057b7795522589E36383C87356217820 \
-  "goLive(string,string)" \
-  "Slop Computer Live" "https://media.slop.computer/hls/live/index.m3u8" \
+# Go live — full episode signature
+cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 \
+  "goLive(string,string,string,string,address,uint256)" \
+  "Slop Computer Live" "slop-computer-live" "" "" \
+  0x0000000000000000000000000000000000000000 $(date +%s) \
   --private-key <key>
 
 # Go offline
-cast send 0x94D987a8057b7795522589E36383C87356217820 \
+cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 \
   "goOffline()" --private-key <key>
 ```
 
