@@ -636,14 +636,17 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   }, [existing, selectedSigners]);
   const effectiveThreshold = existing ? existing.threshold : draftOrDefault.threshold;
 
-  // Predicted multisig address. Same on every chain since the factory
-  // address is identical — pin the read to mainnet RPC.
+  // Predicted multisig address. Deterministic + identical on every chain the
+  // factory is deployed to, so we pin the read to one known-deployed chain.
+  // Must be a chain where the CURRENT factory version actually has code — v2+
+  // factories are Base-only (v1 was everywhere incl. mainnet), so reading on
+  // mainnet would hit a codeless address and hang at "computing".
   const { data: predicted } = useReadContract({
     address: FACTORY_ADDRESS,
     abi: MultisigFactoryAbi,
     functionName: "getMultisigAddress",
     args: effectiveDeployer ? [effectiveDeployer, effectiveSalt] : undefined,
-    chainId: mainnet.id,
+    chainId: base.id,
     query: { enabled: !!effectiveDeployer },
   });
   const predictedAddress = (existing?.address ?? predicted ?? null) as AddressType | null;
