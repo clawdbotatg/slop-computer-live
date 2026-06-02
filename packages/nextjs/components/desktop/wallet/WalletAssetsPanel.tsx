@@ -459,7 +459,15 @@ const AssetDetailModal = ({ asset, slug, onClose }: { asset: PortfolioAsset; slu
         style={{
           width: "100%",
           maxWidth: 460,
-          maxHeight: "85vh",
+          // Cap to the containing block, not the viewport. `.slop-window` has
+          // `backdrop-filter` + `overflow: hidden`, which makes our `position:
+          // fixed` backdrop resolve to the wallet window (not the viewport) and
+          // clip anything taller than it. `85vh` is viewport-relative, so in a
+          // short window the card overflowed and the scrollable body was hidden
+          // below the clip with no way to reach it. `100%` keeps the card
+          // inside the window (minus the backdrop's 16px padding) so the body's
+          // overflowY:auto can actually scroll.
+          maxHeight: "100%",
           // Card itself doesn't scroll — the body region inside does. This
           // way the header (with close button) stays pinned and the user
           // can always dismiss without scrolling back to the top.

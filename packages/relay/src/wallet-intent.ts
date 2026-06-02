@@ -822,6 +822,57 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
     },
   },
 
+  // Build calldata for a self-call that changes the multisig's own signer set
+  // or threshold. The wallet IS a slop Multisig; these execute via the normal
+  // threshold-approved exec flow (target = the wallet's own address). Returns
+  // { to, value, data } ready to drop into a transaction. addPasskeySigner is
+  // intentionally NOT handled here — registering a passkey needs a browser
+  // WebAuthn enrollment ceremony (to mint qx/qy/credentialId) that the relay
+  // cannot perform; tell the user to add a passkey from the wallet UI instead.
+  buildSignerChange: {
+    execute: async ({ action, signer, threshold, multisigAddress }: any) => {
+      const SEL: Record<string, string> = {
+        addAccountSigner: "aba7f004",
+        removeSigner: "0e316ab7",
+        changeThreshold: "694e80c3",
+      };
+      const to = typeof multisigAddress === "string" ? multisigAddress.toLowerCase() : "";
+      if (!/^0x[0-9a-f]{40}$/.test(to)) {
+        return { error: "multisigAddress (the wallet's own address) is required for a self-call." };
+      }
+      if (action === "addAccountSigner" || action === "removeSigner") {
+        if (typeof signer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(signer)) {
+          return { error: `${action} needs a valid 20-byte address in 'signer' (resolve ENS first).` };
+        }
+        const data = "0x" + SEL[action] + signer.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+        return {
+          to,
+          value: "0x0",
+          data,
+          description: `${action === "addAccountSigner" ? "Add" : "Remove"} signer ${signer}`,
+        };
+      }
+      if (action === "changeThreshold") {
+        let n: bigint;
+        try {
+          n = BigInt(threshold);
+        } catch {
+          return { error: "changeThreshold needs an integer 'threshold'." };
+        }
+        if (n < 1n) return { error: "threshold must be >= 1." };
+        const data = "0x" + SEL.changeThreshold + n.toString(16).padStart(64, "0");
+        return { to, value: "0x0", data, description: `Change threshold to ${n.toString()}` };
+      }
+      if (action === "addPasskeySigner") {
+        return {
+          error:
+            "Adding a passkey requires a browser WebAuthn enrollment (to create the new credential and read its P-256 public key) — the relay can't do it. Tell the user to add a passkey from the wallet UI on the device that will hold it.",
+        };
+      }
+      return { error: `Unknown action '${action}'. Use addAccountSigner | removeSigner | changeThreshold.` };
+    },
+  },
+
   logMiss: {
     // Optional internal miss log. No-ops unless MISS_LOG_GIST_ID +
     // GITHUB_GIST_TOKEN are set on the relay.
@@ -914,7 +965,15 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
 
 // ─── System prompt ───────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a smart wallet assistant with full visibility into the user's portfolio and transaction history.
+const SYSTEM_PROMPT = `You are the assistant for a "slop" Multisig wallet, with full visibility into its portfolio and transaction history.
+
+WHAT THIS WALLET IS (important — do NOT treat it as a plain EOA):
+- It is a SMART-CONTRACT multisig wallet (a "slop Multisig", similar in spirit to a Safe), deployed at the address given in context. It has an M-of-N signer set and a threshold.
+- Signers are one of two kinds: "account" signers (a normal EOA, a 7702 smart account, a Safe, or another Multisig — anything validated by ECDSA-or-ERC1271) and "passkey" signers (WebAuthn / Face-ID / security key). The current signers + threshold are injected in context below.
+- Because it's a contract, it CAN change its own membership and threshold. You do this by proposing a transaction that calls the wallet ON ITSELF (target = the wallet's own address, value 0x0) — exactly like a Safe owner change. Use the buildSignerChange tool to get the calldata; never hand-write it.
+- So when the user says "add a signer", "remove a signer", "make it 2-of-3", etc. — you CAN do that. Do NOT say "that's only for smart wallets / I can't manage an EOA". This IS a smart wallet.
+- EXCEPTION — adding a PASSKEY: you cannot do this from here. Registering a passkey needs a browser WebAuthn enrollment (to mint the credential and read its P-256 public key) on the device that will hold it. Tell the user to add a passkey from the wallet UI; you can still add/remove account signers and change the threshold yourself.
+- Any signer/threshold change is a normal multisig transaction: it still has to be approved by the wallet's signers to threshold before it executes. You just propose it.
 
 YOU ALWAYS HAVE:
 - The user's current portfolio (all tokens, all chains, USD values) — injected in context below
@@ -926,6 +985,7 @@ INTENT CLASSIFICATION (read this FIRST before doing anything):
 - "do you know...?", "are you aware...?", "did you know...?" → The user is asking whether you KNOW something. Respond conversationally confirming or denying your knowledge. Do NOT call any tools. Do NOT dump portfolio data. Just answer the question in plain English.
 - "what do I have?", "show me my portfolio", "how much X?" → Portfolio/balance question. Use injected data or tools.
 - "swap X", "send X", "bridge X" → Transaction request. Build calldata.
+- "add/remove a signer", "add 0x… / name.eth as a signer", "change the threshold", "make it 2-of-3" → Transaction request: a self-call. Build it with buildSignerChange. (Adding a PASSKEY is the one exception — direct them to the wallet UI.)
 - If unsure, default to a conversational chat response and ask for clarification. NEVER dump unrelated data.
 
 WHEN ANSWERING QUESTIONS:
@@ -938,7 +998,7 @@ WHEN ANSWERING QUESTIONS:
 - Keep answers concise — 2-4 sentences unless they ask for more detail.
 
 WHEN TO BUILD A TRANSACTION:
-Only when the user clearly wants to execute: "swap", "send", "bridge", "wrap", "buy", "sell".
+Only when the user clearly wants to execute: "swap", "send", "bridge", "wrap", "buy", "sell", or change signers/threshold (add/remove signer, change threshold).
 Chat (plain English) for portfolio questions, prices, explanations, history, ambiguous input, or small talk.
 
 RESPONSE RULES:
@@ -954,6 +1014,7 @@ AVAILABLE TOOLS:
 - getTokenPrice: current price + 24h change. getTokenAddress: token contract lookup. getTokenLiquidity: DEX pools.
 - buildRoute: swap / bridge / DeFi-zap calldata via LI.FI. getRouteStatus: cross-chain transfer status.
 - buildTransfer: ETH/ERC-20 transfer calldata. wrapEth / unwrapWeth. resolveENS.
+- buildSignerChange: calldata to add/remove an account signer or change this wallet's threshold (a self-call). Resolve ENS to an address first; pass the wallet's own address as multisigAddress. Returns { to, value, data } → return it as a transaction response. (Passkeys must be added from the wallet UI, not here.)
 - validateENSName, checkENSAvailability, getENSRentPrice, buildENSRegistration: ENS workflow.
 - logMiss: call when you cannot fulfill a request.
 
@@ -963,7 +1024,7 @@ MANDATORY WORKFLOW (for transactions only):
 3. For swaps/bridges: use buildRoute directly with token symbols.
 4. For simple transfers: use buildTransfer. For WETH wrap/unwrap: use wrapEth / unwrapWeth.
 5. For ENS registration: validateENSName → checkENSAvailability → getENSRentPrice → (user confirms) → buildENSRegistration.
-6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep).
+6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep AND for signer/threshold self-calls — those change wallet config, not assets, so they correctly show no asset changes; return them directly).
 7. Only return the transaction if simulation confirms the expected asset changes.
 8. If buildRoute returns an error → call getTokenLiquidity to diagnose and explain why.
 
@@ -1241,6 +1302,24 @@ const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
   {
     type: "function",
     function: {
+      name: "buildSignerChange",
+      description:
+        "Build calldata to change THIS wallet's own signers or threshold (it's a smart-contract multisig). Use for 'add a signer', 'remove a signer', 'make it 2-of-3', etc. Returns { to, value, data } for a self-call transaction. Resolve ENS to an address first. NOTE: action 'addPasskeySigner' is not supported here — passkeys must be added from the wallet UI.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["addAccountSigner", "removeSigner", "changeThreshold"] },
+          signer: { type: "string", description: "20-byte address (for addAccountSigner / removeSigner)" },
+          threshold: { type: "number", description: "new threshold (for changeThreshold)" },
+          multisigAddress: { type: "string", description: "this wallet's own address (the self-call target)" },
+        },
+        required: ["action", "multisigAddress"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "logMiss",
       description: "Call this when you cannot fulfill a user request.",
       parameters: {
@@ -1318,6 +1397,10 @@ export type WalletIntentInput = {
     contractAddress?: string;
   }[];
   recentMessages?: { role: string; content: string }[];
+  // The wallet's own multisig membership, so the AI can reason about
+  // add/remove-signer and threshold changes.
+  signers?: { address: string; kind: "account" | "passkey"; label?: string }[];
+  threshold?: number;
   recentActivity?: {
     type: string;
     chain: string;
@@ -1386,11 +1469,20 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
     content: m.content,
   }));
 
+  const signerSummary =
+    input.signers && input.signers.length > 0
+      ? `\n\nThis wallet is a slop Multisig — ${input.threshold ?? "?"}-of-${input.signers.length}. Current signers:\n` +
+        input.signers
+          .map(s => `- ${s.address}${s.label ? ` (${s.label})` : ""} · ${s.kind}`)
+          .join("\n") +
+        `\nTo change membership/threshold, build a self-call with buildSignerChange (multisigAddress = ${input.address}).`
+      : "";
+
   const loopMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `User's wallet address: ${input.address}\nConnected chain ID: ${userChainId}${portfolioSummary}${defiSummary}${activitySummary}\n\n[Context injected — ready for conversation]`,
+      content: `User's wallet address: ${input.address}\nConnected chain ID: ${userChainId}${signerSummary}${portfolioSummary}${defiSummary}${activitySummary}\n\n[Context injected — ready for conversation]`,
     },
     {
       role: "assistant",

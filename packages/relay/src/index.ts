@@ -3839,10 +3839,23 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
         fetchPortfolio(address).catch(() => null),
         fetchActivity(address).catch(() => null),
       ]);
+      // If the chat is about THIS room's current multisig, hand the AI its
+      // signer set + threshold so it can reason about add/remove/threshold.
+      const curWallet = room.wallet.getCurrent();
+      const walletSigners =
+        curWallet && curWallet.address.toLowerCase() === address
+          ? curWallet.signers.map(s => ({
+              address: s.address,
+              kind: (s.signerType === "passkey" ? "passkey" : "account") as "account" | "passkey",
+              label: s.label,
+            }))
+          : undefined;
       const intentInput: WalletIntentInput = {
         message,
         address,
         chainId,
+        signers: walletSigners,
+        threshold: walletSigners ? curWallet?.threshold : undefined,
         portfolio: (portfolio?.assets ?? []).map(x => ({
           tokenSymbol: x.tokenSymbol,
           balance: x.balance,
