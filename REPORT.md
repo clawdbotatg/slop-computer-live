@@ -161,9 +161,13 @@ cast send 0xf3ce3614fe8cd4294a0bf05d10cfda9d9cbc4886 \
 
 ## Alchemy Key (for RPC)
 
-```
-https://eth-mainnet.g.alchemy.com/v2/nteU3EvWxEqvzjViYPJ27
-```
+Do **not** commit API keys. Pull `ALCHEMY_API_KEY` from the relevant `.env`
+(`packages/foundry/.env` in slop-computer-contracts, or the Vercel env for the
+frontend) and build the URL as `https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY`.
+
+> ⚠️ A live key was committed here on 2026-05-03 and was public for ~a month —
+> treat it as compromised and rotate it in the Alchemy dashboard. (It still
+> lives in git history at commit `553a1a0`; removing it here does not purge it.)
 
 ---
 
