@@ -102,6 +102,26 @@ export async function findLatestRecording(
 }
 
 /**
+ * Parse the recording start time (epoch ms) out of a MediaMTX recording
+ * filename. MediaMTX writes files as `%Y-%m-%d_%H-%M-%S-%f` (see
+ * `deploy/mediamtx.yml` recordPath), e.g. `2026-06-03_16-00-23-923649.mp4`,
+ * in the box's local time — which is UTC on the deploy host, so we parse as
+ * UTC. The `%f` microseconds are truncated to ms. Returns null if the name
+ * doesn't match (older recordings, manual files), in which case the meta
+ * generator falls back to anchoring on the first transcript segment.
+ */
+export function parseRecordingStartMs(name: string): number | null {
+  const m = name.match(/(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-(\d{1,6}))?/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s, frac] = m;
+  const ms = Date.UTC(+y!, +mo! - 1, +d!, +h!, +mi!, +s!);
+  if (Number.isNaN(ms)) return null;
+  // Pad/truncate the fractional part to milliseconds (first 3 digits).
+  const subMs = frac ? Math.floor(Number(`0.${frac}`) * 1000) : 0;
+  return ms + subMs;
+}
+
+/**
  * POST the file to kubo's /api/v0/add and parse its newline-delimited JSON
  * progress stream. kubo emits `{Bytes: N}` chunks as it ingests the file
  * and a final `{Hash: CID, Size: N}` chunk when the CID is settled. We
@@ -372,9 +392,16 @@ export async function finalizeRecording(opts: {
         if (transcriptArchive && transcriptArchive.segmentCount >= 3) {
           emit({ phase: "generating-meta" });
           try {
+            // Anchor chapter times to the video recording window so they line
+            // up with the player clock — start parsed from the filename, end
+            // from the file mtime. Without this, pre-show mic-checks and
+            // post-show chatter in the transcript anchor t0 hours early.
+            const videoStartMs = parseRecordingStartMs(latest.name);
             aiMeta = await generateEpisodeMeta({
               transcriptJsonl: transcriptArchive.content,
               chatJsonl: chatArchive?.content,
+              videoStartMs: videoStartMs ?? undefined,
+              videoEndMs: videoStartMs != null ? latest.mtime : undefined,
             });
           } catch (err) {
             // eslint-disable-next-line no-console

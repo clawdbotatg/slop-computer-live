@@ -95,8 +95,16 @@ function formatTime(seconds: number): string {
 function buildPrompt(opts: {
   transcript: TranscriptLine[];
   chat: ChatLine[];
-}): { prompt: string; durationSec: number } {
-  const t0 = opts.transcript[0]?.ts ?? Date.now();
+  /** Wall-clock ms of the video recording start. When known (parsed from the
+   *  recording filename) we anchor t=0 here instead of the first transcript
+   *  segment, so chapter times line up with the video player's clock rather
+   *  than with a pre-show mic-check captured hours earlier. */
+  originMs?: number;
+  /** Wall-clock ms of the recording end (file mtime) — gives the true video
+   *  duration for the cap, independent of trailing post-show chatter. */
+  endMs?: number;
+}): { prompt: string; durationSec: number; t0: number } {
+  const t0 = opts.originMs ?? opts.transcript[0]?.ts ?? Date.now();
   const transcriptLines = opts.transcript
     .map(l => {
       const dt = Math.max(0, (l.ts - t0) / 1000);
@@ -105,7 +113,7 @@ function buildPrompt(opts: {
     .join("\n");
 
   const lastTs = opts.transcript[opts.transcript.length - 1]?.ts ?? t0;
-  const durationSec = Math.max(0, (lastTs - t0) / 1000);
+  const durationSec = opts.endMs != null ? Math.max(0, (opts.endMs - t0) / 1000) : Math.max(0, (lastTs - t0) / 1000);
 
   // Chat is sampled, not exhaustive — we only want it as a vibe signal,
   // not a second transcript. Take ~30 lines spread across the show.
@@ -132,14 +140,24 @@ Produce a JSON object with EXACTLY these fields:
 - "oneLiner": One sentence (max 140 chars) you'd put under the title on a podcast index page. Specific and concrete — name the actual things discussed.
 - "description": 2-4 short paragraphs (~150 words total). Plain prose, no bullet lists, no headers. Mention the speakers by their handles. Describe what was actually covered.
 - "topics": Array of 3-7 short topic tags (lowercase, kebab-case or single words, like "agent-payments", "mcp", "evals"). Use what was actually discussed, not generic terms.
-- "chapters": Array of 4-10 chapter markers spanning the show. Each has "tStart" (seconds from start, integer) and "title" (short, max 50 chars). Pick real topic shifts, not arbitrary time intervals. First chapter should have tStart 0.
+- "chapters": Array of 4-10 chapter markers at real topic shifts (not arbitrary time intervals). Each has "title" (short, max 50 chars) and "quote": a verbatim snippet of 6-12 words copied EXACTLY from the transcript line where that topic begins. Copy the words exactly as written above — do NOT paraphrase, do NOT fix transcription errors, and do NOT include the leading [H:MM:SS] timestamp or the speaker handle. Pick a quote that is distinctive (avoid generic filler like "yeah so I think"). The first chapter must mark the very start, quoting the first substantive line of the show. Do NOT output any timestamps — the times are computed from your quotes, so the quote must be findable in the transcript above.
 
 OUTPUT ONLY THE JSON. No preamble, no markdown fences, no trailing commentary. Start with { and end with }.`;
 
-  return { prompt, durationSec };
+  return { prompt, durationSec, t0 };
 }
 
-function isEpisodeMetaShape(x: unknown): x is Omit<EpisodeMeta, "generatedBy" | "generatedAt"> {
+/** Raw model output: chapters carry a transcript `quote`, not a timestamp.
+ *  {@link resolveChapters} turns each quote into a real `tStart`. */
+type RawMeta = {
+  title: string;
+  oneLiner: string;
+  description: string;
+  topics: string[];
+  chapters: { title: string; quote: string }[];
+};
+
+function isRawMetaShape(x: unknown): x is RawMeta {
   if (!x || typeof x !== "object") return false;
   const o = x as Record<string, unknown>;
   if (typeof o.title !== "string") return false;
@@ -150,32 +168,79 @@ function isEpisodeMetaShape(x: unknown): x is Omit<EpisodeMeta, "generatedBy" | 
   for (const c of o.chapters as unknown[]) {
     if (!c || typeof c !== "object") return false;
     const ch = c as Record<string, unknown>;
-    if (typeof ch.tStart !== "number") return false;
     if (typeof ch.title !== "string") return false;
+    if (typeof ch.quote !== "string") return false;
   }
   return true;
 }
 
 /**
- * Sanitize model-supplied chapters against the real recording length. The LLM
- * eyeballs `[H:MM:SS]` lines and routinely invents `tStart` values past the end
- * of the show (e.g. `2:18:00` chapters on a 1:00:24 recording). `durationSec` is
- * ground truth (lastTs − t0), so anything beyond it is a hallucination. We drop
- * out-of-range markers, floor to integer seconds, sort, dedupe, and force the
- * first marker to 0 — the contract the prompt asks for but the model can break.
+ * Turn the model's chapter *quotes* into real timestamps. Each raw chapter
+ * carries a verbatim snippet from the transcript line where the topic begins;
+ * we find that line and use ITS server-stamped `ts`. This is the whole point of
+ * the design: a chapter time is the time of an actual spoken line, not the
+ * model's estimate. Earlier we asked the model for `tStart` directly and it
+ * hallucinated values past the end of the show (e.g. `2:18:00` on a 1:00:24
+ * recording). A quote that can't be located is DROPPED, never faked — so the
+ * worst case is fewer chapters, never wrong ones. Output is sorted, deduped,
+ * range-clamped to the real duration, and the first marker is pinned to 0.
  */
-function clampChapters(chapters: EpisodeChapter[], durationSec: number): EpisodeChapter[] {
-  // 2s of slack: the last transcript segment can land a hair before the true
-  // end of the video, and we'd rather keep a legitimate final chapter.
+function resolveChapters(
+  raw: { title: string; quote: string }[],
+  transcript: TranscriptLine[],
+  t0: number,
+  durationSec: number,
+): EpisodeChapter[] {
+  // Lowercase, strip punctuation, collapse whitespace — so a quote matches the
+  // transcript line despite casing/punctuation differences in the STT output.
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const segs = transcript.map(l => ({ ts: l.ts, n: norm(l.text) }));
+
+  // Locate the transcript segment a quote came from, return its absolute ts.
+  const matchTs = (quote: string): number | null => {
+    const q = norm(quote);
+    if (q.length < 4) return null;
+    // 1) Exact normalized substring — the common case when the model copies.
+    //    If the phrase appears in more than one segment it isn't distinctive
+    //    enough to anchor a time, so drop it rather than guess the wrong one.
+    const exact = segs.filter(s => s.n.includes(q));
+    if (exact.length === 1) return exact[0]!.ts;
+    if (exact.length > 1) return null;
+    // 2) STT garbles/drops words, so fall back to best word-overlap. Require a
+    //    strong majority of the quote's words in one segment, otherwise we'd
+    //    anchor to an unrelated line that merely shares a common word.
+    const qWords = q.split(" ").filter(w => w.length > 2);
+    if (qWords.length < 3) return null;
+    let best: { ts: number; score: number } | null = null;
+    for (const s of segs) {
+      const sw = new Set(s.n.split(" "));
+      const score = qWords.filter(w => sw.has(w)).length / qWords.length;
+      if (!best || score > best.score) best = { ts: s.ts, score };
+    }
+    return best && best.score >= 0.7 ? best.ts : null;
+  };
+
+  // 2s of slack past the transcript end: the final segment can land a hair
+  // before the true end of the video, and a legit closing chapter is fine.
   const cap = Math.floor(durationSec) + 2;
   const seen = new Set<number>();
-  const cleaned = chapters
-    .map(c => ({ ...c, tStart: Math.floor(c.tStart) }))
-    .filter(c => c.tStart >= 0 && c.tStart <= cap)
+  const resolved = raw
+    .map(ch => {
+      const ts = matchTs(ch.quote);
+      if (ts == null) return null;
+      return { tStart: Math.max(0, Math.floor((ts - t0) / 1000)), title: ch.title };
+    })
+    .filter((c): c is EpisodeChapter => c !== null)
+    .filter(c => c.tStart <= cap)
     .sort((a, b) => a.tStart - b.tStart)
     .filter(c => (seen.has(c.tStart) ? false : (seen.add(c.tStart), true)));
-  if (cleaned.length && cleaned[0]!.tStart !== 0) cleaned[0]!.tStart = 0;
-  return cleaned;
+  if (resolved.length && resolved[0]!.tStart !== 0) resolved[0]!.tStart = 0;
+  return resolved;
 }
 
 // Pull a clean JSON string out of the model's raw text. The instruction says
@@ -273,14 +338,39 @@ async function callAnthropic(prompt: string): Promise<{ text: string; model: str
 export async function generateEpisodeMeta(opts: {
   transcriptJsonl: string;
   chatJsonl?: string;
+  /** Wall-clock ms the video recording started / ended (from the recording
+   *  filename and its mtime). When provided, the transcript + chat are trimmed
+   *  to this window and t=0 is anchored to the recording start. This is what
+   *  keeps chapter times aligned to the video: the on-disk transcript also
+   *  accumulates pre-show mic-checks and post-show chatter that would otherwise
+   *  anchor t0 hours early and push every chapter past the end of the video. */
+  videoStartMs?: number;
+  videoEndMs?: number;
 }): Promise<EpisodeMeta | null> {
   if (!BANKR_API_KEY && !ANTHROPIC_API_KEY) return null;
 
-  const transcript = parseJsonl<TranscriptLine>(opts.transcriptJsonl);
+  let transcript = parseJsonl<TranscriptLine>(opts.transcriptJsonl);
+  let chat = opts.chatJsonl ? parseJsonl<ChatLine>(opts.chatJsonl) : [];
+
+  // Trim to the actual recording window when we know it. 5s of grace at each
+  // edge so a line that straddles the boundary isn't lost.
+  const { videoStartMs, videoEndMs } = opts;
+  if (videoStartMs != null && videoEndMs != null && videoEndMs > videoStartMs) {
+    const lo = videoStartMs - 5000;
+    const hi = videoEndMs + 5000;
+    const inWindow = <T extends { ts: number }>(x: T) => x.ts >= lo && x.ts <= hi;
+    transcript = transcript.filter(inWindow);
+    chat = chat.filter(inWindow);
+  }
+
   if (transcript.length < 3) return null; // not enough to summarize meaningfully
 
-  const chat = opts.chatJsonl ? parseJsonl<ChatLine>(opts.chatJsonl) : [];
-  const { prompt, durationSec } = buildPrompt({ transcript, chat });
+  const { prompt, durationSec, t0 } = buildPrompt({
+    transcript,
+    chat,
+    originMs: videoStartMs,
+    endMs: videoEndMs,
+  });
 
   // Prefer Bankr; fall back to direct Anthropic if it's not configured or
   // the call fails. The fallback matters for local dev where typically only
@@ -297,14 +387,17 @@ export async function generateEpisodeMeta(opts: {
     console.error("[meta-ai] JSON parse failed:", String(err).slice(0, 200));
     return null;
   }
-  if (!isEpisodeMetaShape(parsed)) {
+  if (!isRawMetaShape(parsed)) {
     // eslint-disable-next-line no-console
     console.error("[meta-ai] unexpected shape", JSON.stringify(parsed).slice(0, 200));
     return null;
   }
   return {
-    ...parsed,
-    chapters: clampChapters(parsed.chapters, durationSec),
+    title: parsed.title,
+    oneLiner: parsed.oneLiner,
+    description: parsed.description,
+    topics: parsed.topics,
+    chapters: resolveChapters(parsed.chapters, transcript, t0, durationSec),
     generatedBy: result.model,
     generatedAt: Date.now(),
   };
