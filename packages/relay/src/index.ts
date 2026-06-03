@@ -2588,15 +2588,17 @@ app.post(
     // the result through `card_state` + `card_job: null` on the mesh,
     // not through this response body.
     const ct = String(req.headers["content-type"] ?? "");
+    req.log.info({ slug, startedBy, bytes: body.length, ct }, "card job: accepted");
     void (async () => {
       try {
-        const { png } = await generateCard(body, ct);
+        const { png } = await generateCard(body, ct, req.log);
         await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
         await _writeFile(cardFilePath(slug), png);
         const snap = readCardSnapshot(slug);
         room.broadcast({ type: "card_state", state: snap });
+        req.log.info({ slug, elapsedMs: Date.now() - job.startedAt }, "card job: complete");
       } catch (err) {
-        req.log.error({ err }, "card generation failed");
+        req.log.error({ err, slug, elapsedMs: Date.now() - job.startedAt }, "card generation failed");
       } finally {
         cardJobs.delete(slug);
         room.broadcast({ type: "card_job", job: null });
