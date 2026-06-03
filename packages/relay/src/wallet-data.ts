@@ -24,6 +24,7 @@ const ALCHEMY_NETWORK: Record<number, string> = {
   42161: "arb-mainnet",
   10: "opt-mainnet",
   137: "polygon-mainnet",
+  100: "gnosis-mainnet",
 };
 
 export function alchemyUrl(chainId: number): string {
@@ -39,8 +40,8 @@ export const CHAIN_RPC: Record<string, string> = {
   arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   optimism: `https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   polygon: `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-  xdai: "https://rpc.gnosischain.com",
-  gnosis: "https://rpc.gnosischain.com",
+  xdai: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+  gnosis: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
 };
 
 const CHAIN_EXPLORERS: Record<string, string> = {
