@@ -122,6 +122,19 @@ export async function denoiseStream(raw: MediaStream): Promise<DenoisedStream | 
     // the AudioContext picks the device's preferred rate (44.1 kHz on
     // many laptops) and the model outputs garbled audio.
     const ctx = new AudioContext({ sampleRate: 48000 });
+    // The post-reload fast-resume path can acquire the mic BEFORE any user
+    // gesture, in which case Chrome's autoplay policy starts this context
+    // SUSPENDED — the RNNoise graph wouldn't run and the published mic
+    // would be silent until activation. Resume now (no-op when a gesture
+    // is already in scope, e.g. the normal Share-menu path) and again on
+    // the first user gesture so a pre-gesture grab gets live audio the
+    // instant the user clicks. "slop:activated" is dispatched once by
+    // useUserGesture on first pointer/key/touch.
+    const onActivate = () => void ctx.resume().catch(() => {});
+    void ctx.resume().catch(() => {});
+    if (typeof window !== "undefined") {
+      window.addEventListener("slop:activated", onActivate, { once: true });
+    }
     const wasmBinary = await loadWasmOnce(loadRnnoise);
     await ctx.audioWorklet.addModule(RNNOISE_WORKLET_URL);
 
@@ -154,6 +167,9 @@ export async function denoiseStream(raw: MediaStream): Promise<DenoisedStream | 
     const stopAudio = () => {
       if (audioStopped) return;
       audioStopped = true;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("slop:activated", onActivate);
+      }
       for (const t of audioOnly.getTracks()) {
         try {
           t.stop();

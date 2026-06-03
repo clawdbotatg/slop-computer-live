@@ -1882,12 +1882,42 @@ function DesktopInner({ slug }: { slug: string }) {
     return () => window.removeEventListener("pagehide", release);
   }, []);
 
+  // FAST PATH — fire ONE immediate resume attempt the moment the mesh
+  // connects, BEFORE the entry-gate gesture. Camera/mic permissions are
+  // sticky in Chrome, so re-acquiring an already-granted device does NOT
+  // require a fresh user gesture — this is what made reloads feel instant
+  // before the gesture gate landed (85f132b). Restored as a SEPARATE,
+  // strictly-additive attempt so the proven gesture-gated ladder below is
+  // left 100% intact:
+  //   • single shot, NO backoff ladder
+  //   • NEVER clears the resume flag (the ladder below owns give-up, so a
+  //     pre-gesture failure can't lose the camera before the user clicks)
+  //   • duplicate-publish-safe via useLocalMedia's inFlightRef guard — the
+  //     ladder's first attempt no-ops if this one is still in flight
+  //     (this is the bug that pulled the old Resume button, 63efeff)
+  // If the device is still locked by the unloading tab, or a browser truly
+  // demands a gesture for capture, this attempt simply fails silently and
+  // the gesture-gated ladder handles it EXACTLY as today. Worst case =
+  // today's behaviour; best case = video back before the user clicks Enter.
+  useEffect(() => {
+    if (!session.authenticated || !mesh.connected) return;
+    if (session.spectator) return;
+    const r = readResume(slug);
+    if (r.camera) void mediaRefForLayouts.current.startCamera();
+    if (r.audio) void mediaRefForLayouts.current.startAudio();
+    // No gestured dep — this MUST run pre-gesture. start* are idempotent
+    // (acquire no-ops when the kind is active or mid-acquire), so a
+    // reconnect re-fire is harmless.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.authenticated, mesh.connected, slug]);
+
   // Audio + camera auto-resume on reload — mic/cam permissions are
   // sticky in Chrome so this won't prompt. Publications that were
   // live before the reload silently re-attach. Screen share is
   // resumable too, but via the click-to-resume placeholder below
   // (getDisplayMedia requires a fresh user gesture, so we can't
-  // restart silently).
+  // restart silently). This is the SAFETY-NET ladder; the fast-path
+  // single attempt above usually beats it to the punch.
   useEffect(() => {
     if (!session.authenticated || !mesh.connected) return;
     // Wait for the entry-gate click before touching media. Acquiring

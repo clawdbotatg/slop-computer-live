@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { denoiseStream } from "~~/utils/noiseSuppression";
 
@@ -141,13 +141,24 @@ export function useLocalMedia(
   });
   const [busy, setBusy] = useState<StreamKind | null>(null);
   const [error, setError] = useState<string>("");
+  // In-flight guard for single-slot kinds (camera/audio). `activeIds`
+  // only flips AFTER getUserMedia resolves + publishes, so two acquire
+  // calls racing during the async window (e.g. the immediate pre-gesture
+  // resume attempt overlapping the gesture-gated retry, or a manual
+  // Resume click landing mid-retry) would BOTH grab a stream and publish
+  // a duplicate window — exactly the bug that got the old Resume button
+  // pulled (63efeff). This ref flips synchronously at acquire start so
+  // the second caller no-ops. Not in any dep array — a ref, read live.
+  const inFlightRef = useRef<{ camera: boolean; audio: boolean }>({ camera: false, audio: false });
 
   const acquire = useCallback(
     async (kind: StreamKind, getStream: () => Promise<MediaStream>) => {
-      // Camera/audio are single-slot: bail if one is already running.
-      // Screen is multi-slot — every call opens a fresh picker. Already
-      // active counts as success for the caller's retry bookkeeping.
-      if (kind !== "screen" && activeIds[kind]) return true;
+      // Camera/audio are single-slot: bail if one is already running OR
+      // mid-acquisition. Screen is multi-slot — every call opens a fresh
+      // picker. Already active counts as success for the caller's retry
+      // bookkeeping.
+      if (kind !== "screen" && (activeIds[kind] || inFlightRef.current[kind])) return true;
+      if (kind !== "screen") inFlightRef.current[kind] = true;
       setError("");
       setBusy(kind);
       try {
@@ -202,6 +213,7 @@ export function useLocalMedia(
         return false;
       } finally {
         setBusy(null);
+        if (kind !== "screen") inFlightRef.current[kind] = false;
       }
     },
     [activeIds, addStream, stopStream],
