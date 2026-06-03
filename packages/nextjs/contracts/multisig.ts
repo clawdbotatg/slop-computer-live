@@ -9,7 +9,8 @@ export const MultisigFactoryAbi = MultisigFactoryJson as readonly unknown[];
 // EOA / 7702 smart account (MetaMask) / Safe / nested Multisig can all be signers
 // with no on-chain kind to guess. Passkey stays its own kind.
 // See packages/../slop-computer-wallet/INTEGRATION.md §1.
-// NOTE: v4 is currently live on Base only; the other chains still need redeploy.
+// Live & Etherscan-verified at these addresses on Base (8453), Ethereum (1),
+// Optimism (10), Arbitrum (42161), Polygon (137), and Gnosis (100).
 export const FACTORY_ADDRESS = "0xfcdEe21865b60C2700C23Cd946316CEdA0F215B5" as const;
 export const MULTISIG_IMPL_ADDRESS = "0x5Be7f750Cc271DBf0C6027a45bFe78b99504CE3A" as const;
 
