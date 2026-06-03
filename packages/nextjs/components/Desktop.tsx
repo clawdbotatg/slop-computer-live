@@ -1919,12 +1919,17 @@ function DesktopInner({ slug }: { slug: string }) {
     // live — previously start* always resolved and the .catch never ran.
     // Calls route through the live media ref so a retry that fires after
     // the user manually started the device sees activeIds and no-ops.
-    // Tight early poll so we grab the camera the instant the OS frees it
-    // (after pagehide's track.stop the release still takes a beat). Wide
-    // gaps used to waste up to ~2s of dead air sitting between retries
-    // after the device was already free; this catches it fast, then backs
-    // off to still span ~7s before giving up on a genuinely stuck device.
-    const RESUME_RETRY_MS = [250, 400, 600, 900, 1300, 1800, 2500];
+    // Tight, near-flat poll so we grab the camera the instant the OS
+    // frees it (after pagehide's track.stop the release still takes a
+    // beat). The OS hold is the real floor — we can't beat it — but the
+    // PREVIOUS widening ladder ([…1800,2500]) wasted seconds of dead air
+    // sitting between retries after the device was already free, which is
+    // what made the resume feel like an 8-10s hang. Small gaps catch the
+    // free moment within ~300ms of it happening; the span still reaches
+    // ~5s before giving up on a genuinely stuck (revoked) device. Paired
+    // with the soft-deviceId resume grab below, the first attempt usually
+    // wins outright and this ladder never runs.
+    const RESUME_RETRY_MS = [250, 300, 300, 350, 400, 500, 700, 900, 1100];
     let cancelled = false;
     const timers = new Set<number>();
 
@@ -1957,7 +1962,7 @@ function DesktopInner({ slug }: { slug: string }) {
     };
 
     if (r.audio) tryWithRetry("audio", m => m.startAudio());
-    if (r.camera) tryWithRetry("camera", m => m.startCamera());
+    if (r.camera) tryWithRetry("camera", m => m.startCamera({ soft: true }));
     return () => {
       cancelled = true;
       for (const t of timers) clearTimeout(t);
