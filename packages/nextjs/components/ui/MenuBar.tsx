@@ -788,7 +788,8 @@ function AirSign({ airState }: { airState: AirState }) {
 function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-  const [linkStatus, setLinkStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [publicStatus, setPublicStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [privateStatus, setPrivateStatus] = useState<"idle" | "copied" | "failed">("idle");
   const ref = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -800,26 +801,43 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  // Copy a shareable link to this room on the live. subdomain (the current
-  // origin) with the room password baked into `?invite=` so the recipient
-  // clears the password gate on landing. The password is whatever this
-  // browser cached when it last passed the gate — the same value
-  // PasswordGate replays on mount.
-  const copyLink = async () => {
+  // Public link: the clean slop.computer URL with no password baked in —
+  // exactly what the QR code encodes. Anyone who follows it lands on the
+  // room's password gate (or straight in, if the room is open).
+  const copyPublic = async () => {
+    if (!slug) return;
+    try {
+      await navigator.clipboard.writeText(`https://slop.computer/${slug}`);
+      setPublicStatus("copied");
+      setTimeout(() => {
+        setPublicStatus("idle");
+        setOpen(false);
+      }, 1200);
+    } catch {
+      setPublicStatus("failed");
+      setTimeout(() => setPublicStatus("idle"), 1500);
+    }
+  };
+
+  // Private link: the current origin with the room password baked into
+  // `?invite=` so the recipient clears the password gate on landing. The
+  // password is whatever this browser cached when it last passed the gate —
+  // the same value PasswordGate replays on mount.
+  const copyPrivate = async () => {
     if (!slug) return;
     try {
       const password = readStoredRoomPassword(slug);
       const base = `${window.location.origin}/${slug}`;
       const url = password ? `${base}?invite=${encodeURIComponent(password)}` : base;
       await navigator.clipboard.writeText(url);
-      setLinkStatus("copied");
+      setPrivateStatus("copied");
       setTimeout(() => {
-        setLinkStatus("idle");
+        setPrivateStatus("idle");
         setOpen(false);
       }, 1200);
     } catch {
-      setLinkStatus("failed");
-      setTimeout(() => setLinkStatus("idle"), 1500);
+      setPrivateStatus("failed");
+      setTimeout(() => setPrivateStatus("idle"), 1500);
     }
   };
 
@@ -911,42 +929,9 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
           }}
         >
           {slug ? (
-            <a
-              href={`https://slop.computer/${slug}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setOpen(false)}
-              style={{
-                ...itemStyle,
-                textDecoration: "none",
-                color: "var(--slop-cyan, #3fcfff)",
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLAnchorElement).style.background =
-                  "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
-                (e.currentTarget as HTMLAnchorElement).style.color = "#fff";
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLAnchorElement).style.background = "transparent";
-                (e.currentTarget as HTMLAnchorElement).style.color = "var(--slop-cyan, #3fcfff)";
-              }}
-            >
-              {slug}
-            </a>
-          ) : null}
-          {slug ? (
-            <div
-              style={{
-                height: 1,
-                margin: "4px 8px",
-                background: "rgba(255,62,201,0.3)",
-              }}
-            />
-          ) : null}
-          {slug ? (
             <button
               type="button"
-              onClick={copyLink}
+              onClick={copyPublic}
               style={itemStyle}
               onMouseEnter={e => {
                 (e.currentTarget as HTMLButtonElement).style.background =
@@ -958,8 +943,43 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
                 (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
               }}
             >
-              {linkStatus === "copied" ? "link copied!" : linkStatus === "failed" ? "copy failed" : "copy link"}
+              {publicStatus === "copied"
+                ? "link copied!"
+                : publicStatus === "failed"
+                  ? "copy failed"
+                  : `${slug} public`}
             </button>
+          ) : null}
+          {slug ? (
+            <button
+              type="button"
+              onClick={copyPrivate}
+              style={itemStyle}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.background =
+                  "linear-gradient(180deg, var(--slop-magenta) 0%, var(--slop-magenta-dim, #c41a96) 100%)";
+                (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                (e.currentTarget as HTMLButtonElement).style.color = "var(--slop-text)";
+              }}
+            >
+              {privateStatus === "copied"
+                ? "link copied!"
+                : privateStatus === "failed"
+                  ? "copy failed"
+                  : `${slug} private`}
+            </button>
+          ) : null}
+          {slug ? (
+            <div
+              style={{
+                height: 1,
+                margin: "4px 8px",
+                background: "rgba(255,62,201,0.3)",
+              }}
+            />
           ) : null}
           <button
             type="button"
