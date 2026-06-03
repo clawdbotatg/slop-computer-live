@@ -11,7 +11,7 @@ import { writeFileAtomic } from "./fs-atomic.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
-import { broadcastAction, getBroadcastStatus, getBroadcastUrl, isBroadcastActive, setBroadcastUrl } from "./broadcast.js";
+import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
 import {
   closeAllPeers,
@@ -332,57 +332,48 @@ setInterval(() => {
 }, LIFECYCLE_TICK_MS).unref();
 
 // --- On-air monitor --------------------------------------------------------
-// Poll the headless broadcaster's systemd state and push it into each room
-// so the menubar air sign (off-air / standby / on-air) reflects reality for
-// every viewer. "Active" only counts for the single room the broadcaster is
-// pointed at (parsed from SLOP_URL) — every other room stays off-air even
-// while the unit runs. On a dev box with no systemctl, getActive() returns
-// "unknown", so nothing ever goes on-air locally — that's fine.
-const AIR_POLL_MS = 4000;
+// The menubar air sign (off-air / standby / on-air) needs to know whether we
+// are ACTUALLY pushing the live stream out. The real signal is MediaMTX's HLS
+// index: when OBS is publishing it serves the playlist (200); with no publisher
+// the path doesn't exist (404). So we poll that URL and fan the boolean into
+// every room (Room.setHlsLive). Which room the stream is *showing* is then
+// decided by god-mode spectator presence — see Room.recomputeStreamActive.
+//
+// (The old poller checked the local `slop-broadcast.service` systemd unit, which
+// is never active in prod since we stream from a second machine via OBS — so it
+// left the sign stuck on OFF AIR for entire shows. The dormant broadcaster
+// itself still lives in packages/relay/src/broadcast.ts.)
+const HLS_POLL_MS = 5000;
 
-/** First path segment of the broadcaster's SLOP_URL, i.e. the room it joined.
- *  A bare origin ("https://live.slop.computer/") maps to the default room. */
-function broadcastTargetSlug(url: string): string | null {
-  try {
-    const seg = new URL(url).pathname.split("/").filter(Boolean)[0];
-    if (!seg) return DEFAULT_SLUG;
-    return isValidSlug(seg) ? seg : null;
-  } catch {
-    return null;
-  }
-}
-
-// ⚠️ DORMANT path — this only ever flags a room LIVE when the server-side
-// `slop-broadcast.service` is active, which it never is in prod (we stream
-// from a second machine via OBS). Left in place with the rest of the dormant
-// broadcaster; see packages/relay/src/broadcast.ts. Effectively a no-op today.
-async function pollBroadcastAir(): Promise<void> {
+async function pollHlsLive(): Promise<void> {
   const rooms = [...listRooms()];
-  // Nobody connected anywhere → don't spawn systemctl/journalctl subprocesses
-  // on an idle relay. Make sure nothing is stuck on-air first, then bail.
-  if (!rooms.some(r => r.peerCount() > 0)) {
-    for (const room of rooms) room.setStreamActive(false);
+  // No god-mode session anywhere → nothing can be on-air. Don't ping the
+  // media server on an idle relay; just make sure nothing is stuck live.
+  if (!rooms.some(r => r.hasGodSpectator())) {
+    for (const room of rooms) room.setHlsLive(false);
     return;
   }
-  let active = false;
-  let targetSlug: string | null = null;
+  let live = false;
   try {
-    active = await isBroadcastActive();
-    if (active) {
-      const url = await getBroadcastUrl();
-      targetSlug = url ? broadcastTargetSlug(url) : null;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 4000);
+    try {
+      // GET (MediaMTX's HLS server doesn't answer HEAD); we only read the
+      // status. 200 = a publisher is active and segments are flowing.
+      const res = await fetch(config.hlsUrl, { signal: ac.signal });
+      live = res.ok;
+    } finally {
+      clearTimeout(t);
     }
   } catch {
-    active = false;
+    live = false; // network error / timeout → treat as off-air
   }
-  for (const room of rooms) {
-    room.setStreamActive(active && room.id === targetSlug);
-  }
+  for (const room of rooms) room.setHlsLive(live);
 }
 setInterval(() => {
-  void pollBroadcastAir();
-}, AIR_POLL_MS).unref();
-void pollBroadcastAir();
+  void pollHlsLive();
+}, HLS_POLL_MS).unref();
+void pollHlsLive();
 
 // Music player state is now per-room — see room.music (MusicState class).
 
@@ -1918,7 +1909,12 @@ app.post<{ Body: TranscriptBody }>("/v1/transcript", async (req, reply) => {
   const raw = typeof req.body?.text === "string" ? req.body.text : "";
   if (!raw.trim()) return reply.code(400).send({ error: "empty" });
   if (raw.length > TRANSCRIPT_MAX_TEXT * 2) return reply.code(413).send({ error: "too-long" });
-  const transcript = roomFromReq(req).transcript;
+  const room = roomFromReq(req);
+  // Standby: nothing enters the archive while the operator is backstage.
+  // Mirrors the /v1/transcript/relay guard so every write path honors the
+  // same invariant. ok+seg:null = accepted-but-dropped (no retry).
+  if (room.getGreenRoom()) return { ok: true, seg: null };
+  const transcript = room.transcript;
   if (!transcript.allow(a.session.token)) return reply.code(429).send({ error: "rate-limited" });
   const inMesh = findPeersBySessionToken(a.session.token).length > 0;
   const source: TranscriptSegment["source"] =
@@ -1966,6 +1962,16 @@ app.post<{ Querystring: SttRelayQuery }>(
     if (!a.session.spectator) return reply.code(403).send({ error: "godmode-only" });
     if (!isSttConfigured()) return reply.code(503).send({ error: "stt-not-configured" });
 
+    // Green room / standby: the operator is talking backstage. Drop the
+    // audio WITHOUT transcribing — nothing said in standby reaches the
+    // archive, and we don't burn an OpenAI call on it. The god-mode
+    // client also stops capturing while standby is on (see useGodModeStt),
+    // so this is the authoritative backstop for a stale/racing client.
+    // Return ok+seg:null (the same shape as an empty transcription) so the
+    // caller treats it as a no-op rather than an error to retry.
+    const room = roomFromReq(req);
+    if (room.getGreenRoom()) return { ok: true, seg: null };
+
     const body = req.body;
     if (!Buffer.isBuffer(body) || body.length === 0) {
       return reply
@@ -1993,7 +1999,6 @@ app.post<{ Querystring: SttRelayQuery }>(
     // and a fast conversation would 429 mid-utterance. Bucket key
     // falls back to the god-mode session token when address is null
     // so we still cap unattributed spam.
-    const room = roomFromReq(req);
     const bucketKey = address ?? anonId ?? `gm:${a.session.token}`;
     if (!room.transcript.allow(bucketKey)) {
       return reply.code(429).send({ error: "rate-limited" });
@@ -2044,6 +2049,15 @@ app.delete("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return roomFromReq(req).transcript.clear();
+});
+
+// Host-only chat wipe — same "clean slate before going live" use as the
+// transcript wipe above. Poll-only (mirrors transcript.clear): connected
+// clients keep their scrollback until reload, fresh loads start empty.
+app.delete("/admin/chat", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return roomFromReq(req).chat.clear();
 });
 
 // --- Episode flags (STT toggle, etc.) ---------------------------------------

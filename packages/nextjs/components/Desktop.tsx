@@ -771,8 +771,17 @@ function DesktopInner({ slug }: { slug: string }) {
   // on for the episode — it's the canonical archive source even when
   // we suppress its broadcast for speakers whose in-browser captions
   // are live. The 🛰️ menubar indicator derives from `listening`.
+  //
+  // Gated OFF in the green room: standby is the operator's backstage,
+  // and the whole point of dropping the curtain is to talk freely
+  // without it reaching the stream OR the transcript archive. We stop
+  // capturing peer audio entirely (no MediaRecorder, no upload, no
+  // OpenAI spend) the moment standby engages, and resume on exit. The
+  // relay also drops any /v1/transcript/relay post while standby is on
+  // as the authoritative backstop — see index.ts — so a stale client
+  // can't leak a backstage utterance into the archive.
   const godStt = useGodModeStt({
-    enabled: isGodMode && episode.sttOn,
+    enabled: isGodMode && episode.sttOn && !greenRoom,
     mesh,
     relayHttpUrl: RELAY_HTTP,
     slug,

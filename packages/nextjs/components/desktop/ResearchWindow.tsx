@@ -299,7 +299,7 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           >
             <LoadingBar cells={20} progress={researchProgress} caption="researching" />
             <div>
-              vanilla knowledge + web research running in parallel — usually a minute or two
+              vanilla knowledge + web research, then an episode preview — usually a minute or two
               {rs.job?.startedBy ? <> · started by {rs.job.startedBy}</> : null}
             </div>
           </div>
@@ -516,6 +516,10 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
           ) : null}
         </div>
       </section>
+
+      <Section title="Socials desc · episode preview" error={result.errors.socialsDesc}>
+        {result.socialsDesc ? <Prose text={result.socialsDesc} /> : <Empty>No episode preview generated.</Empty>}
+      </Section>
 
       <Section title="Vanilla LLM knowledge" error={result.errors.vanilla}>
         {result.vanilla ? <Prose text={result.vanilla} /> : <Empty>No baseline available.</Empty>}

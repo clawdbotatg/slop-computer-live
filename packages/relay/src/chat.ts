@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Per-room chat log. In-memory ring of the last MAX messages, mirrored
@@ -134,6 +134,22 @@ export class ChatHistory {
   recent(): ChatMessage[] {
     this.load();
     return [...this.buffer];
+  }
+
+  // Manual wipe — nukes the in-memory ring and truncates the on-disk JSONL.
+  // Mirrors Transcript.clear(): poll-only, so already-connected clients keep
+  // their scrollback until reload; fresh loads / SSE inits get a clean slate.
+  clear(): { clearedCount: number } {
+    this.load();
+    const clearedCount = this.buffer.length;
+    this.buffer = [];
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(this.filePath, "", "utf8");
+    } catch {
+      /* disk write failed — ring is wiped, file may still hold old content */
+    }
+    return { clearedCount };
   }
 
   // Read the full on-disk JSONL log + count of non-empty lines. Used at

@@ -495,6 +495,37 @@ const AdminPage: NextPage = () => {
     }
   };
 
+  // Wipes a room's chat log (the per-slug /admin/chat endpoint nukes both
+  // the rolling buffer and the persisted JSONL). Same two-click arming as
+  // the transcript reset above.
+  const [chatResetArmed, setChatResetArmed] = useState<string | null>(null);
+  const chatResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetRoomChat = async (slug: string) => {
+    if (chatResetArmed !== slug) {
+      setChatResetArmed(slug);
+      if (chatResetTimer.current) clearTimeout(chatResetTimer.current);
+      chatResetTimer.current = setTimeout(() => setChatResetArmed(null), 4000);
+      return;
+    }
+    if (chatResetTimer.current) clearTimeout(chatResetTimer.current);
+    setChatResetArmed(null);
+    setCopyStatus("");
+    try {
+      const res = await fetch(`${RELAY_BASE}/admin/chat?slug=${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = (await res.json().catch(() => null)) as { clearedCount?: number; error?: string } | null;
+      if (!res.ok) {
+        setCopyStatus(`chat reset failed: ${data?.error ?? res.statusText}`);
+        return;
+      }
+      setCopyStatus(`/${slug} chat reset (${data?.clearedCount ?? 0} messages) ✓`);
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
+    }
+  };
+
   // Two-stage room delete/clear: clicking "Delete" or "Clear" opens a
   // modal that requires the host to type the slug exactly before the
   // destructive request fires. The server re-validates the typed slug
@@ -1030,6 +1061,28 @@ const AdminPage: NextPage = () => {
                   title="wipe this room's transcript archive"
                 >
                   {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
+                </Button>
+                <span
+                  style={{
+                    fontFamily: "var(--slop-font-display)",
+                    textTransform: "uppercase",
+                    color: "var(--slop-text-muted)",
+                    fontSize: 12,
+                    marginLeft: 6,
+                  }}
+                >
+                  CHAT:
+                </span>
+                <Button
+                  onClick={() => void resetRoomChat(r.slug)}
+                  style={
+                    chatResetArmed === r.slug
+                      ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" }
+                      : undefined
+                  }
+                  title="wipe this room's chat log"
+                >
+                  {chatResetArmed === r.slug ? "Confirm" : "Reset"}
                 </Button>
                 {r.slug === DEFAULT_SLUG ? null : (
                   <>

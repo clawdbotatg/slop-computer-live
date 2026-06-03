@@ -1818,13 +1818,15 @@ The whole flow is a per-room snapshot at \`state.researchState\` in
 \`\`\`
 {
   query: { name, socials, notes },                         // echoed back
+  socialsDesc: string,                                      // hype "episode preview" blurb in the
+                                                            //   SlopComputer voice, grounded in research
   vanilla: string,                                          // 1-3 paragraphs from training data, OR
                                                             //   "I don't have knowledge of them in my training data."
   researched: string,                                       // 2-4 paragraphs of fresh prose
   questions: string[],                                      // 8-10 slow-pitch interview questions
   tweets: [{ text, url?, date? }, ...],                    // 5-15 sampled recent tweets
   sources: [{ title, url, snippet? }, ...],                // cited pages
-  errors: { vanilla?: string, researched?: string }        // per-stage failures
+  errors: { socialsDesc?: string, vanilla?: string, researched?: string }  // per-stage failures
 }
 \`\`\`
 

@@ -670,12 +670,13 @@ export type ResearchSource = { title: string; url: string; snippet?: string };
 
 export type ResearchResult = {
   query: { name: string; socials: ResearchSocials; notes?: string };
+  socialsDesc: string;
   vanilla: string;
   researched: string;
   questions: string[];
   tweets: ResearchTweet[];
   sources: ResearchSource[];
-  errors: { vanilla?: string; researched?: string };
+  errors: { socialsDesc?: string; vanilla?: string; researched?: string };
 };
 
 export type ResearchJob = {

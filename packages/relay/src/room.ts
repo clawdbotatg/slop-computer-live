@@ -240,6 +240,12 @@ function roomPaths(id: string): {
 /** Broadcast air sign shown to every viewer. See `airState` on Room. */
 export type AirState = "off-air" | "standby" | "on-air";
 
+/** Grace window before the air sign drops to OFF AIR after the last
+ *  god-mode/spectator session disconnects. A god-mode reload briefly
+ *  drops the only spectator and reconnects within ~1-2s; without this
+ *  the sign would blink OFF AIR for every viewer on every refresh. */
+const STREAM_GRACE_MS = 8000;
+
 export class Room {
   readonly id: string;
 
@@ -260,14 +266,19 @@ export class Room {
 
   /** Broadcast "on-air" state, surfaced to every peer as a classic radio
    *  sign in the menubar. Derived from two inputs:
-   *    - `streamActive`: is the headless RTMP broadcaster's systemd unit
-   *      running AND pointed at this room? (pushed by the air poller in
-   *      index.ts every few seconds)
+   *    - `streamActive`: are we ACTUALLY pushing the HLS stream out AND is
+   *      this the room being broadcast? `hlsLive` is the real signal — the
+   *      relay polls the MediaMTX HLS index (config.hlsUrl); 200 = OBS is
+   *      publishing, 404 = it isn't (see the HLS monitor in index.ts). The
+   *      god-mode spectator's room picks WHICH room that stream is showing.
+   *      So streamActive = hlsLive && this room has a god-mode spectator.
    *    - `greenRoom`: has the god-mode operator dropped into "green room"
    *      / standby mode? (set via the spectator-only `green_room` message)
-   *  off-air = no live stream · standby = stream up but operator is in the
-   *  green room · on-air = stream up showing the real desktop. */
+   *  off-air = not pushing HLS · standby = streaming but operator is in the
+   *  green room · on-air = streaming the real desktop. */
+  private hlsLive = false;
   private streamActive = false;
+  private streamGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private greenRoom = false;
   private airState: AirState = "off-air";
   /** Disk path for the persisted green-room flag — survives relay restarts
@@ -541,6 +552,10 @@ export class Room {
         role: peer.role,
       });
     }
+    // A god-mode spectator joining/leaving changes which room the OBS
+    // stream is showing → re-derive the air sign (mobile-mode spectators
+    // are clip viewers, not the streaming box, so they don't count).
+    if (peer.spectator && !peer.mobileMode) this.recomputeStreamActive();
   }
 
   removePeer(id: string): void {
@@ -576,7 +591,10 @@ export class Room {
     // spectator, and auto-resetting here would yank the stream out of
     // standby on every refresh. Green room is a sticky manual toggle
     // (spacebar) + persisted to disk; it only changes when someone flips
-    // it. air recomputes from the live-stream poll regardless.
+    // it. The air sign's `streamActive` half re-derives off god-mode
+    // presence (gated on hlsLive), on a grace timer so a reload doesn't
+    // blink the sign off-air.
+    if (wasSpectator && peer?.mobileMode !== true) this.recomputeStreamActive();
   }
 
   setLiveCaptionAlive(speakerKey: string, alive: boolean): void {
@@ -604,11 +622,50 @@ export class Room {
     return this.airState;
   }
 
-  /** Pushed by the air poller: is the broadcaster live AND on this room? */
-  setStreamActive(active: boolean): void {
+  private setStreamActive(active: boolean): void {
     if (this.streamActive === active) return;
     this.streamActive = active;
     this.recomputeAir();
+  }
+
+  /** Pushed by the HLS monitor in index.ts: is OBS actually publishing to
+   *  MediaMTX right now? (the HLS index returns 200 vs 404). This is the
+   *  real "are we streaming" signal — global, not per-room. */
+  setHlsLive(live: boolean): void {
+    if (this.hlsLive === live) return;
+    this.hlsLive = live;
+    this.recomputeStreamActive();
+  }
+
+  /** Is the god-mode streaming box (a non-mobile spectator) in this room?
+   *  That session is the OBS-captured tab, so it identifies which room a
+   *  live HLS stream is showing. */
+  hasGodSpectator(): boolean {
+    return [...this.peers.values()].some(p => p.spectator && !p.mobileMode);
+  }
+
+  /** Re-derive `streamActive` = we're pushing HLS AND this is the room the
+   *  god-mode operator is broadcasting. Going live is immediate; going
+   *  off-air waits out STREAM_GRACE_MS so a brief HLS hiccup or a god-mode
+   *  reload (which momentarily drops the only spectator) doesn't blink the
+   *  sign to OFF AIR for every viewer. Called on hlsLive change + peer
+   *  add/remove. */
+  private recomputeStreamActive(): void {
+    const target = this.hlsLive && this.hasGodSpectator();
+    if (target) {
+      if (this.streamGraceTimer) {
+        clearTimeout(this.streamGraceTimer);
+        this.streamGraceTimer = null;
+      }
+      this.setStreamActive(true);
+      return;
+    }
+    if (!this.streamActive || this.streamGraceTimer) return; // already off / grace running
+    this.streamGraceTimer = setTimeout(() => {
+      this.streamGraceTimer = null;
+      this.setStreamActive(this.hlsLive && this.hasGodSpectator());
+    }, STREAM_GRACE_MS);
+    this.streamGraceTimer.unref?.();
   }
 
   getGreenRoom(): boolean {

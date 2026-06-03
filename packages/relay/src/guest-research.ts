@@ -1,13 +1,16 @@
 // Guest research — pre-show prep for whoever's about to be on the mic.
 // Hands a name + socials to Claude and gets back:
+//   • a "socials desc" — hype episode-preview blurb in the SlopComputer
+//     voice (no tools), grounded in the researched dossier. Shown first.
 //   • vanilla model knowledge (no tools — just what training data has)
 //   • a researched description + recent-tweets summary + interview
 //     questions (Claude with web_search tool)
 //   • raw sources (tweets + research links) so the host can scan them
 //
-// Two Claude calls run in parallel. Each one is independent and
-// fault-tolerant: if one fails the other still returns. The endpoint
-// folds them together into a single ResearchResult.
+// The vanilla + researched calls run in parallel; the socials desc runs
+// after so it can ground itself in the research. Each stage is
+// independent and fault-tolerant: if one fails the others still return.
+// The endpoint folds them together into a single ResearchResult.
 //
 // Requires ANTHROPIC_API_KEY on the relay; without it we return a
 // stubbed response that tells the user what to set.
@@ -44,13 +47,16 @@ export type ResearchSource = {
 
 export type ResearchResult = {
   query: ResearchQuery;
+  /** Hype/promo "socials desc" — an episode preview blurb in the
+   *  SlopComputer voice, grounded in the researched dossier. Shown first. */
+  socialsDesc: string;
   vanilla: string;
   researched: string;
   questions: string[];
   tweets: TweetSnippet[];
   sources: ResearchSource[];
   /** Per-stage errors so the UI can show what failed without hiding partial results. */
-  errors: { vanilla?: string; researched?: string };
+  errors: { socialsDesc?: string; vanilla?: string; researched?: string };
 };
 
 // `includeNotes` is false for the vanilla pass: the vanilla call must
@@ -98,6 +104,42 @@ async function callAnthropic(body: Record<string, unknown>): Promise<AnthropicRe
     throw new Error(`anthropic ${res.status}: ${text.slice(0, 300)}`);
   }
   return (await res.json()) as AnthropicResponse;
+}
+
+// The show's identity, in its own words. Fed verbatim into the socials
+// blurb so the promo copy stays on-voice instead of drifting into
+// generic podcast-announcement mush.
+const SLOP_ETHOS = `SlopComputer is an onchain podcast for technical humans building with AI: the cypherpunks, the sloperators, the forward deployed context goblins. Join the psychosis to build our way out of the permanent underclass.`;
+
+// Socials desc — no tools. A hype "episode preview" blurb the host can
+// drop straight onto X to announce the guest. Grounded in the researched
+// dossier (passed in) so the copy references real, specific things about
+// the guest rather than hallucinating. If research failed we still
+// produce something off the model's own knowledge + the form fields.
+async function socialsDescription(q: ResearchQuery, researchedContext: string): Promise<string> {
+  const ctx = researchedContext.trim()
+    ? `\n\nHere's what research turned up about the guest — ground the copy in these real, specific facts:\n${researchedContext.trim()}`
+    : "";
+  const prompt = `You're writing the social-media episode announcement for an upcoming SlopComputer episode featuring this guest. This is the "socials desc" — the blurb that goes out on X/Farcaster to hype the drop.
+
+The show, in its own voice:
+${SLOP_ETHOS}
+
+Guest:
+${describeQuery(q)}${ctx}
+
+Write the episode preview. It must:
+- lean HARD into the SlopComputer voice and ethos above — cypherpunk / sloperator / forward-deployed-context-goblin energy, "join the psychosis", "build our way out of the permanent underclass". This is the frame.
+- introduce THIS specific guest: who they are, what they've actually built or done, what makes them genuinely interesting, and why this conversation matters to the audience.
+- read like hype copy, not a Wikipedia bio — energetic, in-the-know, a little unhinged, but real.
+
+Output rules — follow exactly: 2–4 short paragraphs of prose. No headings, no bullet lists, no preamble like "Here's the preview:". No hashtags unless one genuinely earns its place. Just the copy.`;
+  const json = await callAnthropic({
+    model: MODEL,
+    max_tokens: 800,
+    messages: [{ role: "user", content: prompt }],
+  });
+  return extractText(json) || "(model returned empty response)";
 }
 
 // Vanilla pass — no tools. We want a baseline of "what does the model
@@ -373,17 +415,16 @@ Never invent handles. If you're not sure a handle is correct, leave it empty.`;
 
 export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
   if (!ANTHROPIC_API_KEY) {
+    const missing = "ANTHROPIC_API_KEY not set on the relay — add it to packages/relay/.env to enable AI research.";
     return {
       query: q,
+      socialsDesc: "",
       vanilla: "",
       researched: "",
       questions: [],
       tweets: [],
       sources: [],
-      errors: {
-        vanilla: "ANTHROPIC_API_KEY not set on the relay — add it to packages/relay/.env to enable AI research.",
-        researched: "ANTHROPIC_API_KEY not set on the relay — add it to packages/relay/.env to enable AI research.",
-      },
+      errors: { socialsDesc: missing, vanilla: missing, researched: missing },
     };
   }
 
@@ -391,6 +432,7 @@ export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
 
   const result: ResearchResult = {
     query: q,
+    socialsDesc: "",
     vanilla: "",
     researched: "",
     questions: [],
@@ -409,6 +451,16 @@ export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
     result.sources = researchedR.value.sources;
   } else {
     result.errors.researched = String(researchedR.reason).slice(0, 400);
+  }
+
+  // Socials desc runs last so it can ground its hype copy in whatever the
+  // researched dossier turned up. It's no-tools and fast; the small added
+  // latency buys promo copy that references real, specific facts instead
+  // of inventing them. Falls back to model knowledge if research failed.
+  try {
+    result.socialsDesc = await socialsDescription(q, result.researched);
+  } catch (err) {
+    result.errors.socialsDesc = String(err).slice(0, 400);
   }
 
   return result;
