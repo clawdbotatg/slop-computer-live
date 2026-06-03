@@ -1919,17 +1919,24 @@ function DesktopInner({ slug }: { slug: string }) {
     // live — previously start* always resolved and the .catch never ran.
     // Calls route through the live media ref so a retry that fires after
     // the user manually started the device sees activeIds and no-ops.
-    // Tight, near-flat poll so we grab the camera the instant the OS
-    // frees it (after pagehide's track.stop the release still takes a
-    // beat). The OS hold is the real floor — we can't beat it — but the
-    // PREVIOUS widening ladder ([…1800,2500]) wasted seconds of dead air
-    // sitting between retries after the device was already free, which is
-    // what made the resume feel like an 8-10s hang. Small gaps catch the
-    // free moment within ~300ms of it happening; the span still reaches
-    // ~5s before giving up on a genuinely stuck (revoked) device. Paired
-    // with the soft-deviceId resume grab below, the first attempt usually
-    // wins outright and this ladder never runs.
-    const RESUME_RETRY_MS = [250, 300, 300, 350, 400, 500, 700, 900, 1100];
+    // Tight EARLY gaps, generous TAIL. Two independent goals that must
+    // not be conflated:
+    //   1) recover fast in the common case — the device frees within a
+    //      second or two of the old tab unloading, and the PREVIOUS
+    //      widening ladder ([…1800,2500]) then sat in seconds of dead air
+    //      before its next tick, which is what made resume feel like an
+    //      8-10s hang. Small gaps up front catch the free moment within
+    //      ~300ms of it happening.
+    //   2) NEVER give up earlier than before — exhausting the ladder
+    //      clears the resume flag (below), so the camera is then lost
+    //      until a manual re-share. Slow machines / heavy contention can
+    //      hold the OS camera lock for several seconds (a0567c7 cites a
+    //      ~10s window), so the tail must span AT LEAST the old ~7.75s.
+    // This ladder gives up at ~9.7s — strictly later than the old 7.75s,
+    // so it can't lose video the old code would have recovered, while the
+    // tight front fixes the dead-air. Paired with the soft-deviceId grab
+    // below, the first attempt usually wins and this ladder never runs.
+    const RESUME_RETRY_MS = [250, 300, 300, 350, 400, 500, 600, 800, 1000, 1300, 1700, 2200];
     let cancelled = false;
     const timers = new Set<number>();
 
