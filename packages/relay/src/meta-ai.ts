@@ -156,6 +156,28 @@ function isEpisodeMetaShape(x: unknown): x is Omit<EpisodeMeta, "generatedBy" | 
   return true;
 }
 
+/**
+ * Sanitize model-supplied chapters against the real recording length. The LLM
+ * eyeballs `[H:MM:SS]` lines and routinely invents `tStart` values past the end
+ * of the show (e.g. `2:18:00` chapters on a 1:00:24 recording). `durationSec` is
+ * ground truth (lastTs − t0), so anything beyond it is a hallucination. We drop
+ * out-of-range markers, floor to integer seconds, sort, dedupe, and force the
+ * first marker to 0 — the contract the prompt asks for but the model can break.
+ */
+function clampChapters(chapters: EpisodeChapter[], durationSec: number): EpisodeChapter[] {
+  // 2s of slack: the last transcript segment can land a hair before the true
+  // end of the video, and we'd rather keep a legitimate final chapter.
+  const cap = Math.floor(durationSec) + 2;
+  const seen = new Set<number>();
+  const cleaned = chapters
+    .map(c => ({ ...c, tStart: Math.floor(c.tStart) }))
+    .filter(c => c.tStart >= 0 && c.tStart <= cap)
+    .sort((a, b) => a.tStart - b.tStart)
+    .filter(c => (seen.has(c.tStart) ? false : (seen.add(c.tStart), true)));
+  if (cleaned.length && cleaned[0]!.tStart !== 0) cleaned[0]!.tStart = 0;
+  return cleaned;
+}
+
 // Pull a clean JSON string out of the model's raw text. The instruction says
 // "OUTPUT ONLY THE JSON" but Opus occasionally still wraps it in ```json
 // fences or prefixes a sentence — strip both.
@@ -258,7 +280,7 @@ export async function generateEpisodeMeta(opts: {
   if (transcript.length < 3) return null; // not enough to summarize meaningfully
 
   const chat = opts.chatJsonl ? parseJsonl<ChatLine>(opts.chatJsonl) : [];
-  const { prompt } = buildPrompt({ transcript, chat });
+  const { prompt, durationSec } = buildPrompt({ transcript, chat });
 
   // Prefer Bankr; fall back to direct Anthropic if it's not configured or
   // the call fails. The fallback matters for local dev where typically only
@@ -282,6 +304,7 @@ export async function generateEpisodeMeta(opts: {
   }
   return {
     ...parsed,
+    chapters: clampChapters(parsed.chapters, durationSec),
     generatedBy: result.model,
     generatedAt: Date.now(),
   };
