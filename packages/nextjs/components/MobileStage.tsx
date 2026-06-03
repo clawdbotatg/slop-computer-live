@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
-import { MobileAppTile } from "~~/components/mobile/MobileAppTile";
+import { MOBILE_APP_RENDERERS, MobileAppTile } from "~~/components/mobile/MobileAppTile";
 import { MobileBrowserTile } from "~~/components/mobile/MobileBrowserTile";
 import { MobileSubtitleBand } from "~~/components/mobile/MobileSubtitleBand";
 import { FAKE_PRESETS, type FakePreset, fakePubsFor, isFakePreset } from "~~/components/mobile/fakePubs";
@@ -138,6 +138,9 @@ export const MobileStage = ({ mesh }: MobileStageProps) => {
       // apps. The prefix matches what Desktop.tsx uses to scope its
       // own preview windows.
       if (id.startsWith("preview-")) continue;
+      // Skip apps with no real mobile renderer — they'd only show as a
+      // bare icon placeholder, which looks broken in a recorded clip.
+      if (!MOBILE_APP_RENDERERS.has(id)) continue;
       out.push({
         streamId: `mobile-app-${id}`,
         peerId: `mobile-app-${id}`,

@@ -19,6 +19,13 @@ export type MobileAppTileProps = {
   mesh: PeerMeshState;
 };
 
+// AppIds that have a real, content-bearing mobile renderer below.
+// MobileStage filters openWindowIds against this set so apps that
+// would only render as a bare icon (research, card, etc.) are skipped
+// entirely — an icon floating in a clip reads as broken, not "open."
+// Keep in sync with the switch in MobileAppTile.
+export const MOBILE_APP_RENDERERS = new Set(["chat", "todo", "notes", "glossary"]);
+
 export const MobileAppTile = ({ appId, mesh }: MobileAppTileProps) => {
   switch (appId) {
     case "chat":

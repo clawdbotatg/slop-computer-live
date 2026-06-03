@@ -48,6 +48,7 @@ export class ChatHistory {
   private buffer: ChatMessage[] = [];
   private loaded = false;
   private subscribers = new Set<Subscriber>();
+  private clearSubscribers = new Set<() => void>();
   // Soft per-address rate limit — allow a small burst then 1 msg/sec sustained.
   // Tracked in memory per room; a relay restart resets it (acceptable, it's a
   // soft cap).
@@ -136,9 +137,9 @@ export class ChatHistory {
     return [...this.buffer];
   }
 
-  // Manual wipe — nukes the in-memory ring and truncates the on-disk JSONL.
-  // Mirrors Transcript.clear(): poll-only, so already-connected clients keep
-  // their scrollback until reload; fresh loads / SSE inits get a clean slate.
+  // Manual wipe — nukes the in-memory ring and truncates the on-disk JSONL,
+  // then notifies clear-subscribers so connected clients can drop their
+  // scrollback live (fresh loads / SSE inits already get a clean slate).
   clear(): { clearedCount: number } {
     this.load();
     const clearedCount = this.buffer.length;
@@ -148,6 +149,13 @@ export class ChatHistory {
       writeFileSync(this.filePath, "", "utf8");
     } catch {
       /* disk write failed — ring is wiped, file may still hold old content */
+    }
+    for (const fn of this.clearSubscribers) {
+      try {
+        fn();
+      } catch {
+        /* one bad sub shouldn't kill the rest */
+      }
     }
     return { clearedCount };
   }
@@ -185,5 +193,10 @@ export class ChatHistory {
   subscribe(fn: Subscriber): () => void {
     this.subscribers.add(fn);
     return () => this.subscribers.delete(fn);
+  }
+
+  subscribeClear(fn: () => void): () => void {
+    this.clearSubscribers.add(fn);
+    return () => this.clearSubscribers.delete(fn);
   }
 }

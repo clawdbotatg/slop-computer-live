@@ -120,7 +120,7 @@ async function socialsDescription(q: ResearchQuery, researchedContext: string): 
   const ctx = researchedContext.trim()
     ? `\n\nHere's what research turned up about the guest — ground the copy in these real, specific facts:\n${researchedContext.trim()}`
     : "";
-  const prompt = `You're writing the social-media episode announcement for an upcoming SlopComputer episode featuring this guest. This is the "socials desc" — the blurb that goes out on X/Farcaster to hype the drop.
+  const prompt = `You're writing a short social blurb for an upcoming SlopComputer episode featuring this guest — the "socials desc" that goes out on X/Farcaster.
 
 The show, in its own voice:
 ${SLOP_ETHOS}
@@ -128,15 +128,15 @@ ${SLOP_ETHOS}
 Guest:
 ${describeQuery(q)}${ctx}
 
-Write the episode preview. It must:
-- lean HARD into the SlopComputer voice and ethos above — cypherpunk / sloperator / forward-deployed-context-goblin energy, "join the psychosis", "build our way out of the permanent underclass". This is the frame.
-- introduce THIS specific guest: who they are, what they've actually built or done, what makes them genuinely interesting, and why this conversation matters to the audience.
-- read like hype copy, not a Wikipedia bio — energetic, in-the-know, a little unhinged, but real.
+Write the blurb. It must:
+- lightly introduce THIS specific guest: who they are and what makes them genuinely interesting, in combination with the SlopComputer frame above.
+- read like in-the-know hype copy, not a Wikipedia bio — energetic, a little unhinged, but real.
+- do NOT speculate or promise what the conversation will cover, what they'll "dig into," or what the audience will "learn." Just set up the person and why they fit the show.
 
-Output rules — follow exactly: 2–4 short paragraphs of prose. No headings, no bullet lists, no preamble like "Here's the preview:". No hashtags unless one genuinely earns its place. Just the copy.`;
+Output rules — follow exactly: ONE short paragraph (2–4 sentences). No headings, no bullet lists, no preamble like "Here's the preview:". No hashtags unless one genuinely earns its place. Just the copy.`;
   const json = await callAnthropic({
     model: MODEL,
-    max_tokens: 800,
+    max_tokens: 300,
     messages: [{ role: "user", content: prompt }],
   });
   return extractText(json) || "(model returned empty response)";

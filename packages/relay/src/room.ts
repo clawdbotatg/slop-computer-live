@@ -405,6 +405,7 @@ export class Room {
     this.episode.subscribe(state => this.broadcast({ type: "episode", state }));
     this.clock.subscribe(state => this.broadcast({ type: "clock_state", state }));
     this.chat.subscribe(msg => this.broadcast({ type: "chat", msg }));
+    this.chat.subscribeClear(() => this.broadcast({ type: "chat_cleared" }));
     this.jamendo.subscribe(event => this.broadcast({ type: "music_genre", genre: event.genre }));
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));

@@ -3476,6 +3476,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "chat_cleared") {
+          setChatMessages([]);
+          return;
+        }
+
         if (msg.type === "todos" && Array.isArray(msg.items)) {
           setTodos(msg.items as TodoItem[]);
           return;
