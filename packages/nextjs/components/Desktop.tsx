@@ -1919,24 +1919,12 @@ function DesktopInner({ slug }: { slug: string }) {
     // live — previously start* always resolved and the .catch never ran.
     // Calls route through the live media ref so a retry that fires after
     // the user manually started the device sees activeIds and no-ops.
-    // Tight EARLY gaps, generous TAIL. Two independent goals that must
-    // not be conflated:
-    //   1) recover fast in the common case — the device frees within a
-    //      second or two of the old tab unloading, and the PREVIOUS
-    //      widening ladder ([…1800,2500]) then sat in seconds of dead air
-    //      before its next tick, which is what made resume feel like an
-    //      8-10s hang. Small gaps up front catch the free moment within
-    //      ~300ms of it happening.
-    //   2) NEVER give up earlier than before — exhausting the ladder
-    //      clears the resume flag (below), so the camera is then lost
-    //      until a manual re-share. Slow machines / heavy contention can
-    //      hold the OS camera lock for several seconds (a0567c7 cites a
-    //      ~10s window), so the tail must span AT LEAST the old ~7.75s.
-    // This ladder gives up at ~9.7s — strictly later than the old 7.75s,
-    // so it can't lose video the old code would have recovered, while the
-    // tight front fixes the dead-air. Paired with the soft-deviceId grab
-    // below, the first attempt usually wins and this ladder never runs.
-    const RESUME_RETRY_MS = [250, 300, 300, 350, 400, 500, 600, 800, 1000, 1300, 1700, 2200];
+    // Tight early poll so we grab the camera the instant the OS frees it
+    // (after pagehide's track.stop the release still takes a beat). Wide
+    // gaps used to waste up to ~2s of dead air sitting between retries
+    // after the device was already free; this catches it fast, then backs
+    // off to still span ~7s before giving up on a genuinely stuck device.
+    const RESUME_RETRY_MS = [250, 400, 600, 900, 1300, 1800, 2500];
     let cancelled = false;
     const timers = new Set<number>();
 
@@ -1969,7 +1957,7 @@ function DesktopInner({ slug }: { slug: string }) {
     };
 
     if (r.audio) tryWithRetry("audio", m => m.startAudio());
-    if (r.camera) tryWithRetry("camera", m => m.startCamera({ soft: true }));
+    if (r.camera) tryWithRetry("camera", m => m.startCamera());
     return () => {
       cancelled = true;
       for (const t of timers) clearTimeout(t);

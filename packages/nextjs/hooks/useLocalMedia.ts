@@ -8,10 +8,7 @@ export type UseLocalMedia = {
   // Resolve to true on success, false on failure. The error is also
   // recorded in `error` for display, but the boolean lets callers (the
   // reload auto-resume) retry a contended device instead of giving up.
-  // `soft` (resume path only) makes the saved camera pick an *ideal*
-  // hint instead of `exact` — see the startCamera impl for why that
-  // wins the post-reload device race.
-  startCamera: (opts?: { soft?: boolean }) => Promise<boolean>;
+  startCamera: () => Promise<boolean>;
   startScreen: () => Promise<boolean>;
   startAudio: () => Promise<boolean>;
   stop: (kind: StreamKind) => void;
@@ -211,23 +208,14 @@ export function useLocalMedia(
   );
 
   const startCamera = useCallback(
-    (opts?: { soft?: boolean }) =>
+    () =>
       acquire("camera", () => {
         const cameraId = readPref(MEDIA_PREF_KEYS.cameraId);
         const res = readPref(MEDIA_PREF_KEYS.cameraRes);
         const micId = readPref(MEDIA_PREF_KEYS.micId);
-        // `exact` deviceId rejects HARD the instant the camera is
-        // contended — and right after a reload the unloading tab still
-        // holds the OS lock for a beat, so the resume grab throws
-        // NotReadableError/OverconstrainedError and the caller falls onto
-        // the retry ladder. On the resume path (soft:true) we pass the
-        // saved camera as an *ideal* hint instead: Chrome still resolves
-        // to that camera when it's free, but doesn't reject as hard while
-        // it's briefly busy, so the first attempt wins more often. Manual
-        // shares keep `exact` so the user's explicit device pick is honored.
         const video: MediaTrackConstraints = {
           ...resolutionConstraints(res),
-          ...(cameraId ? { deviceId: opts?.soft ? cameraId : { exact: cameraId } } : {}),
+          ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
         };
         // Camera bundles audio so peers hear the speaker through the same
         // window they see them in (no separate audio publication needed).
