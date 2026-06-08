@@ -63,10 +63,12 @@ box-side setup that makes the button actually work.
                                             # a 3GB round-trip out through the public
                                             # gateway. Important on-box; default is
                                             # https://media.slop.computer/ipfs (remote).
-   CLIPPER_FFMPEG_BIN=ffmpeg
-   CLIPPER_FFMPEG_FULL_BIN=ffmpeg           # Ubuntu's ffmpeg is built --enable-libass,
-                                            # so it burns captions fine — no separate
-                                            # ffmpeg-full needed.
+   CLIPPER_FFMPEG_BIN=ffmpeg                # resolved via PATH
+   CLIPPER_FFMPEG_FULL_BIN=/usr/bin/ffmpeg  # ABSOLUTE path (use `command -v ffmpeg`).
+                                            # Ubuntu's ffmpeg has --enable-libass so it
+                                            # burns captions — no separate ffmpeg-full.
+                                            # (Must be a real path or a bare PATH name;
+                                            # a wrong value silently disables captions.)
    ```
 
 4. **ffmpeg with libass** — caption burning needs it. Ubuntu's `apt` ffmpeg
