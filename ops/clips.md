@@ -50,19 +50,29 @@ box-side setup that makes the button actually work.
    ```
 
 3. **Give it a `.env`** (`/home/ubuntu/clawd-clipper/.env`) — the clipper loads
-   its own env from its cwd:
+   its own env from its cwd. Reuse the relay's keys (they're already on the box;
+   no need to copy secrets around):
    ```
-   ANTHROPIC_API_KEY=...     # clip ranking, judge, tweet copy
-   OPENAI_API_KEY=...        # whisper transcription
-   ALCHEMY_API_KEY=...       # resolve <slug> on mainnet (no public RPC)
-   # IPFS_API_URL defaults to http://127.0.0.1:5001 — the same bgipfs node the
-   # relay pins to. Override only if bgipfs's API is elsewhere.
+   ANTHROPIC_API_KEY=...      # clip ranking, judge, tweet copy
+   OPENAI_API_KEY=...         # whisper transcription
+   ALCHEMY_API_KEY=...        # resolve <slug> on mainnet (no public RPC)
+   IPFS_API_URL=http://127.0.0.1:5001       # PIN to the local bgipfs node (default)
+   IPFS_GATEWAY=http://127.0.0.1:8080/ipfs  # READ the episode video from the LOCAL
+                                            # kubo gateway — the box already has it
+                                            # pinned, so this is a localhost copy, NOT
+                                            # a 3GB round-trip out through the public
+                                            # gateway. Important on-box; default is
+                                            # https://media.slop.computer/ipfs (remote).
+   CLIPPER_FFMPEG_BIN=ffmpeg
+   CLIPPER_FFMPEG_FULL_BIN=ffmpeg           # Ubuntu's ffmpeg is built --enable-libass,
+                                            # so it burns captions fine — no separate
+                                            # ffmpeg-full needed.
    ```
 
-4. **Install ffmpeg-full** (caption burning needs libass; the slim ffmpeg
-   doesn't have it). The clipper looks for `CLIPPER_FFMPEG_FULL_BIN` (default
-   `/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg` — set it to the box's path, e.g.
-   `/usr/bin/ffmpeg` if that build has libass, or install a full ffmpeg).
+4. **ffmpeg with libass** — caption burning needs it. Ubuntu's `apt` ffmpeg
+   ships `--enable-libass` already (verify: `ffmpeg -buildconf | grep libass`),
+   so `CLIPPER_FFMPEG_FULL_BIN=ffmpeg` above is enough. (The clipper's macOS
+   default is `/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`; override it on Linux.)
 
 5. **Point the relay at it** — set in the relay's env and restart:
    ```
