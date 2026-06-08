@@ -5347,6 +5347,79 @@ app.post("/admin/finalize", async (req, reply) => {
   return reply.send(stream);
 });
 
+// One clip job per slug at a time (the clipper is heavy: download → cut → pin).
+const clipJobsInFlight = new Set<string>();
+
+// Generate the 9:16 clips + tweet copy for an already-finalized episode by
+// spawning a clawd-clipper checkout (CLIPPER_DIR) with `--vertical --publish`.
+// It cuts the clips, pins them + a clips.json to bgipfs, and writes
+// out/<slug>/publish.json with the new manifest CID — which we stream back as
+// the `done` event. The host then signs setManifest with that CID (we hold no
+// key). Streams NDJSON progress like /admin/finalize.
+app.post("/admin/generate-clips", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
+  const slug = String((req.query as { slug?: string }).slug ?? "").trim();
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad or missing ?slug" });
+  if (clipJobsInFlight.has(slug)) return reply.code(409).send({ error: `clip job already running for ${slug}` });
+  clipJobsInFlight.add(slug);
+
+  const stream = new Readable({ read() {} });
+  reply.header("Content-Type", "application/x-ndjson");
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Accel-Buffering", "no");
+  const writeEvent = (obj: unknown) => stream.push(JSON.stringify(obj) + "\n");
+
+  void (async () => {
+    try {
+      const { spawn } = await import("node:child_process");
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      writeEvent({ phase: "starting", slug });
+
+      const bin = join(config.clipperDir, "node_modules", ".bin", "tsx");
+      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish"], { cwd: config.clipperDir, env: process.env });
+
+      // Stream the clipper's stdout/stderr lines through as progress.
+      let buf = "";
+      const pump = (d: Buffer) => {
+        buf += d.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\s+$/, "");
+          buf = buf.slice(nl + 1);
+          if (line) writeEvent({ phase: "log", line });
+        }
+      };
+      child.stdout?.on("data", pump);
+      child.stderr?.on("data", pump);
+      const code: number = await new Promise(res => child.on("close", c => res(c ?? 0)));
+      if (buf.trim()) writeEvent({ phase: "log", line: buf.trim() });
+      if (code !== 0) {
+        writeEvent({ phase: "error", message: `clipper exited ${code}` });
+        return;
+      }
+      let result: { clipsCid?: string; manifestCid?: string; count?: number } = {};
+      try {
+        result = JSON.parse(await readFile(join(config.clipperDir, "out", slug, "publish.json"), "utf8"));
+      } catch {
+        writeEvent({ phase: "error", message: "clipper finished but wrote no publish.json" });
+        return;
+      }
+      writeEvent({ phase: "done", manifestCid: result.manifestCid, clipsCid: result.clipsCid, count: result.count });
+    } catch (err) {
+      app.log.error({ err }, "generate-clips failed");
+      writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      clipJobsInFlight.delete(slug);
+      stream.push(null);
+    }
+  })();
+
+  return reply.send(stream);
+});
+
 app.get("/admin/peers", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });

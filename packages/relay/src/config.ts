@@ -88,6 +88,11 @@ export const config = {
   // deploy/mediamtx.yml). /admin/finalize scans `<recordingsDir>/live/` and
   // grabs the newest file.
   recordingsDir: env("RECORDINGS_DIR", "/home/ubuntu/recordings"),
+  // Path to a clawd-clipper checkout on this box. When set, /admin/generate-clips
+  // spawns it (`tsx src/index.ts <slug> --vertical --publish`) to cut the 9:16
+  // clips + tweets, pin them to bgipfs, and produce an updated manifest CID.
+  // Unset → the route 501s (clips stay a local/manual flow).
+  clipperDir: env("CLIPPER_DIR", ""),
   // Local kubo daemon (systemd `ipfs.service`). /admin/finalize POSTs the
   // recording to /api/v0/add and streams the {Bytes, Hash} response back
   // to the host UI as a real progress bar.
