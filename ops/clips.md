@@ -8,6 +8,11 @@ section at the bottom of `slop.computer/<slug>`.
 Three repos are involved; all the code is already shipped. This doc is the
 box-side setup that makes the button actually work.
 
+> Related: `ops/window-geometry.md` — the relay logs exact window rects per
+> episode so the clipper's 9:16 layout reads them deterministically instead of
+> recovering them from pixels. It feeds the same vertical clips this runbook
+> generates.
+
 ```
 /admin → Finalize → Save Manifest → [Generate clips] → Save Manifest (again) → done
                                           │                    │
