@@ -3708,6 +3708,17 @@ function DesktopInner({ slug }: { slug: string }) {
               // Keep the player mounted while minimized so its <audio>
               // element stays in the DOM and music keeps playing.
               keepMountedWhenDocked
+              // Closing SLOPAMP stops playback (shared across the mesh), so
+              // music doesn't keep going from a detached <audio> element
+              // after the window unmounts. Minimize (above) still keeps it
+              // playing — only the explicit close stops it.
+              onClose={() => {
+                const ms = mesh.musicState;
+                if (ms?.playing) {
+                  mesh.setMusicState({ ...ms, playing: false, position: 0, at: Date.now() });
+                }
+                mesh.closeWindow("music");
+              }}
             >
               <MusicPlayerWindow mesh={mesh} audioBusEnabled={isGodMode} />
             </SharedAppWindow>

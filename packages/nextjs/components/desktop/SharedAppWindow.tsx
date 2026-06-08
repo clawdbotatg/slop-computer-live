@@ -46,6 +46,11 @@ export type SharedAppWindowProps = {
    *  e.g. SLOPAMP, whose <audio> element keeps playing only while in the
    *  DOM. Off by default: most apps are fine to tear down + rebuild. */
   keepMountedWhenDocked?: boolean;
+  /** Override the close action. Defaults to `mesh.closeWindow(id)`. Use
+   *  when an app needs to do extra teardown on close (e.g. SLOPAMP stops
+   *  playback) — the override is responsible for calling `closeWindow`
+   *  itself. */
+  onClose?: () => void;
   children: ReactNode;
 };
 
@@ -62,6 +67,7 @@ export const SharedAppWindow = ({
   // still override.
   bodyStyle = { padding: 0, overflow: "hidden" },
   keepMountedWhenDocked,
+  onClose,
   children,
 }: SharedAppWindowProps) => {
   if (!mesh.openWindowIds.has(id)) return null;
@@ -84,7 +90,7 @@ export const SharedAppWindow = ({
       bodyClassName={bodyClassName}
       bodyStyle={bodyStyle}
       keepMountedWhenDocked={keepMountedWhenDocked}
-      onClose={() => mesh.closeWindow(id)}
+      onClose={onClose ?? (() => mesh.closeWindow(id))}
     >
       {children}
     </SlotWindow>

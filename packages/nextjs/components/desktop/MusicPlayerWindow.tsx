@@ -788,10 +788,23 @@ export const MusicPlayerWindow = ({
     return () => window.cancelAnimationFrame(raf);
   }, []);
 
-  // Cleanup AudioContext on unmount.
+  // Cleanup on unmount: close the AudioContext AND pause the <audio>
+  // element. A detached media element keeps playing in Chrome until it's
+  // garbage-collected, so without the explicit pause, closing SLOPAMP
+  // would leave the track audible on the closing peer (its mesh-sync
+  // effect can't run once unmounted). Pause is local-only — no broadcast
+  // — so it doesn't touch the shared state that survives a reload.
   useEffect(() => {
+    const a = audioRef.current;
     return () => {
       audioCtxRef.current?.close().catch(() => undefined);
+      if (a) {
+        try {
+          a.pause();
+        } catch {
+          /* ignore */
+        }
+      }
     };
   }, []);
 
