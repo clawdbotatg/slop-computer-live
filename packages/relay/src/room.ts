@@ -264,6 +264,15 @@ export class Room {
 
   private peers = new Map<string, Peer>();
 
+  /** Live spectator count — number of open `/v1/chat/stream` SSE connections
+   *  to this room. Each slop.computer room-page visitor opens exactly one
+   *  (via the front-end `useChat` hook), so this is our "viewers watching
+   *  right now" number. Distinct from `peers` (the desktop WS mesh: host +
+   *  guests + agents) — a passive watcher reading chat is a viewer, not a
+   *  peer. Connect bumps it; the SSE `close` handler drops it. */
+  private viewers = 0;
+  private viewerSubs = new Set<(count: number) => void>();
+
   /** Ephemeral: the inner size of the active god-mode streaming session's
    *  browser window. Spectators broadcast `god_viewport` on resize and we
    *  fan it out so every client can draw a dashed rectangle showing where
@@ -564,9 +573,8 @@ export class Room {
       });
     }
     // A god-mode spectator joining/leaving changes which room the OBS
-    // stream is showing → re-derive the air sign (mobile-mode spectators
-    // are clip viewers, not the streaming box, so they don't count).
-    if (peer.spectator && !peer.mobileMode) this.recomputeStreamActive();
+    // stream is showing → re-derive the air sign.
+    if (peer.spectator) this.recomputeStreamActive();
   }
 
   removePeer(id: string): void {
@@ -605,7 +613,7 @@ export class Room {
     // it. The air sign's `streamActive` half re-derives off god-mode
     // presence (gated on hlsLive), on a grace timer so a reload doesn't
     // blink the sign off-air.
-    if (wasSpectator && peer?.mobileMode !== true) this.recomputeStreamActive();
+    if (wasSpectator) this.recomputeStreamActive();
   }
 
   setLiveCaptionAlive(speakerKey: string, alive: boolean): void {
@@ -648,11 +656,11 @@ export class Room {
     this.recomputeStreamActive();
   }
 
-  /** Is the god-mode streaming box (a non-mobile spectator) in this room?
-   *  That session is the OBS-captured tab, so it identifies which room a
+  /** Is the god-mode streaming box (a spectator) in this room? That
+   *  session is the OBS-captured tab, so it identifies which room a
    *  live HLS stream is showing. */
   hasGodSpectator(): boolean {
-    return [...this.peers.values()].some(p => p.spectator && !p.mobileMode);
+    return [...this.peers.values()].some(p => p.spectator);
   }
 
   /** Re-derive `streamActive` = we're pushing HLS AND this is the room the
@@ -730,6 +738,44 @@ export class Room {
 
   peerCount(): number {
     return this.peers.size;
+  }
+
+  /** Current live viewer count (open chat-stream SSE connections). */
+  viewerCount(): number {
+    return this.viewers;
+  }
+
+  /** Register a viewer (called on chat-stream connect). Bumps the count,
+   *  notifies subscribers, and returns a release fn that's idempotent — the
+   *  SSE `close` handler may fire more than once, but the count only drops
+   *  the first time. */
+  addViewer(): () => void {
+    this.viewers++;
+    this.notifyViewers();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.viewers = Math.max(0, this.viewers - 1);
+      this.notifyViewers();
+    };
+  }
+
+  /** Subscribe to viewer-count changes (used by chat-stream connections to
+   *  push a live `viewers` SSE event). Returns an unsubscribe fn. */
+  onViewers(fn: (count: number) => void): () => void {
+    this.viewerSubs.add(fn);
+    return () => this.viewerSubs.delete(fn);
+  }
+
+  private notifyViewers(): void {
+    for (const fn of this.viewerSubs) {
+      try {
+        fn(this.viewers);
+      } catch {
+        /* one bad subscriber shouldn't break the rest */
+      }
+    }
   }
 
   broadcast(msg: unknown, exceptId?: string): void {

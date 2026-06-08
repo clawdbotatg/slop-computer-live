@@ -7,7 +7,6 @@ import type { Address as AddressType } from "viem";
 import { type CommandAction, CommandPalette } from "~~/components/CommandPalette";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
-import { MobileStage } from "~~/components/MobileStage";
 import { PasswordGate } from "~~/components/PasswordGate";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
@@ -452,7 +451,6 @@ function DesktopInner({ slug }: { slug: string }) {
   // whatever the operator pasted into their address bar.
   const [inviteFromUrl, setInviteFromUrl] = useState<string>("");
   const [godModeFromUrl, setGodModeFromUrl] = useState<string>("");
-  const [mobileModeFromUrl, setMobileModeFromUrl] = useState<string>("");
   useEffect(() => {
     if (typeof window === "undefined") return;
     const u = new URL(window.location.href);
@@ -466,12 +464,7 @@ function DesktopInner({ slug }: { slug: string }) {
       setGodModeFromUrl(god);
       u.searchParams.delete("godMode");
     }
-    const mobile = u.searchParams.get("mobileMode");
-    if (mobile) {
-      setMobileModeFromUrl(mobile);
-      u.searchParams.delete("mobileMode");
-    }
-    if (fromUrl || god || mobile) {
+    if (fromUrl || god) {
       window.history.replaceState({}, "", u.toString());
     }
   }, []);
@@ -487,8 +480,6 @@ function DesktopInner({ slug }: { slug: string }) {
   // cookie, THEN we trade the godMode password for a spectator session.
   // `godModeBusy` keeps the JoinCard from flashing between those steps.
   const [godModeBusy, setGodModeBusy] = useState(false);
-  // Same two-step flow for ?mobileMode= → /auth/mobilemode.
-  const [mobileModeBusy, setMobileModeBusy] = useState(false);
   useEffect(() => {
     if (slug === DEFAULT_SLUG) {
       setRoomAuthed(true);
@@ -549,41 +540,6 @@ function DesktopInner({ slug }: { slug: string }) {
       }
     })();
   }, [godModeFromUrl, roomAuthed, session, refreshSession]);
-
-  // Same flow for ?mobileMode= — fires once after the room cookie lands,
-  // trades the password for a session with `mobileMode: true` (which
-  // also implies `spectator: true` on the relay side).
-  const mobileModeFiredRef = useRef(false);
-  useEffect(() => {
-    if (mobileModeFiredRef.current) return;
-    if (!mobileModeFromUrl) return;
-    if (roomAuthed !== true) return;
-    if (session.authenticated && session.mobileMode) return;
-    mobileModeFiredRef.current = true;
-    setMobileModeBusy(true);
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080"}/auth/mobilemode`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ password: mobileModeFromUrl }),
-          },
-        );
-        if (!res.ok) {
-          console.warn("[mobileMode] auth failed", res.status);
-          return;
-        }
-        await refreshSession();
-      } catch (err) {
-        console.warn("[mobileMode] auth error", err);
-      } finally {
-        setMobileModeBusy(false);
-      }
-    })();
-  }, [mobileModeFromUrl, roomAuthed, session, refreshSession]);
 
   const selfHint = useMemo(() => {
     if (!session.authenticated) return null;
@@ -729,11 +685,9 @@ function DesktopInner({ slug }: { slug: string }) {
   const media = useLocalMedia(addStream, stopStream);
 
   const episode = useEpisodeState(RELAY_HTTP, slug);
-  // Real god-mode (streaming box) ONLY — not the mobile-clip spectator.
-  // Both sessions carry `spectator: true`, but mobileMode is a portrait
-  // clip stage and must not own the audio bus, run god-STT, or set the
-  // public stream-output bounds (the dashed god-viewport rectangle).
-  const isGodMode = session.authenticated && session.spectator === true && !session.mobileMode;
+  // God-mode (streaming box): owns the audio bus, runs god-STT, and sets
+  // the public stream-output bounds (the dashed god-viewport rectangle).
+  const isGodMode = session.authenticated && session.spectator === true;
   // Wake the shared AudioBus on the spectator/streaming box. Every
   // audio element on the page that registers via useAudioBusElement
   // gates on its own god-mode flag too, but the bus itself needs to
@@ -2988,14 +2942,6 @@ function DesktopInner({ slug }: { slug: string }) {
     [mesh.slots, meshUpdateSlotForFiles, slug],
   );
 
-  // Mobile mode short-circuits the entire desktop tree. The session
-  // has spectator=true so the relay's publish block + the visiblePeers
-  // filter already apply; we just need to render the clip-friendly
-  // stage instead of MenuBar/icons/windows. See ops/PLAN-mobile-mode.md.
-  if (session.authenticated && session.mobileMode) {
-    return <MobileStage mesh={mesh} />;
-  }
-
   return (
     <>
       <DesktopBackground />
@@ -3982,7 +3928,7 @@ function DesktopInner({ slug }: { slug: string }) {
           Suppressed entirely while godMode auth is mid-flight — the
           spectator session is about to land, no point flashing the
           JoinCard at the streaming box for a split second. */}
-      {!loading && !session.authenticated && !godModeBusy && !mobileModeBusy ? (
+      {!loading && !session.authenticated && !godModeBusy ? (
         <div
           style={{
             position: "fixed",

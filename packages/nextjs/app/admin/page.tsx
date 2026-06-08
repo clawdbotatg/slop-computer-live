@@ -85,14 +85,11 @@ type Peer = {
   connectedAt?: number;
   slug?: string;
   spectator?: boolean;
-  mobileMode?: boolean;
 };
 
-// Both god-mode and mobile-mode peers join as role "guest" with
-// `spectator` set; only mobile-mode also carries `mobileMode`. Surface
-// the real flavor so the admin list doesn't collapse them all to "guest".
+// God-mode peers join as role "guest" with `spectator` set. Surface the
+// real flavor so the admin list doesn't collapse them to "guest".
 const peerMode = (p: Peer): string => {
-  if (p.mobileMode) return "mobileMode";
   if (p.spectator) return "godMode";
   return p.role;
 };
@@ -173,9 +170,6 @@ const AdminPage: NextPage = () => {
   // when the env var isn't set — the [god] affordance is hidden in that
   // case rather than producing a link that'll fail at /auth/godmode.
   const [godPassword, setGodPassword] = useState<string | null>(null);
-  // Same shape as godPassword — null when MOBILE_MODE_PASSWORD isn't
-  // set on the relay (collapses the [mobile] link affordance).
-  const [mobilePassword, setMobilePassword] = useState<string | null>(null);
   const rememberRoomPassword = (slug: string, password: string) => {
     const next = { ...readAdminPasswords(), [slug]: password };
     writeAdminPasswords(next);
@@ -319,26 +313,6 @@ const AdminPage: NextPage = () => {
     };
   }, [isHost]);
 
-  // Same fetch shape for MOBILE_MODE_PASSWORD — drives the [mobile]
-  // copy-link affordance below the [god] one.
-  useEffect(() => {
-    if (!isHost) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${RELAY_BASE}/admin/mobile-password`, { credentials: "include" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { password?: string | null };
-        if (!cancelled) setMobilePassword(data.password ?? null);
-      } catch {
-        /* relay offline — leave mobile link hidden */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isHost]);
-
   const rotateRoomPassword = async (slug: string, newPassword: string) => {
     setCopyStatus("");
     if (!newPassword) {
@@ -399,30 +373,6 @@ const AdminPage: NextPage = () => {
     try {
       await navigator.clipboard.writeText(url);
       setCopyStatus(`copied /${slug} god-mode link ✓`);
-    } catch {
-      setCopyStatus("clipboard blocked — copy manually");
-    }
-  };
-
-  // Mirror of copyGodLink for the portrait clip-recording stage. Same
-  // two-step gate (`invite=` clears the room cookie, `mobileMode=`
-  // mints the MobileStage session on top). See ops/PLAN-mobile-mode.md.
-  const copyMobileLink = async (slug: string) => {
-    if (typeof window === "undefined") return;
-    if (!mobilePassword) {
-      setCopyStatus("mobile mode not configured on the relay (MOBILE_MODE_PASSWORD unset)");
-      return;
-    }
-    const roomPw = roomPasswords[slug];
-    if (!roomPw) {
-      setCopyStatus(`no room password remembered for /${slug} — regenerate it first`);
-      return;
-    }
-    const base = `${window.location.origin}/${slug}`;
-    const url = `${base}?invite=${encodeURIComponent(roomPw)}&mobileMode=${encodeURIComponent(mobilePassword)}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopyStatus(`copied /${slug} mobile link ✓`);
     } catch {
       setCopyStatus("clipboard blocked — copy manually");
     }
@@ -952,30 +902,6 @@ const AdminPage: NextPage = () => {
                   }}
                 >
                   [god]
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void copyMobileLink(r.slug)}
-                  className="slop-link"
-                  title={
-                    !mobilePassword
-                      ? "MOBILE_MODE_PASSWORD not set on the relay"
-                      : !roomPasswords[r.slug]
-                        ? "regenerate this room's password first so the link can embed it"
-                        : "copy mobile-stage link (portrait clip recording layout)"
-                  }
-                  style={{
-                    background: "transparent",
-                    border: 0,
-                    padding: 0,
-                    margin: 0,
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "lowercase",
-                    cursor: "pointer",
-                    opacity: mobilePassword && roomPasswords[r.slug] ? 1 : 0.5,
-                  }}
-                >
-                  [mobile]
                 </button>
                 <a
                   href={`https://slop.computer/admin?liveSlugToSchedule=${encodeURIComponent(r.slug)}`}

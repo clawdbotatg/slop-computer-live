@@ -22,11 +22,6 @@ export type Session = {
   // is rejected if it tries to publish, chat, or write any shared
   // state. Role stays "guest" so admin-only checks still gate it.
   spectator?: boolean;
-  // True for "mobile mode" sessions: spectator-style observer that
-  // renders the portrait `MobileStage` UI instead of the desktop tree.
-  // Always paired with spectator=true so the publish block + guest-list
-  // hide apply. See ops/PLAN-mobile-mode.md.
-  mobileMode?: boolean;
   // Room this token is scoped to. Set only on agent tokens (see
   // createAgentSession). Bearer callers carry no cookies, so the room
   // an agent may touch is baked in at mint time and enforced by
@@ -122,7 +117,6 @@ export function createSession(args: {
   handle: string | null;
   anonId?: string | null;
   spectator?: boolean;
-  mobileMode?: boolean;
   passkey?: { qx: string; qy: string; credentialIdHash: string };
 }): Session {
   pruneSessions();

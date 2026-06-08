@@ -69,14 +69,6 @@ export const config = {
   // or click broadcasts, can't publish or chat. Intended for the
   // streaming machine that captures the live show.
   godPassword: env("GOD_MODE_PASSWORD", ""),
-  // Optional "mobile mode" password — same shape as godPassword, but
-  // unlocks a portrait clip-friendly stage instead of the full desktop
-  // (see ops/PLAN-mobile-mode.md). Mobile sessions are also spectators
-  // (no publish, hidden from guest list) so they can't accidentally
-  // broadcast cam/mic/screen during a recording. Kept distinct from
-  // godPassword so a mobile clip link doesn't also grant god caps
-  // (audio bus, server-STT, god viewport).
-  mobilePassword: env("MOBILE_MODE_PASSWORD", ""),
   sessionSecret,
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),

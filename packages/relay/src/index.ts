@@ -704,6 +704,7 @@ app.get("/health", async () => ({
   ok: true,
   service: "slop-relay",
   peers: [...listRooms()].reduce((n, r) => n + r.peerCount(), 0),
+  viewers: [...listRooms()].reduce((n, r) => n + r.viewerCount(), 0),
 }));
 
 // --- Apps registry ----------------------------------------------------------
@@ -1805,14 +1806,23 @@ app.get("/v1/chat/stream", async (req, reply) => {
   const write = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  const chat = roomFromReq(req).chat;
+  const room = roomFromReq(req);
+  const chat = room.chat;
   write("init", { messages: chat.recent() });
   const unsub = chat.subscribe(msg => write("chat", msg));
+  // Viewer count: this open SSE connection IS a viewer. Bump the room's count
+  // (which notifies every other connection), subscribe to changes so this
+  // client tracks the live number, and send it the current value right away.
+  const releaseViewer = room.addViewer();
+  const unsubViewers = room.onViewers(count => write("viewers", { count }));
+  write("viewers", { count: room.viewerCount() });
   // Heartbeat — some proxies drop idle connections after ~60s.
   const heartbeat = setInterval(() => reply.raw.write(`: ping\n\n`), 25_000);
   req.raw.on("close", () => {
     clearInterval(heartbeat);
     unsub();
+    unsubViewers();
+    releaseViewer();
     try {
       reply.raw.end();
     } catch {
@@ -4743,6 +4753,7 @@ app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/meta", async (req, reply)
     name: room.meta.getName(),
     createdAt: room.meta.getCreatedAt(),
     live: room.peerCount() > 0,
+    viewers: room.viewerCount(),
     stt: room.episode.getState().sttOn,
     card: { published: _existsSync(cardPublishedFilePath(req.params.slug)) },
     wallet: w
@@ -5019,41 +5030,6 @@ app.post<{ Body: GodModeBody }>("/auth/godmode", PASSWORD_RATE_LIMIT, async (req
   return { ok: true, role: "guest", spectator: true };
 });
 
-// --- Mobile-mode auth (spectator + portrait stage) ---------------------------
-//
-// Same shape as /auth/godmode but mints a session flagged for the
-// MobileStage UI (portrait clip layout, no desktop chrome). Also a
-// spectator session so the publish block + guest-list hide both apply —
-// a mobile clip viewer should never accidentally broadcast or appear in
-// the room. Kept on a separate password so the clip link can be handed
-// out without granting god capabilities (audio bus, server-STT,
-// god-viewport). See ops/PLAN-mobile-mode.md.
-
-type MobileModeBody = { password?: unknown };
-
-app.post<{ Body: MobileModeBody }>("/auth/mobilemode", PASSWORD_RATE_LIMIT, async (req, reply) => {
-  if (!config.mobilePassword) {
-    return reply.code(503).send({ error: "mobilemode-not-configured" });
-  }
-  if (!hasAnyValidRoomCookie(req.cookies, config.sessionSecret)) {
-    return reply.code(403).send({ error: "room-auth-required" });
-  }
-  const body = (req.body ?? {}) as MobileModeBody;
-  const password = typeof body.password === "string" ? body.password : "";
-  if (!password || password !== config.mobilePassword) {
-    return reply.code(401).send({ error: "bad-password" });
-  }
-  const session = createSession({
-    role: "guest",
-    address: null,
-    handle: null,
-    spectator: true,
-    mobileMode: true,
-  });
-  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
-  return { ok: true, role: "guest", spectator: true, mobileMode: true };
-});
-
 app.post("/auth/logout", async (req, reply) => {
   const token = req.cookies[SESSION_COOKIE];
   if (token) deleteSession(token);
@@ -5075,7 +5051,6 @@ app.get("/auth/me", async req => {
     anonId: session.anonId ?? null,
     isAdmin: session.role === "host" && !!session.address && isAdminAddress(session.address),
     spectator: session.spectator === true,
-    mobileMode: session.mobileMode === true,
   };
 });
 
@@ -5153,15 +5128,6 @@ app.get("/admin/god-password", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return { password: config.godPassword || null };
-});
-
-// Same shape as /admin/god-password but for MOBILE_MODE_PASSWORD —
-// drives the [mobile] copy-link affordance on the admin page. Null
-// when unset so the UI can dim the button.
-app.get("/admin/mobile-password", async (req, reply) => {
-  const auth = requireHost(req);
-  if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return { password: config.mobilePassword || null };
 });
 
 app.post("/admin/invite-password", async (req, reply) => {
@@ -5793,7 +5759,6 @@ app.register(async function signalRoutes(fastify) {
       anonId: session.anonId ?? null,
       connectedAt: Date.now(),
       ...(isSpectator ? { spectator: true as const } : {}),
-      ...(session.mobileMode ? { mobileMode: true as const } : {}),
       ...(session.passkey ? { passkey: session.passkey } : {}),
     };
 

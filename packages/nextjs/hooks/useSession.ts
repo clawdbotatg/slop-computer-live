@@ -35,10 +35,6 @@ export type Session =
       // local cursor, no auto-publish) and the relay rejects any
       // attempt to write shared state.
       spectator?: boolean;
-      // True when the session was minted via /auth/mobilemode. Spectator
-      // session that swaps the desktop tree for the portrait MobileStage
-      // (clip-friendly stage). Implies `spectator: true`.
-      mobileMode?: boolean;
     };
 
 export type UseSessionResult = {
