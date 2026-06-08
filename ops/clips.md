@@ -73,8 +73,10 @@ box-side setup that makes the button actually work.
 
 4. **ffmpeg with libass** — caption burning needs it. Ubuntu's `apt` ffmpeg
    ships `--enable-libass` already (verify: `ffmpeg -buildconf | grep libass`),
-   so `CLIPPER_FFMPEG_FULL_BIN=ffmpeg` above is enough. (The clipper's macOS
-   default is `/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`; override it on Linux.)
+   so the `CLIPPER_FFMPEG_FULL_BIN=/usr/bin/ffmpeg` above works. ⚠️ Use an
+   ABSOLUTE path (or a bare PATH name, which the clipper now resolves) — a value
+   that isn't a real file silently disables caption burning (you get plain
+   clips). The clipper's macOS default is `/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`.
 
 5. **Point the relay at it** — set in the relay's env and restart:
    ```
