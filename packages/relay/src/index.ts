@@ -5329,6 +5329,7 @@ app.post("/admin/finalize", async (req, reply) => {
         ipfsApiUrl: config.ipfsApiUrl,
         chatArchive: room.chat.readArchive(),
         transcriptArchive: room.transcript.readArchive(),
+        geometryArchive: room.geometry.readArchive(),
         participants,
         cardArchive,
         onEvent: writeEvent,

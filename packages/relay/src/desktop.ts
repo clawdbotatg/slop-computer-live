@@ -21,8 +21,18 @@
 
 import { readFileSync } from "node:fs";
 import { writeFileAtomic } from "./fs-atomic.js";
+import type { GeometryLog } from "./geometry-log.js";
 
 export type SlotKind = "camera" | "screen" | "audio";
+
+// Stable slot id for a media publication. MUST match the frontend's
+// `slotIdFor` (Desktop.tsx) — the id is the join key the geometry log and the
+// clipper use to map a window rect back to its owner + kind. Screens include
+// the streamId so one user sharing two screens gets two windows.
+export function slotIdFor(pub: Pick<Publication, "ownerKey" | "kind" | "streamId">): string {
+  if (pub.kind === "screen") return `owner-${pub.ownerKey}-screen-${pub.streamId}`;
+  return `owner-${pub.ownerKey}-${pub.kind}`;
+}
 
 export type Publication = {
   streamId: string;
@@ -59,6 +69,11 @@ export class DesktopState {
      *  host bucket. */
     private readonly legacySlotsFile: string | null = null,
     private readonly legacyHostKey: string | null = null,
+    /** Append-only geometry log. Every slot move / window show / window hide
+     *  funnels through this class's methods, so wiring the log here captures
+     *  both the WS `slot_update` path and the HTTP `/v1/slots` path with no
+     *  call-site duplication. Null disables logging (e.g. in tests). */
+    private readonly geometry: GeometryLog | null = null,
   ) {}
 
   private load(): void {
@@ -127,6 +142,7 @@ export class DesktopState {
     };
     this.slots.set(patch.id, merged);
     this.scheduleSave();
+    this.geometry?.recordMove(merged);
     return merged;
   }
 
@@ -144,15 +160,26 @@ export class DesktopState {
     const next = list.filter(x => x.streamId !== p.streamId);
     next.push(p);
     this.publicationsByPeer.set(p.peerId, next);
+    // Window became live — log it with its current position (if a slot is
+    // already remembered) so the geometry log carries even never-moved windows.
+    const slotId = slotIdFor(p);
+    this.geometry?.recordShow(slotId, this.getSlot(slotId));
+  }
+
+  getSlot(id: string): SlotPosition | null {
+    this.load();
+    return this.slots.get(id) ?? null;
   }
 
   unpublish(peerId: string, streamId: string): boolean {
     const list = this.publicationsByPeer.get(peerId);
     if (!list) return false;
+    const removed = list.find(x => x.streamId === streamId);
     const next = list.filter(x => x.streamId !== streamId);
     if (next.length === list.length) return false;
     if (next.length === 0) this.publicationsByPeer.delete(peerId);
     else this.publicationsByPeer.set(peerId, next);
+    if (removed) this.geometry?.recordHide(slotIdFor(removed));
     return true;
   }
 
@@ -181,6 +208,8 @@ export class DesktopState {
   clearPeerPublications(peerId: string): Publication[] {
     const list = this.publicationsByPeer.get(peerId) ?? [];
     this.publicationsByPeer.delete(peerId);
+    // Peer disconnected — every one of their windows closed.
+    for (const p of list) this.geometry?.recordHide(slotIdFor(p));
     return list;
   }
 }

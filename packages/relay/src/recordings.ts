@@ -54,6 +54,7 @@ export type FinalizeEvent =
   | { phase: "uploading"; bytes: number; totalBytes: number }
   | { phase: "pinning-chat"; messageCount: number }
   | { phase: "pinning-transcript"; segmentCount: number }
+  | { phase: "pinning-geometry"; sampleCount: number }
   | { phase: "pinning-card"; sizeBytes: number }
   | { phase: "generating-meta" }
   | { phase: "pinning-manifest" }
@@ -296,6 +297,13 @@ export async function finalizeRecording(opts: {
    *  not dependent on `live.slop.computer/v1/cards/<slug>/published.png`
    *  staying up. Pass `null` if the host never saved a card. */
   cardArchive: { bytes: Buffer; format: string } | null;
+  /** Append-only window-geometry timeline (geometry.jsonl), snapshotted from
+   *  the room. Pinned to IPFS and referenced under `manifest.geometry.cid` so
+   *  the clipper can read exact window rects instead of recovering them from
+   *  the recorded pixels. A `header` line carrying `videoStartMs` (so consumers
+   *  can map `ts` → video seconds) is prepended here at finalize. Pass `null`
+   *  to omit (older rooms, no log) — the clipper falls back to its CV pipeline. */
+  geometryArchive: { content: string; sampleCount: number } | null;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -364,6 +372,31 @@ export async function finalizeRecording(opts: {
           };
         }
 
+        // Anchor for time alignment: parsed from the MediaMTX recording
+        // filename (UTC). Shared by the geometry header below and the AI-meta
+        // chapter times further down. Null for manual/older filenames.
+        const videoStartMs = parseRecordingStartMs(latest.name);
+
+        // Snapshot the window-geometry timeline the same way as chat/transcript.
+        // We prepend a `header` line carrying `videoStartMs` so the consumer can
+        // map each event's wall-clock `ts` to video seconds, then pin the JSONL.
+        let geometryPin: { cid: string; sampleCount: number; format: string } | null = null;
+        const geometryArchive = opts.geometryArchive;
+        if (geometryArchive && geometryArchive.sampleCount > 0) {
+          emit({ phase: "pinning-geometry", sampleCount: geometryArchive.sampleCount });
+          const header = JSON.stringify({ v: 1, kind: "header", videoStartMs: videoStartMs ?? null }) + "\n";
+          const geometryCid = await pinBlobToLocalIpfs({
+            apiUrl: opts.ipfsApiUrl,
+            blob: new Blob([header + geometryArchive.content], { type: "application/x-ndjson" }),
+            filename: "geometry.jsonl",
+          });
+          geometryPin = {
+            cid: geometryCid,
+            sampleCount: geometryArchive.sampleCount,
+            format: "application/jsonl",
+          };
+        }
+
         // Pin the host-baked unfurl card PNG. Same dedup-on-content-hash
         // semantics as everything else kubo pins — same PNG → same CID
         // across re-finalizes.
@@ -393,10 +426,9 @@ export async function finalizeRecording(opts: {
           emit({ phase: "generating-meta" });
           try {
             // Anchor chapter times to the video recording window so they line
-            // up with the player clock — start parsed from the filename, end
-            // from the file mtime. Without this, pre-show mic-checks and
+            // up with the player clock — start parsed from the filename (above),
+            // end from the file mtime. Without this, pre-show mic-checks and
             // post-show chatter in the transcript anchor t0 hours early.
-            const videoStartMs = parseRecordingStartMs(latest.name);
             aiMeta = await generateEpisodeMeta({
               transcriptJsonl: transcriptArchive.content,
               chatJsonl: chatArchive?.content,
@@ -419,6 +451,7 @@ export async function finalizeRecording(opts: {
           video: { cid: string; sizeBytes: number; format: string };
           chat?: { cid: string; messageCount: number };
           transcript?: { cid: string; segmentCount: number };
+          geometry?: { cid: string; sampleCount: number; format: string };
           card?: { cid: string; format: string; sizeBytes: number };
           participants?: {
             address: string | null;
@@ -437,6 +470,7 @@ export async function finalizeRecording(opts: {
         };
         if (chatPin) manifestJson.chat = chatPin;
         if (transcriptPin) manifestJson.transcript = transcriptPin;
+        if (geometryPin) manifestJson.geometry = geometryPin;
         if (cardPin) manifestJson.card = cardPin;
         if (opts.participants && opts.participants.length > 0) {
           // Strip extras the frontend doesn't read (firstSeenAt etc.) so the

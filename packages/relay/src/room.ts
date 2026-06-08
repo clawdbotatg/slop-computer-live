@@ -19,6 +19,7 @@ import { ChessState } from "./chess.js";
 import { Clock } from "./clock.js";
 import { config } from "./config.js";
 import { DesktopState } from "./desktop.js";
+import { GeometryLog } from "./geometry-log.js";
 import { EpisodeFlags } from "./episode.js";
 import { FileIndex } from "./files.js";
 import { Chyron } from "./chyron.js";
@@ -109,6 +110,7 @@ function roomPaths(id: string): {
   };
   browsers: { path: string; legacyPath: string | null; legacyHostKey: string | null };
   desktop: { slotsFile: string; legacySlotsFile: string | null; legacyHostKey: string | null };
+  geometry: { path: string };
   chess: SubsystemPath;
   music: { path: string };
   wallet: SubsystemPath;
@@ -177,6 +179,11 @@ function roomPaths(id: string): {
       slotsFile: `${dir}/slots.json`,
       legacySlotsFile: legacy ? (process.env.SLOT_PATH ?? "/var/lib/slop-relay/slots.json") : null,
       legacyHostKey: legacy ? (config.adminAddresses[0]?.toLowerCase() ?? null) : null,
+    },
+    geometry: {
+      // Append-only window geometry timeline. New concept — no legacy path to
+      // inherit; cold start = empty log (clipper falls back to CV).
+      path: `${dir}/geometry.jsonl`,
     },
     chess: {
       path: `${dir}/chess.json`,
@@ -322,6 +329,7 @@ export class Room {
   readonly files: FileIndex;
   readonly browsers: BrowserRegistry;
   readonly desktop: DesktopState;
+  readonly geometry: GeometryLog;
   readonly music: MusicState;
   readonly pong = new Pong();
   readonly worm = new Worm();
@@ -379,10 +387,12 @@ export class Room {
       paths.browsers.legacyPath,
       paths.browsers.legacyHostKey,
     );
+    this.geometry = new GeometryLog(paths.geometry.path);
     this.desktop = new DesktopState(
       paths.desktop.slotsFile,
       paths.desktop.legacySlotsFile,
       paths.desktop.legacyHostKey,
+      this.geometry,
     );
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
