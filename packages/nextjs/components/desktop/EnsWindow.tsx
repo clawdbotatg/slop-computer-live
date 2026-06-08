@@ -444,8 +444,9 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
             </div>
           ) : !status?.multisigOnMainnet ? (
             <div style={{ ...muted, color: "var(--slop-amber)" }}>
-              The multisig isn&apos;t deployed on Ethereum mainnet yet. Deploy it on mainnet in the WALLET app, then
-              propose here.
+              ⚠️ The multisig isn&apos;t deployed on Ethereum mainnet yet — the reverse record runs as a tx executed{" "}
+              <i>by</i> the multisig, so the contract has to exist on mainnet first. Open the <b>WALLET</b> app, deploy
+              the multisig on <b>Ethereum mainnet</b>, then come back here to propose this record.
             </div>
           ) : (
             <Button variant="primary" onClick={() => void proposeReverse()} disabled={busy !== null}>
