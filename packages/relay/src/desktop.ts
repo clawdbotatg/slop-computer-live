@@ -205,6 +205,19 @@ export class DesktopState {
     return null;
   }
 
+  /** Wipe the geometry log to a clean slate (new session), then re-seed it
+   *  with every currently-live window's position so a reset that happens with
+   *  windows already on screen still has a baseline. Wired to the host's
+   *  "reset STT" action — the natural new-session boundary. */
+  resetGeometry(): void {
+    if (!this.geometry) return;
+    this.geometry.reset();
+    for (const p of this.listPublications()) {
+      const slotId = slotIdFor(p);
+      this.geometry.recordShow(slotId, this.getSlot(slotId));
+    }
+  }
+
   clearPeerPublications(peerId: string): Publication[] {
     const list = this.publicationsByPeer.get(peerId) ?? [];
     this.publicationsByPeer.delete(peerId);

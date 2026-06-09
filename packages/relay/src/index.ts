@@ -2058,7 +2058,13 @@ app.get("/admin/transcript", async (req, reply) => {
 app.delete("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  return roomFromReq(req).transcript.clear();
+  const room = roomFromReq(req);
+  // Reset STT == new-session boundary, so also wipe the window-geometry log.
+  // It's append-only per slug and would otherwise accumulate across shows,
+  // leaving the clipper's replay-by-timestamp consumer with stale rects from
+  // prior sessions. Re-seeds with currently-live windows. (See geometry-log.ts.)
+  room.desktop.resetGeometry();
+  return room.transcript.clear();
 });
 
 // Host-only chat wipe — same "clean slate before going live" use as the

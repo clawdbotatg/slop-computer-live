@@ -68,7 +68,9 @@ Manifest type carried through in both `clawd-clipper/src/resolve.ts` and
 | `manifest.geometry` type carry-through | clipper + frontpage | ✅ shipped |
 | Fetch + replay → `DetectedWindow[]` adapter | clipper (`src/geometry.ts`) | ✅ built |
 | Branch geometry-or-CV into the vertical path | clipper (`src/index.ts`) | ✅ built |
-| **Verify coordinate-space calibration on a real clip** | — | ⬜ **needs a recorded episode** |
+| **Verify coordinate-space calibration on a real clip** | — | ❌ **FAILED on `clawdbotatg` (2026-06-08) — see below** |
+| Geometry path gated behind `CLIPPER_USE_GEOMETRY` (default = CV pixels) | clipper (`src/index.ts`) | ✅ shipped (default OFF) |
+| Per-session geometry reset wired to "reset STT" | relay (`DELETE /admin/transcript`) | ✅ shipped |
 
 ### How the clipper consumes it (built)
 
@@ -103,6 +105,55 @@ between transcript wall-clock and video seconds for speaker attribution; the
 geometry replay likely needs the same alignment rather than trusting
 `videoStartMs` from the filename alone.
 
+### RESULT — calibration FAILED, and it's not a tunable affine (2026-06-08, `clawdbotatg`)
+
+First real recorded episode with a `geometry.jsonl`. The replayed rects **do not
+line up with the recorded frame**, and crucially **no single affine transform
+fixes it** — so the four `CLIPPER_GEOM_*` knobs (`LAYOUT_W/H`, `OFFSET_X/Y`)
+cannot save it. Evidence (overlay of replayed rects on a real 1920×1080 frame at
+video t=1200s, both cameras verified stably parked at that time):
+
+- Camera `34aa` fits a ~0.62 scale + offset onto its rendered window.
+- Applying that **same** transform to camera `11ce` lands it in the wrong place
+  — its logged slot `(754,50)` is top-center, but in the recording that region
+  is the spectrum/clock, **no camera there**. The two cameras can't share one
+  transform.
+
+**Root cause:** the geometry log records the relay's *interactive god-desktop
+slot positions* (`SlotPosition`, the coord space the relay lays out in — host
+viewport pixels, default 1920×1080, see `Desktop.tsx` `meshGodViewportRef`). But
+the **recording is a different composition**: each client re-arranges/clamps
+windows to its own viewport on load (`Desktop.tsx` "Slot clamp on viewport
+resize"), and the OBS capture is whatever that client rendered — not the
+canonical slot coords. Per-window clamping is non-affine, so it's not
+recoverable by a global transform. (Box viewport env is even 1280×800/16:10
+while the recording is 1920×1080/16:9 — different aspect, confirming the
+recording is not a 1:1 capture of the logged layout.)
+
+**Decision:** the clipper now defaults to the CV **pixel detector**, which reads
+the actual recorded pixels (keys off each window's red/yellow/green traffic
+lights) and is immune to all of this. The geometry path is gated behind
+`CLIPPER_USE_GEOMETRY=1` (off by default) in `clawd-clipper/src/index.ts`.
+
+**To actually make geometry work** (future): the relay would need to log the
+*broadcast composition's* rects — i.e. the geometry as it appears in the exact
+render that OBS captures, at the recording's resolution — not the canonical slot
+positions. That means capturing rects from the same client/viewport that feeds
+the recording (or having OBS capture a deterministic 1920×1080 render of the
+god-desktop whose coords the relay knows 1:1). Until then, CV is the source of
+truth and this whole log is decorative for clip geometry.
+
+### Per-session reset (shipped 2026-06-08)
+
+The log is append-only and keyed per slug, so it **accumulated across sessions**
+on the same slug (e.g. `clawdbotatg` showed a 549-min span mixing multiple
+shows). A replay-by-timestamp consumer tolerates that (events before this
+episode just sort first), but it grows unbounded and is confusing. Fix:
+`DELETE /admin/transcript` (the host's "reset STT" button — the natural
+new-session boundary) now also calls `DesktopState.resetGeometry()`, which
+truncates `geometry.jsonl` and re-seeds it with the currently-live windows'
+positions. See `geometry-log.ts` `reset()` and `desktop.ts` `resetGeometry()`.
+
 ## Operating it
 
 There is **no new toggle** — geometry logging is always on (it's a tiny
@@ -121,8 +172,12 @@ Order of operations to get end-to-end value:
    `.slop-data/rooms/<slug>/geometry.jsonl` has lines).
 3. Build the clipper consumption path against that real artifact (resolves the
    calibration question at the same time).
-4. `git pull` the box's clipper checkout. From then on, `/admin/generate-clips`
-   produces geometry-driven vertical layouts, CV only as fallback.
+4. `git pull` the box's clipper checkout. **NOTE (2026-06-08):** step 3 was done
+   and the calibration **failed** (see "RESULT" above) — the clipper now uses CV
+   pixels by default and the geometry path is gated behind `CLIPPER_USE_GEOMETRY=1`.
+   So `/admin/generate-clips` produces CV-driven layouts; geometry is opt-in only
+   and currently misaligned. Don't set that env until the broadcast-coords rework
+   above is done.
 
 ## Verify (after deploy)
 

@@ -29,7 +29,7 @@
 // logged. Browser/app windows aren't speakers, so they're skipped to keep the
 // log small and focused on the speaker→tile mapping the clipper needs.
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SlotPosition } from "./desktop.js";
 
@@ -116,5 +116,26 @@ export class GeometryLog {
     let sampleCount = 0;
     for (const line of raw.split("\n")) if (line.trim()) sampleCount++;
     return { content: raw, sampleCount };
+  }
+
+  /** Wipe the log to a clean slate. The file is append-only and keyed per
+   *  slug, so without this it accumulates ACROSS sessions on the same slug —
+   *  a replay-by-timestamp consumer then sees stale rects from prior shows.
+   *  Called from the host's "reset STT" path so a new session starts fresh.
+   *  Drops any queued move and truncates the file; the caller (DesktopState)
+   *  re-emits currently-visible windows so the fresh log still has a baseline. */
+  reset(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.pending.clear();
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(this.filePath, "", "utf8");
+    } catch {
+      // Truncate failed — non-fatal; worst case the old lines linger and the
+      // clipper's CV fallback covers any misalignment.
+    }
   }
 }
