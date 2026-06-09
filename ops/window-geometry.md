@@ -68,8 +68,8 @@ Manifest type carried through in both `clawd-clipper/src/resolve.ts` and
 | `manifest.geometry` type carry-through | clipper + frontpage | ✅ shipped |
 | Fetch + replay → `DetectedWindow[]` adapter | clipper (`src/geometry.ts`) | ✅ built |
 | Branch geometry-or-CV into the vertical path | clipper (`src/index.ts`) | ✅ built |
-| **Verify coordinate-space calibration on a real clip** | — | ❌ **FAILED on `clawdbotatg` (2026-06-08) — see below** |
-| Geometry path gated behind `CLIPPER_USE_GEOMETRY` (default = CV pixels) | clipper (`src/index.ts`) | ✅ shipped (default OFF) |
+| **Verify coordinate-space calibration on a real clip** | — | ✅ **SOLVED on `clawdbotatg` (2026-06-08) — IoU 0.97, see below** |
+| Geometry path gated behind `CLIPPER_USE_GEOMETRY` (default = CV pixels) | clipper (`src/index.ts`) | ✅ shipped (default OFF; geometry now accurate, can be flipped on) |
 | Per-session geometry reset wired to "reset STT" | relay (`DELETE /admin/transcript`) | ✅ shipped |
 
 ### How the clipper consumes it (built)
@@ -105,43 +105,42 @@ between transcript wall-clock and video seconds for speaker attribution; the
 geometry replay likely needs the same alignment rather than trusting
 `videoStartMs` from the filename alone.
 
-### RESULT — calibration FAILED, and it's not a tunable affine (2026-06-08, `clawdbotatg`)
+### RESULT — calibration SOLVED, it IS a single affine (2026-06-08, `clawdbotatg`)
 
-First real recorded episode with a `geometry.jsonl`. The replayed rects **do not
-line up with the recorded frame**, and crucially **no single affine transform
-fixes it** — so the four `CLIPPER_GEOM_*` knobs (`LAYOUT_W/H`, `OFFSET_X/Y`)
-cannot save it. Evidence (overlay of replayed rects on a real 1920×1080 frame at
-video t=1200s, both cameras verified stably parked at that time):
+First real recorded episode with a `geometry.jsonl`. The replayed rects are a
+**clean ~1.12× scale** of the recorded frame — a single global affine fixes
+everything. (An earlier pass wrongly concluded "not a tunable affine"; that was
+sloppy manual frame-alignment, not the data. The proper fit below is decisive.)
 
-- Camera `34aa` fits a ~0.62 scale + offset onto its rendered window.
-- Applying that **same** transform to camera `11ce` lands it in the wrong place
-  — its logged slot `(754,50)` is top-center, but in the recording that region
-  is the spectrum/clock, **no camera there**. The two cameras can't share one
-  transform.
+Method: the CV pixel detector is accurate (verified visually), so it's ground
+truth. Ran `yarn compare clawdbotatg` (clipper), which for every clip matches the
+geometry-replayed boxes to the pixel boxes by IoU, then fit the transform from
+**29 matched pairs across all 12 clips**:
 
-**Root cause:** the geometry log records the relay's *interactive god-desktop
-slot positions* (`SlotPosition`, the coord space the relay lays out in — host
-viewport pixels, default 1920×1080, see `Desktop.tsx` `meshGodViewportRef`). But
-the **recording is a different composition**: each client re-arranges/clamps
-windows to its own viewport on load (`Desktop.tsx` "Slot clamp on viewport
-resize"), and the OBS capture is whatever that client rendered — not the
-canonical slot coords. Per-window clamping is non-affine, so it's not
-recoverable by a global transform. (Box viewport env is even 1280×800/16:10
-while the recording is 1920×1080/16:9 — different aspect, confirming the
-recording is not a 1:1 capture of the logged layout.)
+- scale **X = 1.118**, **Y = 1.125**; offset ≈ 0; **sd ≈ 0.01** — dead consistent.
+- ⇒ the layout space is **~1717×960**, not 1920×1080. The relay lays windows out
+  in a broadcast viewport that's ~1.12× smaller than the OBS 1920×1080 canvas, so
+  the capture is uniformly scaled — NOT 1:1, but a *fixed* scale (no per-window
+  clamping in this setup).
+- Identity (1920×1080) put every box ~100px too far left/up → mean IoU **0.50**.
+  With the fitted constants → mean IoU **0.97**. Boxes snap onto the windows.
 
-**Decision:** the clipper now defaults to the CV **pixel detector**, which reads
-the actual recorded pixels (keys off each window's red/yellow/green traffic
-lights) and is immune to all of this. The geometry path is gated behind
-`CLIPPER_USE_GEOMETRY=1` (off by default) in `clawd-clipper/src/index.ts`.
+**Fix (shipped):** `clawd-clipper/src/geometry.ts` defaults are now
+`LAYOUT_W=1717, LAYOUT_H=960, OFFSET_X=-8, OFFSET_Y=0` (still env-overridable via
+`CLIPPER_GEOM_LAYOUT_W/H`, `CLIPPER_GEOM_OFFSET_X/Y`). The geometry replay is now
+accurate.
 
-**To actually make geometry work** (future): the relay would need to log the
-*broadcast composition's* rects — i.e. the geometry as it appears in the exact
-render that OBS captures, at the recording's resolution — not the canonical slot
-positions. That means capturing rects from the same client/viewport that feeds
-the recording (or having OBS capture a deterministic 1920×1080 render of the
-god-desktop whose coords the relay knows 1:1). Until then, CV is the source of
-truth and this whole log is decorative for clip geometry.
+**Re-fitting if the capture setup changes:** the 1717×960 calibration is tied to
+the current OBS canvas / broadcast viewport. If that changes, geometry drifts
+again (silently). Re-fit by running `yarn compare <slug>` on any recorded
+episode — it prints mean IoU and the page shows pixel-vs-geometry side by side;
+the calibration script pattern in this commit recovers the new constants.
+
+**Production stance:** the clipper still DEFAULTS to the CV pixel detector
+(`CLIPPER_USE_GEOMETRY` unset) because CV is setup-independent — it can't drift
+if OBS changes. Geometry is now validated-accurate and can be made primary with
+`CLIPPER_USE_GEOMETRY=1` (deterministic, no CV edge cases, but depends on the log
+existing and the calibration holding).
 
 ### Per-session reset (shipped 2026-06-08)
 
@@ -173,11 +172,10 @@ Order of operations to get end-to-end value:
 3. Build the clipper consumption path against that real artifact (resolves the
    calibration question at the same time).
 4. `git pull` the box's clipper checkout. **NOTE (2026-06-08):** step 3 was done
-   and the calibration **failed** (see "RESULT" above) — the clipper now uses CV
-   pixels by default and the geometry path is gated behind `CLIPPER_USE_GEOMETRY=1`.
-   So `/admin/generate-clips` produces CV-driven layouts; geometry is opt-in only
-   and currently misaligned. Don't set that env until the broadcast-coords rework
-   above is done.
+   and the calibration **succeeded** (mean IoU 0.97 — see "RESULT" above). The
+   clipper still defaults to CV pixels (setup-independent), but geometry is now
+   accurate and can be made primary with `CLIPPER_USE_GEOMETRY=1`. Validate any
+   episode's geometry with `yarn compare <slug>` in the clipper.
 
 ## Verify (after deploy)
 
