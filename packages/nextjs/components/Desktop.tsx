@@ -1714,19 +1714,42 @@ function DesktopInner({ slug }: { slug: string }) {
   // `bounds="parent"` would pin state.x/y to the bound on the first drag
   // step — the window then only moves a fraction of cursor travel and the
   // Y axis can even drift the wrong direction as slack accumulates.
+  // DANGER: clamp() broadcasts through meshUpdateSlot, so a clamp against
+  // a bogus viewport rewrites every peer's layout permanently (clamp only
+  // ever shrinks; nothing grows windows back). A CDP screenshot (Claude /
+  // OpenClaw automation uses Emulation.setDeviceMetricsOverride) fires a
+  // synchronous `resize` at the override size and a second one at the
+  // restored size moments later. Clamping the first event used to compute
+  // height = vh - MENUBAR against a tiny transient vh — at ≤36px that IS
+  // the cross-peer "minimized" flag (see Window.tsx dock threshold), so
+  // one screenshot docked every window in the room. Three guards below:
+  // debounce (transient blips coalesce into one no-op clamp against the
+  // restored size), a viewport sanity floor (no human runs the desktop
+  // this small; emulation artifacts get ignored outright), and a height
+  // floor (whatever clamp emits can never cross the dock threshold).
   const meshUpdateSlot = mesh.updateSlot;
   const slotsRef = useRef(mesh.slots);
   slotsRef.current = mesh.slots;
   const meshBootstrapped = mesh.bootstrapped;
   useEffect(() => {
     const MENUBAR = 38;
+    // Smallest viewport a real spectator plausibly has (half-screen
+    // laptop window). Anything under this is an automation/emulation
+    // artifact — skip the clamp and wait for a sane size.
+    const MIN_VIEWPORT_W = 500;
+    const MIN_VIEWPORT_H = 350;
+    // Clamp may shrink a window but must stay well above the 36px dock
+    // threshold — "minimize" is a deliberate user action and the clamp
+    // must never be able to express it.
+    const MIN_CLAMP_H = 100;
     const clamp = () => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
+      if (vw < MIN_VIEWPORT_W || vh < MIN_VIEWPORT_H) return;
       Object.values(slotsRef.current).forEach(slot => {
         let { x, y, width, height } = slot;
         if (width > vw) width = vw;
-        if (height > vh - MENUBAR) height = vh - MENUBAR;
+        if (height > vh - MENUBAR) height = Math.max(MIN_CLAMP_H, vh - MENUBAR);
         if (x + width > vw) x = vw - width;
         if (y + height > vh) y = vh - height;
         if (x < 0) x = 0;
@@ -1736,9 +1759,21 @@ function DesktopInner({ slug }: { slug: string }) {
         }
       });
     };
+    // Trailing debounce, viewport read at fire time: a screenshot's
+    // shrink→restore pair settles before the timer fires, so the clamp
+    // runs once against the *restored* size and changes nothing. A real
+    // user resize just clamps 250ms after the drag stops.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduled = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(clamp, 250);
+    };
     if (meshBootstrapped) clamp();
-    window.addEventListener("resize", clamp);
-    return () => window.removeEventListener("resize", clamp);
+    window.addEventListener("resize", scheduled);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("resize", scheduled);
+    };
   }, [meshUpdateSlot, meshBootstrapped]);
 
   // Spectator (god-mode / OBS capture) broadcasts its own window inner
