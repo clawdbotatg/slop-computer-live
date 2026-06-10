@@ -2183,7 +2183,7 @@ app.get("/admin/transcript/stream", async (req, reply) => {
 // have to carry every app's docs in context if it's only doing one thing.
 // All generators live in `./skill.ts`; this file only wires the routes.
 
-import { SKILL_TOPICS, isSkillTopic, skillForTopic, skillIndex } from "./skill.js";
+import { PUBLIC_TOKEN_PLACEHOLDER, SKILL_TOPICS, isSkillTopic, skillForTopic, skillIndex } from "./skill.js";
 
 /** Both routes share the same auth path — accept `?token=` or
  *  cookie/bearer header. If the token came from the query string AND
@@ -2220,9 +2220,14 @@ function skillSlugFromReq(req: { query?: unknown }): string | null {
 app.get<{ Querystring: { token?: string; slug?: string } }>("/v1/skill", async (req, reply) => {
   const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
   const got = resolveSkillAuth(req, queryToken);
-  if (!got) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("content-type", "text/markdown; charset=utf-8");
   reply.header("cache-control", "no-store");
+  // Unauthenticated (or expired token) → serve the public render: same
+  // doc, every Bearer example carries PUBLIC_TOKEN_PLACEHOLDER plus a
+  // banner explaining how the human mints a real token from the
+  // desktop's menu bar. Lets slop.computer link the skill openly
+  // without leaking anyone's token.
+  if (!got) return skillIndex(PUBLIC_TOKEN_PLACEHOLDER, false, skillSlugFromReq(req));
   return skillIndex(got.token, got.auth.isHost, skillSlugFromReq(req));
 });
 
@@ -2235,9 +2240,10 @@ app.get<{ Params: { topic: string }; Querystring: { token?: string; slug?: strin
     }
     const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
     const got = resolveSkillAuth(req, queryToken);
-    if (!got) return reply.code(401).send({ error: "unauthenticated" });
     reply.header("content-type", "text/markdown; charset=utf-8");
     reply.header("cache-control", "no-store");
+    // Same public-render fallback as /v1/skill above.
+    if (!got) return skillForTopic(topic, PUBLIC_TOKEN_PLACEHOLDER, false, skillSlugFromReq(req));
     return skillForTopic(topic, got.token, got.auth.isHost, skillSlugFromReq(req));
   },
 );

@@ -14,10 +14,38 @@
 
 const BASE = "https://live.slop.computer";
 
+/** Token stand-in used when the skill is rendered without auth (the
+ *  public, tokenless GET). Every `Bearer ${token}` example renders
+ *  with this literal so the doc stays copy-paste-shaped while making
+ *  it impossible to act on without a real token. */
+export const PUBLIC_TOKEN_PLACEHOLDER = "<GET_TOKEN_FROM_YOUR_HUMAN>";
+
 /** Banner shared across every doc — auth reminder + how to fetch
  *  related sub-skills. Cheap to include everywhere so an agent who
  *  only loads one sub-skill still has the basics. */
 function header(token: string, scope: string, hostOnlyNote: string): string {
+  if (token === PUBLIC_TOKEN_PLACEHOLDER) {
+    return `# slop-computer-live agent
+
+You are an agent that wants to participate in a live multi-user
+desktop session at \`live.slop.computer\`. Every call below must be
+authenticated:
+
+\`\`\`
+Authorization: Bearer ${token}
+\`\`\`
+
+> ⚠ **You do not have a token yet — this is the public, tokenless
+> render of this skill.** Tokens are minted per user + room and are
+> never published. To get yours: your human joins the live room in a
+> browser (\`live.slop.computer/<slug>\`), opens the **slop.computer
+> menu** in the desktop's menu bar, and clicks **copy skill** — that
+> mints a 7-day bearer token and copies this same skill URL with
+> \`?token=...&slug=...\` pre-filled. Have them paste it to you,
+> re-fetch the skill from that URL (every example re-renders with the
+> real token), and substitute the token anywhere you see
+> \`${token}\`.`;
+  }
   return `# slop-computer-live agent
 
 You are an agent participating in a live multi-user desktop session at
