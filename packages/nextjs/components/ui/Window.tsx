@@ -5,7 +5,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { TitleBar } from "./TitleBar";
 import { Rnd } from "react-rnd";
 
-const TITLEBAR_HEIGHT = 36;
+export const TITLEBAR_HEIGHT = 36;
 // While docked, dragging the pill UP by at least this many px pops the
 // window back open (live, mid-drag). Below it, the drag just slides the
 // pill left/right along the dock edge — so a little vertical wobble while
@@ -49,15 +49,22 @@ export type WindowProps = {
   // Inset within the viewport that maximize should respect (e.g. 26px top
   // for the menubar in production). Defaults to 0 on all sides.
   containerInset?: { top?: number; right?: number; bottom?: number; left?: number };
-  // Extra gap (px) the minimized "pill" leaves at the bottom of the screen
-  // so it docks ABOVE bottom-pinned desktop chrome (the timeline/headlines/
-  // ticker stack) instead of behind it. Affects ONLY the docked pill's
-  // resting position — not maximize, which still uses containerInset. The
-  // bars sit at zIndex 60, far above any window's slot z, so without this
-  // gap a docked window is hidden behind the opaque ticker and looks gone.
-  // Default 0 (generic component); the slop desktop passes the bar-stack
-  // height.
+  // Extra gap (px) the minimized "pill" leaves at the bottom of the screen,
+  // measured from the viewport bottom to the pill's BOTTOM edge. Affects
+  // ONLY the docked pill's resting position — not maximize, which still
+  // uses containerInset. Default 0 (generic component). The slop desktop
+  // passes an inset slightly smaller than its bottom bar stack so the pill
+  // tucks BEHIND the opaque bars with just the top of its titlebar peeking
+  // above them (see DOCKED_PILL_BOTTOM_INSET in bottomBarLayout.ts) —
+  // pair it with dockUnderZ so the tucked portion actually hides.
   dockBottomInset?: number;
+  // z-index of the bottom-pinned chrome the pill tucks under. While docked,
+  // the window's zIndex is capped just below this so the tucked part of the
+  // pill stays hidden behind the bars. Without the cap, slot z — which
+  // grows unboundedly (focus = maxZ + 1, never compacted) — eventually
+  // passes the bars' z and the pill paints on top of the ticker. Undefined
+  // (default) = no cap.
+  dockUnderZ?: number;
   // Keep the body (children) mounted while docked instead of unmounting
   // it. Default false: docked windows render titlebar-only and drop their
   // body to save work. Opt in for windows whose body owns live state that
@@ -91,6 +98,7 @@ export const Window = ({
   children,
   containerInset,
   dockBottomInset = 0,
+  dockUnderZ,
   keepMountedWhenDocked = false,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
@@ -131,8 +139,9 @@ export const Window = ({
   // resize) so a peer with a different screen height sees it on their
   // own bottom edge, not at the initiator's absolute coordinate. The
   // synced slot y is deliberately ignored while docked. dockBottomInset
-  // lifts the pill above the bottom bar stack (ticker etc.) so it isn't
-  // buried behind that z-60 chrome.
+  // lifts the pill's bottom edge off the viewport bottom — the slop
+  // desktop sizes it so the pill sits mostly behind the bar stack with
+  // just a sliver of titlebar peeking above it.
   const dockedY = Math.max(insets.top, viewportH - insets.bottom - dockBottomInset - TITLEBAR_HEIGHT);
 
   const restore = () => {
@@ -313,6 +322,10 @@ export const Window = ({
   // mount loses local mode state but the slot persists).
   const isDocked = mode === "dock" || height <= TITLEBAR_HEIGHT;
 
+  // While docked, keep the pill under the bottom-bar chrome so its tucked
+  // portion hides behind the opaque bars (see dockUnderZ prop comment).
+  const renderZ = isDocked && dockUnderZ !== undefined ? Math.min(zIndex, dockUnderZ - 1) : zIndex;
+
   const body = (
     <>
       <TitleBar
@@ -358,7 +371,7 @@ export const Window = ({
           top: y,
           width,
           height,
-          zIndex,
+          zIndex: renderZ,
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -418,7 +431,7 @@ export const Window = ({
       }
       className="slop-window"
       style={{
-        zIndex,
+        zIndex: renderZ,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
