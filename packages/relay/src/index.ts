@@ -5320,40 +5320,50 @@ app.post("/admin/finalize", async (req, reply) => {
 });
 
 // One clip job per slug at a time (the clipper is heavy: download → cut → pin).
-const clipJobsInFlight = new Set<string>();
+// The job is detached from the request: it keeps running if the host reloads
+// /admin mid-run, buffering its log lines + final result in memory so a later
+// POST can re-attach (replay the buffer, then stream live) or pick up the
+// finished manifest CID.
+type ClipJobResult = { clipsCid?: string; manifestCid?: string; count?: number; generatedAt?: string };
+type ClipJob = {
+  slug: string;
+  status: "running" | "done" | "error";
+  /** Buffered clipper output for replay on re-attach (capped FIFO). */
+  lines: string[];
+  subscribers: Set<(ev: Record<string, unknown>) => void>;
+  result?: ClipJobResult;
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+};
+const clipJobs = new Map<string, ClipJob>();
+const CLIP_LOG_CAP = 5000;
 
-// Generate the 9:16 clips + tweet copy for an already-finalized episode by
-// spawning a clawd-clipper checkout (CLIPPER_DIR) with `--vertical --publish`.
-// It cuts the clips, pins them + a clips.json to bgipfs, and writes
-// out/<slug>/publish.json with the new manifest CID — which we stream back as
-// the `done` event. The host then signs setManifest with that CID (we hold no
-// key). Streams NDJSON progress like /admin/finalize.
-app.post("/admin/generate-clips", async (req, reply) => {
-  const auth = requireHost(req);
-  if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
-  const slug = String((req.query as { slug?: string }).slug ?? "").trim();
-  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad or missing ?slug" });
-  if (clipJobsInFlight.has(slug)) return reply.code(409).send({ error: `clip job already running for ${slug}` });
-  clipJobsInFlight.add(slug);
+const clipJobEmit = (job: ClipJob, ev: Record<string, unknown>) => {
+  if (ev.phase === "log" && typeof ev.line === "string") {
+    job.lines.push(ev.line);
+    if (job.lines.length > CLIP_LOG_CAP) job.lines.splice(0, job.lines.length - CLIP_LOG_CAP);
+  }
+  for (const fn of [...job.subscribers]) fn(ev);
+};
 
-  const stream = new Readable({ read() {} });
-  reply.header("Content-Type", "application/x-ndjson");
-  reply.header("Cache-Control", "no-store");
-  reply.header("X-Accel-Buffering", "no");
-  const writeEvent = (obj: unknown) => stream.push(JSON.stringify(obj) + "\n");
-
+// Spawn a clawd-clipper checkout (CLIPPER_DIR) with `--vertical --publish` for
+// an already-finalized episode. It cuts the clips, pins them + a clips.json to
+// bgipfs, and writes out/<slug>/publish.json with the new manifest CID — which
+// we broadcast as the `done` event. The host then signs setManifest with that
+// CID (we hold no key).
+const startClipJob = (slug: string): ClipJob => {
+  const job: ClipJob = { slug, status: "running", lines: [], subscribers: new Set(), startedAt: Date.now() };
+  clipJobs.set(slug, job);
   void (async () => {
     try {
       const { spawn } = await import("node:child_process");
       const { readFile } = await import("node:fs/promises");
       const { join } = await import("node:path");
-      writeEvent({ phase: "starting", slug });
-
       const bin = join(config.clipperDir, "node_modules", ".bin", "tsx");
       const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish"], { cwd: config.clipperDir, env: process.env });
 
-      // Stream the clipper's stdout/stderr lines through as progress.
+      // Buffer + broadcast the clipper's stdout/stderr lines as progress.
       let buf = "";
       const pump = (d: Buffer) => {
         buf += d.toString();
@@ -5361,35 +5371,111 @@ app.post("/admin/generate-clips", async (req, reply) => {
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl).replace(/\s+$/, "");
           buf = buf.slice(nl + 1);
-          if (line) writeEvent({ phase: "log", line });
+          if (line) clipJobEmit(job, { phase: "log", line });
         }
       };
       child.stdout?.on("data", pump);
       child.stderr?.on("data", pump);
       const code: number = await new Promise(res => child.on("close", c => res(c ?? 0)));
-      if (buf.trim()) writeEvent({ phase: "log", line: buf.trim() });
-      if (code !== 0) {
-        writeEvent({ phase: "error", message: `clipper exited ${code}` });
-        return;
-      }
-      let result: { clipsCid?: string; manifestCid?: string; count?: number } = {};
+      if (buf.trim()) clipJobEmit(job, { phase: "log", line: buf.trim() });
+      if (code !== 0) throw new Error(`clipper exited ${code}`);
+      let result: ClipJobResult;
       try {
         result = JSON.parse(await readFile(join(config.clipperDir, "out", slug, "publish.json"), "utf8"));
       } catch {
-        writeEvent({ phase: "error", message: "clipper finished but wrote no publish.json" });
-        return;
+        throw new Error("clipper finished but wrote no publish.json");
       }
-      writeEvent({ phase: "done", manifestCid: result.manifestCid, clipsCid: result.clipsCid, count: result.count });
+      job.status = "done";
+      job.result = result;
+      job.finishedAt = Date.now();
+      clipJobEmit(job, { phase: "done", manifestCid: result.manifestCid, clipsCid: result.clipsCid, count: result.count });
     } catch (err) {
       app.log.error({ err }, "generate-clips failed");
-      writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
-    } finally {
-      clipJobsInFlight.delete(slug);
-      stream.push(null);
+      job.status = "error";
+      job.error = err instanceof Error ? err.message : String(err);
+      job.finishedAt = Date.now();
+      clipJobEmit(job, { phase: "error", message: job.error });
     }
   })();
+  return job;
+};
 
-  return reply.send(stream);
+// NDJSON stream for a job: replay history, then live events until done/error.
+const clipJobStream = (job: ClipJob): Readable => {
+  const stream = new Readable({ read() {} });
+  const writeEvent = (ev: Record<string, unknown>) => stream.push(JSON.stringify(ev) + "\n");
+  writeEvent({ phase: "starting", slug: job.slug });
+  if (job.status === "running") {
+    // Replay the log history so the client's phase-weighted progress bar
+    // fast-forwards to the right spot, then subscribe for live events.
+    for (const line of job.lines) writeEvent({ phase: "log", line });
+    const sub = (ev: Record<string, unknown>) => {
+      writeEvent(ev);
+      if (ev.phase === "done" || ev.phase === "error") {
+        job.subscribers.delete(sub);
+        stream.push(null);
+      }
+    };
+    job.subscribers.add(sub);
+    // Stop broadcasting to a reader the client abandoned (reload/navigation).
+    stream.on("close", () => job.subscribers.delete(sub));
+    return stream;
+  }
+  // Finished job: the terminal event alone carries everything the client
+  // needs (manifest CID / error) — no point replaying thousands of log lines.
+  if (job.status === "done") {
+    writeEvent({
+      phase: "done",
+      manifestCid: job.result?.manifestCid,
+      clipsCid: job.result?.clipsCid,
+      count: job.result?.count,
+    });
+  } else {
+    writeEvent({ phase: "error", message: job.error });
+  }
+  stream.push(null);
+  return stream;
+};
+
+// Streams NDJSON progress like /admin/finalize. A POST while a job is already
+// running for the slug re-attaches to it (no more 409). `?attach=1` only ever
+// re-attaches — running job, finished-this-process job, or (surviving even a
+// relay restart) a publish.json on disk less than a day old — and 404s when
+// there's nothing to resume, so /admin can probe on page load without
+// accidentally kicking off a 20-minute clipper run.
+app.post("/admin/generate-clips", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
+  const q = req.query as { slug?: string; attach?: string };
+  const slug = String(q.slug ?? "").trim();
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad or missing ?slug" });
+  const attachOnly = q.attach === "1";
+
+  let job = clipJobs.get(slug);
+  if (!job || job.status !== "running") {
+    if (!attachOnly) {
+      job = startClipJob(slug);
+    } else if (!job) {
+      try {
+        const { readFile } = await import("node:fs/promises");
+        const { join } = await import("node:path");
+        const result = JSON.parse(
+          await readFile(join(config.clipperDir, "out", slug, "publish.json"), "utf8"),
+        ) as ClipJobResult;
+        const age = Date.now() - Date.parse(result.generatedAt ?? "");
+        if (!(age >= 0 && age < 24 * 60 * 60 * 1000)) return reply.code(404).send({ error: "no clip job for slug" });
+        job = { slug, status: "done", lines: [], subscribers: new Set(), result, startedAt: 0 };
+      } catch {
+        return reply.code(404).send({ error: "no clip job for slug" });
+      }
+    }
+  }
+
+  reply.header("Content-Type", "application/x-ndjson");
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Accel-Buffering", "no");
+  return reply.send(clipJobStream(job));
 });
 
 app.get("/admin/peers", async (req, reply) => {
