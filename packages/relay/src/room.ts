@@ -33,6 +33,7 @@ import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
 import { UIState } from "./ui-state.js";
 import { QrState } from "./qr-state.js";
+import { ResearchCorpus } from "./research-corpus.js";
 import { ResearchState } from "./research-state.js";
 import { LeftclawState } from "./leftclaw-state.js";
 import { RoomAuth } from "./room-auth.js";
@@ -116,6 +117,7 @@ function roomPaths(id: string): {
   wallet: SubsystemPath;
   escrow: { path: string };
   research: { path: string };
+  researchCorpus: { path: string };
   leftclaw: { path: string };
   walletChat: { path: string };
   auth: { path: string };
@@ -208,6 +210,10 @@ function roomPaths(id: string): {
       // No legacy path — guest-research never persisted before, so the
       // DEFAULT_SLUG room has nothing to inherit. Cold start = empty.
       path: `${dir}/research.json`,
+    },
+    researchCorpus: {
+      // No legacy path — corpus docs are a new concept. Cold start = empty.
+      path: `${dir}/research-corpus.json`,
     },
     leftclaw: {
       // No legacy path — the Hire app is new; cold start = idle.
@@ -343,6 +349,7 @@ export class Room {
   readonly pong = new Pong();
   readonly worm = new Worm();
   readonly research: ResearchState;
+  readonly researchCorpus: ResearchCorpus;
   readonly leftclaw: LeftclawState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
@@ -410,6 +417,7 @@ export class Room {
     this.escrow = new EscrowState(paths.escrow.path);
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
+    this.researchCorpus = new ResearchCorpus(paths.researchCorpus.path);
     this.leftclaw = new LeftclawState(paths.leftclaw.path);
     this.auth = new RoomAuth(paths.auth.path);
     this.chyron = new Chyron(paths.chyron.path);
@@ -428,6 +436,7 @@ export class Room {
     this.jamendo.subscribe(event => this.broadcast({ type: "music_genre", genre: event.genre }));
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
+    this.researchCorpus.subscribe(items => this.broadcast({ type: "research_corpus", items }));
     this.leftclaw.subscribe(state => this.broadcast({ type: "leftclaw_state", state }));
     this.walletChat.subscribe(state => this.broadcast({ type: "wallet_chat", state }));
     this.chyron.subscribe(state => this.broadcast({ type: "chyron", state }));

@@ -4,7 +4,9 @@
 //     voice (no tools), grounded in the researched dossier. Shown first.
 //   • vanilla model knowledge (no tools — just what training data has)
 //   • a researched description + recent-tweets summary + interview
-//     questions (Claude with web_search tool)
+//     questions (Claude with web_search tool, grounded additionally in
+//     the room's corpus docs — host-pasted articles/tweets/notes from
+//     research-corpus.ts, tiled into the prompt)
 //   • raw sources (tweets + research links) so the host can scan them
 //
 // The vanilla + researched calls run in parallel; the socials desc runs
@@ -33,6 +35,13 @@ export type ResearchQuery = {
   notes?: string;
 };
 
+/** A corpus doc as the AI sees it — just name + body. The relay maps
+ *  room.researchCorpus.list() down to this before each call. */
+export type CorpusInput = {
+  name: string;
+  text: string;
+};
+
 export type TweetSnippet = {
   text: string;
   url?: string;
@@ -55,6 +64,9 @@ export type ResearchResult = {
   questions: string[];
   tweets: TweetSnippet[];
   sources: ResearchSource[];
+  /** Names + sizes of the corpus docs that were tiled into the research
+   *  prompt, so the dossier shows what host context grounded it. */
+  corpusDocs: { name: string; chars: number }[];
   /** Per-stage errors so the UI can show what failed without hiding partial results. */
   errors: { socialsDesc?: string; vanilla?: string; researched?: string };
 };
@@ -71,6 +83,31 @@ function describeQuery(q: ResearchQuery, includeNotes = true): string {
   if (q.socials.other) lines.push(`Other: ${q.socials.other}`);
   if (includeNotes && q.notes) lines.push(`Host notes: ${q.notes}`);
   return lines.join("\n");
+}
+
+// Tile every corpus doc into one prompt section. `maxTotalChars`
+// budgets the combined body text — the deep dossier can afford more
+// context than the fast lookup. Docs past the budget are named but
+// their bodies omitted, so the model at least knows they exist.
+// The vanilla pass NEVER sees this (same rule as host notes — it must
+// reflect training data only).
+function corpusContextBlock(docs: CorpusInput[], maxTotalChars: number): string {
+  const nonEmpty = docs.filter(d => d.text.trim());
+  if (nonEmpty.length === 0) return "";
+  const parts: string[] = [];
+  let used = 0;
+  for (const d of nonEmpty) {
+    const name = d.name.trim() || "untitled";
+    const remaining = maxTotalChars - used;
+    if (remaining <= 0) {
+      parts.push(`--- ${name} — content omitted (context budget exhausted) ---`);
+      continue;
+    }
+    const body = d.text.trim().slice(0, remaining);
+    used += body.length;
+    parts.push(`--- ${name} ---\n${body}`);
+  }
+  return `\n\nThe host also collected these source documents about the guest (pasted tweets, article text, notes — verbatim, may be messy). Treat them as host-provided context that SUPPLEMENTS your own research — still run your own searches, and prefer fresher information when they conflict:\n\n${parts.join("\n\n")}`;
 }
 
 type AnthropicTextBlock = { type: "text"; text: string };
@@ -174,7 +211,10 @@ Output rules — follow exactly:
 //   • If the response truncates mid-output (max_tokens hit), already-
 //     emitted tags are still recoverable; with a single JSON object
 //     you lose everything.
-async function researchedReport(q: ResearchQuery): Promise<{
+async function researchedReport(
+  q: ResearchQuery,
+  corpusContext: string,
+): Promise<{
   researched: string;
   questions: string[];
   tweets: TweetSnippet[];
@@ -188,7 +228,7 @@ async function researchedReport(q: ResearchQuery): Promise<{
   const prompt = `You're prepping a podcast/show host for an interview with this guest. Research them on the public web and return a dossier.
 
 Guest:
-${describeQuery(q)}
+${describeQuery(q)}${corpusContext}
 
 ${twitterHint}
 
@@ -347,7 +387,10 @@ export type LookupResult = {
 // full form. Single Claude call with web_search — keeps it fast so the
 // pre-show flow is snappy. The deep research call runs separately
 // later, after the host has had a chance to edit the prefill.
-export async function lookupGuest(query: string): Promise<LookupResult> {
+// Corpus docs (if the host pasted any) are tiled in with a small
+// budget — pasted material usually pins down identity faster than a
+// web search can.
+export async function lookupGuest(query: string, corpus: CorpusInput[] = []): Promise<LookupResult> {
   const trimmed = query.trim();
   if (!trimmed) return { name: "", socials: {}, notes: "", error: "empty-query" };
   if (!ANTHROPIC_API_KEY) {
@@ -361,7 +404,7 @@ export async function lookupGuest(query: string): Promise<LookupResult> {
 
   const prompt = `A show host typed this into a "who's our next guest?" box. Figure out who they mean and pull together their public socials.
 
-Input: "${trimmed}"
+Input: "${trimmed}"${corpusContextBlock(corpus, 8_000)}
 
 It might be a full name, a single name, a Twitter/X handle (with or without @), a GitHub handle, or a URL. Use web search to disambiguate. If multiple public people match, pick the most likely well-known one and say which one you picked in "notes".
 
@@ -413,7 +456,11 @@ Never invent handles. If you're not sure a handle is correct, leave it empty.`;
   }
 }
 
-export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
+export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []): Promise<ResearchResult> {
+  // Summarized (name + size, never the bodies) into the result so the
+  // dossier can show what host context the research was grounded in.
+  const corpusDocs = corpus.filter(d => d.text.trim()).map(d => ({ name: d.name.trim() || "untitled", chars: d.text.trim().length }));
+
   if (!ANTHROPIC_API_KEY) {
     const missing = "ANTHROPIC_API_KEY not set on the relay — add it to packages/relay/.env to enable AI research.";
     return {
@@ -424,11 +471,15 @@ export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
       questions: [],
       tweets: [],
       sources: [],
+      corpusDocs,
       errors: { socialsDesc: missing, vanilla: missing, researched: missing },
     };
   }
 
-  const [vanillaR, researchedR] = await Promise.allSettled([vanillaKnowledge(q), researchedReport(q)]);
+  const [vanillaR, researchedR] = await Promise.allSettled([
+    vanillaKnowledge(q),
+    researchedReport(q, corpusContextBlock(corpus, 24_000)),
+  ]);
 
   const result: ResearchResult = {
     query: q,
@@ -438,6 +489,7 @@ export async function researchGuest(q: ResearchQuery): Promise<ResearchResult> {
     questions: [],
     tweets: [],
     sources: [],
+    corpusDocs,
     errors: {},
   };
 

@@ -235,6 +235,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`cardJob\` | \`CardJob \\| null\` | In-flight card-generation job (this room) |
 | \`cardTitle\` | \`CardTitle \\| null\` | Shared title overlay text + position |
 | \`researchState\` | \`ResearchSnapshot\` | Per-room shared guest-research dossier + phase machine (see \`/v1/skill/research\`) |
+| \`researchCorpus\` | \`CorpusDoc[]\` | Host-pasted source docs fed to the research AI (see \`/v1/skill/research\`) |
 | \`leftclawState\` | \`LeftclawSnapshot\` | Per-room "Hire" job-posting machine + posted-jobs history (see \`/v1/skill/leftclaw\`) |
 | \`qrState\` | \`{ text, logoDataUrl } \\| null\` | Room-shared QR code content (see \`/v1/skill/windows\`) |
 | \`pongState\` | \`PongSnapshot\` | Live pong match for this room (see \`/v1/skill/pong\`) |
@@ -1854,6 +1855,7 @@ The whole flow is a per-room snapshot at \`state.researchState\` in
   questions: string[],                                      // 8-10 slow-pitch interview questions
   tweets: [{ text, url?, date? }, ...],                    // 5-15 sampled recent tweets
   sources: [{ title, url, snippet? }, ...],                // cited pages
+  corpusDocs: [{ name, chars }, ...],                      // corpus docs tiled into the prompt
   errors: { socialsDesc?: string, vanilla?: string, researched?: string }  // per-stage failures
 }
 \`\`\`
@@ -1900,6 +1902,30 @@ the half that worked. Web search is capped at 12 uses per call. On
 success: \`phase → "done"\` with \`result\` populated. On error:
 \`phase → "form"\` with \`error\` set so the host can retry.
 
+### Research corpus — host-curated source docs
+
+Named documents of pasted source material (tweet threads, article
+text, notes). On every lookup/research call the relay tiles ALL doc
+bodies into the AI prompt as host-provided context that supplements
+the model's own web search. Shared like notes — anyone in the room can
+create/edit/delete; the full list lives at \`state.researchCorpus\`
+and rebroadcasts as \`research_corpus\` after every change.
+
+\`\`\`
+GET    ${BASE}/v1/research/corpus?slug=${slugStr(slug)}
+# → { items: [{ id, name, text, createdTs, updatedTs, address, handle }, ...] }
+
+POST   ${BASE}/v1/research/corpus?slug=${slugStr(slug)} { "name": "Their ETHDenver talk", "text": "…pasted…" }
+# → { ok: true, doc }     (max 50 docs, 20k chars each)
+
+POST   ${BASE}/v1/research/corpus/:id?slug=${slugStr(slug)} { "name"?, "text"? }   # patch — either field
+DELETE ${BASE}/v1/research/corpus/:id?slug=${slugStr(slug)}
+\`\`\`
+
+Drop key facts you want the dossier grounded in here BEFORE posting
+to \`/v1/guest-lookup\` or \`/v1/guest-research\` — the job snapshots
+the corpus at start time. \`result.corpusDocs\` lists what was used.
+
 ### Reset to lookup screen
 
 \`\`\`
@@ -1909,6 +1935,8 @@ DELETE ${BASE}/v1/research?slug=${slugStr(slug)}
 \`\`\`
 
 Anyone in the room can reset (same permissive model as \`/v1/card\`).
+Resetting also clears the research corpus — docs are about the
+current guest, and "Start over" means a new one.
 
 ### Side effect — timeline focus
 

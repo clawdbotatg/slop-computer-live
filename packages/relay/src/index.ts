@@ -1168,6 +1168,7 @@ app.get("/v1/state", async (req, reply) => {
     cardJob: readCardJob(roomFromReq(req).id),
     cardTitle: readCardTitle(roomFromReq(req).id),
     researchState: roomFromReq(req).research.current().state,
+    researchCorpus: roomFromReq(req).researchCorpus.list(),
     leftclawState: roomFromReq(req).leftclaw.current().state,
     tldrState: roomFromReq(req).tldr.current().state,
     qrState: roomFromReq(req).qr.current().state,
@@ -3475,11 +3476,16 @@ app.post<{ Body: GuestLookupBody }>("/v1/guest-lookup", async (req, reply) => {
   });
   noteAction(room, a, "research", `🔎 ${actorName(a.session)} looked up “${query}”`, { query });
 
+  // Corpus docs are server-authoritative shared state — snapshot them
+  // at job start so the AI reads exactly what the room saw when the
+  // button was clicked.
+  const corpus = room.researchCorpus.list().map(d => ({ name: d.name, text: d.text }));
+
   // Fire and forget. The HTTP response returns immediately; result
   // delivery happens through the `research_state` broadcast.
   void (async () => {
     try {
-      const result = await lookupGuest(query);
+      const result = await lookupGuest(query, corpus);
       if (result.error) {
         room.research.setPatch({
           phase: "idle",
@@ -3539,9 +3545,12 @@ app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) =
   });
   noteAction(room, a, "research", `🔎 ${actorName(a.session)} started deep research on ${name}`, { name });
 
+  // Same job-start snapshot as the lookup route above.
+  const corpus = room.researchCorpus.list().map(d => ({ name: d.name, text: d.text }));
+
   void (async () => {
     try {
-      const result = await researchGuest({ name, socials, notes });
+      const result = await researchGuest({ name, socials, notes }, corpus);
       room.research.setPatch({
         phase: "done",
         result,
@@ -3572,8 +3581,62 @@ app.delete("/v1/research", async (req, reply) => {
   const room = roomFromReq(req);
   const current = room.research.current().state;
   if (current.job) return reply.code(409).send({ error: "in-flight", state: current });
+  // Corpus docs are about the current guest — "Start over" means a new
+  // guest, so they go too (their own broadcast fires alongside).
+  room.researchCorpus.clear();
   const next = room.research.reset();
   return { ok: true, state: next };
+});
+
+// --- Research corpus REST surface -------------------------------------------
+// Host-curated source docs for the research AI (research-corpus.ts).
+// Mirrors the notes surface: the desktop client mutates over WS
+// (corpus_create / corpus_update / corpus_delete), these routes exist
+// for HTTP-only agents. Every mutation broadcasts `research_corpus`.
+
+type CorpusCreateBody = { name?: unknown; text?: unknown };
+type CorpusUpdateBody = { name?: unknown; text?: unknown };
+
+app.get("/v1/research/corpus", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return { items: roomFromReq(req).researchCorpus.list() };
+});
+
+app.post<{ Body: CorpusCreateBody }>("/v1/research/corpus", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const doc = room.researchCorpus.create({
+    address: a.session.address,
+    handle: a.session.handle,
+    anonId: a.session.anonId ?? null,
+    name: typeof req.body?.name === "string" ? req.body.name : "",
+    text: typeof req.body?.text === "string" ? req.body.text : "",
+  });
+  if (!doc) return reply.code(400).send({ error: "create-failed" });
+  noteAction(room, a, "research", `📚 ${actorName(a.session)} added a corpus doc`);
+  return { ok: true, doc };
+});
+
+app.post<{ Params: { id: string }; Body: CorpusUpdateBody }>("/v1/research/corpus/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const patch = {
+    name: typeof req.body?.name === "string" ? req.body.name : undefined,
+    text: typeof req.body?.text === "string" ? req.body.text : undefined,
+  };
+  if (!roomFromReq(req).researchCorpus.update(req.params.id, patch))
+    return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/research/corpus/:id", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!roomFromReq(req).researchCorpus.remove(req.params.id)) return reply.code(404).send({ error: "not-found" });
+  return { ok: true };
 });
 
 // --- Leftclaw "Hire" app ---------------------------------------------------
@@ -5937,6 +6000,7 @@ app.register(async function signalRoutes(fastify) {
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
       researchState: room.research.current().state,
+      researchCorpus: room.researchCorpus.list(),
       leftclawState: room.leftclaw.current().state,
       tldrState: room.tldr.current().state,
       qrState: room.qr.current().state,
@@ -6235,6 +6299,29 @@ app.register(async function signalRoutes(fastify) {
         case "note_delete": {
           if (typeof msg.id !== "string") return;
           room.notes.remove(msg.id);
+          return;
+        }
+        case "corpus_create": {
+          room.researchCorpus.create({
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            name: typeof msg.name === "string" ? msg.name : "",
+            text: typeof msg.text === "string" ? msg.text : "",
+          });
+          return;
+        }
+        case "corpus_update": {
+          if (typeof msg.id !== "string") return;
+          room.researchCorpus.update(msg.id, {
+            name: typeof msg.name === "string" ? msg.name : undefined,
+            text: typeof msg.text === "string" ? msg.text : undefined,
+          });
+          return;
+        }
+        case "corpus_delete": {
+          if (typeof msg.id !== "string") return;
+          room.researchCorpus.remove(msg.id);
           return;
         }
         case "glossary_add": {

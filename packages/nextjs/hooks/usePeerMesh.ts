@@ -676,7 +676,24 @@ export type ResearchResult = {
   questions: string[];
   tweets: ResearchTweet[];
   sources: ResearchSource[];
+  /** Names + sizes of corpus docs that grounded the research prompt.
+   *  Optional — dossiers persisted before the corpus feature lack it. */
+  corpusDocs?: { name: string; chars: number }[];
   errors: { socialsDesc?: string; vanilla?: string; researched?: string };
+};
+
+/** Research corpus doc — server-authoritative, mirrors
+ *  `packages/relay/src/research-corpus.ts`. Host-pasted source material
+ *  (tweets, article text, notes) tiled into the research AI's prompt. */
+export type CorpusDoc = {
+  id: string;
+  createdTs: number;
+  updatedTs: number;
+  address: string | null;
+  handle: string | null;
+  anonId?: string | null;
+  name: string;
+  text: string;
 };
 
 export type ResearchJob = {
@@ -1292,9 +1309,19 @@ export type PeerMeshState = {
    *  every peer in `researchState.result` when complete. */
   researchStart: (args: { name: string; socials: ResearchSocials; notes?: string }) => void;
   /** Reset the shared research state back to the empty lookup screen.
+   *  Also clears the research corpus (docs are about the current guest).
    *  Refused server-side while a job is in flight (avoids orphaning a
    *  running AI call). */
   researchReset: () => void;
+  /** Shared research-corpus docs — host-pasted source material the
+   *  research AI reads alongside its own web search. Server-
+   *  authoritative full-list broadcasts, like `notes`. */
+  researchCorpus: CorpusDoc[];
+  /** Create a corpus doc (empty body; the panel selects it for editing). */
+  corpusCreate: (name: string) => void;
+  /** Patch a corpus doc — name and text update independently. */
+  corpusUpdate: (id: string, patch: { name?: string; text?: string }) => void;
+  corpusDelete: (id: string) => void;
   /** Shared Leftclaw "Hire" job-posting state — service type + form +
    *  posting phase/step + result. Broadcast wholesale (last-writer-wins).
    *  See leftclaw-state.ts on the relay. */
@@ -1591,6 +1618,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [cardJob, setCardJob] = useState<CardJob | null>(null);
   const [cardTitle, setCardTitleLocal] = useState<CardTitle | null>(null);
   const [researchState, setResearchStateLocal] = useState<ResearchState>(DEFAULT_RESEARCH_STATE);
+  const [researchCorpus, setResearchCorpus] = useState<CorpusDoc[]>([]);
   const [leftclawState, setLeftclawStateLocal] = useState<LeftclawState>(DEFAULT_LEFTCLAW_STATE);
   const [tldrState, setTldrStateLocal] = useState<TldrState>(DEFAULT_TLDR_STATE);
   const [qrState, setQrStateLocal] = useState<QrState>(DEFAULT_QR_STATE);
@@ -2220,6 +2248,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const noteDelete = useCallback(
     (id: string) => {
       send({ type: "note_delete", id });
+    },
+    [send],
+  );
+
+  // Research-corpus mutators — same WS shape as notes, but docs carry a
+  // `name` separate from the pasted body. Caps mirror research-corpus.ts.
+  const corpusCreate = useCallback(
+    (name: string) => {
+      send({ type: "corpus_create", name: name.slice(0, 80), text: "" });
+    },
+    [send],
+  );
+  const corpusUpdate = useCallback(
+    (id: string, patch: { name?: string; text?: string }) => {
+      send({
+        type: "corpus_update",
+        id,
+        name: patch.name?.slice(0, 80),
+        text: patch.text?.slice(0, 20_000),
+      });
+    },
+    [send],
+  );
+  const corpusDelete = useCallback(
+    (id: string) => {
+      send({ type: "corpus_delete", id });
     },
     [send],
   );
@@ -3033,6 +3087,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.researchState && typeof msg.researchState === "object") {
             setResearchStateLocal(msg.researchState as ResearchState);
           }
+          if (Array.isArray(msg.researchCorpus)) {
+            setResearchCorpus(msg.researchCorpus as CorpusDoc[]);
+          }
           if (msg.leftclawState && typeof msg.leftclawState === "object") {
             setLeftclawStateLocal(msg.leftclawState as LeftclawState);
           }
@@ -3316,6 +3373,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "research_state" && msg.state && typeof msg.state === "object") {
           setResearchStateLocal(msg.state as ResearchState);
+          return;
+        }
+
+        if (msg.type === "research_corpus" && Array.isArray(msg.items)) {
+          setResearchCorpus(msg.items as CorpusDoc[]);
           return;
         }
 
@@ -3938,6 +4000,10 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     researchLookup,
     researchStart,
     researchReset,
+    researchCorpus,
+    corpusCreate,
+    corpusUpdate,
+    corpusDelete,
     leftclawState,
     leftclawStart,
     leftclawUpdate,

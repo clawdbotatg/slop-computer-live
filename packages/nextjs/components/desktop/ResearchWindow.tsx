@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { PeerMeshState, ResearchResult, ResearchSocials } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
@@ -16,6 +16,12 @@ import { useRoomSlug } from "~~/lib/room-slug";
 // prefilled fields without broadcasting keystrokes. Only the submit
 // click commits + broadcasts. Last writer wins if two peers submit
 // simultaneously (relay refuses overlapping jobs with 409).
+//
+// The Corpus side panel is a mini-Notes embedded in this window:
+// named docs of pasted source material (tweet threads, article text)
+// that the relay tiles into the AI prompt on every Lookup/Research.
+// Docs are shared state like notes (research-corpus.ts broadcasts the
+// full list); the panel-open toggle is per-viewer, persisted locally.
 
 const LOOKUP_ASSUMED_MS = 15_000;
 const RESEARCH_ASSUMED_MS = 100_000;
@@ -49,6 +55,9 @@ const BORDER = "1px solid rgba(255,62,201,0.25)";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 
 const EMPTY_SOCIALS: ResearchSocials = {};
+
+const CORPUS_OPEN_KEY = "slop-research-corpus-open";
+const CORPUS_SAVE_DEBOUNCE_MS = 400;
 
 export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   const rs = mesh.researchState;
@@ -95,6 +104,20 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const setSocialField = (k: keyof ResearchSocials, v: string) => setSocials(s => ({ ...s, [k]: v }));
 
+  // ---- Corpus panel toggle -------------------------------------------------
+  // Per-viewer (NOT broadcast — a spectator peeking at the corpus
+  // shouldn't yank it open on everyone's screen). Seeded from
+  // localStorage in the initializer so it survives reloads.
+  const [corpusOpen, setCorpusOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(CORPUS_OPEN_KEY) === "1";
+  });
+  useEffect(() => {
+    if (corpusOpen) window.localStorage.setItem(CORPUS_OPEN_KEY, "1");
+    else window.localStorage.removeItem(CORPUS_OPEN_KEY);
+  }, [corpusOpen]);
+  const corpusCount = mesh.researchCorpus.length;
+
   // ---- Submit handlers ----------------------------------------------------
   const runLookup = useCallback(
     (e: React.FormEvent) => {
@@ -133,22 +156,13 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // ---- Render gating ------------------------------------------------------
   // Lookup screen renders for idle + lookup-pending. Form/result screen
   // renders for everything else. `done` keeps showing the form so the
-  // host can tweak + re-research if needed.
-  if (rs.phase === "idle" || rs.phase === "lookup-pending") {
-    return (
-      <LookupPhase
-        query={lookupQuery}
-        setQuery={setLookupQuery}
-        onSubmit={runLookup}
-        loading={lookupRunning}
-        startedAt={lookupRunning ? rs.job!.startedAt : null}
-        startedBy={lookupRunning ? rs.job!.startedBy : null}
-        error={rs.error}
-      />
-    );
-  }
-
-  return (
+  // host can tweak + re-research if needed. Either screen sits in the
+  // left column of a row layout; the Corpus panel docks on the right.
+  // The form screen stays inline JSX (not a child component like
+  // LookupPhase) because it reads a dozen pieces of the local form
+  // state above — and an inline component closure would remount (and
+  // blur) the inputs on every parent render.
+  const formScreen = (
     <div
       style={{
         display: "flex",
@@ -214,6 +228,26 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
             type="button"
+            onClick={() => setCorpusOpen(o => !o)}
+            style={{
+              marginRight: "auto",
+              padding: "6px 12px",
+              fontSize: 10,
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              background: corpusOpen ? "rgba(255,62,201,0.15)" : "transparent",
+              color: corpusOpen ? "var(--slop-text)" : "var(--slop-text-muted)",
+              border: BORDER,
+              borderRadius: 4,
+              cursor: "pointer",
+            }}
+            title="source documents fed to the research AI as host-provided context"
+          >
+            📚 Corpus{corpusCount > 0 ? ` (${corpusCount})` : ""}
+          </button>
+          <button
+            type="button"
             onClick={startOver}
             disabled={researchRunning}
             style={{
@@ -229,7 +263,9 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
               cursor: researchRunning ? "not-allowed" : "pointer",
               opacity: researchRunning ? 0.5 : 1,
             }}
-            title={researchRunning ? "wait for the in-flight job to finish" : "clear and start over"}
+            title={
+              researchRunning ? "wait for the in-flight job to finish" : "clear the dossier + corpus and start over"
+            }
           >
             Start over
           </button>
@@ -304,7 +340,9 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
           >
             <LoadingBar cells={20} progress={researchProgress} caption="researching" />
             <div>
-              vanilla knowledge + web research, then an episode preview — usually a minute or two
+              vanilla knowledge + web research
+              {corpusCount > 0 ? ` + ${corpusCount} corpus doc${corpusCount === 1 ? "" : "s"}` : ""}, then an episode
+              preview — usually a minute or two
               {rs.job?.startedBy ? <> · started by {rs.job.startedBy}</> : null}
             </div>
           </div>
@@ -312,6 +350,31 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
         {rs.result ? <ResultView result={rs.result} /> : null}
       </div>
+    </div>
+  );
+
+  const main =
+    rs.phase === "idle" || rs.phase === "lookup-pending" ? (
+      <LookupPhase
+        query={lookupQuery}
+        setQuery={setLookupQuery}
+        onSubmit={runLookup}
+        loading={lookupRunning}
+        startedAt={lookupRunning ? rs.job!.startedAt : null}
+        startedBy={lookupRunning ? rs.job!.startedBy : null}
+        error={rs.error}
+        corpusCount={corpusCount}
+        corpusOpen={corpusOpen}
+        onToggleCorpus={() => setCorpusOpen(o => !o)}
+      />
+    ) : (
+      formScreen
+    );
+
+  return (
+    <div style={{ display: "flex", height: "100%", background: "#06030d", overflow: "hidden" }}>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>{main}</div>
+      {corpusOpen ? <CorpusPanel mesh={mesh} onClose={() => setCorpusOpen(false)} /> : null}
     </div>
   );
 };
@@ -366,9 +429,23 @@ type LookupPhaseProps = {
   startedAt: number | null;
   startedBy: string | null;
   error: string | null;
+  corpusCount: number;
+  corpusOpen: boolean;
+  onToggleCorpus: () => void;
 };
 
-const LookupPhase = ({ query, setQuery, onSubmit, loading, startedAt, startedBy, error }: LookupPhaseProps) => {
+const LookupPhase = ({
+  query,
+  setQuery,
+  onSubmit,
+  loading,
+  startedAt,
+  startedBy,
+  error,
+  corpusCount,
+  corpusOpen,
+  onToggleCorpus,
+}: LookupPhaseProps) => {
   const progress = useSharedProgress(startedAt, LOOKUP_ASSUMED_MS);
   return (
     <div
@@ -451,9 +528,33 @@ const LookupPhase = ({ query, setQuery, onSubmit, loading, startedAt, startedBy,
         >
           {loading ? "Looking up…" : "Look up"}
         </button>
+        <button
+          type="button"
+          onClick={onToggleCorpus}
+          style={{
+            padding: "6px 12px",
+            fontSize: 10,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            background: corpusOpen ? "rgba(255,62,201,0.15)" : "transparent",
+            color: corpusOpen ? "var(--slop-text)" : "var(--slop-text-muted)",
+            border: BORDER,
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+          title="source documents fed to the lookup + research AI as host-provided context"
+        >
+          📚 Corpus{corpusCount > 0 ? ` (${corpusCount})` : ""}
+        </button>
         {loading ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, marginTop: 4 }}>
             <LoadingBar cells={16} progress={progress} caption="looking up" />
+            {corpusCount > 0 ? (
+              <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+                reading {corpusCount} corpus doc{corpusCount === 1 ? "" : "s"} alongside web search
+              </div>
+            ) : null}
             {startedBy ? (
               <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>started by {startedBy}</div>
             ) : null}
@@ -601,6 +702,22 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
           <Empty>No sources cited.</Empty>
         )}
       </Section>
+
+      {result.corpusDocs && result.corpusDocs.length > 0 ? (
+        <Section title={`Corpus docs used (${result.corpusDocs.length})`}>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+            {result.corpusDocs.map((d, i) => (
+              <li key={i} style={{ fontSize: 12, lineHeight: 1.4 }}>
+                📚 {d.name}
+                <span style={{ color: "var(--slop-text-muted)", fontSize: 11 }}>
+                  {" "}
+                  · {d.chars.toLocaleString()} chars
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
     </>
   );
 };
@@ -658,3 +775,317 @@ function hrefFor(raw: string): string {
   if (raw.includes(".")) return `https://${raw}`;
   return raw;
 }
+
+// ---- Corpus panel -----------------------------------------------------------
+// Mini-Notes embedded in the research window: named docs of pasted
+// source material the relay tiles into the AI prompt. Same editor
+// strategy as NotesWindow — local drafts for instant keystrokes,
+// debounced corpus_update to the relay, echo suppression so our own
+// broadcast doesn't clobber an in-flight edit. The name field and body
+// textarea share one debounce (a save always carries both).
+
+const corpusTitleFor = (doc: { name: string; text: string }): string => {
+  if (doc.name.trim()) return doc.name.trim().slice(0, 60);
+  const first = doc.text.split("\n")[0].trim();
+  if (first) return first.slice(0, 60);
+  return "untitled";
+};
+
+const CorpusPanel = ({ mesh, onClose }: { mesh: PeerMeshState; onClose: () => void }) => {
+  const docs = mesh.researchCorpus;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [draftText, setDraftText] = useState("");
+  const lastSentRef = useRef<{ id: string; name: string; text: string } | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Same pending-new dance as NotesWindow: snapshot known ids on "+ New",
+  // select whichever id shows up in the next broadcast that isn't in it.
+  const pendingNewRef = useRef<Set<string> | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Default selection: the most-recently-updated doc.
+  const sorted = useMemo(() => [...docs].sort((a, b) => b.updatedTs - a.updatedTs), [docs]);
+  useEffect(() => {
+    if (selectedId && docs.some(d => d.id === selectedId)) return;
+    setSelectedId(sorted[0]?.id ?? null);
+  }, [sorted, selectedId, docs]);
+
+  useEffect(() => {
+    const known = pendingNewRef.current;
+    if (!known) return;
+    const fresh = docs.find(d => !known.has(d.id));
+    if (fresh) {
+      pendingNewRef.current = null;
+      setSelectedId(fresh.id);
+    }
+  }, [docs]);
+
+  // Sync drafts with the selected doc's server copy, skipping the echo
+  // of our own last save.
+  const selected = docs.find(d => d.id === selectedId) ?? null;
+  useEffect(() => {
+    if (!selected) {
+      setDraftName("");
+      setDraftText("");
+      return;
+    }
+    const last = lastSentRef.current;
+    if (last && last.id === selected.id && last.name === selected.name && last.text === selected.text) return;
+    setDraftName(selected.name);
+    setDraftText(selected.text);
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    textareaRef.current?.focus();
+  }, [selectedId]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const queueSave = (name: string, text: string) => {
+    if (!selected) return;
+    const id = selected.id;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      lastSentRef.current = { id, name, text };
+      mesh.corpusUpdate(id, { name, text });
+    }, CORPUS_SAVE_DEBOUNCE_MS);
+  };
+
+  const onNameChange = (v: string) => {
+    setDraftName(v);
+    queueSave(v, draftText);
+  };
+  const onTextChange = (v: string) => {
+    setDraftText(v);
+    queueSave(draftName, v);
+  };
+
+  const createDoc = () => {
+    pendingNewRef.current = new Set(docs.map(d => d.id));
+    mesh.corpusCreate(`Doc ${docs.length + 1}`);
+  };
+
+  const deleteSelected = () => {
+    if (!selected) return;
+    mesh.corpusDelete(selected.id);
+  };
+
+  return (
+    <div
+      style={{
+        width: 240,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+        borderLeft: "1px solid var(--slop-border, #2a1d4a)",
+        background: PANEL_BG,
+        color: "var(--slop-text)",
+        fontFamily: "var(--slop-font-body)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 8px",
+          borderBottom: "1px solid var(--slop-border, #2a1d4a)",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 9,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: ACCENT,
+          }}
+        >
+          Corpus
+        </span>
+        <button
+          type="button"
+          onClick={createDoc}
+          style={{
+            marginLeft: "auto",
+            padding: "2px 8px",
+            fontSize: 10,
+            fontFamily: "var(--slop-font-display)",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            background: ACCENT,
+            color: "#06030d",
+            border: "none",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontWeight: 700,
+          }}
+        >
+          + New
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="close corpus panel"
+          style={{
+            background: "transparent",
+            border: "1px solid var(--slop-border, #2a1d4a)",
+            color: "var(--slop-text-muted)",
+            borderRadius: 3,
+            padding: "2px 6px",
+            fontSize: 10,
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      </div>
+
+      <div
+        style={{
+          fontSize: 10,
+          color: "var(--slop-text-muted)",
+          padding: "6px 8px",
+          borderBottom: "1px solid var(--slop-border, #2a1d4a)",
+          lineHeight: 1.4,
+        }}
+      >
+        Paste source material — tweets, article text, notes. Every doc is fed to the AI on Lookup &amp; Research.
+      </div>
+
+      {docs.length > 0 ? (
+        <ul
+          style={{
+            margin: 0,
+            padding: 0,
+            listStyle: "none",
+            overflowY: "auto",
+            maxHeight: "35%",
+            flexShrink: 0,
+            borderBottom: "1px solid var(--slop-border, #2a1d4a)",
+          }}
+        >
+          {sorted.map(doc => {
+            const isActive = doc.id === selectedId;
+            return (
+              <li key={doc.id}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(doc.id)}
+                  style={{
+                    width: "100%",
+                    padding: "5px 8px",
+                    textAlign: "left",
+                    background: isActive ? "rgba(255,62,201,0.15)" : "transparent",
+                    color: isActive ? "var(--slop-text)" : "var(--slop-text-muted)",
+                    border: "none",
+                    borderBottom: "1px solid var(--slop-border, #2a1d4a)",
+                    fontSize: 11,
+                    fontFamily: "var(--slop-font-body)",
+                    cursor: "pointer",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {corpusTitleFor(doc)}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+
+      {selected ? (
+        <>
+          <div style={{ display: "flex", gap: 4, padding: "6px 8px 0" }}>
+            <input
+              value={draftName}
+              onChange={e => onNameChange(e.target.value)}
+              placeholder="doc name"
+              spellCheck={false}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "#06030d",
+                color: "var(--slop-text)",
+                border: BORDER,
+                borderRadius: 4,
+                padding: "4px 6px",
+                font: "inherit",
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              onClick={deleteSelected}
+              aria-label="delete doc"
+              style={{
+                background: "transparent",
+                border: "1px solid var(--slop-border, #2a1d4a)",
+                color: "var(--slop-text-muted)",
+                borderRadius: 3,
+                padding: "2px 6px",
+                fontSize: 9,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+              }}
+            >
+              Delete
+            </button>
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={draftText}
+            onChange={e => onTextChange(e.target.value)}
+            placeholder="paste tweets, article text, bios, anything…"
+            spellCheck={false}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              margin: 8,
+              resize: "none",
+              background: "#06030d",
+              color: "var(--slop-text)",
+              border: BORDER,
+              borderRadius: 4,
+              outline: "none",
+              padding: 8,
+              fontSize: 12,
+              fontFamily: "var(--slop-font-body)",
+              lineHeight: 1.45,
+            }}
+          />
+        </>
+      ) : (
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--slop-text-muted)",
+            fontSize: 11,
+            fontStyle: "italic",
+            padding: 16,
+            textAlign: "center",
+          }}
+        >
+          No docs yet. Click &quot;+ New&quot; and paste source material.
+        </div>
+      )}
+    </div>
+  );
+};
