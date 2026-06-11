@@ -62,6 +62,13 @@ sudo systemctl enable --now slop-live slop-relay slop-browser-host
 
 ### Server-side broadcaster
 
+> ⚠️ **DORMANT — masked in prod since 2026-06-11** (it once got
+> restarted after a deploy and ghost-streamed a dead room for 10 hours).
+> Shows stream via OBS on a second machine. The unit file now lives at
+> `/usr/lib/systemd/system/slop-broadcast.service` with a mask symlink in
+> `/etc/systemd/system/`. See the warning in `docs/STREAMING.md` §(B)
+> before touching it.
+
 Optional fourth service. Replaces an external OBS push with an on-box
 Chromium + ffmpeg pipeline (see `deploy/slop-broadcast.{sh,service}` and
 `broadcastPlan.md`). Needs Xvfb + PulseAudio + xdotool on the host:

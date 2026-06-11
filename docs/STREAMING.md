@@ -58,6 +58,15 @@ works, the tradeoffs, and how to enable/disable the server-side variant.
 
 ## (B) Server-side broadcast — `slop-broadcast.service`
 
+> ⚠️ **DORMANT — DO NOT START.** The unit is **masked** on the prod box
+> (since 2026-06-11). Shows stream via flow (A) — OBS on a second
+> machine. On 2026-06-11 a session restarted this unit after a deploy
+> and it streamed a dead goblin room for 10 hours, putting a ghost
+> stream on slop.computer right before a show and leaving a 13 GB junk
+> recording. If you genuinely need it (and you almost certainly don't):
+> `sudo systemctl unmask slop-broadcast` first, and **mask it again
+> when done** — never leave it merely `stopped` or `disabled`.
+
 A systemd unit on the prod box that boots `Xvfb` + a `PulseAudio` null
 sink + `Chromium --app` (joined as godMode, same as flow A) + `ffmpeg`,
 and pushes the captured window + sink-monitor to mediamtx over loopback
@@ -116,6 +125,11 @@ the top of the panel and hit save — it rewrites `SLOP_URL` in the env
 file and restarts the unit.
 
 ### From ssh
+
+> ⚠️ The unit is **masked** in prod — every start/restart below will
+> fail with "Unit slop-broadcast.service is masked" until you
+> deliberately `sudo systemctl unmask slop-broadcast`. That's the
+> point. Re-mask when you're done.
 
 ```bash
 # state
