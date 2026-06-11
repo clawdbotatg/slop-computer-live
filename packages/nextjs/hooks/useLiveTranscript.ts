@@ -63,6 +63,15 @@ export type UseLiveTranscriptOptions = {
   /** Host-controlled per-episode flag, read from /v1/episode. When false,
    *  the hook stays dormant even if `enabled` is true. */
   episodeSttOn: boolean;
+  /** Per-browser user override (the menubar 🎙️ toggle). Differs from a
+   *  mute in what it tells the server: mute keeps alive=true (god-mode
+   *  stays suppressed — the user wants NO captions of what they're
+   *  saying), while this sends alive=false so god-mode server STT takes
+   *  the captions slot. The speaker keeps captions; only THIS browser's
+   *  Web Speech recognizer goes cold. Exists because Chrome's speech
+   *  service is effectively exclusive per machine — a second Chrome
+   *  needing recognition starves unless this one lets go. */
+  userDisabled?: boolean;
   /** Mesh WS connection state. We re-emit our latest alive flag every
    *  time the socket reopens — the server clears its per-speaker
    *  arbitration map on disconnect (sticky-until-rejoin), so without
@@ -158,10 +167,12 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
     sendLiveCaptionState,
     lang = "en-US",
     onError,
+    userDisabled = false,
   } = opts;
   // Hook is dormant unless BOTH the per-peer gate AND the episode-wide
-  // STT flag are on. Either being false stops recognition.
-  const enabled = rawEnabled && episodeSttOn;
+  // STT flag are on, AND the user hasn't parked local STT themselves.
+  // Any of the three being false stops recognition.
+  const enabled = rawEnabled && episodeSttOn && !userDisabled;
   const [supported, setSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -172,6 +183,8 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
   // re-binding the entire recognizer on every render.
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const userDisabledRef = useRef(userDisabled);
+  userDisabledRef.current = userDisabled;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const sendLiveCaptionRef = useRef(sendLiveCaption);
@@ -479,8 +492,16 @@ export function useLiveTranscript(opts: UseLiveTranscriptOptions): UseLiveTransc
       // means neither lane will broadcast for this speaker until they
       // unmute (god-mode VAD also goes silent on `enabled=false`
       // tracks since track.enabled=false emits silence).
+      //
+      // EXCEPT a user disable: there the speaker still wants captions —
+      // just not from this browser — so hand the slot to god-mode.
+      // Re-enabling flips alive back to true via the start path above.
+      if (userDisabledRef.current) setAlive(false);
     }
-  }, [enabled, listening]);
+    // userDisabled is a dep (not just folded into `enabled`) so flipping
+    // the toggle while already-stopped (e.g. muted) still re-runs this
+    // and emits the alive=false handoff.
+  }, [enabled, listening, userDisabled]);
 
   // Watchdog for the silent-failure case: recognizer started but no
   // result event has fired in HUNG_TIMEOUT_MS while we expected speech.

@@ -434,6 +434,11 @@ const clearKindPersistedState = (slug: string, kind: StreamKind) => {
 // slug) because the goal is "user has been to slop.computer once" — a
 // repeat visitor jumping between rooms shouldn't get the tutorial again.
 const HAS_BEEN_HERE_KEY = "slop-has-been-here-v1";
+
+// Per-browser (NOT per-room) flag: the user clicked the menubar 🎙️ to
+// park local Web Speech STT — e.g. so another Chrome on this machine can
+// use the speech service. See the localSttUserDisabled state in Desktop.
+const LOCAL_STT_DISABLED_KEY = "slop-local-stt-disabled-v1";
 const HINT_TIMEOUT_MS = 15_000;
 const HINT_ALLOWED_KINDS: ReadonlySet<string> = new Set(["chat", "audio", "video", "screen"]);
 
@@ -784,6 +789,34 @@ function DesktopInner({ slug }: { slug: string }) {
     [streams],
   );
 
+  // Per-browser user override for local STT (the menubar 🎙️ toggle).
+  // Chrome's speech-recognition service is effectively exclusive per
+  // machine — two Chrome instances can't both transcribe — so a user
+  // running another Chrome that needs STT can park THIS browser's
+  // recognizer here. Captions fall back to god-mode server STT (handled
+  // inside useLiveTranscript via alive=false). Browser-wide, not
+  // per-room: the contended resource is the browser, not the room.
+  const [localSttUserDisabled, setLocalSttUserDisabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(LOCAL_STT_DISABLED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleLocalStt = useCallback(() => {
+    setLocalSttUserDisabled(prev => {
+      const next = !prev;
+      try {
+        if (next) window.localStorage.setItem(LOCAL_STT_DISABLED_KEY, "1");
+        else window.localStorage.removeItem(LOCAL_STT_DISABLED_KEY);
+      } catch {
+        /* private mode — toggle still works for this session */
+      }
+      return next;
+    });
+  }, []);
+
   // In-browser Web Speech captions. Runs alongside god-mode STT — it's
   // ~3-5s faster and viewers see the speaker's words form in real time.
   // God-mode is suppressed (broadcast-side only, archive untouched) for
@@ -794,6 +827,7 @@ function DesktopInner({ slug }: { slug: string }) {
   const liveStt = useLiveTranscript({
     enabled: !isGodMode && publishingMicAudio && !audioMuted && episode.captionsOn,
     episodeSttOn: episode.sttOn,
+    userDisabled: localSttUserDisabled,
     meshConnected: mesh.connected,
     sendLiveCaption: mesh.sendLiveCaption,
     sendLiveCaptionState: mesh.sendLiveCaptionState,
@@ -2991,6 +3025,8 @@ function DesktopInner({ slug }: { slug: string }) {
         localSttListening={liveStt.listening}
         localSttError={liveStt.lastError}
         localSttResultTick={liveStt.resultTick}
+        localSttDisabled={localSttUserDisabled}
+        onLocalSttToggle={toggleLocalStt}
         walletAddress={mesh.wallet?.address ?? null}
         walletBalanceUsd={menubarWalletBalanceUsd}
         onWalletClick={session.authenticated ? () => focusApp("wallet") : undefined}

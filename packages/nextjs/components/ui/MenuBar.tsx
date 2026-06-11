@@ -88,6 +88,14 @@ interface MenuBarProps {
    *  caption pipeline isn't actually stalled waiting on a sentence-
    *  end finalize. */
   localSttResultTick?: number;
+  /** True when the user has parked local STT via the 🎙️ toggle —
+   *  this browser's recognizer stays cold and captions ride god-mode
+   *  server STT instead. Renders the mic dimmed + greyscale. */
+  localSttDisabled?: boolean;
+  /** Click handler for the 🎙️ — flips the per-browser local STT
+   *  override (Desktop owns the state + localStorage persistence).
+   *  Absent = the mic stays a display-only indicator. */
+  onLocalSttToggle?: () => void;
   /** Optional session-wallet chip. If a wallet address is supplied
    *  we render the Address component as a clickable chip; otherwise
    *  a "Deploy wallet" link. Clicking either opens the wallet window. */
@@ -121,6 +129,8 @@ export const MenuBar = ({
   localSttListening = false,
   localSttError = null,
   localSttResultTick = 0,
+  localSttDisabled = false,
+  onLocalSttToggle,
   walletAddress,
   walletBalanceUsd,
   onWalletClick,
@@ -139,6 +149,33 @@ export const MenuBar = ({
     const id = window.setTimeout(() => setSttPulse(false), 220);
     return () => window.clearTimeout(id);
   }, [localSttResultTick]);
+
+  // Transient explainer bubble shown right after the 🎙️ toggle is
+  // clicked, so the user sees what the click just did (parked local STT
+  // vs. brought it back) without having to hover for the title text.
+  // Auto-dismisses; re-clicking restarts the timer with the new message.
+  const [sttNotice, setSttNotice] = useState<string | null>(null);
+  const sttNoticeTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (sttNoticeTimerRef.current != null) window.clearTimeout(sttNoticeTimerRef.current);
+    },
+    [],
+  );
+  const handleSttToggle = () => {
+    if (!onLocalSttToggle) return;
+    onLocalSttToggle();
+    // `localSttDisabled` is the value BEFORE this click — the toggle's
+    // setState hasn't painted yet — so "currently enabled" means the
+    // click just turned local STT off.
+    setSttNotice(
+      localSttDisabled
+        ? "Local STT re-enabled — captions ride this browser's Web Speech again."
+        : "Local STT disabled — this browser's speech recognizer is parked (so another Chrome can use it). Your captions now come from god-mode server STT.",
+    );
+    if (sttNoticeTimerRef.current != null) window.clearTimeout(sttNoticeTimerRef.current);
+    sttNoticeTimerRef.current = window.setTimeout(() => setSttNotice(null), 4500);
+  };
 
   const authNode = session.authenticated ? (
     <PowerMenu
@@ -286,75 +323,119 @@ export const MenuBar = ({
             </span>
           ) : null}
           {localSttSupported ? (
-            <span
-              className="slop-menubar__item"
-              style={{
-                cursor: "help",
-                fontSize: 14,
-                padding: "0 6px",
-                position: "relative",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                // Honest indicator. Full opacity when local STT is actively
-                // running (listening) — your captions ride your browser.
-                // Half when it's merely *supported* but idle (gate closed:
-                // mic unpublished, self-muted, or captions/STT off) so you can
-                // see local COULD engage but isn't — you're on the slower
-                // god-mode round-trip until it does.
-                opacity: localSttListening ? 1 : 0.5,
-                transition: "opacity 280ms ease",
-              }}
-              title={
-                localSttError
-                  ? `local STT error: ${localSttError} — falling back to god-mode captions for this speaker`
-                  : localSttListening
-                    ? "🎙️ local Web Speech STT is live — your captions ride your browser, not the server"
-                    : "🎙️ local STT wired up — will engage when you start talking"
-              }
-              aria-label={localSttListening ? "local STT listening" : "local STT idle"}
-            >
-              {/* Magenta halo to distinguish from god-mode's cyan one.
-                  Calm size when idle, swells when the recognizer is
-                  running, and FLASHES bright + larger on every onresult
-                  tick so word-by-word interim activity reads visually. */}
-              <span
-                aria-hidden
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                type="button"
+                className="slop-menubar__item"
+                onClick={onLocalSttToggle ? handleSttToggle : undefined}
                 style={{
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  width: sttPulse ? 30 : localSttListening ? 22 : 8,
-                  height: sttPulse ? 30 : localSttListening ? 22 : 8,
-                  borderRadius: "50%",
-                  background: "var(--slop-magenta, #ff3ec9)",
-                  opacity: localSttError ? 0.4 : sttPulse ? 0.85 : localSttListening ? 0.5 : 0.18,
-                  boxShadow: sttPulse
-                    ? "0 0 20px 4px var(--slop-magenta, #ff3ec9)"
-                    : localSttListening
-                      ? "0 0 12px 2px var(--slop-magenta, #ff3ec9)"
-                      : "0 0 4px var(--slop-magenta, #ff3ec9)",
-                  transform: "translate(-50%, -50%)",
-                  // Snappy on the way in (pulse hit), gentle on settle —
-                  // matches how the eye expects a recognition flash to
-                  // feel.
-                  transition: sttPulse
-                    ? "width 80ms ease-out, height 80ms ease-out, opacity 80ms ease-out, box-shadow 80ms ease-out"
-                    : "width 280ms ease-in, height 280ms ease-in, opacity 280ms ease-in, box-shadow 280ms ease-in",
-                  pointerEvents: "none",
-                  zIndex: 0,
-                  filter: localSttError ? "grayscale(0.5)" : "none",
-                }}
-              />
-              <span
-                style={{
+                  cursor: onLocalSttToggle ? "pointer" : "help",
+                  fontSize: 14,
+                  padding: "0 6px",
+                  margin: 0,
+                  border: 0,
+                  background: "transparent",
+                  font: "inherit",
                   position: "relative",
-                  zIndex: 1,
-                  opacity: localSttError ? 0.5 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  // Honest indicator. Full opacity when local STT is actively
+                  // running (listening) — your captions ride your browser.
+                  // Half when it's merely *supported* but idle (gate closed:
+                  // mic unpublished, self-muted, or captions/STT off) so you can
+                  // see local COULD engage but isn't — you're on the slower
+                  // god-mode round-trip until it does. Dimmest + greyscale when
+                  // the user parked it via this very toggle.
+                  opacity: localSttDisabled ? 0.35 : localSttListening ? 1 : 0.5,
+                  filter: localSttDisabled ? "grayscale(1)" : "none",
+                  transition: "opacity 280ms ease, filter 280ms ease",
                 }}
+                title={
+                  localSttDisabled
+                    ? "🎙️ local STT is OFF (your toggle) — captions for you come from god-mode server STT. Click to re-enable in-browser Web Speech."
+                    : localSttError
+                      ? `local STT error: ${localSttError} — falling back to god-mode captions for this speaker. Click to disable local STT.`
+                      : localSttListening
+                        ? "🎙️ local Web Speech STT is live — your captions ride your browser, not the server. Click to disable (hands captions to god-mode; frees Chrome's recognizer for another browser)."
+                        : "🎙️ local STT wired up — will engage when you start talking. Click to disable (hands captions to god-mode; frees Chrome's recognizer for another browser)."
+                }
+                aria-pressed={localSttDisabled}
+                aria-label={
+                  localSttDisabled ? "local STT disabled" : localSttListening ? "local STT listening" : "local STT idle"
+                }
               >
-                🎙️
-              </span>
+                {/* Magenta halo to distinguish from god-mode's cyan one.
+                    Calm size when idle, swells when the recognizer is
+                    running, and FLASHES bright + larger on every onresult
+                    tick so word-by-word interim activity reads visually. */}
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    top: "50%",
+                    left: "50%",
+                    width: sttPulse ? 30 : localSttListening ? 22 : 8,
+                    height: sttPulse ? 30 : localSttListening ? 22 : 8,
+                    borderRadius: "50%",
+                    background: "var(--slop-magenta, #ff3ec9)",
+                    opacity: localSttDisabled
+                      ? 0.08
+                      : localSttError
+                        ? 0.4
+                        : sttPulse
+                          ? 0.85
+                          : localSttListening
+                            ? 0.5
+                            : 0.18,
+                    boxShadow: sttPulse
+                      ? "0 0 20px 4px var(--slop-magenta, #ff3ec9)"
+                      : localSttListening
+                        ? "0 0 12px 2px var(--slop-magenta, #ff3ec9)"
+                        : "0 0 4px var(--slop-magenta, #ff3ec9)",
+                    transform: "translate(-50%, -50%)",
+                    // Snappy on the way in (pulse hit), gentle on settle —
+                    // matches how the eye expects a recognition flash to
+                    // feel.
+                    transition: sttPulse
+                      ? "width 80ms ease-out, height 80ms ease-out, opacity 80ms ease-out, box-shadow 80ms ease-out"
+                      : "width 280ms ease-in, height 280ms ease-in, opacity 280ms ease-in, box-shadow 280ms ease-in",
+                    pointerEvents: "none",
+                    zIndex: 0,
+                    filter: localSttError ? "grayscale(0.5)" : "none",
+                  }}
+                />
+                <span
+                  style={{
+                    position: "relative",
+                    zIndex: 1,
+                    opacity: localSttError && !localSttDisabled ? 0.5 : 1,
+                  }}
+                >
+                  🎙️
+                </span>
+              </button>
+              {sttNotice ? (
+                <span
+                  role="status"
+                  style={{
+                    ...MENU_PANEL_STYLE,
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: -6,
+                    width: 240,
+                    padding: "8px 10px",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    letterSpacing: "0.02em",
+                    whiteSpace: "normal",
+                    textAlign: "left",
+                    cursor: "default",
+                  }}
+                >
+                  {sttNotice}
+                </span>
+              ) : null}
             </span>
           ) : null}
           {airState ? <AirSign airState={airState} /> : null}
