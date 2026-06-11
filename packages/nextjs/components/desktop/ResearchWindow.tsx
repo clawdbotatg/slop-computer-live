@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { PeerMeshState, ResearchResult, ResearchSocials } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
+import { useRoomSlug } from "~~/lib/room-slug";
 
 // Multiplayer guest-research dossier. Every transition lives on the
 // relay (research-state.ts) and broadcasts to every peer:
@@ -61,8 +62,12 @@ export const ResearchWindow = ({ mesh }: { mesh: PeerMeshState }) => {
   // Local typing state for the freeform "name or @handle" input. Kept
   // local so spectators don't see keystrokes — only the submit
   // broadcasts. Pre-seeded from the shared state on mount so a
-  // late-joiner sees what the room is currently asking about.
-  const [lookupQuery, setLookupQuery] = useState(rs.lookupQuery);
+  // late-joiner sees what the room is currently asking about; when the
+  // shared query is still empty, seed "@<slug>" instead — rooms are
+  // named after the guest's Twitter handle, so that's almost always
+  // the right first lookup (same spirit as the card/QR slug defaults).
+  const slug = useRoomSlug();
+  const [lookupQuery, setLookupQuery] = useState(() => rs.lookupQuery || `@${slug}`);
   useEffect(() => {
     // If the shared query changes while we're NOT typing (e.g. someone
     // else hit Look up), reflect it. We don't try to handle "we're
