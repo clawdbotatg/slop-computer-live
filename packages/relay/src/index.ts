@@ -5523,7 +5523,7 @@ const startClipJob = (slug: string, researchContext?: string): ClipJob => {
       // caption passes get the same correctly-spelled proper nouns the meta pass
       // does. Absent for rooms with no research → clipper just runs without it.
       const env = researchContext ? { ...process.env, CLIPPER_RESEARCH: researchContext } : process.env;
-      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish"], { cwd: config.clipperDir, env });
+      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish", "--stitch"], { cwd: config.clipperDir, env });
 
       // Buffer + broadcast the clipper's stdout/stderr lines as progress.
       let buf = "";
