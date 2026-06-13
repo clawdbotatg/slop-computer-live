@@ -219,6 +219,25 @@ export async function pinJsonToLocalIpfs(opts: { apiUrl: string; json: unknown }
 }
 
 /**
+ * Read a small object back out of the LOCAL kubo node by CID via
+ * /api/v0/cat. Used by the meta-only regenerate path to pull a past
+ * episode's already-pinned manifest + transcript without touching any
+ * recording on disk. Strips a leading `ipfs://` so callers can pass either
+ * a bare CID or the on-chain `ipfs://<cid>` URL. Throws on a non-200 (e.g.
+ * the content was garbage-collected off this node).
+ */
+export async function catFromLocalIpfs(opts: { apiUrl: string; cid: string }): Promise<string> {
+  const cid = opts.cid.replace(/^ipfs:\/\//, "").trim();
+  if (!cid) throw new Error("catFromLocalIpfs: empty cid");
+  const res = await fetch(`${opts.apiUrl}/api/v0/cat?arg=${encodeURIComponent(cid)}`, { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`kubo /api/v0/cat (${cid}) ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.text();
+}
+
+/**
  * Remux a fragmented-MP4 recording (what MediaMTX writes with
  * `recordFormat: fmp4`) into a standard non-fragmented MP4 with
  * `-c copy` (no re-encode, ~30x realtime) and `+faststart` (moov atom
@@ -304,6 +323,13 @@ export async function finalizeRecording(opts: {
    *  can map `ts` → video seconds) is prepended here at finalize. Pass `null`
    *  to omit (older rooms, no log) — the clipper falls back to its CV pipeline. */
   geometryArchive: { content: string; sampleCount: number } | null;
+  /** Authoritative non-transcript context for the AI-meta pass so it doesn't
+   *  repeat speech-to-text spelling errors in names. `roomSlug` is the
+   *  host-chosen slug (usually the guest's name/topic); `researchContext` is the
+   *  pre-assembled guest-research dossier text. All best-effort. */
+  roomSlug?: string;
+  roomName?: string;
+  researchContext?: string;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -434,6 +460,10 @@ export async function finalizeRecording(opts: {
               chatJsonl: chatArchive?.content,
               videoStartMs: videoStartMs ?? undefined,
               videoEndMs: videoStartMs != null ? latest.mtime : undefined,
+              slug: opts.roomSlug,
+              roomName: opts.roomName,
+              participants: opts.participants ?? undefined,
+              research: opts.researchContext,
             });
           } catch (err) {
             // eslint-disable-next-line no-console
@@ -526,4 +556,161 @@ export async function finalizeRecording(opts: {
 
 export function isFinalizeInFlight(): boolean {
   return inFlight !== null;
+}
+
+/** The subset of the v1 manifest the regenerate path reads + rewrites. We keep
+ *  every field as-is and only swap `meta`, so unknown future fields survive via
+ *  the spread in {@link regenerateEpisodeMeta}. */
+type EpisodeManifestV1 = {
+  version: 1;
+  video: { cid: string; sizeBytes: number; format: string };
+  chat?: { cid: string; messageCount: number };
+  transcript?: { cid: string; segmentCount: number };
+  geometry?: { cid: string; sampleCount: number; format: string };
+  card?: { cid: string; format: string; sizeBytes: number };
+  participants?: {
+    address: string | null;
+    anonId: string | null;
+    role: "host" | "guest";
+    handle: string | null;
+  }[];
+  meta?: EpisodeMeta;
+};
+
+/** Streaming progress events for the meta-only regenerate flow. Reuses the
+ *  phase names the admin UI already parses from finalize (`generating-meta`,
+ *  `pinning-manifest`, `done`, `error`) so the client handler is near-identical. */
+export type RegenerateEvent =
+  | { phase: "starting" }
+  | { phase: "fetching-manifest"; manifestCid: string }
+  | { phase: "generating-meta" }
+  | { phase: "pinning-manifest" }
+  | { phase: "done"; manifestCid: string; meta: EpisodeMeta }
+  | { phase: "error"; message: string };
+
+/** Recover the recording's wall-clock start (epoch ms) from a geometry archive,
+ *  whose first line is a `{kind:"header", videoStartMs}` record (see the geometry
+ *  pin in finalizeRecording). Returns null when geometry is absent or headerless
+ *  — the meta generator then anchors t0 on the first transcript segment, the same
+ *  fallback the original finalize used for pre-geometry rooms. */
+function videoStartFromGeometry(geometryJsonl: string): number | null {
+  const first = geometryJsonl.split("\n").find(l => l.trim());
+  if (!first) return null;
+  try {
+    const h = JSON.parse(first) as { kind?: string; videoStartMs?: number | null };
+    if (h.kind === "header" && typeof h.videoStartMs === "number") return h.videoStartMs;
+  } catch {
+    /* not a header line — fall through */
+  }
+  return null;
+}
+
+/** Largest transcript timestamp (epoch ms), so the meta generator can bound the
+ *  trim window at the real end of speech instead of needing the (now-gone)
+ *  recording file mtime. Returns null on an empty/garbled transcript. */
+function lastTranscriptTs(transcriptJsonl: string): number | null {
+  let max: number | null = null;
+  for (const line of transcriptJsonl.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const ts = (JSON.parse(s) as { ts?: number }).ts;
+      if (typeof ts === "number" && (max == null || ts > max)) max = ts;
+    } catch {
+      /* skip */
+    }
+  }
+  return max;
+}
+
+/**
+ * Regenerate ONLY the AI metadata for an already-finalized episode, leaving its
+ * video / transcript / chat / card / participants untouched. This exists because
+ * {@link finalizeRecording} always pins the NEWEST file in the recordings dir —
+ * re-running it days later would replace a past episode's video with whatever was
+ * recorded most recently. Here we instead read the episode's existing manifest +
+ * its already-pinned transcript back out of the local kubo node, run the meta
+ * generator (now with slug/roster/research context), and pin a NEW manifest that
+ * is byte-identical to the old one except for `meta`.
+ *
+ * Nothing is destructive: the old manifest CID stays pinned and on-chain until
+ * the host signs `setManifest` with the new CID returned here (and they can point
+ * back at the old CID at any time — both are immutable, content-addressed).
+ *
+ * Deliberately NO single-flight guard (unlike `finalizeRecording`'s `inFlight`):
+ * the only cost of a double-fire is a wasted Opus call + a duplicate pin of the
+ * same content (content-addressed → same CID), and there's no newest-file race to
+ * lose. The admin button disables itself while running, which covers the common
+ * case; a global lock isn't worth the coupling.
+ */
+export async function regenerateEpisodeMeta(opts: {
+  ipfsApiUrl: string;
+  /** Existing manifest CID (bare or `ipfs://`-prefixed) read off-chain by the caller. */
+  manifestCid: string;
+  roomSlug?: string;
+  roomName?: string;
+  researchContext?: string;
+  onEvent?: (ev: RegenerateEvent) => void;
+}): Promise<{ manifestCid: string; meta: EpisodeMeta }> {
+  const emit = opts.onEvent ?? (() => {});
+  try {
+    emit({ phase: "starting" });
+
+    const bareCid = opts.manifestCid.replace(/^ipfs:\/\//, "").trim();
+    if (!bareCid) throw new Error("no manifest CID provided");
+    emit({ phase: "fetching-manifest", manifestCid: bareCid });
+
+    const manifestText = await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: bareCid });
+    let manifest: EpisodeManifestV1;
+    try {
+      manifest = JSON.parse(manifestText) as EpisodeManifestV1;
+    } catch {
+      throw new Error("existing manifest is not valid JSON");
+    }
+    if (!manifest.transcript?.cid) {
+      throw new Error("existing manifest has no transcript — nothing to regenerate meta from");
+    }
+
+    const transcriptJsonl = await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: manifest.transcript.cid });
+    const chatJsonl = manifest.chat?.cid
+      ? await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: manifest.chat.cid }).catch(() => undefined)
+      : undefined;
+
+    // Recover the video window so chapter times stay aligned with how the
+    // episode was originally finalized: start from the geometry header (if the
+    // manifest has one), end at the last spoken line.
+    let videoStartMs: number | undefined;
+    if (manifest.geometry?.cid) {
+      const geo = await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: manifest.geometry.cid }).catch(() => "");
+      videoStartMs = videoStartFromGeometry(geo) ?? undefined;
+    }
+    const lastTs = lastTranscriptTs(transcriptJsonl);
+    const videoEndMs = videoStartMs != null && lastTs != null ? lastTs : undefined;
+
+    emit({ phase: "generating-meta" });
+    const meta = await generateEpisodeMeta({
+      transcriptJsonl,
+      chatJsonl,
+      videoStartMs,
+      videoEndMs,
+      slug: opts.roomSlug,
+      roomName: opts.roomName,
+      participants: manifest.participants,
+      research: opts.researchContext,
+    });
+    if (!meta) throw new Error("meta generation returned nothing (no transcript content or no AI key)");
+
+    emit({ phase: "pinning-manifest" });
+    // Spread the existing manifest so any field we don't model survives; only
+    // `meta` is replaced.
+    const next: EpisodeManifestV1 = { ...manifest, meta };
+    const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
+
+    emit({ phase: "done", manifestCid: newCid, meta });
+    return { manifestCid: newCid, meta };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ phase: "error", message });
+    throw err;
+  }
 }

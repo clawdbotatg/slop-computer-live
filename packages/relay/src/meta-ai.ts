@@ -92,6 +92,62 @@ function formatTime(seconds: number): string {
  * the earliest transcript timestamp = t=0 of the recording, which is a
  * close-enough proxy for show-start.
  */
+/** Authoritative, host-supplied context that the speech-to-text transcript can't
+ *  be trusted for: the slug, who actually joined, and the pre-show research
+ *  dossier. All optional — every field is best-effort and skipped when absent. */
+export type EpisodeContext = {
+  /** Host-chosen room slug, e.g. "fucory". Usually encodes the guest's name or
+   *  the central topic — the single most reliable spelling we have. */
+  slug?: string;
+  /** Host's room label (may equal the slug). */
+  roomName?: string;
+  /** Resolved roster of everyone who joined. Only `handle`-bearing entries are
+   *  listed; null-handle peers (SIWE/passkey with no chosen name) are skipped. */
+  participants?: {
+    address: string | null;
+    anonId: string | null;
+    handle: string | null;
+    role: "host" | "guest";
+  }[];
+  /** Pre-assembled guest-research dossier text (name, socials, deep research
+   *  prose) — packed with correctly-spelled proper nouns. Built by the caller
+   *  so this module stays decoupled from the research types. */
+  research?: string;
+};
+
+/** Render the EPISODE CONTEXT preamble that grounds the model in authoritative
+ *  spellings before it reads the error-prone transcript. Returns "" when there's
+ *  nothing to say, so the prompt is unchanged for context-less finalizes. */
+function buildContextBlock(ctx: EpisodeContext | undefined): string {
+  if (!ctx) return "";
+  const sections: string[] = [];
+  if (ctx.slug) sections.push(`EPISODE SLUG (host-chosen — usually encodes the guest's name or the central topic): "${ctx.slug}"`);
+  if (ctx.roomName && ctx.roomName !== ctx.slug) sections.push(`ROOM NAME: "${ctx.roomName}"`);
+
+  const handles: string[] = [];
+  const seen = new Set<string>();
+  for (const p of ctx.participants ?? []) {
+    if (!p.handle || seen.has(p.handle)) continue;
+    seen.add(p.handle);
+    handles.push(`- ${p.handle} (${p.role})`);
+  }
+  if (handles.length) {
+    sections.push(
+      `KNOWN SPEAKERS (authoritative real handles of people who joined; the transcript's speech-to-text often mangles these):\n${handles.join("\n")}`,
+    );
+  }
+
+  const research = ctx.research?.trim();
+  if (research) {
+    sections.push(
+      `GUEST RESEARCH (host's pre-show dossier — names, projects, and links here are correctly spelled; prefer these spellings over the transcript for any proper noun):\n${research}`,
+    );
+  }
+
+  if (!sections.length) return "";
+  return `EPISODE CONTEXT (authoritative — use these spellings, not the transcript's, when a name or proper noun in the transcript looks like a phonetic garble of something below; do NOT invent names that aren't supported here):\n\n${sections.join("\n\n")}\n\n`;
+}
+
 function buildPrompt(opts: {
   transcript: TranscriptLine[];
   chat: ChatLine[];
@@ -103,6 +159,8 @@ function buildPrompt(opts: {
   /** Wall-clock ms of the recording end (file mtime) — gives the true video
    *  duration for the cap, independent of trailing post-show chatter. */
   endMs?: number;
+  /** Authoritative non-transcript context (slug, roster, research dossier). */
+  context?: EpisodeContext;
 }): { prompt: string; durationSec: number; t0: number } {
   const t0 = opts.originMs ?? opts.transcript[0]?.ts ?? Date.now();
   const transcriptLines = opts.transcript
@@ -127,9 +185,11 @@ function buildPrompt(opts: {
     }
   }
 
-  const prompt = `You are writing metadata for an episode of a live podcast/show about AI agents, LLM tooling, developer tools, and occasional crypto/web3 crossover (on-chain agents, agent payments). The transcript below is auto-generated from in-browser speech-to-text — there will be transcription errors; infer charitably.
+  const contextBlock = buildContextBlock(opts.context);
 
-TRANSCRIPT (speakers are wallet handles / ENS names; timestamps are [H:MM:SS] from the start of the recording):
+  const prompt = `You are writing metadata for an episode of a live podcast/show about AI agents, LLM tooling, developer tools, and occasional crypto/web3 crossover (on-chain agents, agent payments). The transcript below is auto-generated from in-browser speech-to-text — there will be transcription errors, especially in names and other proper nouns; infer charitably and correct them against the EPISODE CONTEXT below.
+
+${contextBlock}TRANSCRIPT (speakers are wallet handles / ENS names; timestamps are [H:MM:SS] from the start of the recording):
 ${transcriptLines}
 ${chatSample.length ? `\nAUDIENCE CHAT SAMPLE (for vibe / highlight signal — not exhaustive):\n${chatSample.join("\n")}` : ""}
 
@@ -346,6 +406,15 @@ export async function generateEpisodeMeta(opts: {
    *  anchor t0 hours early and push every chapter past the end of the video. */
   videoStartMs?: number;
   videoEndMs?: number;
+  /** Host-chosen room slug — usually the most reliable spelling of the guest's
+   *  name or the central topic. */
+  slug?: string;
+  /** Host's room label. */
+  roomName?: string;
+  /** Resolved participant roster (handle-bearing entries are listed in the prompt). */
+  participants?: EpisodeContext["participants"];
+  /** Pre-assembled guest-research dossier text (correctly-spelled proper nouns). */
+  research?: string;
 }): Promise<EpisodeMeta | null> {
   if (!BANKR_API_KEY && !ANTHROPIC_API_KEY) return null;
 
@@ -370,6 +439,12 @@ export async function generateEpisodeMeta(opts: {
     chat,
     originMs: videoStartMs,
     endMs: videoEndMs,
+    context: {
+      slug: opts.slug,
+      roomName: opts.roomName,
+      participants: opts.participants,
+      research: opts.research,
+    },
   });
 
   // Prefer Bankr; fall back to direct Anthropic if it's not configured or

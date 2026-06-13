@@ -12,7 +12,7 @@ import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
-import { finalizeRecording, findLatestRecording, isFinalizeInFlight } from "./recordings.js";
+import { finalizeRecording, findLatestRecording, isFinalizeInFlight, regenerateEpisodeMeta } from "./recordings.js";
 import {
   closeAllPeers,
   findPeersBySessionToken,
@@ -5311,6 +5311,35 @@ app.get("/admin/recording", async (req, reply) => {
 // which leaves the browser seeing a cross-origin response with no
 // Access-Control-Allow-Origin header → "Failed to fetch". The Readable
 // path lets the CORS plugin attach its headers before Node flushes them.
+// Assemble the pre-show guest-research dossier into a compact context string for
+// the AI-meta pass. It's the richest source of correctly-spelled proper nouns
+// (guest name, socials, projects) — so the meta AI can repair speech-to-text
+// garbles like a guest's name in the transcript. Best-effort: undefined for rooms
+// with no research; `researched` is capped so an unusually long dossier can't
+// dominate the prompt. Shared by /admin/finalize and /admin/regenerate-meta.
+function researchContextForRoom(room: ReturnType<typeof roomFromReq>): string | undefined {
+  const r = room.research.current().state.result;
+  if (!r) return undefined;
+  const lines: string[] = [];
+  if (r.query?.name) lines.push(`Guest: ${r.query.name}`);
+  const s = r.query?.socials;
+  if (s) {
+    const socials = [
+      s.twitter && `Twitter/X: ${s.twitter}`,
+      s.github && `GitHub: ${s.github}`,
+      s.linkedin && `LinkedIn: ${s.linkedin}`,
+      s.website && `Website: ${s.website}`,
+      s.other && `Other: ${s.other}`,
+    ].filter(Boolean);
+    if (socials.length) lines.push(socials.join("\n"));
+  }
+  if (r.query?.notes?.trim()) lines.push(`Host notes: ${r.query.notes.trim()}`);
+  const researched = r.researched?.trim();
+  if (researched) lines.push(`Dossier:\n${researched.slice(0, 8000)}`);
+  const text = lines.join("\n\n").trim();
+  return text.length ? text : undefined;
+}
+
 app.post("/admin/finalize", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -5364,6 +5393,7 @@ app.post("/admin/finalize", async (req, reply) => {
         if (p.address) return { ...p, handle: null };
         return p;
       });
+      const researchContext = researchContextForRoom(room);
       await finalizeRecording({
         recordingsDir: config.recordingsDir,
         pathName: "live",
@@ -5373,12 +5403,71 @@ app.post("/admin/finalize", async (req, reply) => {
         geometryArchive: room.geometry.readArchive(),
         participants,
         cardArchive,
+        roomSlug: room.id,
+        roomName: room.meta.getName(),
+        researchContext,
         onEvent: writeEvent,
       });
     } catch (err) {
       // `finalizeRecording` already emits a `phase: "error"` event, but
       // belt-and-suspenders if the throw came from somewhere else.
       app.log.error({ err }, "finalize failed");
+      writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      stream.push(null); // EOF
+    }
+  })();
+
+  return reply.send(stream);
+});
+
+// Meta-only regenerate: re-run the AI metadata pass for an ALREADY-finalized
+// episode without re-pinning any video. The host passes the episode's current
+// on-chain manifest CID (?manifest=); we read it + its pinned transcript back out
+// of the local kubo node, regenerate `meta` (with slug/roster/research context),
+// and pin a NEW manifest identical except for `meta`. Streams NDJSON progress like
+// /admin/finalize. Non-destructive: the old manifest stays pinned + on-chain until
+// the host signs setManifest with the new CID (which the `done` event carries).
+//
+// Trust assumption: `slug` and `manifest` are taken at face value and not cross-
+// checked against each other — research/roster context comes from the `slug` room
+// while the roster + every reused CID come from the `manifest`. The admin client
+// always pairs an episode's own slug with its own manifest CID, and this is
+// host-only (requireHost). A hand-crafted mismatched request would at worst write
+// odd-but-fixable metadata to a manifest the host can re-point away from — never
+// data loss — so we don't pay an on-chain read here to validate the pairing.
+app.post("/admin/regenerate-meta", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+
+  const q = (req.query ?? {}) as { manifest?: unknown };
+  const manifestCid = typeof q.manifest === "string" ? q.manifest : "";
+  if (!manifestCid) return reply.code(400).send({ error: "missing ?manifest=<cid> of the episode to regenerate" });
+
+  const stream = new Readable({ read() {} });
+  reply.header("Content-Type", "application/x-ndjson");
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Accel-Buffering", "no");
+
+  const writeEvent = (obj: unknown) => {
+    stream.push(JSON.stringify(obj) + "\n");
+  };
+
+  void (async () => {
+    try {
+      const room = roomFromReq(req);
+      await regenerateEpisodeMeta({
+        ipfsApiUrl: config.ipfsApiUrl,
+        manifestCid,
+        roomSlug: room.id,
+        roomName: room.meta.getName(),
+        researchContext: researchContextForRoom(room),
+        onEvent: writeEvent,
+      });
+    } catch (err) {
+      // regenerateEpisodeMeta already emits a `phase: "error"` event; this is
+      // belt-and-suspenders for a throw from elsewhere.
+      app.log.error({ err }, "regenerate-meta failed");
       writeEvent({ phase: "error", message: err instanceof Error ? err.message : String(err) });
     } finally {
       stream.push(null); // EOF
