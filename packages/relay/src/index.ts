@@ -5510,7 +5510,7 @@ const clipJobEmit = (job: ClipJob, ev: Record<string, unknown>) => {
 // bgipfs, and writes out/<slug>/publish.json with the new manifest CID — which
 // we broadcast as the `done` event. The host then signs setManifest with that
 // CID (we hold no key).
-const startClipJob = (slug: string): ClipJob => {
+const startClipJob = (slug: string, researchContext?: string): ClipJob => {
   const job: ClipJob = { slug, status: "running", lines: [], subscribers: new Set(), startedAt: Date.now() };
   clipJobs.set(slug, job);
   void (async () => {
@@ -5519,7 +5519,11 @@ const startClipJob = (slug: string): ClipJob => {
       const { readFile } = await import("node:fs/promises");
       const { join } = await import("node:path");
       const bin = join(config.clipperDir, "node_modules", ".bin", "tsx");
-      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish"], { cwd: config.clipperDir, env: process.env });
+      // Pass the pre-show guest-research dossier so the clipper's selection +
+      // caption passes get the same correctly-spelled proper nouns the meta pass
+      // does. Absent for rooms with no research → clipper just runs without it.
+      const env = researchContext ? { ...process.env, CLIPPER_RESEARCH: researchContext } : process.env;
+      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish"], { cwd: config.clipperDir, env });
 
       // Buffer + broadcast the clipper's stdout/stderr lines as progress.
       let buf = "";
@@ -5613,7 +5617,7 @@ app.post("/admin/generate-clips", async (req, reply) => {
   let job = clipJobs.get(slug);
   if (!job || job.status !== "running") {
     if (!attachOnly) {
-      job = startClipJob(slug);
+      job = startClipJob(slug, researchContextForRoom(roomFromReq(req)));
     } else if (!job) {
       try {
         const { readFile } = await import("node:fs/promises");
