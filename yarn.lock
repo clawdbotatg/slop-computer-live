@@ -3270,6 +3270,7 @@ __metadata:
     dotenv: "npm:^17.0.0"
     fastify: "npm:^5.2.1"
     openai: "npm:^6.37.0"
+    pureimage: "npm:^0.4.18"
     tsx: "npm:^4.20.0"
     typescript: "npm:~5.8.2"
     viem: "npm:2.39.0"
@@ -10655,6 +10656,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"jpeg-js@npm:^0.4.4":
+  version: 0.4.4
+  resolution: "jpeg-js@npm:0.4.4"
+  checksum: 10/30bb6e16e79db4bd6edbecf1140039bbab326de876f2d20685f04a38d03f70ef9fada1886f0bf58832a4dba4aa179311fc4be7df3d756cab8f1c74d745542f38
+  languageName: node
+  linkType: hard
+
 "js-sha3@npm:0.8.0, js-sha3@npm:^0.8.0":
   version: 0.8.0
   resolution: "js-sha3@npm:0.8.0"
@@ -12359,6 +12367,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"opentype.js@npm:^0.4.3":
+  version: 0.4.11
+  resolution: "opentype.js@npm:0.4.11"
+  bin:
+    ot: ./bin/ot
+  checksum: 10/436887f91394d44a795124803f00eb8c90430c9162c0b5bcb227360a9541fb448014939c0d3be28e6024e64309212cf47df986a7221c4b3c5ff3d95d22928e12
+  languageName: node
+  linkType: hard
+
 "optionator@npm:^0.8.1":
   version: 0.8.3
   resolution: "optionator@npm:0.8.3"
@@ -12906,6 +12923,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"pngjs@npm:^7.0.0":
+  version: 7.0.0
+  resolution: "pngjs@npm:7.0.0"
+  checksum: 10/e843ebbb0df092ee0f3a3e7dbd91ff87a239a4e4c4198fff202916bfb33b67622f4b83b3c29f3ccae94fcb97180c289df06068624554f61686fe6b9a4811f7db
+  languageName: node
+  linkType: hard
+
 "pony-cause@npm:^2.1.10":
   version: 2.1.11
   resolution: "pony-cause@npm:2.1.11"
@@ -13311,6 +13335,17 @@ __metadata:
   bin:
     puppeteer: lib/cjs/puppeteer/node/cli.js
   checksum: 10/8369c18c4dba156c2da9d60b634917ebd56ee5bab6b185acadef140989d5626fd7a69eb88578daa72652387a84f11ddd8544c0b1119fbd2e43c4972af9fb784e
+  languageName: node
+  linkType: hard
+
+"pureimage@npm:^0.4.18":
+  version: 0.4.18
+  resolution: "pureimage@npm:0.4.18"
+  dependencies:
+    jpeg-js: "npm:^0.4.4"
+    opentype.js: "npm:^0.4.3"
+    pngjs: "npm:^7.0.0"
+  checksum: 10/fdf4909bcd6fdf374fe7ea8a181610fb9545df1ed2933740431eef393a2e40c5478b61f250a3428feaadebab6202263e3411171d35a434c0441bcefd42d60dcb
   languageName: node
   linkType: hard
 

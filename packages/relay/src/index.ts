@@ -8,6 +8,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
+import { bakeCardPublished } from "./card-bake.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
@@ -2681,6 +2682,31 @@ app.post(
     return { ok: true, bytes: body.length };
   },
 );
+
+// Server-side bake + publish — no browser needed. Reads the room's card.png
+// and cardTitle and renders the title overlay server-side (pureimage), then
+// writes the published unfurl PNG. This is the pure-API path agents use instead
+// of clicking the "save as unfurl" disk button in CardWindow. Host-only.
+app.post("/v1/card/publish", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const room = roomFromReq(req);
+  const slug = room.id;
+  const cardPath = cardFilePath(slug);
+  if (!_existsSync(cardPath)) {
+    return reply.code(404).send({ error: "no-card", note: "generate a card first via POST /v1/card" });
+  }
+  const title = readCardTitle(slug) ?? { text: slug.toUpperCase(), x: 0.525, y: 0.838, sizeFrac: 0.055 };
+  try {
+    await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+    const bytes = await bakeCardPublished(cardPath, cardPublishedFilePath(slug), title);
+    noteAction(room, a, "card", `🖼️ ${actorName(a.session)} published the title card (server bake)`);
+    return { ok: true, bytes };
+  } catch (err) {
+    req.log.error({ err }, "server card bake failed");
+    return reply.code(500).send({ error: "bake-failed", message: (err as Error).message });
+  }
+});
 
 // Serve the per-room card PNG. Slug validated against the same regex
 // the relay uses everywhere; filename is locked to a small allowlist so

@@ -2620,7 +2620,21 @@ DELETE ${BASE}/v1/card?slug=${slugStr(slug)}
 
 Anyone in the room may reset. Doesn't cancel an in-flight job.
 
-### Publish the baked PNG
+### Publish the unfurl (server-side bake — easiest, no browser)
+
+\`\`\`
+POST ${BASE}/v1/card/publish?slug=${slugStr(slug)}
+# (no body) → { ok: true, bytes: number }
+\`\`\`
+
+The relay reads the room's \`card.png\` + \`cardTitle\` and bakes the
+title overlay server-side (matching CardWindow's look), writing the
+published unfurl PNG. **This is the recommended path for agents** — one
+authenticated call, no browser/canvas needed. Uses \`cardTitle\` if set,
+else a slug-derived default. Result served at
+\`${BASE}/v1/cards/${slugStr(slug)}/published.png\` (also the og:image).
+
+### Publish a pre-baked PNG (client-composed)
 
 \`\`\`
 POST ${BASE}/v1/card/published?slug=${slugStr(slug)}
@@ -2629,10 +2643,10 @@ Body: raw PNG bytes (the title overlay baked in)
 # → { ok: true, bytes: number }
 \`\`\`
 
-The bake itself happens client-side (CardWindow has a canvas pass
-that renders the title onto the image). Agents that want to publish
-need to either compose the PNG themselves or coordinate with a peer
-that can.
+Alternative to the server bake above: the CardWindow disk button does a
+client-side canvas pass and POSTs the result here. Use this only if you
+need pixel-exact WYSIWYG of a host's screen; otherwise prefer
+\`/v1/card/publish\`.
 `;
 }
 
