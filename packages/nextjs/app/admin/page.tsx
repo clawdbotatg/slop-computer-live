@@ -872,50 +872,6 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 960 }}>
-        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
-          Common questions
-        </h2>
-        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
-          Your standard list of questions for the pod. Edited here once; the calendar-update step pastes this into each
-          episode&apos;s description alongside the room link.
-        </p>
-        <textarea
-          value={questions}
-          onChange={e => setQuestions(e.target.value)}
-          rows={12}
-          spellCheck={false}
-          placeholder={"- who is your favorite sloperator?\n- what's on your mind?\n- your stack, how you build\n..."}
-          style={{
-            width: "100%",
-            boxSizing: "border-box",
-            fontFamily: "monospace",
-            fontSize: 13,
-            lineHeight: 1.5,
-            padding: 10,
-            background: "rgba(8,4,18,0.35)",
-            color: "var(--slop-text, #eee)",
-            border: "1px solid var(--slop-bevel-dark)",
-            resize: "vertical",
-          }}
-        />
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
-          <Button variant="primary" onClick={saveQuestions}>
-            Save questions
-          </Button>
-          {questionsStatus ? (
-            <span
-              style={{
-                fontSize: 12,
-                color: questionsStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
-              }}
-            >
-              {questionsStatus}
-            </span>
-          ) : null}
-        </div>
-      </Bevel>
-
       <Bevel style={{ padding: 16, maxWidth: 1280 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
@@ -1503,6 +1459,50 @@ const AdminPage: NextPage = () => {
             </tbody>
           </table>
         )}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Common questions
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
+          Your standard list of questions for the pod. Edited here once; the calendar-update step pastes this into each
+          episode&apos;s description alongside the room link.
+        </p>
+        <textarea
+          value={questions}
+          onChange={e => setQuestions(e.target.value)}
+          rows={12}
+          spellCheck={false}
+          placeholder={"- who is your favorite sloperator?\n- what's on your mind?\n- your stack, how you build\n..."}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            fontFamily: "monospace",
+            fontSize: 13,
+            lineHeight: 1.5,
+            padding: 10,
+            background: "rgba(8,4,18,0.35)",
+            color: "var(--slop-text, #eee)",
+            border: "1px solid var(--slop-bevel-dark)",
+            resize: "vertical",
+          }}
+        />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+          <Button variant="primary" onClick={saveQuestions}>
+            Save questions
+          </Button>
+          {questionsStatus ? (
+            <span
+              style={{
+                fontSize: 12,
+                color: questionsStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
+              }}
+            >
+              {questionsStatus}
+            </span>
+          ) : null}
+        </div>
       </Bevel>
     </>
   );
