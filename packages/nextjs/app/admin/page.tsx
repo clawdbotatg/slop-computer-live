@@ -170,6 +170,10 @@ const AdminPage: NextPage = () => {
   // when the env var isn't set — the [god] affordance is hidden in that
   // case rather than producing a link that'll fail at /auth/godmode.
   const [godPassword, setGodPassword] = useState<string | null>(null);
+  // Common questions blurb — global, host-edited; pasted into episode calendar
+  // descriptions by the calendar-update step.
+  const [questions, setQuestions] = useState("");
+  const [questionsStatus, setQuestionsStatus] = useState("");
   const rememberRoomPassword = (slug: string, password: string) => {
     const next = { ...readAdminPasswords(), [slug]: password };
     writeAdminPasswords(next);
@@ -312,6 +316,40 @@ const AdminPage: NextPage = () => {
       cancelled = true;
     };
   }, [isHost]);
+
+  // Load the common-questions blurb when the host signs in.
+  useEffect(() => {
+    if (!isHost) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${RELAY_BASE}/v1/admin/questions`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { text?: string };
+        if (!cancelled) setQuestions(data.text ?? "");
+      } catch {
+        /* relay offline — leave blank */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isHost]);
+
+  const saveQuestions = async () => {
+    setQuestionsStatus("saving…");
+    try {
+      const res = await fetch(`${RELAY_BASE}/v1/admin/questions`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: questions }),
+      });
+      setQuestionsStatus(res.ok ? "saved ✓" : `error ${res.status}`);
+    } catch {
+      setQuestionsStatus("save failed");
+    }
+  };
 
   const rotateRoomPassword = async (slug: string, newPassword: string) => {
     setCopyStatus("");
@@ -832,6 +870,50 @@ const AdminPage: NextPage = () => {
             {createRoomStatus}
           </p>
         ) : null}
+      </Bevel>
+
+      <Bevel style={{ padding: 16, maxWidth: 960 }}>
+        <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>
+          Common questions
+        </h2>
+        <p style={{ color: "var(--slop-text-muted)", margin: "6px 0 12px", fontSize: 12 }}>
+          Your standard list of questions for the pod. Edited here once; the calendar-update step pastes this into each
+          episode&apos;s description alongside the room link.
+        </p>
+        <textarea
+          value={questions}
+          onChange={e => setQuestions(e.target.value)}
+          rows={12}
+          spellCheck={false}
+          placeholder={"- who is your favorite sloperator?\n- what's on your mind?\n- your stack, how you build\n..."}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            fontFamily: "monospace",
+            fontSize: 13,
+            lineHeight: 1.5,
+            padding: 10,
+            background: "rgba(8,4,18,0.35)",
+            color: "var(--slop-text, #eee)",
+            border: "1px solid var(--slop-bevel-dark)",
+            resize: "vertical",
+          }}
+        />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+          <Button variant="primary" onClick={saveQuestions}>
+            Save questions
+          </Button>
+          {questionsStatus ? (
+            <span
+              style={{
+                fontSize: 12,
+                color: questionsStatus.endsWith("✓") ? "var(--slop-lime, #b4ff3a)" : "var(--slop-magenta, #ff3ec9)",
+              }}
+            >
+              {questionsStatus}
+            </span>
+          ) : null}
+        </div>
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 1280 }}>

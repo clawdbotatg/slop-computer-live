@@ -2708,6 +2708,43 @@ app.post("/v1/card/publish", async (req, reply) => {
   }
 });
 
+// ---- Common questions blurb (global, host-edited) -------------------------
+// One shared block of "questions Austin always asks" that the host edits in
+// the admin dashboard; the calendar-update step pastes it into each event's
+// description alongside the room link. Global (not per-room).
+function commonQuestionsFilePath(): string {
+  return `./.slop-data/common-questions.txt`;
+}
+function readCommonQuestions(): string {
+  try {
+    return _readFileSync(commonQuestionsFilePath(), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+app.get("/v1/admin/questions", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  return { text: readCommonQuestions() };
+});
+
+app.put("/v1/admin/questions", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a || !a.isHost) return reply.code(403).send({ error: "host-only" });
+  const body = (req.body ?? {}) as { text?: unknown };
+  const text = typeof body.text === "string" ? body.text : "";
+  if (text.length > 20000) return reply.code(413).send({ error: "too-large", note: "20k char cap" });
+  try {
+    await _mkdir("./.slop-data", { recursive: true });
+    await _writeFile(commonQuestionsFilePath(), text);
+  } catch (err) {
+    req.log.error({ err }, "common questions write failed");
+    return reply.code(500).send({ error: "write-failed" });
+  }
+  return { ok: true, bytes: Buffer.byteLength(text) };
+});
+
 // Serve the per-room card PNG. Slug validated against the same regex
 // the relay uses everywhere; filename is locked to a small allowlist so
 // this can never be turned into an arbitrary-file-read primitive. Lives
