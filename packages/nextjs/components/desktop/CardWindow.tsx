@@ -33,7 +33,9 @@ const TITLE_COLOR = "#3fcfff"; // --slop-cyan
 
 type Frac = { x: number; y: number };
 
-const DEFAULT_TITLE_POS: Frac = { x: 0.5, y: 0.93 };
+// Default sits up-and-right of bottom-center — the spot hosts kept dragging
+// the title to anyway. Fractions of the image content rect.
+const DEFAULT_TITLE_POS: Frac = { x: 0.525, y: 0.838 };
 const DEFAULT_TITLE_SIZE_FRAC = 0.055;
 
 type Props = {
