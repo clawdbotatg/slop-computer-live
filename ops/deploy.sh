@@ -76,6 +76,29 @@ echo ""
 echo "→ Building Next.js…"
 yarn next:build
 
+# Guard against the localhost-baked-bundle footgun. NEXT_PUBLIC_* vars are
+# inlined at build time; this build runs LOCALLY, so they come from this
+# machine's packages/nextjs/.env.local — NOT the prod systemd unit. If that
+# file is missing or wrong, every relay URL silently falls back to its
+# `?? "http://localhost:8080"` default and the shipped admin/spectator pages
+# fetch the *visitor's* own machine → "Failed to fetch". Catch it before we
+# ship rather than from a user bug report.
+echo ""
+echo "→ Verifying baked relay URLs…"
+nextstatic="packages/nextjs/.next/static"
+if grep -rq "localhost:8080\|localhost:8090" "$nextstatic" 2>/dev/null; then
+  echo "✗ Built bundle still references localhost:8080/8090 — NEXT_PUBLIC_RELAY_*"
+  echo "  fell back to dev defaults. Set the live URLs in packages/nextjs/.env.local"
+  echo "  (NEXT_PUBLIC_RELAY_HTTP_URL=https://live.slop.computer etc.) and rebuild."
+  exit 1
+fi
+if ! grep -rq "wss://live.slop.computer/signal" "$nextstatic" 2>/dev/null; then
+  echo "✗ Built bundle is missing wss://live.slop.computer/signal — the signaling"
+  echo "  URL didn't bake in. Check NEXT_PUBLIC_RELAY_URL in packages/nextjs/.env.local."
+  exit 1
+fi
+echo "✓ Bundle points at live.slop.computer (no localhost fallbacks)"
+
 echo ""
 echo "→ Building relay…"
 yarn relay:build
