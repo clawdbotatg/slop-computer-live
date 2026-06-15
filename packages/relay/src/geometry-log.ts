@@ -41,9 +41,16 @@ const FLUSH_MS = 150;
 // Only speaker windows carry this prefix (see slotIdFor in desktop.ts).
 const isMediaSlot = (id: string): boolean => id.startsWith("owner-");
 
+/** One window's actual rendered rect in the OBS-capture (god-mode) browser, in
+ *  that browser's CSS px (viewport-relative). `vw`/`vh` (the viewport) travel
+ *  with each line so the consumer maps to the recorded frame as x/vw, y/vh. */
+export type GodWindow = { id: string; x: number; y: number; w: number; h: number; z: number };
+
 export class GeometryLog {
   private pending = new Map<string, SlotPosition>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingGod: { vw: number; vh: number; windows: GodWindow[] } | null = null;
+  private godTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly filePath: string) {}
 
@@ -79,6 +86,38 @@ export class GeometryLog {
     this.write({ id, removed: true });
   }
 
+  /** GOD-FRAME geometry: the god-mode/OBS browser's snapshot of every media
+   *  window's ACTUAL rendered rect + that browser's viewport (vw/vh). This is
+   *  the recorded-frame truth — it maps to the captured pixels with no
+   *  calibration guess, unlike the slot rects recordMove logs (a different
+   *  composition). Coalesced like recordMove (the client already debounces).
+   *  Lines carry `shown:true` so they're self-sufficient; window REMOVAL still
+   *  comes from recordHide (a closed window simply drops out of the snapshot).
+   *  Consumers prefer god lines (vw/vh present) over slot lines per id. */
+  recordGod(vw: number, vh: number, windows: GodWindow[]): void {
+    const media = windows.filter(w => isMediaSlot(w.id));
+    if (!media.length) return;
+    this.pendingGod = { vw, vh, windows: media };
+    if (this.godTimer) return;
+    this.godTimer = setTimeout(() => {
+      this.godTimer = null;
+      this.flushGod();
+    }, FLUSH_MS);
+  }
+
+  private flushGod(): void {
+    if (this.godTimer) {
+      clearTimeout(this.godTimer);
+      this.godTimer = null;
+    }
+    if (!this.pendingGod) return;
+    const { vw, vh, windows } = this.pendingGod;
+    this.pendingGod = null;
+    for (const w of windows) {
+      this.write({ id: w.id, shown: true, x: w.x, y: w.y, w: w.w, h: w.h, z: w.z, vw, vh, src: "god" });
+    }
+  }
+
   private flushPending(): void {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
@@ -107,6 +146,7 @@ export class GeometryLog {
    *  number of event lines (used to skip pinning an empty log). */
   readArchive(): { content: string; sampleCount: number } | null {
     this.flushPending();
+    this.flushGod();
     let raw: string;
     try {
       raw = readFileSync(this.filePath, "utf8");
@@ -129,7 +169,12 @@ export class GeometryLog {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    if (this.godTimer) {
+      clearTimeout(this.godTimer);
+      this.godTimer = null;
+    }
     this.pending.clear();
+    this.pendingGod = null;
     try {
       mkdirSync(dirname(this.filePath), { recursive: true });
       writeFileSync(this.filePath, "", "utf8");

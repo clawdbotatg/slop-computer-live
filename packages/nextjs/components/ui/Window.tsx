@@ -29,6 +29,11 @@ const DOCK_DROP_OVERSHOOT_FRAC = 0.18;
 
 export type WindowProps = {
   title: string;
+  // Stable slot id, surfaced on the rendered root as `data-slot-id`. The
+  // god-mode/OBS browser measures these elements' on-screen rects to log the
+  // exact recorded-frame window geometry (see Desktop.tsx's god-geometry effect
+  // + the relay's geometry-log). Purely a measurement hook — no behaviour.
+  slotId?: string;
   x?: number;
   y?: number;
   width?: number;
@@ -79,6 +84,7 @@ type Rect = { x: number; y: number; width: number; height: number };
 
 export const Window = ({
   title,
+  slotId,
   x = 80,
   y = 80,
   width = 320,
@@ -365,6 +371,7 @@ export const Window = ({
     return (
       <div
         className="slop-window"
+        data-slot-id={slotId}
         style={{
           position: "absolute",
           left: x,
@@ -384,6 +391,10 @@ export const Window = ({
 
   return (
     <Rnd
+      // Unknown prop → react-rnd routes it through to the rendered root div
+      // (its `__rest` spread onto re-resizable), so `[data-slot-id]` is
+      // queryable in the DOM for god-mode geometry measurement.
+      data-slot-id={slotId}
       // While docked, render against the locally-computed bottom edge
       // instead of the synced slot y (which was set on whoever's screen
       // initiated the minimize). Dragging is disabled when docked, so

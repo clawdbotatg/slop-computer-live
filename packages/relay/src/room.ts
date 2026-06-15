@@ -19,7 +19,7 @@ import { ChessState } from "./chess.js";
 import { Clock } from "./clock.js";
 import { config } from "./config.js";
 import { DesktopState } from "./desktop.js";
-import { GeometryLog } from "./geometry-log.js";
+import { GeometryLog, type GodWindow } from "./geometry-log.js";
 import { EpisodeFlags } from "./episode.js";
 import { FileIndex } from "./files.js";
 import { Chyron } from "./chyron.js";
@@ -644,6 +644,14 @@ export class Room {
     }
     this.godViewport = v;
     this.broadcast({ type: "god_viewport", viewport: v });
+  }
+
+  /** Record the god-mode/OBS browser's snapshot of every media window's actual
+   *  rendered rect (+ its viewport) into the geometry log — the recorded-frame
+   *  geometry the clipper crops 9:16 clips from. Not broadcast; this is a
+   *  write-only sink for the episode artifact (see GeometryLog.recordGod). */
+  recordGodGeometry(vw: number, vh: number, windows: GodWindow[]): void {
+    this.geometry.recordGod(vw, vh, windows);
   }
 
   getAirState(): AirState {

@@ -2899,6 +2899,7 @@ defense-in-depth measure.
 | \`ping_report\` | \`rtt\` | n/a | publish your relay-RTT to the guest-list meter |
 | \`offer\` / \`answer\` / \`ice\` | \`to\`, \`payload\` | **WS-only** | WebRTC signaling, routed to a single peer |
 | \`god_viewport\` | \`viewport: {width, height} \\| null\` | **WS-only** | OBS-capture dashed rectangle (god-mode only) |
+| \`god_geometry\` | \`vw, vh, windows: [{id, x, y, w, h, z}]\` | **WS-only** | god-mode only; logs each media window's actual rendered rect (px, viewport-relative) → \`geometry.jsonl\` (\`src:"god"\`) for the clipper's 9:16 crop |
 | \`cursor\` | \`x, y\` | \`POST /v1/cursor\` | labelled cursor position |
 | \`click\` | \`x, y\` | \`POST /v1/click\` | colored click ripple |
 | \`card_title\` | \`title: { text, x, y, sizeFrac }\` | **WS-only** | shared title overlay on the per-room card; \`0 ≤ x,y ≤ 1\`, \`0.015 ≤ sizeFrac ≤ 0.25\` |

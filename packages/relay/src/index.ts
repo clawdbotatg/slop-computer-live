@@ -6281,6 +6281,7 @@ app.register(async function signalRoutes(fastify) {
           t === "answer" ||
           t === "ice" ||
           t === "god_viewport" ||
+          t === "god_geometry" ||
           t === "green_room";
         if (!allowed) return;
       }
@@ -6333,6 +6334,36 @@ app.register(async function signalRoutes(fastify) {
           if (!Number.isFinite(w) || !Number.isFinite(h)) return;
           if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
           room.setGodViewport({ width: Math.round(w), height: Math.round(h) });
+          return;
+        }
+        case "god_geometry": {
+          // Only the god-mode/spectator (OBS-capture) browser reports the actual
+          // rendered window rects — they're the recorded-frame geometry the
+          // clipper crops 9:16 clips from. Validate hard (it ends up in a pinned
+          // artifact) and cap the array so a peer can't bloat the log.
+          if (!isSpectator) return;
+          const vw = Number((msg as { vw?: unknown }).vw);
+          const vh = Number((msg as { vh?: unknown }).vh);
+          if (!Number.isFinite(vw) || !Number.isFinite(vh)) return;
+          if (vw <= 0 || vh <= 0 || vw > 8192 || vh > 8192) return;
+          const raw = (msg as { windows?: unknown }).windows;
+          if (!Array.isArray(raw)) return;
+          const windows: { id: string; x: number; y: number; w: number; h: number; z: number }[] = [];
+          for (const item of raw.slice(0, 32)) {
+            if (!item || typeof item !== "object") continue;
+            const o = item as Record<string, unknown>;
+            const id = o.id;
+            const x = Number(o.x);
+            const y = Number(o.y);
+            const w = Number(o.w);
+            const h = Number(o.h);
+            const z = Number(o.z);
+            if (typeof id !== "string" || !id) continue;
+            if (![x, y, w, h].every(Number.isFinite)) continue;
+            if (w <= 0 || h <= 0) continue;
+            windows.push({ id, x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), z: Number.isFinite(z) ? Math.round(z) : 0 });
+          }
+          if (windows.length) room.recordGodGeometry(Math.round(vw), Math.round(vh), windows);
           return;
         }
         case "green_room": {

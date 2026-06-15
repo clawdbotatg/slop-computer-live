@@ -1850,6 +1850,67 @@ function DesktopInner({ slug }: { slug: string }) {
     };
   }, [isGodMode, meshConnectedForGodViewport, meshSetGodViewport]);
 
+  // Spectator (god-mode / OBS capture) logs the ACTUAL rendered rect of every
+  // media window (`[data-slot-id^="owner-"]`, tagged by <Window slotId>) plus
+  // this browser's viewport. The relay persists these as the recorded-frame
+  // geometry the clipper crops 9:16 clips from — far better than recovering it
+  // with CV. getBoundingClientRect is already viewport-relative and the whole
+  // browser is captured uniformly, so a rect maps to the frame as x/vw, y/vh
+  // with no calibration constant (this is the fix for the slot-coords mismatch).
+  // Spectator-only (relay drops it otherwise); a steady-frame signature check
+  // suppresses no-op emits, and a light interval catches drags/arranges that
+  // don't fire a resize event. A handful of getBoundingClientRect + a string
+  // compare per tick — cheap.
+  const meshSendGodGeometry = mesh.sendGodGeometry;
+  useEffect(() => {
+    if (!isGodMode) return;
+    if (!meshConnectedForGodViewport) return;
+    let lastSig = "";
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const measure = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (vw <= 0 || vh <= 0) return;
+      const windows: { id: string; x: number; y: number; w: number; h: number; z: number }[] = [];
+      document.querySelectorAll<HTMLElement>('[data-slot-id^="owner-"]').forEach(el => {
+        const id = el.getAttribute("data-slot-id");
+        if (!id) return;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+        const z = Number.parseInt(window.getComputedStyle(el).zIndex, 10);
+        windows.push({
+          id,
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          z: Number.isFinite(z) ? z : 0,
+        });
+      });
+      const sig =
+        `${vw}x${vh}|` +
+        windows
+          .map(w => `${w.id}:${w.x},${w.y},${w.w},${w.h},${w.z}`)
+          .sort()
+          .join("|");
+      if (sig === lastSig) return; // steady frame — nothing moved
+      lastSig = sig;
+      meshSendGodGeometry({ vw, vh, windows });
+    };
+    const scheduled = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(measure, 200);
+    };
+    measure();
+    const interval = setInterval(measure, 1000);
+    window.addEventListener("resize", scheduled);
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      clearInterval(interval);
+      window.removeEventListener("resize", scheduled);
+    };
+  }, [isGodMode, meshConnectedForGodViewport, meshSendGodGeometry]);
+
   // Prewarm the RNNoise pipeline BEFORE the gesture, while the entry
   // gate is still up. On a cold UpgradeModal reload the first camera
   // grab otherwise blocks the video publish on a chunk import + ~150KB
@@ -3378,6 +3439,7 @@ function DesktopInner({ slug }: { slug: string }) {
             <Window
               key={`${pub.peerId}-${pub.streamId}`}
               title={titleFor(pub)}
+              slotId={slotId}
               x={slot.x}
               y={slot.y}
               width={slot.width}

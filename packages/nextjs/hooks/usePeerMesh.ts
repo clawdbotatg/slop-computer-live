@@ -1232,6 +1232,15 @@ export type PeerMeshState = {
    *  (or `null` to clear). No-op for non-spectators — the relay drops
    *  the message either way. */
   setGodViewport: (v: { width: number; height: number } | null) => void;
+  /** Spectator-only: log the OBS-capture browser's actual rendered window rects
+   *  (px, viewport-relative) + its viewport, so the clipper can crop 9:16 clips
+   *  from the true recorded-frame geometry. No-op for non-spectators (the relay
+   *  drops it). Fire-and-forget. */
+  sendGodGeometry: (payload: {
+    vw: number;
+    vh: number;
+    windows: { id: string; x: number; y: number; w: number; h: number; z: number }[];
+  }) => void;
   /** Broadcast air sign for this room, derived by the relay. Every viewer
    *  sees the same value; the menubar renders it as a radio sign. */
   airState: AirState;
@@ -2399,6 +2408,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     (v: { width: number; height: number } | null) => {
       setGodViewportState(v);
       send({ type: "god_viewport", viewport: v });
+    },
+    [send],
+  );
+
+  // Spectator (god-mode) broadcast of the ACTUAL rendered window rects in the
+  // OBS-capture browser (px, viewport-relative) plus this browser's viewport.
+  // The relay logs these as the recorded-frame geometry the clipper crops 9:16
+  // clips from — the whole browser is captured uniformly, so a rect maps to the
+  // frame with no calibration guess (x/vw, y/vh). Relay drops it for
+  // non-spectators; fire-and-forget like cursor, no optimistic state.
+  const sendGodGeometry = useCallback(
+    (payload: {
+      vw: number;
+      vh: number;
+      windows: { id: string; x: number; y: number; w: number; h: number; z: number }[];
+    }) => {
+      send({ type: "god_geometry", ...payload });
     },
     [send],
   );
@@ -4001,6 +4027,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setChyron,
     godViewport,
     setGodViewport,
+    sendGodGeometry,
     airState,
     greenRoom,
     setGreenRoom,
