@@ -5765,6 +5765,199 @@ app.post("/admin/generate-clips", async (req, reply) => {
   return reply.send(clipJobStream(job));
 });
 
+// ── Custom clip (--clip-at): render ONE operator-chosen window ───────────────
+// Unlike /admin/generate-clips this does NOT mine the episode, NOT judge, and —
+// crucially — NOT publish: it spawns the clipper with `--clip-at START-END`,
+// which writes a single 9:16 clip into out/<slug>/custom/ plus a custom-clip.json
+// descriptor, touching neither the manifest nor IPFS. The rendered file is then
+// streamed back to the admin via /admin/clip-file for preview + download.
+type CustomClipDescriptor = {
+  slug: string;
+  title: string;
+  start: number;
+  end: number;
+  duration?: number;
+  dir: string;
+  file?: string; // landscape mp4 (custom-dir-relative filename)
+  mobileFile?: string; // 9:16 stacked-tile mp4
+  altMobileFile?: string; // ALT 9:16 take
+  srt?: string;
+  speaker?: string;
+  generatedAt: string;
+};
+type CustomClipJob = {
+  slug: string;
+  status: "running" | "done" | "error";
+  lines: string[];
+  subscribers: Set<(ev: Record<string, unknown>) => void>;
+  descriptor?: CustomClipDescriptor;
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+};
+const customClipJobs = new Map<string, CustomClipJob>();
+
+const customEmit = (job: CustomClipJob, ev: Record<string, unknown>) => {
+  if (ev.phase === "log" && typeof ev.line === "string") {
+    job.lines.push(ev.line);
+    if (job.lines.length > CLIP_LOG_CAP) job.lines.splice(0, job.lines.length - CLIP_LOG_CAP);
+  }
+  for (const fn of [...job.subscribers]) fn(ev);
+};
+
+const clipFileUrl = (slug: string, name: string) =>
+  `/admin/clip-file?slug=${encodeURIComponent(slug)}&name=${encodeURIComponent(name)}`;
+
+// The terminal `done` event: hands the client relay URLs for the rendered files
+// (it fetches them with credentials, makes a blob URL for the <video> + download).
+const customDoneEvent = (job: CustomClipJob): Record<string, unknown> => {
+  const d = job.descriptor;
+  return {
+    phase: "done",
+    title: d?.title,
+    start: d?.start,
+    end: d?.end,
+    duration: d?.duration,
+    speaker: d?.speaker,
+    name: d?.mobileFile ?? d?.file,
+    mobile: d?.mobileFile ? clipFileUrl(job.slug, d.mobileFile) : undefined,
+    altMobile: d?.altMobileFile ? clipFileUrl(job.slug, d.altMobileFile) : undefined,
+    landscape: d?.file ? clipFileUrl(job.slug, d.file) : undefined,
+  };
+};
+
+const startCustomClipJob = (slug: string, startSec: number, endSec: number, title: string | undefined, researchContext?: string): CustomClipJob => {
+  const job: CustomClipJob = { slug, status: "running", lines: [], subscribers: new Set(), startedAt: Date.now() };
+  customClipJobs.set(slug, job);
+  void (async () => {
+    try {
+      const { spawn } = await import("node:child_process");
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const bin = join(config.clipperDir, "node_modules", ".bin", "tsx");
+      const env = researchContext ? { ...process.env, CLIPPER_RESEARCH: researchContext } : process.env;
+      const cliArgs = ["src/index.ts", slug, "--clip-at", `${startSec}-${endSec}`];
+      if (title) cliArgs.push("--clip-title", title);
+      const child = spawn(bin, cliArgs, { cwd: config.clipperDir, env });
+
+      let buf = "";
+      const pump = (d: Buffer) => {
+        buf += d.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\s+$/, "");
+          buf = buf.slice(nl + 1);
+          if (line) customEmit(job, { phase: "log", line });
+        }
+      };
+      child.stdout?.on("data", pump);
+      child.stderr?.on("data", pump);
+      const code: number = await new Promise(res => child.on("close", c => res(c ?? 0)));
+      if (buf.trim()) customEmit(job, { phase: "log", line: buf.trim() });
+      if (code !== 0) throw new Error(`clipper exited ${code}`);
+      let descriptor: CustomClipDescriptor;
+      try {
+        descriptor = JSON.parse(await readFile(join(config.clipperDir, "out", slug, "custom-clip.json"), "utf8")) as CustomClipDescriptor;
+      } catch {
+        throw new Error("clipper finished but wrote no custom-clip.json");
+      }
+      job.status = "done";
+      job.descriptor = descriptor;
+      job.finishedAt = Date.now();
+      customEmit(job, customDoneEvent(job));
+    } catch (err) {
+      app.log.error({ err }, "custom clip failed");
+      job.status = "error";
+      job.error = err instanceof Error ? err.message : String(err);
+      job.finishedAt = Date.now();
+      customEmit(job, { phase: "error", message: job.error });
+    }
+  })();
+  return job;
+};
+
+const customClipStream = (job: CustomClipJob): Readable => {
+  const stream = new Readable({ read() {} });
+  const writeEvent = (ev: Record<string, unknown>) => stream.push(JSON.stringify(ev) + "\n");
+  writeEvent({ phase: "starting", slug: job.slug });
+  if (job.status === "running") {
+    for (const line of job.lines) writeEvent({ phase: "log", line });
+    const sub = (ev: Record<string, unknown>) => {
+      writeEvent(ev);
+      if (ev.phase === "done" || ev.phase === "error") {
+        job.subscribers.delete(sub);
+        stream.push(null);
+      }
+    };
+    job.subscribers.add(sub);
+    stream.on("close", () => job.subscribers.delete(sub));
+    return stream;
+  }
+  if (job.status === "done") writeEvent(customDoneEvent(job));
+  else writeEvent({ phase: "error", message: job.error });
+  stream.push(null);
+  return stream;
+};
+
+app.post("/admin/clip-at", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
+  const q = req.query as { slug?: string };
+  const slug = String(q.slug ?? "").trim();
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad or missing ?slug" });
+  const body = (req.body ?? {}) as { start?: unknown; end?: unknown; title?: unknown };
+  const startSec = Number(body.start);
+  const endSec = Number(body.end);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || startSec < 0 || endSec <= startSec)
+    return reply.code(400).send({ error: "start/end must be seconds with end > start ≥ 0" });
+  if (endSec - startSec > 600) return reply.code(400).send({ error: "window too long (max 600s)" });
+  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 120) : undefined;
+
+  // One custom render per slug at a time; a request while one runs re-attaches
+  // to it (the UI disables the button meanwhile, so params won't differ).
+  let job = customClipJobs.get(slug);
+  if (!job || job.status !== "running") {
+    job = startCustomClipJob(slug, startSec, endSec, title, researchContextForRoom(roomFromReq(req)));
+  }
+
+  reply.header("Content-Type", "application/x-ndjson");
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Accel-Buffering", "no");
+  return reply.send(customClipStream(job));
+});
+
+// Stream a rendered custom-clip file (mp4 / srt) from out/<slug>/custom/ back to
+// the admin. Host-gated and locked to a single safe filename — no path traversal,
+// no escaping the custom dir.
+app.get("/admin/clip-file", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
+  const q = req.query as { slug?: string; name?: string };
+  const slug = String(q.slug ?? "").trim();
+  const name = String(q.name ?? "").trim();
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad slug" });
+  if (!name || name.includes("/") || name.includes("..") || !/^[A-Za-z0-9._-]+$/.test(name))
+    return reply.code(400).send({ error: "bad name" });
+  const { join } = await import("node:path");
+  const { createReadStream } = await import("node:fs");
+  const { stat } = await import("node:fs/promises");
+  const filePath = join(config.clipperDir, "out", slug, "custom", name);
+  try {
+    const s = await stat(filePath);
+    if (!s.isFile()) return reply.code(404).send({ error: "not found" });
+    const lower = name.toLowerCase();
+    const type = lower.endsWith(".mp4") ? "video/mp4" : lower.endsWith(".srt") ? "application/x-subrip" : "application/octet-stream";
+    reply.header("Content-Type", type);
+    reply.header("Content-Length", String(s.size));
+    reply.header("Cache-Control", "no-store");
+    return reply.send(createReadStream(filePath));
+  } catch {
+    return reply.code(404).send({ error: "not found" });
+  }
+});
+
 app.get("/admin/peers", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
