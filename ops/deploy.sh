@@ -83,21 +83,29 @@ yarn next:build
 # `?? "http://localhost:8080"` default and the shipped admin/spectator pages
 # fetch the *visitor's* own machine → "Failed to fetch". Catch it before we
 # ship rather than from a user bug report.
+#
+# We assert the *presence* of the resolved live URLs, not the *absence* of
+# localhost: when the env IS set, `EXPR ?? "http://localhost:8080"` inlines to
+# `"https://live.slop.computer" ?? "http://localhost:8080"` and the minifier
+# leaves the dead fallback literal in a couple of chunks — harmless, but it
+# means an absence check false-positives. These wss://live.slop.computer
+# literals can ONLY appear when NEXT_PUBLIC_RELAY_URL / _BROWSER_HOST_URL baked
+# in (their code fallbacks are ws://slop.computer/signal and ws://localhost:8090).
 echo ""
 echo "→ Verifying baked relay URLs…"
 nextstatic="packages/nextjs/.next/static"
-if grep -rq "localhost:8080\|localhost:8090" "$nextstatic" 2>/dev/null; then
-  echo "✗ Built bundle still references localhost:8080/8090 — NEXT_PUBLIC_RELAY_*"
-  echo "  fell back to dev defaults. Set the live URLs in packages/nextjs/.env.local"
-  echo "  (NEXT_PUBLIC_RELAY_HTTP_URL=https://live.slop.computer etc.) and rebuild."
-  exit 1
-fi
-if ! grep -rq "wss://live.slop.computer/signal" "$nextstatic" 2>/dev/null; then
-  echo "✗ Built bundle is missing wss://live.slop.computer/signal — the signaling"
-  echo "  URL didn't bake in. Check NEXT_PUBLIC_RELAY_URL in packages/nextjs/.env.local."
-  exit 1
-fi
-echo "✓ Bundle points at live.slop.computer (no localhost fallbacks)"
+for needle in "wss://live.slop.computer/signal" "wss://live.slop.computer/browser"; do
+  if ! grep -rq "$needle" "$nextstatic" 2>/dev/null; then
+    echo "✗ Built bundle is missing '$needle' — a NEXT_PUBLIC_RELAY_* var fell"
+    echo "  back to its dev default. Set the live URLs in packages/nextjs/.env.local:"
+    echo "    NEXT_PUBLIC_RELAY_HTTP_URL=https://live.slop.computer"
+    echo "    NEXT_PUBLIC_RELAY_URL=wss://live.slop.computer/signal"
+    echo "    NEXT_PUBLIC_BROWSER_HOST_URL=wss://live.slop.computer/browser"
+    echo "  then rebuild."
+    exit 1
+  fi
+done
+echo "✓ Bundle resolves to live.slop.computer relay/browser URLs"
 
 echo ""
 echo "→ Building relay…"
