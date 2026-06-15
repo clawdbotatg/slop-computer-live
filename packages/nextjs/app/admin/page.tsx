@@ -139,6 +139,7 @@ const AdminPage: NextPage = () => {
     slug: string;
     createdAt: number | null;
     paidUntil: number | null;
+    gate: "password" | "wallet-signers";
     hot: boolean;
     sttOn: boolean;
   };
@@ -375,6 +376,38 @@ const AdminPage: NextPage = () => {
     } catch (e) {
       setCopyStatus((e as Error).message || "network error");
       return false;
+    }
+  };
+
+  // Flip a room between password and wallet-signer access. Upgrading to
+  // "wallet-signers" only works once the room has a deployed multisig
+  // with signers AND the calling admin is one of them — the relay
+  // enforces both (409 no-wallet-signers / 403 not-a-signer), surfaced
+  // here so the operator knows to deploy the wallet in-room first.
+  const setRoomGate = async (slug: string, mode: "password" | "wallet-signers") => {
+    setCopyStatus("");
+    try {
+      const res = await fetch(`${RELAY_BASE}/v1/rooms/${encodeURIComponent(slug)}/gate`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        const hint =
+          j.error === "no-wallet-signers"
+            ? "deploy this room's multisig (with signers) first"
+            : j.error === "not-a-signer"
+              ? "your admin wallet isn't a signer on this room's multisig"
+              : (j.error ?? `error ${res.status}`);
+        setCopyStatus(hint);
+        return;
+      }
+      setCopyStatus(mode === "wallet-signers" ? `/${slug} → wallet-signer access ✓` : `/${slug} → password access ✓`);
+      void fetchRooms();
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
     }
   };
 
@@ -664,11 +697,28 @@ const AdminPage: NextPage = () => {
     name: string;
     configured: boolean;
     running: boolean;
+    desired?: boolean;
     startedAt?: string;
+    attempt?: number;
+    reconnecting?: boolean;
+  };
+  type FanoutEvent = {
+    ts: string;
+    id: string;
+    event: string;
+    code?: number | null;
+    signal?: string | null;
+    uptimeSec?: number;
+    expected?: boolean;
+    attempt?: number;
+    delayMs?: number;
+    error?: string;
+    tail?: string[];
   };
   const [stream, setStream] = useState<StreamSession | null>(null);
   const [fanouts, setFanouts] = useState<Fanout[]>([]);
   const [fanoutBusy, setFanoutBusy] = useState<string | null>(null);
+  const [fanoutEvents, setFanoutEvents] = useState<FanoutEvent[]>([]);
 
   // ---- Services health -----------------------------------------------------
   // Poll each /health URL every 5s. Services without a healthUrl render as
@@ -720,6 +770,14 @@ const AdminPage: NextPage = () => {
         if (!cancelled) setFanouts(data.fanouts ?? []);
       } catch {
         /* relay offline — leave list empty */
+      }
+      try {
+        const res = await fetch(`${RELAY_BASE}/admin/fanouts/history`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setFanoutEvents(data.events ?? []);
+      } catch {
+        /* relay offline — leave history as-is */
       }
     };
     tick();
@@ -954,6 +1012,32 @@ const AdminPage: NextPage = () => {
                 >
                   [schedule]
                 </a>
+                {r.slug !== DEFAULT_SLUG ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void setRoomGate(r.slug, r.gate === "wallet-signers" ? "password" : "wallet-signers")
+                    }
+                    className="slop-link"
+                    title={
+                      r.gate === "wallet-signers"
+                        ? "wallet-signer access is ON — click to switch back to password"
+                        : "upgrade: only this room's multisig signers can enter (deploy the wallet in-room first)"
+                    }
+                    style={{
+                      background: "transparent",
+                      border: 0,
+                      padding: 0,
+                      margin: 0,
+                      fontFamily: "var(--slop-font-display)",
+                      textTransform: "lowercase",
+                      cursor: "pointer",
+                      color: r.gate === "wallet-signers" ? "var(--slop-lime, #b4ff3a)" : undefined,
+                    }}
+                  >
+                    {r.gate === "wallet-signers" ? "[wallet-gate: on]" : "[wallet-gate: off]"}
+                  </button>
+                ) : null}
                 {r.slug === DEFAULT_SLUG ? (
                   <button
                     type="button"
@@ -1208,25 +1292,31 @@ const AdminPage: NextPage = () => {
                       fontSize: 10,
                       fontFamily: "var(--slop-font-display)",
                       letterSpacing: "0.05em",
-                      color: f.running ? "#fff" : "var(--slop-text-muted)",
-                      background: f.running ? "var(--slop-magenta, #ff3ec9)" : "transparent",
-                      border: f.running ? "0" : "1px solid var(--slop-bevel-dark)",
+                      color: f.running ? "#fff" : f.reconnecting ? "#1a1a1a" : "var(--slop-text-muted)",
+                      background: f.running
+                        ? "var(--slop-magenta, #ff3ec9)"
+                        : f.reconnecting
+                          ? "#ffb340"
+                          : "transparent",
+                      border: f.running || f.reconnecting ? "0" : "1px solid var(--slop-bevel-dark)",
                       minWidth: 60,
                       textAlign: "center",
                     }}
                   >
-                    {f.running ? "LIVE" : f.configured ? "OFF" : "UNCONFIGURED"}
+                    {f.running ? "LIVE" : f.reconnecting ? "RECONNECT" : f.configured ? "OFF" : "UNCONFIGURED"}
                   </span>
                   <span style={{ fontWeight: 600 }}>{f.name}</span>
-                  {f.startedAt ? (
+                  {f.running && f.startedAt ? (
                     <span style={{ color: "var(--slop-text-muted)", fontSize: 11 }}>
                       since {new Date(f.startedAt).toLocaleTimeString()}
                     </span>
+                  ) : f.reconnecting ? (
+                    <span style={{ color: "#ffb340", fontSize: 11 }}>self-healing — retry #{f.attempt ?? 1}</span>
                   ) : null}
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   {f.configured ? (
-                    f.running ? (
+                    f.running || f.reconnecting || f.desired ? (
                       <Button onClick={() => toggleFanout(f.id, "stop")} disabled={fanoutBusy === f.id}>
                         Stop
                       </Button>
@@ -1247,6 +1337,61 @@ const AdminPage: NextPage = () => {
             ))}
           </div>
         )}
+        {fanoutEvents.length > 0 ? (
+          <details style={{ marginTop: 14 }}>
+            <summary
+              style={{
+                cursor: "pointer",
+                fontSize: 12,
+                fontFamily: "var(--slop-font-display)",
+                letterSpacing: "0.05em",
+                color: "var(--slop-text-muted)",
+              }}
+            >
+              RECENT FANOUT EVENTS ({fanoutEvents.length})
+            </summary>
+            <div
+              style={{
+                marginTop: 8,
+                maxHeight: 220,
+                overflowY: "auto",
+                fontFamily: "var(--slop-font-mono, monospace)",
+                fontSize: 11,
+                lineHeight: 1.5,
+              }}
+            >
+              {[...fanoutEvents].reverse().map((ev, i) => {
+                const crash = ev.event === "exit" && ev.expected === false;
+                const color = crash
+                  ? "#ff5c5c"
+                  : ev.event === "respawn" || ev.event === "start" || ev.event === "restore"
+                    ? "#3ec9ff"
+                    : ev.event === "respawn-scheduled"
+                      ? "#ffb340"
+                      : "var(--slop-text-muted)";
+                const bits = [
+                  new Date(ev.ts).toLocaleString(),
+                  ev.id,
+                  ev.event,
+                  ev.attempt != null ? `#${ev.attempt}` : "",
+                  ev.delayMs != null ? `in ${Math.round(ev.delayMs / 1000)}s` : "",
+                  ev.code != null ? `code ${ev.code}` : "",
+                  ev.signal ? ev.signal : "",
+                  ev.uptimeSec != null ? `up ${ev.uptimeSec}s` : "",
+                  ev.error ?? "",
+                ].filter(Boolean);
+                return (
+                  <div key={`${ev.ts}-${i}`} style={{ color, whiteSpace: "pre-wrap" }}>
+                    {bits.join("  ")}
+                    {ev.tail && ev.tail.length ? (
+                      <div style={{ color: "var(--slop-text-muted)", paddingLeft: 12 }}>↳ {ev.tail.join(" / ")}</div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        ) : null}
       </Bevel>
 
       <Bevel style={{ padding: 16, maxWidth: 960 }}>

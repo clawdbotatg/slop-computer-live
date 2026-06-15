@@ -49,13 +49,21 @@ function verifyPassword(plaintext: string, stored: string): boolean {
   return timingSafeEqual(computed, expected);
 }
 
+// "password" — the classic shared-secret gate (default for every room).
+// "wallet-signers" — access is whoever is a signer on the room's current
+// multisig. A room is *upgraded* from "password" to "wallet-signers" by a
+// host once a wallet exists; the password hash is kept (so the room stays
+// "claimed" and the upgrade is reversible) but no longer gates entry.
+export type RoomGateMode = "password" | "wallet-signers";
+
 type RoomAuthState = {
   passwordHash: string | null;
   createdAt: number;
+  gateMode: RoomGateMode;
 };
 
 export class RoomAuth {
-  private state: RoomAuthState = { passwordHash: null, createdAt: 0 };
+  private state: RoomAuthState = { passwordHash: null, createdAt: 0, gateMode: "password" };
   private loaded = false;
 
   constructor(private readonly filePath: string) {}
@@ -69,6 +77,7 @@ export class RoomAuth {
       this.state = {
         passwordHash: typeof parsed.passwordHash === "string" ? parsed.passwordHash : null,
         createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
+        gateMode: parsed.gateMode === "wallet-signers" ? "wallet-signers" : "password",
       };
     } catch {
       /* fresh — no password yet */
@@ -94,9 +103,23 @@ export class RoomAuth {
     if (!plaintext) throw new Error("empty password");
     this.load();
     this.state = {
+      ...this.state,
       passwordHash: hashPassword(plaintext),
       createdAt: this.state.createdAt || Date.now(),
     };
+    this.persist();
+  }
+
+  /** Which gate controls entry to this room. Defaults to "password". */
+  gateMode(): RoomGateMode {
+    this.load();
+    return this.state.gateMode;
+  }
+
+  setGateMode(mode: RoomGateMode): void {
+    this.load();
+    if (this.state.gateMode === mode) return;
+    this.state.gateMode = mode;
     this.persist();
   }
 

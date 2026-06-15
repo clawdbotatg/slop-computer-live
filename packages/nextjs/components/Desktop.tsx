@@ -52,6 +52,7 @@ import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
 import {
   BandFlag,
+  Bevel,
   Button,
   ClickRipple,
   DesktopBackground,
@@ -481,6 +482,9 @@ function DesktopInner({ slug }: { slug: string }) {
   // checking), `false` = need password, `true` = good. The debug
   // sandbox slug always reports true.
   const [roomAuthed, setRoomAuthed] = useState<boolean | null>(slug === DEFAULT_SLUG ? true : null);
+  // Which gate this room uses. "wallet-signers" rooms skip the password
+  // prompt entirely and rely on the signal-socket signer check instead.
+  const [roomGate, setRoomGate] = useState<"password" | "wallet-signers">("password");
   // godMode auth is two-step: the room password gate sets the room
   // cookie, THEN we trade the godMode password for a spectator session.
   // `godModeBusy` keeps the JoinCard from flashing between those steps.
@@ -499,8 +503,18 @@ function DesktopInner({ slug }: { slug: string }) {
       },
     )
       .then(r => (r.ok ? r.json() : { authed: false }))
-      .then((data: { authed?: boolean }) => {
-        if (!cancelled) setRoomAuthed(data.authed === true);
+      .then((data: { authed?: boolean; gate?: string }) => {
+        if (cancelled) return;
+        // Wallet-signer rooms have no password to enter — entry is gated
+        // at the signal socket by multisig-signer membership. Clear the
+        // password barrier here and let the JoinCard/SIWE flow proceed;
+        // a non-signer is turned away by the WS close (-> mesh.connectError).
+        if (data.gate === "wallet-signers") {
+          setRoomGate("wallet-signers");
+          setRoomAuthed(true);
+          return;
+        }
+        setRoomAuthed(data.authed === true);
       })
       .catch(() => {
         if (!cancelled) setRoomAuthed(false);
@@ -4052,6 +4066,65 @@ function DesktopInner({ slug }: { slug: string }) {
           }}
         >
           <PasswordGate slug={slug} defaultPassword={inviteFromUrl} onAccepted={() => setRoomAuthed(true)} />
+        </div>
+      ) : null}
+
+      {/* Wallet-signer gate refusal. A "wallet-signers" room turned this
+          signed-in wallet away at the signal socket (4407 not-a-signer):
+          the connected address isn't a signer on the room's multisig.
+          Terminal — there's no password to try; an existing signer has to
+          add this address to the wallet. */}
+      {!loading && session.authenticated && roomGate === "wallet-signers" && mesh.connectError === "not-a-signer" ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            background: "rgba(8,4,18,0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Bevel style={{ padding: 22, maxWidth: 380, width: "100%", textAlign: "center" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo-mark.png"
+              alt="slop"
+              width={64}
+              height={64}
+              style={{ display: "block", margin: "0 auto 14px", imageRendering: "pixelated" }}
+            />
+            <h2
+              style={{
+                margin: 0,
+                marginBottom: 10,
+                fontFamily: "var(--slop-font-display)",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                fontSize: 18,
+              }}
+            >
+              Members only
+            </h2>
+            <p style={{ color: "var(--slop-text-muted)", fontSize: 12, marginTop: 0, marginBottom: 6 }}>
+              Room <strong>{slug}</strong> is gated to its wallet signers.
+            </p>
+            <p style={{ color: "var(--slop-text-muted)", fontSize: 12, marginTop: 0, marginBottom: 14 }}>
+              {session.address ? (
+                <>
+                  <code style={{ fontSize: 11 }}>
+                    {session.address.slice(0, 6)}…{session.address.slice(-4)}
+                  </code>{" "}
+                  isn&apos;t a signer on this room&apos;s multisig. Ask an existing signer to add you, then reload.
+                </>
+              ) : (
+                <>Connect the wallet that&apos;s a signer on this room&apos;s multisig.</>
+              )}
+            </p>
+          </Bevel>
         </div>
       ) : null}
 

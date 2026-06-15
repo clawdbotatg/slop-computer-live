@@ -11,7 +11,16 @@ import { writeFileAtomic } from "./fs-atomic.js";
 import { bakeCardPublished } from "./card-bake.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
-import { isKnownFanoutId, listFanouts, restoreFanouts, shutdownAllFanouts, startFanout, stopFanout } from "./fanout.js";
+import {
+  fanoutEvents,
+  isKnownFanoutId,
+  listFanouts,
+  restoreFanouts,
+  setFanoutLogger,
+  shutdownAllFanouts,
+  startFanout,
+  stopFanout,
+} from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
 import { finalizeRecording, findLatestRecording, isFinalizeInFlight, regenerateEpisodeMeta } from "./recordings.js";
 import {
@@ -4784,6 +4793,18 @@ app.post<{ Body: InviteBody }>("/auth/invite", PASSWORD_RATE_LIMIT, async (req, 
 
 const ROOM_COOKIE_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
 
+// Wallet-signer gate: is `address` a signer on this room's current
+// multisig? Reads the relay's mirror (wallet.json) — no on-chain call.
+// Address comparison is case-insensitive (signers are stored lowercased,
+// but session addresses arrive in whatever case SIWE resolved them).
+function isRoomSigner(room: Room, address: string | null): boolean {
+  if (!address) return false;
+  const cur = room.wallet.getCurrent();
+  if (!cur) return false;
+  const want = address.toLowerCase();
+  return cur.signers.some(s => s.address.toLowerCase() === want);
+}
+
 function hasValidRoomCookie(req: { cookies?: Record<string, string | undefined> }, slug: string): boolean {
   if (slug === DEFAULT_SLUG && isInvited(req.cookies?.[INVITE_COOKIE])) {
     // Backwards-compat: pre-Phase-5 users with a slop_invite cookie keep
@@ -4836,6 +4857,46 @@ app.post<{ Params: { slug: string }; Body: RoomPasswordBody }>("/v1/rooms/:slug/
   return { ok: true };
 });
 
+// Host-only: switch a room's access gate between "password" and
+// "wallet-signers". Upgrading to wallet-signers requires the room to
+// already have a deployed multisig with signers, and the caller must be
+// one of those signers — otherwise the flip would lock everyone out
+// (the room would have no valid entrants). Downgrading back to password
+// is always allowed (the original password hash was never discarded).
+type RoomGateBody = { mode?: unknown };
+app.post<{ Params: { slug: string }; Body: RoomGateBody }>("/v1/rooms/:slug/gate", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const mode = req.body?.mode;
+  if (mode !== "password" && mode !== "wallet-signers") {
+    return reply.code(400).send({ error: "bad-mode" });
+  }
+  const room = getOrCreateRoom(req.params.slug);
+  if (!room.auth.hasPassword()) return reply.code(404).send({ error: "no-such-room" });
+  if (mode === "wallet-signers") {
+    const cur = room.wallet.getCurrent();
+    if (!cur || cur.signers.length === 0) {
+      return reply.code(409).send({ error: "no-wallet-signers" });
+    }
+    if (!isRoomSigner(room, auth.address)) {
+      return reply.code(403).send({ error: "not-a-signer" });
+    }
+  }
+  room.auth.setGateMode(mode);
+  room.transcript.appendAction({
+    kind: "room",
+    address: auth.address.toLowerCase(),
+    handle: null,
+    text:
+      mode === "wallet-signers"
+        ? `🔑 ${actorName({ address: auth.address })} upgraded this room to wallet-signer access`
+        : `🔒 ${actorName({ address: auth.address })} switched this room back to password access`,
+    meta: { slug: req.params.slug, gate: mode },
+  });
+  return { ok: true, slug: req.params.slug, gate: mode };
+});
+
 type RoomAuthBody = { password?: unknown };
 
 // Public: verify a room's password and get back a slug-scoped cookie.
@@ -4868,6 +4929,7 @@ app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/auth", async (req, reply)
   return {
     slug: req.params.slug,
     exists: room.auth.hasPassword(),
+    gate: room.auth.gateMode(),
     authed: hasValidRoomCookie(req, req.params.slug),
   };
 });
@@ -5741,10 +5803,12 @@ app.get("/admin/rooms", async (req, reply) => {
   const rooms = Array.from(slugSet)
     .map(slug => {
       let createdAt: number | null = null;
+      let gate: "password" | "wallet-signers" = "password";
       try {
         const raw = fs.readFileSync(`${dir}/${slug}/auth.json`, "utf8");
-        const parsed = JSON.parse(raw) as { createdAt?: number };
+        const parsed = JSON.parse(raw) as { createdAt?: number; gateMode?: string };
         if (typeof parsed.createdAt === "number") createdAt = parsed.createdAt;
+        if (parsed.gateMode === "wallet-signers") gate = "wallet-signers";
       } catch {
         /* unreadable auth.json — slug still claimed, just no createdAt */
       }
@@ -5770,7 +5834,7 @@ app.get("/admin/rooms", async (req, reply) => {
       } catch {
         /* no episode.json — sttOn defaults to true, same as a fresh room */
       }
-      return { slug, createdAt, paidUntil, hot: hotSlugs.has(slug), sttOn };
+      return { slug, createdAt, paidUntil, gate, hot: hotSlugs.has(slug), sttOn };
     })
     .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   return { rooms };
@@ -5904,9 +5968,15 @@ app.post<{ Params: { id: string } }>("/admin/fanouts/:id/start", async (req, rep
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   const id = req.params.id;
   if (!isKnownFanoutId(id)) return reply.code(400).send({ error: "Unknown destination" });
-  const result = startFanout(id, line => app.log.info(line));
+  const result = startFanout(id);
   if (!result.ok) return reply.code(400).send({ error: result.error });
   return { ok: true, fanouts: listFanouts() };
+});
+
+app.get("/admin/fanouts/history", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  return { events: fanoutEvents(200) };
 });
 
 app.post<{ Params: { id: string } }>("/admin/fanouts/:id/stop", async (req, reply) => {
@@ -6040,14 +6110,25 @@ app.register(async function signalRoutes(fastify) {
       socket.close(4404, "room-not-found");
       return;
     }
-    // Password gate. Everyone — including admins — needs the room
-    // cookie for any slug that has a password set. The previous
-    // adminBypass shortcut here meant admins could enter their own
-    // claimed rooms without proving they remembered the password,
-    // which silently broke the "unique-per-room password" invariant.
-    // Admins who lock themselves out should rotate via
-    // POST /v1/rooms/:slug/password instead.
-    if (room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
+    // Access gate. Two modes (see RoomGateMode):
+    //  - "wallet-signers": entry is whoever is a signer on the room's
+    //    current multisig. The session address is already SIWE-verified
+    //    above, so we just check membership of the mirrored signer set.
+    //    Admins still bypass (operator should never be locked out).
+    //  - "password" (default): everyone — including admins — needs the
+    //    room cookie for any slug that has a password set. The previous
+    //    adminBypass shortcut meant admins could enter claimed rooms
+    //    without proving they knew the password, silently breaking the
+    //    "unique-per-room password" invariant. Admins who lock themselves
+    //    out should rotate via POST /v1/rooms/:slug/password instead.
+    if (room.auth.gateMode() === "wallet-signers") {
+      const isAdmin = session.address ? isAdminAddress(session.address) : false;
+      if (!isAdmin && !isRoomSigner(room, session.address)) {
+        send(socket, { type: "error", error: "not-a-signer", slug });
+        socket.close(4407, "not-a-signer");
+        return;
+      }
+    } else if (room.auth.hasPassword() && !hasValidRoomCookie(req, slug)) {
       send(socket, { type: "error", error: "room-auth-required", slug });
       socket.close(4403, "room-auth-required");
       return;
@@ -7479,8 +7560,9 @@ app
     // load (peer-join nudge) or within 30s via the watchdog above.
     kickChessAI(getOrCreateRoom(DEFAULT_SLUG));
     // Restore any fanouts the admin had running before this restart.
-    // One attempt per destination — see fanout.ts/restoreFanouts.
-    restoreFanouts(line => app.log.info(line));
+    // The supervisor retries failures with backoff — see fanout.ts.
+    setFanoutLogger(line => app.log.info(line));
+    restoreFanouts();
   })
   .catch(err => {
     app.log.error(err);

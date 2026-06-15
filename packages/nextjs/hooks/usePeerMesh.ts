@@ -1087,6 +1087,10 @@ export type PeerMeshState = {
   myId: string | null;
   peers: Peer[];
   connected: boolean;
+  // Non-null when the relay closed the signal socket for a non-retryable
+  // access reason (e.g. "not-a-signer" — the connected wallet isn't a
+  // signer on a wallet-gated room's multisig). Reconnection is suppressed.
+  connectError: string | null;
   // True once the first `hello` payload has been processed — i.e. we know
   // the authoritative slots, browsers, and publications. Use this to gate
   // any UI that would otherwise flash from a fallback to the persisted
@@ -1580,6 +1584,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [myId, setMyId] = useState<string | null>(null);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [connected, setConnected] = useState(false);
+  // Set when the relay closes the signal socket for a non-retryable
+  // access reason (e.g. wallet-signer gate: the connected wallet isn't a
+  // signer on this room's multisig). Drives a terminal "can't enter"
+  // screen instead of the silent reconnect loop. `null` = no gate error.
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [publications, setPublications] = useState<Publication[]>([]);
   const [slots, setSlots] = useState<Record<string, SlotPosition>>({});
@@ -2916,6 +2925,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       ws.onopen = () => {
         if (cancelled) return;
         setConnected(true);
+        setConnectError(null);
         ws.send(JSON.stringify({ type: "hello" }));
         pingTimer = setInterval(() => {
           if (ws.readyState !== WebSocket.OPEN) return;
@@ -3756,12 +3766,30 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = ev => {
         if (pingTimer) {
           clearInterval(pingTimer);
           pingTimer = null;
         }
         setConnected(false);
+        // Non-retryable access closes: the relay rejected this session at
+        // the room gate. Reconnecting would just loop on the same refusal,
+        // so we surface a terminal error and set `cancelled` — the normal
+        // cleanup below runs, and the `if (cancelled) return` before the
+        // reconnect timer keeps us from looping. 4407 = wallet-signer gate
+        // ("not-a-signer"); the others are the existing auth gates.
+        const GATE_CLOSE_CODES: Record<number, string> = {
+          4401: "unauthenticated",
+          4403: "room-auth-required",
+          4404: "room-not-found",
+          4407: "not-a-signer",
+          4290: "payment-required",
+        };
+        const gateReason = GATE_CLOSE_CODES[ev.code];
+        if (gateReason) {
+          setConnectError(gateReason);
+          cancelled = true;
+        }
         setBootstrapped(false);
         setMyId(null);
         myIdRef.current = null;
@@ -3910,6 +3938,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     myId,
     peers: visiblePeers,
     connected,
+    connectError,
     bootstrapped,
     remoteStreams,
     publications,
