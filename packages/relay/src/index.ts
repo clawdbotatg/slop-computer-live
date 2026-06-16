@@ -5667,7 +5667,7 @@ const clipJobEmit = (job: ClipJob, ev: Record<string, unknown>) => {
 // bgipfs, and writes out/<slug>/publish.json with the new manifest CID — which
 // we broadcast as the `done` event. The host then signs setManifest with that
 // CID (we hold no key).
-const startClipJob = (slug: string, researchContext?: string): ClipJob => {
+const startClipJob = (slug: string, researchContext?: string, force = false): ClipJob => {
   const job: ClipJob = { slug, status: "running", lines: [], subscribers: new Set(), startedAt: Date.now() };
   clipJobs.set(slug, job);
   void (async () => {
@@ -5680,7 +5680,13 @@ const startClipJob = (slug: string, researchContext?: string): ClipJob => {
       // caption passes get the same correctly-spelled proper nouns the meta pass
       // does. Absent for rooms with no research → clipper just runs without it.
       const env = researchContext ? { ...process.env, CLIPPER_RESEARCH: researchContext } : process.env;
-      const child = spawn(bin, ["src/index.ts", slug, "--vertical", "--publish", "--stitch"], { cwd: config.clipperDir, env });
+      // --force ignores every cache: re-download, RE-TRANSCRIBE (picks up the
+      // 120s-chunk fix that recovers whisper repeat-loop dead-zones), re-select,
+      // re-judge, re-render, re-publish. Slow + costs API, but the only way to
+      // pull a fixed transcript / pipeline change into an already-clipped episode.
+      const cliArgs = ["src/index.ts", slug, "--vertical", "--publish", "--stitch"];
+      if (force) cliArgs.push("--force");
+      const child = spawn(bin, cliArgs, { cwd: config.clipperDir, env });
 
       // Buffer + broadcast the clipper's stdout/stderr lines as progress.
       let buf = "";
@@ -5766,15 +5772,16 @@ app.post("/admin/generate-clips", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   if (!config.clipperDir) return reply.code(501).send({ error: "CLIPPER_DIR not configured on the relay" });
-  const q = req.query as { slug?: string; attach?: string };
+  const q = req.query as { slug?: string; attach?: string; force?: string };
   const slug = String(q.slug ?? "").trim();
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return reply.code(400).send({ error: "bad or missing ?slug" });
   const attachOnly = q.attach === "1";
+  const force = q.force === "1";
 
   let job = clipJobs.get(slug);
   if (!job || job.status !== "running") {
     if (!attachOnly) {
-      job = startClipJob(slug, researchContextForRoom(roomFromReq(req)));
+      job = startClipJob(slug, researchContextForRoom(roomFromReq(req)), force);
     } else if (!job) {
       try {
         const { readFile } = await import("node:fs/promises");
