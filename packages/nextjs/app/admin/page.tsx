@@ -1035,7 +1035,7 @@ const AdminPage: NextPage = () => {
                       color: r.gate === "wallet-signers" ? "var(--slop-lime, #b4ff3a)" : undefined,
                     }}
                   >
-                    {r.gate === "wallet-signers" ? "[wallet-gate: on]" : "[wallet-gate: off]"}
+                    {r.gate === "wallet-signers" ? "[wallet]" : "[token]"}
                   </button>
                 ) : null}
                 {r.slug === DEFAULT_SLUG ? (
