@@ -874,7 +874,15 @@ export function hibernateRoom(slug: string): boolean {
   const room = rooms.get(slug);
   if (!room) return false;
   if (room.peerCount() > 0) return false; // refuse to hibernate a room with live peers
-  room.meta.flush();
+  // A slug that was only ever *probed* (scanner bots hitting actuator-style
+  // paths like /v1/rooms/heapdump/auth) constructs an in-memory Room but is
+  // never claimed — no password, no payment, nothing on disk. Flushing it
+  // would write a meta.json and leave an empty folder behind for every bot
+  // guess. Drop these phantoms without persisting. Real rooms still flush:
+  // claimed ones have an auth.json (hasPassword), paid ones are isPaid, and
+  // any room already on disk re-flushes on its next hibernate as before.
+  const phantom = !room.auth.hasPassword() && !room.meta.isPaid() && !room.meta.hasPersistedState();
+  if (!phantom) room.meta.flush();
   // Tear down the real-time game tickers. They already self-stop when the
   // last seat frees (which happens before peerCount hits 0), so this is
   // belt-and-suspenders against a future regression in that invariant.

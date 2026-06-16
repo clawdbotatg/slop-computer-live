@@ -64,6 +64,14 @@ export class RoomMeta {
     return existsSync(filePath);
   }
 
+  /** Instance form of existsOnDisk — true once this room has been persisted.
+   *  hibernateRoom() uses it to avoid flushing (and thus materializing a
+   *  folder for) a slug that was only ever constructed in memory by a bot
+   *  probe and never claimed. */
+  hasPersistedState(): boolean {
+    return existsSync(this.filePath);
+  }
+
   getName(): string {
     this.load();
     return this.state.name;
