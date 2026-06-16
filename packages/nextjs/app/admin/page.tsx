@@ -166,6 +166,9 @@ const AdminPage: NextPage = () => {
     }
   };
   const [roomPasswords, setRoomPasswords] = useState<Record<string, string>>({});
+  // Per-slug draft for the "Set" affordance — lets a host type a password they
+  // already know (e.g. the scheduler's) to backfill the relay's plaintext.
+  const [inviteDraft, setInviteDraft] = useState<Record<string, string>>({});
   const [copyStatus, setCopyStatus] = useState<string>("");
   // GOD_MODE_PASSWORD plaintext from the relay (host-only endpoint). Null
   // when the env var isn't set — the [god] affordance is hidden in that
@@ -413,14 +416,70 @@ const AdminPage: NextPage = () => {
 
   const copyRoomLink = async (slug: string) => {
     if (typeof window === "undefined") return;
-    const password = roomPasswords[slug];
+    let password = roomPasswords[slug];
+    // Not cached on this device (e.g. the room was created server-side by the
+    // scheduler, so its plaintext never passed through this browser). Ask the
+    // relay — it now stores the plaintext invite for host retrieval — and
+    // cache the result so the next copy is instant.
+    if (!password) {
+      try {
+        const res = await fetch(`${RELAY_BASE}/v1/rooms/${encodeURIComponent(slug)}/invite`, {
+          credentials: "include",
+        });
+        if (res.ok) {
+          const j = (await res.json()) as { password?: string | null };
+          if (j.password) {
+            password = j.password;
+            rememberRoomPassword(slug, j.password);
+          }
+        }
+      } catch {
+        /* relay offline — fall through to a bare link */
+      }
+    }
     const base = `${window.location.origin}/${slug}`;
     const url = password ? `${base}?invite=${encodeURIComponent(password)}` : base;
     try {
       await navigator.clipboard.writeText(url);
-      setCopyStatus(password ? `copied /${slug} link with password ✓` : `copied /${slug} link ✓`);
+      setCopyStatus(
+        password
+          ? `copied /${slug} link with password ✓`
+          : `copied /${slug} link — no password on file (Regen or Set it)`,
+      );
     } catch {
       setCopyStatus("clipboard blocked — copy manually");
+    }
+  };
+
+  // Backfill a room's plaintext invite from a password the host already knows
+  // (e.g. the one the scheduler used). The relay verifies it against the
+  // stored hash and recovers it WITHOUT rotating, so existing shared links
+  // keep working. On success the link copy works on every device.
+  const setRoomInvite = async (slug: string, password: string) => {
+    setCopyStatus("");
+    const pw = password.trim();
+    if (!pw) {
+      setCopyStatus("password required");
+      return;
+    }
+    try {
+      const res = await fetch(`${RELAY_BASE}/v1/rooms/${encodeURIComponent(slug)}/invite`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setCopyStatus(
+          j.error === "bad-password" ? `that's not /${slug}'s password` : (j.error ?? `error ${res.status}`),
+        );
+        return;
+      }
+      rememberRoomPassword(slug, pw);
+      setCopyStatus(`saved /${slug} invite ✓`);
+    } catch (e) {
+      setCopyStatus((e as Error).message || "network error");
     }
   };
 
@@ -1146,6 +1205,33 @@ const AdminPage: NextPage = () => {
                       PASS:
                     </span>
                     <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regen</Button>
+                    {!roomPasswords[r.slug] ? (
+                      <>
+                        <input
+                          type="text"
+                          value={inviteDraft[r.slug] ?? ""}
+                          onChange={e => setInviteDraft(prev => ({ ...prev, [r.slug]: e.target.value }))}
+                          placeholder="known pw"
+                          title="paste the password this room was created with — recovers it without rotating, so existing links keep working"
+                          style={{
+                            width: 96,
+                            fontSize: 12,
+                            fontFamily: "var(--slop-font-mono, monospace)",
+                            padding: "2px 6px",
+                            background: "rgba(8,4,18,0.5)",
+                            border: "1px solid var(--slop-border, #443)",
+                            borderRadius: 4,
+                            color: "var(--slop-text, #eee)",
+                          }}
+                        />
+                        <Button
+                          onClick={() => void setRoomInvite(r.slug, inviteDraft[r.slug] ?? "")}
+                          title="save this password to the relay so the copy-link works on every device"
+                        >
+                          Set
+                        </Button>
+                      </>
+                    ) : null}
                   </>
                 )}
                 <span

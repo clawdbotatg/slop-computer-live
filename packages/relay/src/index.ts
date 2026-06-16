@@ -4897,6 +4897,38 @@ app.post<{ Params: { slug: string }; Body: RoomGateBody }>("/v1/rooms/:slug/gate
   return { ok: true, slug: req.params.slug, gate: mode };
 });
 
+// Host-only: read a room's plaintext invite password so the admin panel can
+// build a shareable `?invite=` link from any device (the plaintext lives on
+// the relay now, not just the creating browser's localStorage). Returns
+// `password: null` for rooms claimed before plaintext storage existed — the
+// host can backfill those via POST below or rotate with /password.
+app.get<{ Params: { slug: string } }>("/v1/rooms/:slug/invite", async (req, reply) => {
+  reply.header("cache-control", "no-store");
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const room = getOrCreateRoom(req.params.slug);
+  if (!room.auth.hasPassword()) return reply.code(404).send({ error: "no-such-room" });
+  return { slug: req.params.slug, password: room.auth.getPassword() };
+});
+
+// Host-only: backfill the plaintext for a room that only has a hash on file
+// (e.g. created server-side by the scheduler). Verifies the supplied string
+// against the stored hash, so this recovers the real invite WITHOUT rotating
+// it — existing shared links keep working. 401 if the string is wrong.
+type RoomInviteBody = { password?: unknown };
+app.post<{ Params: { slug: string }; Body: RoomInviteBody }>("/v1/rooms/:slug/invite", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  if (!isValidSlug(req.params.slug)) return reply.code(400).send({ error: "bad-slug" });
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password) return reply.code(400).send({ error: "missing-password" });
+  const room = getOrCreateRoom(req.params.slug);
+  if (!room.auth.hasPassword()) return reply.code(404).send({ error: "no-such-room" });
+  if (!room.auth.recoverPassword(password)) return reply.code(401).send({ error: "bad-password" });
+  return { ok: true, slug: req.params.slug };
+});
+
 type RoomAuthBody = { password?: unknown };
 
 // Public: verify a room's password and get back a slug-scoped cookie.

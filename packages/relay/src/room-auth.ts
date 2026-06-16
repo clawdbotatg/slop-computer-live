@@ -58,12 +58,21 @@ export type RoomGateMode = "password" | "wallet-signers";
 
 type RoomAuthState = {
   passwordHash: string | null;
+  // Plaintext of the room's invite password, kept alongside the hash so an
+  // authenticated host can retrieve the shareable `?invite=` link from any
+  // device (including rooms created server-side by the scheduler, where the
+  // plaintext never passed through a browser). These are URL-shared invite
+  // secrets, not personal credentials — the same rationale that keeps the
+  // global invite password (invites.ts) in plaintext. Null for rooms claimed
+  // before this field existed; recoverPassword() backfills it once a host
+  // supplies a string that matches the stored hash.
+  password: string | null;
   createdAt: number;
   gateMode: RoomGateMode;
 };
 
 export class RoomAuth {
-  private state: RoomAuthState = { passwordHash: null, createdAt: 0, gateMode: "password" };
+  private state: RoomAuthState = { passwordHash: null, password: null, createdAt: 0, gateMode: "password" };
   private loaded = false;
 
   constructor(private readonly filePath: string) {}
@@ -76,6 +85,7 @@ export class RoomAuth {
       const parsed = JSON.parse(raw) as Partial<RoomAuthState>;
       this.state = {
         passwordHash: typeof parsed.passwordHash === "string" ? parsed.passwordHash : null,
+        password: typeof parsed.password === "string" ? parsed.password : null,
         createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
         gateMode: parsed.gateMode === "wallet-signers" ? "wallet-signers" : "password",
       };
@@ -105,9 +115,33 @@ export class RoomAuth {
     this.state = {
       ...this.state,
       passwordHash: hashPassword(plaintext),
+      password: plaintext,
       createdAt: this.state.createdAt || Date.now(),
     };
     this.persist();
+  }
+
+  /** The stored plaintext invite password, or null if this room predates
+   *  plaintext storage (use recoverPassword() to backfill it). Host-only —
+   *  callers must gate on requireHost before exposing this. */
+  getPassword(): string | null {
+    this.load();
+    return this.state.password;
+  }
+
+  /** Backfill the plaintext for a room that only has a hash on file. Verifies
+   *  the supplied string against the stored hash first, so a wrong guess can't
+   *  poison the cache — and recovers the real invite WITHOUT rotating it, so
+   *  existing shared links keep working. Returns false if there's no password
+   *  set or the string doesn't match. */
+  recoverPassword(plaintext: string): boolean {
+    this.load();
+    if (!this.state.passwordHash) return false;
+    if (!verifyPassword(plaintext, this.state.passwordHash)) return false;
+    if (this.state.password === plaintext) return true;
+    this.state = { ...this.state, password: plaintext };
+    this.persist();
+    return true;
   }
 
   /** Which gate controls entry to this room. Defaults to "password". */
