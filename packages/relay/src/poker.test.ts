@@ -273,6 +273,39 @@ test("fold-win has no showdown pause (re-deal immediately)", () => {
   assert.equal(t.startHand(makeDeck()).ok, true); // no pause
 });
 
+test("showCards reveals the winner's hole after a fold-win", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  // alice = button/SB folds heads-up; bob wins uncontested, cards mucked.
+  assert.equal(t.startHand(deckFor([["Ah", "As"], ["Kh", "Ks"]], [])).ok, true);
+  assert.equal(t.act("alice", { action: "fold" }).ok, true);
+
+  type Pub = { nextHandAt: number | null; seats: { key: string; hole: string[] | null }[] };
+  const before = t.publicView() as Pub;
+  assert.equal(before.seats.find(s => s.key === "bob")!.hole, null); // not yet shown
+  assert.equal(before.nextHandAt, null); // fold-win: no pause
+
+  // A spectator / non-seated key can't reveal someone's cards.
+  assert.equal(t.showCards("mallory").ok, false);
+  // The winner shows; idempotent on repeat.
+  assert.equal(t.showCards("bob").ok, true);
+  assert.equal(t.showCards("bob").ok, true);
+
+  const after = t.publicView() as Pub;
+  assert.deepEqual(after.seats.find(s => s.key === "bob")!.hole, ["Kh", "Ks"]);
+  assert.equal(after.seats.find(s => s.key === "alice")!.hole, null); // alice didn't show
+  assert.notEqual(after.nextHandAt, null); // showing started the viewing pause
+});
+
+test("showCards is rejected while a hand is running", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  assert.equal(t.startHand(makeDeck()).ok, true);
+  assert.equal(t.showCards("alice").ok, false); // hand still live
+});
+
 test("heads-up SB fold gives BB the blind, no showdown", () => {
   const t = table();
   t.sit(0, "alice", "Alice", 100);

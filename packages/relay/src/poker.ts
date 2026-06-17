@@ -119,6 +119,11 @@ export type PokerGame = {
   status: "idle" | "running" | "complete";
   /** Cards exposed at showdown (folded muck stays hidden). */
   showdown: ShowdownEntry[];
+  /** Seat indices that *voluntarily* showed their hole cards after the hand
+   *  ended (e.g. the winner of a fold-win choosing to flash a bluff). Their
+   *  hole is folded into publicView like a showdown reveal. Cleared each
+   *  new hand. */
+  revealed: number[];
   startedAt: number | null;
   /** Date.now() when the current actor started thinking (UI clock). */
   actorSince: number;
@@ -217,6 +222,7 @@ export class PokerState {
       actor: -1,
       status: "idle",
       showdown: [],
+      revealed: [],
       startedAt: null,
       actorSince: 0,
       handEndedAt: null,
@@ -382,6 +388,7 @@ export class PokerState {
     this.game.board = [];
     this.game.pots = [];
     this.game.showdown = [];
+    this.game.revealed = [];
     this.game.currentBet = 0;
     this.game.minRaise = this.game.bigBlind;
     this.game.street = "preflop";
@@ -749,6 +756,25 @@ export class PokerState {
     }
   }
 
+  /** Voluntarily reveal the caller's own hole cards after a hand ends.
+   *  The classic case: you won because everyone folded (no showdown), and
+   *  you want to flash your cards before the next deal. Only valid while the
+   *  hand is complete and the caller still holds the cards they were dealt.
+   *  Idempotent. Revealing also starts the showdown pause (if one isn't
+   *  already running) so the table gets a moment to look. */
+  showCards(key: string): { ok: true } | { ok: false; error: string } {
+    this.load();
+    if (this.game.status !== "complete") return { ok: false, error: "no_hand_to_show" };
+    const i = this.seatIdxByKey(key);
+    if (i < 0) return { ok: false, error: "not_seated" };
+    if (this.game.seats[i]!.hole === null) return { ok: false, error: "no_cards" };
+    if (!this.game.revealed.includes(i)) this.game.revealed.push(i);
+    // Give the table a beat to see it (fold-wins have no pause otherwise).
+    if (this.game.handEndedAt === null) this.game.handEndedAt = Date.now();
+    this.touch();
+    return { ok: true };
+  }
+
   /** Clear the table back to idle (host force-clear / between sessions). */
   reset(): void {
     this.load();
@@ -870,6 +896,11 @@ export class PokerState {
     this.load();
     const g = this.game;
     const revealed = new Map(g.showdown.map(e => [e.seat, e.hole] as const));
+    // Fold in any hands voluntarily shown after a fold-win.
+    for (const i of g.revealed) {
+      const hole = g.seats[i]?.hole;
+      if (hole) revealed.set(i, hole);
+    }
     return {
       handId: g.handId,
       button: g.button,

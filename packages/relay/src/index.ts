@@ -7622,6 +7622,16 @@ app.register(async function signalRoutes(fastify) {
           broadcastPokerState(room);
           return;
         }
+        case "poker_show_cards": {
+          // After a hand ends, a player can voluntarily flash their own hole
+          // cards (classic move after winning on a fold). The engine only
+          // reveals the caller's own cards and only while the hand is over.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const out = room.poker.showCards(callerKey);
+          if (!out.ok) return send(socket, { type: "error", error: out.error });
+          broadcastPokerState(room);
+          return;
+        }
         case "pong_claim": {
           // Auto-assign the first empty seat. Idempotent — if the caller
           // already sits in a seat, returns that side. Returns null when

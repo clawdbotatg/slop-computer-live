@@ -1255,6 +1255,9 @@ export type PeerMeshState = {
   pokerAct: (action: PokerActionKind, toChips?: number) => void;
   /** Deal the next hand (between hands). */
   pokerNextHand: () => void;
+  /** Voluntarily reveal your own hole cards after a hand ends (e.g. show a
+   *  bluff after winning on a fold). */
+  pokerShowCards: () => void;
   /** The current money-game escrow session (chess wager, etc.). */
   escrow: EscrowSession | null;
   /** Latest deposit-verification result from the relay (per reported tx),
@@ -2223,6 +2226,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
   const pokerNextHand = useCallback(() => {
     send({ type: "poker_next_hand" });
+  }, [send]);
+  const pokerShowCards = useCallback(() => {
+    send({ type: "poker_show_cards" });
   }, [send]);
   // Generic escrow actions (any game):
   const escrowFund = useCallback(
@@ -4162,6 +4168,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     pokerStart,
     pokerAct,
     pokerNextHand,
+    pokerShowCards,
     escrow,
     escrowFundResult,
     chessWagerPropose,

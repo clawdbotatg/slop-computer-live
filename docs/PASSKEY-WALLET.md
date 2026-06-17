@@ -235,6 +235,59 @@ displays driven by `usePeerMesh`. Replace raw-passkey-address receive
 affordances with the personal-multisig address; keep the raw id only as a
 non-copyable identity token where needed.
 
+## 11b. App surface — single-player Wallet vs multiplayer Multisig (Safe) app
+
+Introducing personal wallets forces a UI-architecture decision, because the
+thing called **"Wallet"** on the desktop today is actually a **multisig
+builder**, not a personal wallet.
+
+**Today.** `DEFAULT_APPS` (`packages/relay/src/index.ts`) registers
+`{ id: "wallet", label: "Wallet", icon: "/icons/wallet.png", kind: "wallet" }`,
+which opens `WalletWindow.tsx` — a power tool: pick signers, set threshold,
+deploy via CREATE2, co-sign, nested-1271 routing, execute. Poker/chess/escrow
+flows deep-link into it via `kind: "wallet"` (e.g. `PokerWindow.tsx`
+`openWindow("wallet")`). That's a *multiplayer / shared-custody* surface.
+
+**The split (the right framing for slop):**
+
+- **Single-player Wallet** — your **personal** wallet. A lean, opinionated
+  view: your address, balance, receive (QR/copy), send, tx history. The fact
+  that it's a 1-of-2 multisig under the hood is **hidden** — no signer/threshold
+  UI. This is the default surface for a passkey user. (It's "single-player" in
+  the slop sense: solo, yours.)
+- **Multiplayer Multisig (Safe) app** — the **existing** `WalletWindow`,
+  rebranded. Build shared multisigs, manage signers/threshold, room pots,
+  co-signing, nested signers. The power tool for shared custody.
+
+**Both are views over the same v4 Multisig contract** and the same signing libs
+(`utils/passkey.ts`, `utils/multisig.ts`, relay wallet state). **No contract
+divergence** — a personal wallet is just a constrained 1-of-2 multisig with a
+simplified front-end. So this is an information-architecture change, not a new
+backend.
+
+**Recommended:** two distinct desktop apps (different mental models, different
+users) rather than one app with a mode toggle. The personal "Wallet" becomes the
+friendly default; the builder becomes "Multisig."
+
+**Implications (document only):**
+
+- **Naming:** keep `Wallet` for the personal app; the builder becomes
+  **"Multisig"** (preferred) — avoid **"Safe"** unless we mean it as a generic
+  word, since Safe{Wallet} (Gnosis) is a specific product and could confuse.
+- **New app registration:** add a `DEFAULT_APPS` entry + a new `kind` (e.g.
+  `kind: "multisig"`) and a window in `Desktop.tsx`. Re-point the room/pot
+  deep-links (`kind: "wallet"` from poker/escrow) to the **multisig** app, and
+  keep personal send/receive on the **wallet** app.
+- **Icon:** whichever app is "new" needs an icon **before** wiring (repo rule —
+  `yarn icon:add`). Likely a fresh icon for the personal Wallet, and the current
+  `wallet.png` migrates to the Multisig app (or its own new icon).
+- **Auth-mode behavior of the personal Wallet app:** passkey → personal
+  multisig; SIWE/EOA → could show the connected EOA *or* also offer a personal
+  multisig; anon → no wallet (prompt to sign in). Decide per §12.
+- **`WalletWindow.tsx` reuse:** factor the simple personal view out of it (or a
+  new `WalletAppWindow.tsx` that consumes the same hooks) so the two apps share
+  the signing/exec plumbing rather than forking it.
+
 ## 12. Open decisions
 
 1. **Deployer identity** for the CREATE2 salt — a single fixed slop deployer, or
@@ -244,6 +297,11 @@ non-copyable identity token where needed.
 4. **Which chain(s)** for v1 — plan assumes **Base only**, expand later.
 5. **Salt namespace** — fold the intended signer-set hash into the salt to make
    init front-running impossible, or rely on trusted-relay init only?
+6. **App split** — two apps (personal "Wallet" + "Multisig" builder) vs one app
+   with a simple/advanced mode toggle? (Plan recommends two apps.)
+7. **Builder app name** — "Multisig" (preferred) vs "Safe" vs other.
+8. **Personal Wallet for non-passkey auth** — passkey gets a personal multisig;
+   do SIWE/EOA users see their connected EOA, a personal multisig, or both?
 
 ## 13. File touch-map (no new contracts)
 
@@ -252,6 +310,8 @@ non-copyable identity token where needed.
 | Address derivation | `packages/nextjs/utils/multisig.ts`, `utils/passkey.ts` | personal-wallet salt + predicted-address helper |
 | Identity/custody split | `hooks/useSession.ts`, `hooks/usePeerMesh.ts` | add `personalWallet` alongside passkey id |
 | UI surfaces | `components/desktop/WalletWindow.tsx`, `components/ui/SlopAddress.tsx`, JoinCard, `PasskeyChooserModal.tsx` | show personal addr; hide raw addr as receive target |
+| **App split** | `packages/relay/src/index.ts` (`DEFAULT_APPS`), `components/Desktop.tsx`, new `WalletAppWindow.tsx`, poker/escrow `openWindow("wallet")` callsites | new personal "Wallet" app (`kind:"wallet"`) + rebrand builder to "Multisig" (`kind:"multisig"`); re-point pot deep-links |
+| Icons | `yarn icon:add` (icon-gen) | icon for the new app **before** wiring |
 | **Facilitator (new)** | `packages/relay/src/facilitator.ts` (+ wire in `index.ts`) | hot-wallet broadcast of threshold-met txs; guardrails |
 | Relay sig assembly | port from `WalletWindow.tsx` `sortSignatures`/encode | server-side exec assembly |
 | Room/escrow | `packages/relay/src/escrow.ts`, `wallet-data.ts`, `components/desktop/chess/WagerPanel.tsx` | buy-in from personal wallet; payouts to personal wallets |

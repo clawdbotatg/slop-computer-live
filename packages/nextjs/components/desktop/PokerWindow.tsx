@@ -16,7 +16,7 @@
 //   4. Payout  — when one player has all the chips the tournament ends; the
 //                prize pool (Σ buy-ins) is split by finishing place and
 //                anyone submits the multisig payout (reused PayoutProposeButton).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import {
   useAccount,
@@ -27,7 +27,6 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
-import { MultisigAbi } from "~~/contracts/multisig";
 import type {
   EscrowSession,
   PeerMeshState,
@@ -35,6 +34,17 @@ import type {
   PokerSeatPublic,
   PokerTableView,
 } from "~~/hooks/usePeerMesh";
+import {
+  isPokerMuted,
+  setPokerMuted,
+  sfxCardFlip,
+  sfxCheck,
+  sfxChips,
+  sfxDeal,
+  sfxFold,
+  sfxWin,
+  unlockPokerAudio,
+} from "~~/utils/pokerSounds";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const CYAN = "var(--slop-cyan, #2ee6d6)";
@@ -388,15 +398,21 @@ const TournamentConfig = ({ escrow }: { escrow: EscrowSession }) => {
   );
 };
 
-// Buy-in window banner: countdown + who's in + full config + the join control.
+// Buy-in window banner. Pre-game it shows the full tournament config so a
+// joiner knows exactly what they're buying into. Once play has started
+// (`compact`) all that detail is redundant — the table speaks for itself — so
+// it collapses to a slim strip that only resurfaces the join control while the
+// late-registration window is still open.
 const BuyInBanner = ({
   mesh,
   myOwnerKey,
   escrow,
+  compact = false,
 }: {
   mesh: PeerMeshState;
   myOwnerKey: string | null;
   escrow: EscrowSession;
+  compact?: boolean;
 }) => {
   const deadline = metaNum(escrow, "buyinDeadline") || null;
   const open = !!deadline && deadline > Date.now();
@@ -404,6 +420,44 @@ const BuyInBanner = ({
   const full = escrow.accounts.length >= 8;
   const buyin = metaStr(escrow, "buyinWei");
   const pool = escrow.accounts.reduce((s, a) => s + BigInt(a.depositedWei || "0"), 0n).toString();
+
+  // Slim in-game strip: pool + a join CTA only while the window is still open
+  // to a newcomer. Nothing if there's nothing actionable to show.
+  if (compact) {
+    const canJoin = open && !iAmIn && !full;
+    if (!canJoin && !(open && !iAmIn)) {
+      // Closed window (or already seated): a one-liner is plenty.
+      return (
+        <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
+          prize pool <span style={{ color: GOLD }}>{fmtEth(pool)} ETH</span>
+          {open && <span> · late buy-in open</span>}
+        </div>
+      );
+    }
+    return (
+      <div
+        style={{
+          background: "#160e2e",
+          border: `1px solid ${CYAN}`,
+          borderRadius: 10,
+          padding: "8px 10px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+          Late buy-in {fmtEth(buyin)} ETH · pool <span style={{ color: GOLD }}>{fmtEth(pool)} ETH</span>{" "}
+          {open && <Countdown deadline={deadline} urgentAt={30} />}
+        </span>
+        {canJoin && <JoinButton mesh={mesh} escrow={escrow} />}
+        {full && !iAmIn && <span style={{ fontSize: 12, color: ACCENT }}>Full</span>}
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -454,23 +508,31 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
   // all share the same nonce) and to executing straight from the multisig.
   const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [paidOut, setPaidOut] = useState(false);
+  // Detect the payout on-chain WITHOUT depending on the relay having linked the
+  // proposal as the escrow's payout tx. That linkage is fragile — it misses a
+  // re-propose (several txs share the plan) or a payout executed straight from
+  // the multisig — and when it misses, BOTH the relay's auto-settle and the old
+  // nonce poll silently no-op, stranding the room on "Pay out winners" (exactly
+  // the bug we keep hitting). Instead watch the money itself: the room multisig
+  // holds exactly the prize pool (Σ buy-ins == Σ payouts == `total`) while
+  // settling, so once the payout executes those funds leave and its balance
+  // drops below the pool. A balance under `total` ⇒ the money has gone out —
+  // robust to who proposed, re-proposes, RPC hiccups, and a player who only
+  // loads the table after the winner already cashed everyone out.
   useEffect(() => {
-    if (settled || !payoutTx || !publicClient) return;
-    let payoutNonce: bigint;
+    if (settled || !publicClient) return;
+    let poolWei: bigint;
     try {
-      payoutNonce = BigInt(payoutTx.nonce);
+      poolWei = BigInt(total);
     } catch {
       return;
     }
+    if (poolWei <= 0n) return;
     let cancelled = false;
     const check = async () => {
       try {
-        const onChain = (await publicClient.readContract({
-          address: escrow.multisig as `0x${string}`,
-          abi: MultisigAbi,
-          functionName: "nonce",
-        })) as bigint;
-        if (!cancelled && onChain > payoutNonce) setPaidOut(true);
+        const bal = await publicClient.getBalance({ address: escrow.multisig as `0x${string}` });
+        if (!cancelled && bal < poolWei) setPaidOut(true);
       } catch {
         /* RPC hiccup — try again next tick */
       }
@@ -481,7 +543,7 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
       cancelled = true;
       clearInterval(id);
     };
-  }, [settled, payoutTx, publicClient, escrow.multisig]);
+  }, [settled, publicClient, escrow.multisig, total]);
 
   // Belt-and-suspenders: even if on-chain detection can't run, offer a
   // manual close after a grace period so the room is never stranded.
@@ -491,6 +553,24 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
     const id = setTimeout(() => setCanForceClose(true), 60_000);
     return () => clearTimeout(id);
   }, [settled]);
+
+  // Once the payout is confirmed (relay-settled or seen on-chain), don't make
+  // anyone hunt for a button — show the result for a beat, then auto-clear the
+  // escrow so the room drops back to a fresh table for the next tournament.
+  const paid = settled || paidOut;
+  const [advanceIn, setAdvanceIn] = useState<number | null>(null);
+  useEffect(() => {
+    setAdvanceIn(paid ? 8 : null);
+  }, [paid]);
+  useEffect(() => {
+    if (advanceIn === null) return;
+    if (advanceIn <= 0) {
+      mesh.escrowClear(); // idempotent — any peer can clear; first one wins
+      return;
+    }
+    const id = setTimeout(() => setAdvanceIn(n => (n === null ? null : n - 1)), 1000);
+    return () => clearTimeout(id);
+  }, [advanceIn, mesh]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -519,11 +599,11 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           );
         })}
       </div>
-      {settled || paidOut ? (
+      {paid ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {paidOut && !settled && <div style={{ fontSize: 13, color: LIME }}>✓ Payout sent on-chain.</div>}
+          <div style={{ fontSize: 13, color: LIME }}>✓ Paid out{settled ? "" : " on-chain"} — winners settled.</div>
           <button type="button" onClick={() => mesh.escrowClear()} style={{ ...btn(LIME), alignSelf: "flex-start" }}>
-            New tournament
+            New tournament{advanceIn !== null && advanceIn > 0 ? ` (${advanceIn}s)` : ""}
           </button>
         </div>
       ) : payoutTx ? (
@@ -559,7 +639,7 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           onProposed={() => mesh.openWindow("wallet")}
         />
       )}
-      {!settled && !paidOut && canForceClose && (
+      {!paid && canForceClose && (
         <button
           type="button"
           onClick={() => mesh.escrowClear()}
@@ -601,6 +681,12 @@ const DealerChip = () => (
 
 const GOLD = "#ffd23c";
 
+// A single seat at the rail. Compact on purpose — the table is the star, so
+// each plate is just name + cards + stack, with the live state carried by the
+// frame: a pulsing lime glow when it's this seat's turn (the "who's up" signal
+// that travels around the table), gold on a win, cyan for you, dimmed when
+// folded/out. The per-street bet rides as chips between the seat and the pot
+// (rendered by the parent), not as text here.
 const SeatBox = ({
   seat,
   isActor,
@@ -608,7 +694,6 @@ const SeatBox = ({
   isMe,
   isWinner,
   myHole,
-  bigBlind,
 }: {
   seat: PokerSeatPublic;
   isActor: boolean;
@@ -616,41 +701,39 @@ const SeatBox = ({
   isMe: boolean;
   isWinner: boolean;
   myHole: [string, string] | null;
-  bigBlind: number;
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
   const folded = seat.status === "folded" || seat.status === "out";
   const concealed = seat.hasCards && !(isMe && myHole) && !revealed;
-  // Whose turn it is is the strongest signal on the table — a bright glow,
-  // not just a border tint, so every spectator can see it instantly.
   const borderColor = isActor ? LIME : isWinner ? GOLD : isMe ? CYAN : "#2a1648";
-  const glow = isActor ? `0 0 16px ${LIME}` : isWinner ? `0 0 16px ${GOLD}` : "none";
+  const glow = isActor ? `0 0 18px ${LIME}` : isWinner ? `0 0 16px ${GOLD}` : "none";
   return (
     <div
       style={{
         position: "relative",
+        width: 116,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
         borderRadius: 10,
-        padding: 8,
-        opacity: folded ? 0.4 : 1,
-        minWidth: 130,
-        transition: "box-shadow 0.2s, border-color 0.2s",
+        padding: 6,
+        opacity: folded ? 0.45 : 1,
+        transition: "box-shadow 0.2s, border-color 0.2s, background 0.2s",
+        animation: isActor ? "pokerActorPulse 1.1s ease-in-out infinite" : undefined,
       }}
     >
       {isActor && (
         <div
           style={{
             position: "absolute",
-            top: -10,
+            top: -9,
             left: 8,
             background: LIME,
             color: "#0a061a",
-            fontSize: 10,
+            fontSize: 9,
             fontWeight: 900,
-            padding: "1px 8px",
+            padding: "1px 7px",
             borderRadius: 8,
             letterSpacing: 0.5,
           }}
@@ -662,50 +745,86 @@ const SeatBox = ({
         <div
           style={{
             position: "absolute",
-            top: -10,
+            top: -9,
             left: 8,
             background: GOLD,
             color: "#160e2e",
-            fontSize: 10,
+            fontSize: 9,
             fontWeight: 900,
-            padding: "1px 8px",
+            padding: "1px 7px",
             borderRadius: 8,
           }}
         >
           🏆 WINS
         </div>
       )}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 6 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
-          {isButton && <DealerChip />}
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              color: isMe ? CYAN : "var(--slop-text)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {seat.label}
-          </span>
+      {seat.status === "allin" && (
+        <div
+          style={{
+            position: "absolute",
+            top: -9,
+            right: 8,
+            background: ACCENT,
+            color: "#0a061a",
+            fontSize: 9,
+            fontWeight: 900,
+            padding: "1px 7px",
+            borderRadius: 8,
+          }}
+        >
+          ALL-IN
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginBottom: 4 }}>
+        {isButton && <DealerChip />}
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: isMe ? CYAN : "var(--slop-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {seat.label}
         </span>
-        <span style={{ fontSize: 11, color: "var(--slop-text-muted)", flex: "0 0 auto" }}>{seat.status}</span>
       </div>
-      <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+      <div style={{ display: "flex", gap: 4, marginBottom: 4, justifyContent: "center" }}>
         <Card card={cards[0]} hidden={concealed} small />
         <Card card={cards[1]} hidden={concealed} small />
       </div>
-      <div style={{ fontSize: 12 }}>
-        💰 {seat.stack}{" "}
-        <span style={{ color: "var(--slop-text-muted)" }}>
-          ({bigBlind > 0 ? (seat.stack / bigBlind).toFixed(0) : "—"} BB)
-        </span>
+      <div
+        style={{ fontSize: 12, textAlign: "center", color: seat.stack === 0 ? "var(--slop-text-muted)" : undefined }}
+      >
+        💰 {seat.stack}
       </div>
-      {seat.committed > 0 && <div style={{ fontSize: 11, color: LIME }}>bet {seat.committed}</div>}
     </div>
   );
 };
+
+// A little stack of chips sitting in front of a seat, between the player and
+// the pot — the visual of money pushed toward the middle when someone bets.
+const BetChip = ({ amount }: { amount: number }) => (
+  <span
+    style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 3,
+      background: "#0a061a",
+      border: `1px solid ${LIME}`,
+      color: LIME,
+      fontSize: 11,
+      fontWeight: 800,
+      padding: "1px 7px",
+      borderRadius: 10,
+      boxShadow: "0 1px 4px rgba(0,0,0,0.5)",
+      whiteSpace: "nowrap",
+    }}
+  >
+    🪙 {amount}
+  </span>
+);
 
 // "Deal next hand" but held during the post-showdown pause so everyone can
 // study the revealed hands. Ticks locally to re-enable when the pause ends.
@@ -791,6 +910,23 @@ const ActionBar = ({
   );
 };
 
+// Inject the actor-pulse keyframes once (styled-jsx isn't set up here and we
+// want a self-contained component). Idempotent via the id.
+const PULSE_CSS = `@keyframes pokerActorPulse {
+  0%, 100% { box-shadow: 0 0 10px ${LIME}; }
+  50% { box-shadow: 0 0 22px ${LIME}; }
+}`;
+const PokerStyles = () => <style id="poker-fx-styles">{PULSE_CSS}</style>;
+
+// Seat coordinates around the table oval. p=0 is the bottom-centre (anchored to
+// "me" when I'm seated) and p increases clockwise — i.e. action moves to my
+// left, the real direction of play. Returned as CSS percentages so the table
+// scales with the window. `hx/vy` are the ellipse radii in % of the container.
+const seatPos = (p: number, n: number, hx: number, vy: number) => {
+  const theta = Math.PI / 2 + (p * 2 * Math.PI) / Math.max(1, n);
+  return { left: `${50 + hx * Math.cos(theta)}%`, top: `${50 + vy * Math.sin(theta)}%` };
+};
+
 const Felt = ({
   mesh,
   myOwnerKey,
@@ -805,10 +941,55 @@ const Felt = ({
   const myTurn = mySeat && poker.status === "running" && poker.actor === mySeat.idx;
   const winnerSeats = new Set(poker.showdown.filter(s => s.won).map(s => s.seat));
 
+  const [muted, setMuted] = useState(false);
+  useEffect(() => setMuted(isPokerMuted()), []);
+
+  // Sound effects, driven by diffing consecutive public snapshots so the whole
+  // table is audible (every player's action, not just mine). `wagered` =
+  // pot + everyone's current-street commitment, which only ever rises within a
+  // hand as chips go in (it stays continuous across street closes, when
+  // commitments roll into the pot) — so a rise means real money hit the felt.
+  const prevRef = useRef<PokerTableView | null>(null);
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = poker;
+    if (!prev) return; // first snapshot — nothing to compare, stay silent
+
+    if (prev.handId !== poker.handId) {
+      if (poker.handId) sfxDeal(); // new hand dealt
+      return;
+    }
+    if (poker.status === "complete" && prev.status !== "complete") {
+      sfxWin(); // pot awarded
+      return;
+    }
+    if (poker.board.length > prev.board.length) sfxCardFlip(poker.board.length - prev.board.length);
+
+    const wagered = poker.potTotal + poker.seats.reduce((s, x) => s + x.committed, 0);
+    const prevWagered = prev.potTotal + prev.seats.reduce((s, x) => s + x.committed, 0);
+    if (wagered > prevWagered) {
+      sfxChips(); // bet / call / raise / blinds
+    } else if (poker.actor !== prev.actor && prev.actor >= 0) {
+      // Someone acted but no chips moved: a check (tap) or a fold (swish).
+      const acted = poker.seats.find(s => s.idx === prev.actor);
+      if (acted && acted.status === "folded") sfxFold();
+      else sfxCheck();
+    }
+  }, [poker]);
+
+  // Compact table-rim seats, positioned around an oval. Anchor "me" to the
+  // bottom; spectators see the natural table order from the bottom.
+  const seats = poker.seats;
+  const n = seats.length;
+  const meIdx = seats.findIndex(s => s.key === myOwnerKey);
+  const rot = meIdx >= 0 ? meIdx : 0;
+  const tableH = n <= 3 ? 300 : 360;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <PokerStyles />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 16, color: LIME }}>
+        <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 15, color: LIME }}>
           ♠ {poker.smallBlind}/{poker.bigBlind}
           {poker.blindLevel > 0 ? ` · L${poker.blindLevel + 1}` : ""} ·{" "}
           {poker.street === "idle" ? "between hands" : poker.street}
@@ -819,48 +1000,114 @@ const Felt = ({
               blinds up <Countdown deadline={poker.nextBlindAt} urgentAt={20} />
             </span>
           )}
+          <button
+            type="button"
+            title={muted ? "Unmute table sounds" : "Mute table sounds"}
+            onClick={() => {
+              const next = !muted;
+              setPokerMuted(next);
+              setMuted(next);
+              if (!next) unlockPokerAudio();
+            }}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 15,
+              lineHeight: 1,
+              padding: 0,
+              color: "var(--slop-text-muted)",
+            }}
+          >
+            {muted ? "🔈" : "🔊"}
+          </button>
         </span>
       </div>
 
-      <div
-        style={{
-          background: FELT,
-          border: "2px solid #15402d",
-          borderRadius: 14,
-          padding: 14,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        {/* Pot, centered right above the community cards. */}
-        <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 15, color: CYAN }}>💰 Pot {poker.potTotal}</div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[0, 1, 2, 3, 4].map(i => (
-            <Card key={i} card={poker.board[i]} />
-          ))}
-        </div>
-        {poker.pots.length > 1 && (
-          <div style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
-            {poker.pots.map((p, i) => `${i === 0 ? "main" : `side ${i}`}: ${p.amountChips}`).join(" · ")}
+      {/* The table: an oval of felt with the pot + board in the middle and the
+          seats around the rail. Tapping it also unlocks audio (browsers gate
+          the AudioContext behind a user gesture). */}
+      <div onPointerDown={() => unlockPokerAudio()} style={{ position: "relative", height: tableH, margin: "4px 0" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: "13%",
+            bottom: "13%",
+            left: "9%",
+            right: "9%",
+            background: `radial-gradient(ellipse at 50% 38%, #11402c, ${FELT})`,
+            border: "3px solid #1c5238",
+            borderRadius: "50%",
+            boxShadow: "inset 0 0 40px rgba(0,0,0,0.55)",
+          }}
+        />
+        {/* Pot + community cards, dead centre. */}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 15, color: CYAN }}>
+            💰 Pot {poker.potTotal}
           </div>
-        )}
-      </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[0, 1, 2, 3, 4].map(i => (
+              <Card key={i} card={poker.board[i]} />
+            ))}
+          </div>
+          {poker.pots.length > 1 && (
+            <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+              {poker.pots.map((p, i) => `${i === 0 ? "main" : `side ${i}`}: ${p.amountChips}`).join(" · ")}
+            </div>
+          )}
+        </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {poker.seats.map(seat => (
-          <SeatBox
-            key={seat.key}
-            seat={seat}
-            isActor={poker.status === "running" && poker.actor === seat.idx}
-            isButton={poker.button === seat.idx}
-            isMe={seat.key === myOwnerKey}
-            isWinner={poker.status === "complete" && winnerSeats.has(seat.idx)}
-            myHole={seat.key === myOwnerKey ? myHole : null}
-            bigBlind={poker.bigBlind}
-          />
-        ))}
+        {/* Seats around the rim + their bet chips pushed toward the pot. */}
+        {seats.map(seat => {
+          const p = (seat.idx - rot + n) % n;
+          const seatXY = seatPos(p, n, 41, 39);
+          const betXY = seatPos(p, n, 22, 21);
+          return (
+            <div key={seat.key}>
+              <div
+                style={{
+                  position: "absolute",
+                  left: seatXY.left,
+                  top: seatXY.top,
+                  transform: "translate(-50%, -50%)",
+                }}
+              >
+                <SeatBox
+                  seat={seat}
+                  isActor={poker.status === "running" && poker.actor === seat.idx}
+                  isButton={poker.button === seat.idx}
+                  isMe={seat.key === myOwnerKey}
+                  isWinner={poker.status === "complete" && winnerSeats.has(seat.idx)}
+                  myHole={seat.key === myOwnerKey ? myHole : null}
+                />
+              </div>
+              {seat.committed > 0 && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: betXY.left,
+                    top: betXY.top,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                >
+                  <BetChip amount={seat.committed} />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {poker.status === "complete" && poker.showdown.length > 0 && (
@@ -942,10 +1189,16 @@ const LiveTable = ({
   const pendingJoin = escrow.accounts.some(a => a.key === myOwnerKey) && !seated.some(s => s.key === myOwnerKey);
   // Players already knocked out (provisional standings, worst place first).
   const out = (poker?.standings ?? []).filter(s => s.out);
+  // After a hand ends, let a player who still holds their cards flash them
+  // (the move after winning on a fold). Hidden once they've shown — their
+  // hole then appears publicly on their seat (mySeat.hole is populated).
+  const myHole = poker && mesh.pokerPrivate?.handId === poker.handId ? mesh.pokerPrivate.hole : null;
+  const mySeat = poker?.seats.find(s => s.key === myOwnerKey) ?? null;
+  const canShowCards = poker?.status === "complete" && !!myHole && !!mySeat && !mySeat.hole;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <BuyInBanner mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} />
+      <BuyInBanner mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} compact={!neverStarted} />
       {pendingJoin && <div style={{ fontSize: 12, color: CYAN }}>You&apos;re dealt in on the next hand.</div>}
 
       {!neverStarted && poker && (
@@ -975,6 +1228,11 @@ const LiveTable = ({
             ) : (
               <DealButton onClick={() => mesh.pokerNextHand()} readyAt={poker?.nextHandAt ?? null} />
             ))}
+          {canShowCards && (
+            <button type="button" onClick={() => mesh.pokerShowCards()} style={btn(CYAN)}>
+              Show my hand
+            </button>
+          )}
           {playable < 2 && neverStarted && (
             <span style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>Need ≥2 players to start.</span>
           )}
@@ -991,20 +1249,142 @@ const LiveTable = ({
   );
 };
 
+// ─── Victory pause ───────────────────────────────────────────────────
+
+// How long to savour the winning hand before the payout screen takes over.
+const VICTORY_PAUSE_MS = 14000;
+
+// The final hand of the tournament just ended and the escrow is settling. The
+// relay would have us cut straight to the cash-out screen, but the last hand
+// deserves a beat — hold on the felt with the showdown revealed so everyone can
+// see how it ended, with a countdown (and a Skip) leading into the payout. This
+// is purely a local view delay: the relay is already settling and nothing here
+// touches money. `onExpire` is called once the countdown elapses (or on Skip),
+// which drops us into CashOutView.
+const VictoryPause = ({
+  mesh,
+  myOwnerKey,
+  escrow,
+  poker,
+  until,
+  onExpire,
+}: {
+  mesh: PeerMeshState;
+  myOwnerKey: string | null;
+  escrow: EscrowSession;
+  poker: PokerTableView;
+  until: number;
+  onExpire: () => void;
+}) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, []);
+  // Fire the handoff to the payout screen once the clock runs out (in an effect,
+  // never during render).
+  useEffect(() => {
+    if (now >= until) onExpire();
+  }, [now, until, onExpire]);
+
+  const secs = Math.max(0, Math.ceil((until - now) / 1000));
+  const pool = (escrow.payouts ?? []).reduce((s, p) => s + BigInt(p.amountWei), 0n).toString();
+  const standings = (escrow.meta.standings as { key: string; label: string; place: number }[] | undefined) ?? [];
+  const champ = standings.find(s => s.place === 1) ?? null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}
+      >
+        <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 19, color: GOLD }}>
+          🏆 {champ?.label ?? "Winner"} takes the tournament
+        </span>
+        <span style={{ fontSize: 13, color: CYAN }}>{fmtEth(pool)} ETH pool</span>
+      </div>
+
+      {/* Keep the final hand on the felt — board, revealed holes, and the
+          showdown summary — so the last beat is the win, not the cash register. */}
+      <Felt mesh={mesh} myOwnerKey={myOwnerKey} poker={poker} />
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          background: "#160e2e",
+          border: `1px solid ${GOLD}55`,
+          borderRadius: 10,
+          padding: "10px 12px",
+        }}
+      >
+        <span style={{ fontSize: 14, color: GOLD, fontFamily: "var(--slop-font-display)" }}>
+          Heading to payout in {secs}s…
+        </span>
+        <button type="button" onClick={onExpire} style={{ ...btn(LIME), fontSize: 12, padding: "6px 12px" }}>
+          Skip to payout →
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // ─── Root ────────────────────────────────────────────────────────────
 
 export const PokerWindow = ({ mesh, myOwnerKey }: Props) => {
   const escrow = mesh.escrow && mesh.escrow.game === "poker" ? mesh.escrow : null;
 
+  // Victory pause: when the tournament's final hand ends, the relay flips the
+  // escrow to "settling" (broadcast a tick before the poker "complete" frame).
+  // Without this we'd jump straight to the payout the instant the win lands —
+  // so on that open→settling EDGE (observed live this session, for a real
+  // tournament end) we hold on the table for a countdown first. A reload
+  // mid-settle starts with status already "settling" → no edge → no pause, so
+  // returning players land on the payout directly.
+  const [pauseUntil, setPauseUntil] = useState<number | null>(null);
+  const prevStatusRef = useRef<string | null>(null);
+  const clearPause = useCallback(() => setPauseUntil(null), []);
+  const settleKind = typeof escrow?.meta.settleKind === "string" ? escrow.meta.settleKind : "";
+  useEffect(() => {
+    const status = escrow?.status ?? null;
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (
+      status === "settling" &&
+      prev != null &&
+      prev !== "settling" &&
+      prev !== "settled" &&
+      settleKind === "tournament"
+    ) {
+      setPauseUntil(Date.now() + VICTORY_PAUSE_MS);
+    } else if (status !== "settling" && status !== "settled") {
+      // Left the cash-out flow entirely (new tournament, cancel) — drop any pause.
+      setPauseUntil(null);
+    }
+  }, [escrow?.status, settleKind]);
+
   const body = useMemo(() => {
     if (escrow && (escrow.status === "settling" || escrow.status === "settled")) {
+      if (pauseUntil !== null && mesh.pokerState) {
+        return (
+          <VictoryPause
+            mesh={mesh}
+            myOwnerKey={myOwnerKey}
+            escrow={escrow}
+            poker={mesh.pokerState}
+            until={pauseUntil}
+            onExpire={clearPause}
+          />
+        );
+      }
       return <CashOutView mesh={mesh} escrow={escrow} />;
     }
     if (escrow && escrow.status === "open") {
       return <LiveTable mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} />;
     }
     return <OpenTableForm mesh={mesh} />;
-  }, [escrow, mesh, myOwnerKey]);
+  }, [escrow, mesh, myOwnerKey, pauseUntil, clearPause]);
 
   return (
     <div

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { AudioDropZone } from "~~/components/desktop/AudioDropZone";
 import { AudioVisualizer } from "~~/components/desktop/AudioVisualizer";
 import { useAudioBusStream } from "~~/hooks/useAudioBus";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
@@ -55,6 +56,11 @@ export type VideoViewProps = {
   address?: string | null;
   /** Publisher opted out of any avatar — suppress the backdrop image. */
   hidden?: boolean;
+  /** Publisher-only. When set, the audio-only backdrop becomes a
+   *  drag-and-drop target for a custom avatar image (mirrors the audio
+   *  share window). Provided only for the owner's own publication; the
+   *  parent wires it to the same `uploadAvatar` relay call. */
+  onAvatarFile?: (file: File) => void;
   /** When set, register the inner `<video>` element's stream with the
    *  shared AudioBus under this id. Camera publications carry the
    *  publisher's mic and screen shares can carry system audio — both
@@ -89,6 +95,7 @@ export const VideoView = ({
   avatarUrl = null,
   address = null,
   hidden = false,
+  onAvatarFile,
   audioBusId = null,
   audioBusLabel = "video",
   mirrorable = false,
@@ -235,16 +242,23 @@ export const VideoView = ({
           so it doesn't double-register. */}
       {cameraOff && bands ? (
         <div style={{ position: "absolute", inset: 0 }}>
-          <AudioVisualizer
-            stream={stream}
-            bands={bands}
-            muted
-            isMine={false}
-            controls={false}
-            avatarUrl={avatarUrl}
-            address={address}
-            hidden={hidden}
-          />
+          {/* Drop target so the publisher can drag in a custom avatar
+              while in audio-only mode — identical affordance to the
+              audio share window. AudioDropZone with isMine=false just
+              renders the children untouched, so viewers see the avatar
+              with no drop behavior. */}
+          <AudioDropZone isMine={!!onAvatarFile} onFile={file => onAvatarFile?.(file)}>
+            <AudioVisualizer
+              stream={stream}
+              bands={bands}
+              muted
+              isMine={false}
+              controls={false}
+              avatarUrl={avatarUrl}
+              address={address}
+              hidden={hidden}
+            />
+          </AudioDropZone>
         </div>
       ) : null}
       {!isMine ? (

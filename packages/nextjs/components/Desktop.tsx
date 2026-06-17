@@ -3509,6 +3509,15 @@ function DesktopInner({ slug }: { slug: string }) {
                       avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
                       address={peer?.address ?? null}
                       hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+                      // Audio-only backdrop drop target — owner-key match
+                      // (not peer-id) so a user with the wallet open in
+                      // multiple tabs/devices can drag a new PFP onto any
+                      // of their camera windows. Mirrors the audio window.
+                      onAvatarFile={
+                        !!myOwnerKey && pub.ownerKey === myOwnerKey
+                          ? file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))
+                          : undefined
+                      }
                       // God-mode only: camera publications bundle the
                       // publisher's mic on the same stream, so the
                       // video element is where that audio plays —
