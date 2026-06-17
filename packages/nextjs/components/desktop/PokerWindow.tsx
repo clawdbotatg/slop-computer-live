@@ -386,6 +386,10 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
   const settled = escrow.status === "settled";
   const standings = (escrow.meta.standings as { key: string; label: string; place: number }[] | undefined) ?? [];
   const payByKey = new Map((escrow.payouts ?? []).map(p => [p.to, p.amountWei] as const));
+  // Once proposed, the payout tx lives in the room wallet; the user must
+  // sign + execute it there (it's a multisig tx, not a plain send).
+  const payoutTx = escrow.payoutTxId ? (mesh.walletTxs.find(t => t.id === escrow.payoutTxId) ?? null) : null;
+  const threshold = mesh.wallet?.threshold ?? 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -418,15 +422,37 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
         <button type="button" onClick={() => mesh.escrowClear()} style={{ ...btn(CYAN), alignSelf: "flex-start" }}>
           New tournament
         </button>
+      ) : payoutTx ? (
+        // Proposed — now it has to be signed + executed in the Wallet app
+        // (it's a multisig tx). Surface that clearly + a one-tap shortcut.
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 13, color: CYAN }}>
+            Payout proposed — sign &amp; execute it in the <b>Wallet</b> app to send the ETH.
+          </div>
+          <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+            {payoutTx.status === "executing"
+              ? "Executing on-chain…"
+              : `Signatures ${payoutTx.signatures.length}/${threshold || "?"} · ${payoutTx.status}`}
+          </div>
+          <button
+            type="button"
+            onClick={() => mesh.openWindow("wallet")}
+            style={{ ...btn(LIME), alignSelf: "flex-start" }}
+          >
+            Open Wallet app →
+          </button>
+        </div>
       ) : (
         // Anyone can submit the payout — the plan is fixed server-side, so it
-        // can only ever pay the finishers by place.
+        // can only ever pay the finishers by place. Popping the Wallet app on
+        // propose makes the multisig tx show up to sign right away.
         <PayoutProposeButton
           mesh={mesh}
           escrow={escrow}
           isRefund={false}
           canPropose={true}
           claimText={`Pay out winners — ${fmtEth(total)} ETH`}
+          onProposed={() => mesh.openWindow("wallet")}
         />
       )}
     </div>

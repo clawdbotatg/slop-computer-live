@@ -514,6 +514,7 @@ export const PayoutProposeButton = ({
   isRefund,
   canPropose,
   claimText,
+  onProposed,
 }: {
   mesh: PeerMeshState;
   escrow: EscrowSession;
@@ -521,6 +522,9 @@ export const PayoutProposeButton = ({
   canPropose: boolean;
   /** Override the non-refund button label (poker: "Pay out winners"). */
   claimText?: string;
+  /** Fired after a successful propose (poker uses it to pop the Wallet app
+   *  so the multisig tx is right there to sign + execute). */
+  onProposed?: () => void;
 }) => {
   const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [state, setState] = useState<"idle" | "proposing" | "done">("idle");
@@ -592,11 +596,12 @@ export const PayoutProposeButton = ({
         });
       }
       setState("done");
+      onProposed?.();
     } catch (e) {
       setState("idle");
       setErr(String(e).slice(0, 160));
     }
-  }, [mesh, publicClient, escrow]);
+  }, [mesh, publicClient, escrow, onProposed]);
 
   if (!canPropose) {
     return (

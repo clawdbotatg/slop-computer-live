@@ -227,6 +227,7 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["nifty-ink", "abi-ninja", "gas", "news"],
   ["browser", "wallet", "ens", "music"],
   ["pong", "chess", "worm", "leftclaw"],
+  ["poker"],
 ];
 
 // Is this app placed explicitly in the curated grid above?
