@@ -42,6 +42,7 @@ import {
   sfxChips,
   sfxDeal,
   sfxFold,
+  sfxTick,
   sfxWin,
   unlockPokerAudio,
 } from "~~/utils/pokerSounds";
@@ -720,7 +721,9 @@ const SeatBox = ({
         padding: 6,
         opacity: folded ? 0.45 : 1,
         transition: "box-shadow 0.2s, border-color 0.2s, background 0.2s",
-        animation: isActor ? "pokerActorPulse 1.1s ease-in-out infinite" : undefined,
+        // A one-shot bump (replayed on remount each turn — see the key on
+        // SeatBox) that hands off into the steady infinite pulse.
+        animation: isActor ? "pokerActorBump 0.6s ease-out, pokerActorPulse 1.1s ease-in-out 0.6s infinite" : undefined,
       }}
     >
       {isActor && (
@@ -849,41 +852,89 @@ const ActionBar = ({
   mySeat,
   currentBet,
   minRaise,
+  bigBlind,
 }: {
   mesh: PeerMeshState;
   mySeat: PokerSeatPublic;
   currentBet: number;
   minRaise: number;
+  bigBlind: number;
 }) => {
   const toCall = Math.max(0, currentBet - mySeat.committed);
   const maxTo = mySeat.committed + mySeat.stack; // all-in ceiling
   const minRaiseTo = Math.min(maxTo, currentBet + minRaise);
   const [raiseTo, setRaiseTo] = useState(minRaiseTo);
+  // The slider snaps in one-big-blind detents. Re-clamp whenever the band shifts
+  // (a new street, blinds going up, or stack changes) so we never sit out of range.
+  useEffect(() => {
+    setRaiseTo(r => Math.max(minRaiseTo, Math.min(maxTo, r)));
+  }, [minRaiseTo, maxTo]);
   const act = (action: PokerActionKind, toChips?: number) => mesh.pokerAct(action, toChips);
   const canCheck = toCall === 0;
   const canRaise = maxTo > currentBet;
+  const clamped = Math.max(minRaiseTo, Math.min(maxTo, raiseTo));
+  // Snap an arbitrary value onto the big-blind grid (anchored at minRaiseTo),
+  // always staying inside [minRaiseTo, maxTo]. maxTo itself is always reachable.
+  const bb = bigBlind > 0 ? bigBlind : 1;
+  const snap = (v: number) => {
+    const stepped = minRaiseTo + Math.round((v - minRaiseTo) / bb) * bb;
+    return Math.max(minRaiseTo, Math.min(maxTo, stepped));
+  };
+  const lastNotch = useRef(clamped);
+  const onSlide = (v: number) => {
+    const next = snap(v);
+    if (next !== lastNotch.current) {
+      lastNotch.current = next;
+      sfxTick(); // a click per big-blind notch
+    }
+    setRaiseTo(next);
+  };
+  // BB above the current bet — what the raise actually adds, in big blinds.
+  const bbOver = bb > 0 ? Math.round((clamped - currentBet) / bb) : 0;
   return (
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-      <button type="button" onClick={() => act("fold")} style={btn(ACCENT)}>
-        Fold
-      </button>
-      {canCheck ? (
-        <button type="button" onClick={() => act("check")} style={btn(CYAN)}>
-          Check
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button type="button" onClick={() => act("fold")} style={btn(ACCENT)}>
+          Fold
         </button>
-      ) : (
-        <button type="button" onClick={() => act("call")} style={btn(CYAN)}>
-          Call {Math.min(toCall, mySeat.stack)}
-        </button>
-      )}
-      {canRaise && (
-        <>
+        {canCheck ? (
+          <button type="button" onClick={() => act("check")} style={btn(CYAN)}>
+            Check
+          </button>
+        ) : (
+          <button type="button" onClick={() => act("call")} style={btn(CYAN)}>
+            Call {Math.min(toCall, mySeat.stack)}
+          </button>
+        )}
+        {canRaise && (
+          <>
+            <button type="button" onClick={() => act("raise", clamped)} style={btn(LIME)}>
+              {currentBet === 0 ? "Bet" : "Raise to"} {clamped}
+            </button>
+            <button type="button" onClick={() => act("raise", maxTo)} style={btn(LIME)}>
+              All-in {maxTo}
+            </button>
+          </>
+        )}
+      </div>
+      {canRaise && maxTo > minRaiseTo && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", width: "100%" }}>
           <input
-            type="number"
-            value={raiseTo}
+            type="range"
+            value={clamped}
             min={minRaiseTo}
             max={maxTo}
-            onChange={e => setRaiseTo(Number(e.target.value))}
+            step={bb}
+            onChange={e => onSlide(Number(e.target.value))}
+            style={{ flex: 1, accentColor: LIME, minWidth: 120 }}
+          />
+          <input
+            type="number"
+            value={clamped}
+            min={minRaiseTo}
+            max={maxTo}
+            step={bb}
+            onChange={e => setRaiseTo(Math.max(minRaiseTo, Math.min(maxTo, Number(e.target.value))))}
             style={{
               width: 80,
               background: "#160e2e",
@@ -894,17 +945,10 @@ const ActionBar = ({
               fontSize: 13,
             }}
           />
-          <button
-            type="button"
-            onClick={() => act("raise", Math.max(minRaiseTo, Math.min(maxTo, raiseTo)))}
-            style={btn(LIME)}
-          >
-            {currentBet === 0 ? "Bet" : "Raise to"} {Math.max(minRaiseTo, Math.min(maxTo, raiseTo))}
-          </button>
-          <button type="button" onClick={() => act("raise", maxTo)} style={btn(LIME)}>
-            All-in {maxTo}
-          </button>
-        </>
+          <span style={{ fontSize: 11, color: "var(--slop-text-dim, #9a86c4)", whiteSpace: "nowrap" }}>
+            +{bbOver} BB
+          </span>
+        </div>
       )}
     </div>
   );
@@ -915,6 +959,24 @@ const ActionBar = ({
 const PULSE_CSS = `@keyframes pokerActorPulse {
   0%, 100% { box-shadow: 0 0 10px ${LIME}; }
   50% { box-shadow: 0 0 22px ${LIME}; }
+}
+/* One-shot attention "bump": fires when a seat becomes the actor — including
+   when the SAME player is on the clock again (a new street, or play folding
+   back round). Re-keying the seat on actorDeadline remounts it so this replays
+   every turn, then it settles into the steady pulse. */
+@keyframes pokerActorBump {
+  0%   { transform: scale(1);    box-shadow: 0 0 10px ${LIME}; }
+  30%  { transform: scale(1.14); box-shadow: 0 0 30px ${LIME}; }
+  60%  { transform: scale(0.98); box-shadow: 0 0 16px ${LIME}; }
+  100% { transform: scale(1);    box-shadow: 0 0 10px ${LIME}; }
+}
+/* The action buttons "go away and come back" each turn: keying the bar on
+   actorDeadline remounts it, replaying this entrance so a back-to-back turn
+   is unmistakable even though the buttons were already on screen. */
+@keyframes pokerTurnIn {
+  0%   { transform: scale(0.9); opacity: 0; }
+  55%  { transform: scale(1.04); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }`;
 const PokerStyles = () => <style id="poker-fx-styles">{PULSE_CSS}</style>;
 
@@ -1085,6 +1147,10 @@ const Felt = ({
                 }}
               >
                 <SeatBox
+                  // Remount the active seat each new turn (actorDeadline is
+                  // fresh per turn, even back-to-back for the same player) so
+                  // the attention bump replays. Idle seats share a stable key.
+                  key={poker.status === "running" && poker.actor === seat.idx ? `act-${poker.actorDeadline}` : "idle"}
                   seat={seat}
                   isActor={poker.status === "running" && poker.actor === seat.idx}
                   isButton={poker.button === seat.idx}
@@ -1149,12 +1215,30 @@ const Felt = ({
       )}
 
       {myTurn && mySeat && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        // Keyed on actorDeadline so a back-to-back turn remounts this block —
+        // the buttons visibly drop out and re-enter (pokerTurnIn), making it
+        // unmistakable it's your turn again even though they were already up.
+        <div
+          key={`turn-${poker.actorDeadline}`}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            transformOrigin: "left center",
+            animation: "pokerTurnIn 0.42s ease-out",
+          }}
+        >
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span style={{ fontSize: 13, color: LIME, fontWeight: 700 }}>Your turn</span>
             <Countdown deadline={poker.actorDeadline} />
           </div>
-          <ActionBar mesh={mesh} mySeat={mySeat} currentBet={poker.currentBet} minRaise={poker.minRaise} />
+          <ActionBar
+            mesh={mesh}
+            mySeat={mySeat}
+            currentBet={poker.currentBet}
+            minRaise={poker.minRaise}
+            bigBlind={poker.bigBlind}
+          />
         </div>
       )}
       {!myTurn && poker.status === "running" && poker.runningOut && (

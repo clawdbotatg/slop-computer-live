@@ -143,22 +143,39 @@ export function sfxCheck(): void {
   burst(a.c, a.m, t, 0.03, { type: "highpass", freq: 1600, gain: 0.14 });
 }
 
-// Bet / call / raise / blinds — clay chips clattering into the pot.
+// Bet / call / raise / blinds — a stack of clay chips clattering into the pot.
+// Each chip is a sharp noise clack (the impact) layered with a short pitched
+// ring (the ceramic ping) so it reads as a solid, satisfying chip rather than a
+// faint hiss. Loud on purpose — this is the headline sound of the table.
 export function sfxChips(): void {
   if (muted) return;
   const a = audio();
   if (!a) return;
   const t = a.c.currentTime;
-  const n = 5 + Math.floor(Math.random() * 3);
+  const n = 7 + Math.floor(Math.random() * 4);
   for (let i = 0; i < n; i++) {
-    const dt = i * 0.02 + Math.random() * 0.015;
-    burst(a.c, a.m, t + dt, 0.035, {
+    const dt = i * 0.018 + Math.random() * 0.014;
+    const ring = 1900 + Math.random() * 2400;
+    // The clack — a punchy broadband impact transient.
+    burst(a.c, a.m, t + dt, 0.045, {
       type: "bandpass",
-      freq: 2200 + Math.random() * 2200,
-      q: 6,
-      gain: 0.16 + Math.random() * 0.08,
+      freq: ring,
+      q: 2.2,
+      gain: 0.5 + Math.random() * 0.22,
     });
+    // The ring — a quick pitched ping that gives the chip its body.
+    tone(a.c, a.m, t + dt, ring, 0.05 + Math.random() * 0.03, 0.16 + Math.random() * 0.08, "triangle");
   }
+}
+
+// A single dry detent click — the bet slider snapping one big-blind notch. Tiny
+// and crisp so dragging it feels like a clicky dial rather than a smooth glide.
+export function sfxTick(): void {
+  if (muted) return;
+  const a = audio();
+  if (!a) return;
+  const t = a.c.currentTime;
+  burst(a.c, a.m, t, 0.012, { type: "highpass", freq: 2600, gain: 0.07 });
 }
 
 // A card (or a whole flop) flicked onto the felt.
