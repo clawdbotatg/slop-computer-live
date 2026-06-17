@@ -390,6 +390,16 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
   // sign + execute it there (it's a multisig tx, not a plain send).
   const payoutTx = escrow.payoutTxId ? (mesh.walletTxs.find(t => t.id === escrow.payoutTxId) ?? null) : null;
   const threshold = mesh.wallet?.threshold ?? 0;
+  // The relay normally marks the table settled when it sees the payout tx
+  // execute. If that detection misses (e.g. the tx was executed straight
+  // from the multisig), offer a manual close after a grace period so the
+  // room isn't stranded. Cheap escape hatch — the money already moved.
+  const [canForceClose, setCanForceClose] = useState(false);
+  useEffect(() => {
+    if (settled) return;
+    const id = setTimeout(() => setCanForceClose(true), 60_000);
+    return () => clearTimeout(id);
+  }, [settled]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -454,6 +464,15 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           claimText={`Pay out winners — ${fmtEth(total)} ETH`}
           onProposed={() => mesh.openWindow("wallet")}
         />
+      )}
+      {!settled && canForceClose && (
+        <button
+          type="button"
+          onClick={() => mesh.escrowClear()}
+          style={{ ...btn(ACCENT), alignSelf: "flex-start", fontSize: 12, padding: "6px 12px" }}
+        >
+          Already paid out? Close &amp; start a new tournament
+        </button>
       )}
     </div>
   );
