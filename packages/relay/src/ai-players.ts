@@ -151,6 +151,32 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
+  // GLM 5.2 — z.ai's frontier reasoner, a full generation past the
+  // GLM 4.7 (Venice) we also run. Reasoning-capable: smoke-tested at
+  // ~20s/move with ~110 reasoning tokens, returns a clean UCI move in
+  // `content`. 🧠 tier — slow but coherent. GLM's family chess track
+  // record is thin (see header note), so watch its early games.
+  {
+    id: "bankr-glm-5.2",
+    label: "GLM 5.2 (Bankr) 🧠",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "glm-5.2",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
+  // Kimi K2.6 — re-added by request. NOTE: this is the model the header
+  // flags as the WORST performer at the Kaggle chess arena (lost every
+  // game in under 8 moves, misplacing pieces) — re-added knowingly.
+  // Non-reasoning (0 reasoning tokens) but smoke-tested slow at ~13s/move,
+  // so it doesn't cleanly fit the ⚡ "1-4s" promise; watch its games.
+  {
+    id: "bankr-kimi-k2.6",
+    label: "Kimi K2.6 (Bankr) ⚡",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "kimi-k2.6",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+  },
   // ---- Venice — Anthropic via Venice's gateway --------------------
   // Same flagship Bankr exposes, via a second provider — kept so users
   // can pit two gateways' "Claude Opus 4.8" against each other (latency /
