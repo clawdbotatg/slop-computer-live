@@ -48,6 +48,7 @@ import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
+import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
@@ -183,6 +184,7 @@ type AppEntry = {
     | "gas"
     | "clock"
     | "wallet"
+    | "mywallet"
     | "research"
     | "leftclaw"
     | "news"
@@ -2574,6 +2576,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "gas":
         case "clock":
         case "wallet":
+        case "mywallet":
         case "ens":
         case "research":
         case "leftclaw":
@@ -3947,6 +3950,16 @@ function DesktopInner({ slug }: { slug: string }) {
                 myHandle={session.handle}
                 onBalanceUsd={setMenubarWalletBalanceUsd}
               />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="mywallet"
+              title="WALLET"
+              defaultSlot={{ x: 430, y: 130, width: 420, height: 560 }}
+              minWidth={340}
+              minHeight={420}
+            >
+              <WalletAppWindow />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

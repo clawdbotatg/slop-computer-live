@@ -955,6 +955,7 @@ type AppEntry = {
     | "gas"
     | "clock"
     | "wallet"
+    | "mywallet"
     | "research"
     | "leftclaw"
     | "news"
@@ -1093,6 +1094,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Bank",
     icon: "/icons/bank.png",
     kind: "wallet",
+  },
+  {
+    id: "mywallet",
+    label: "Wallet",
+    icon: "/icons/wallet.png",
+    kind: "mywallet",
   },
   {
     id: "ens",
