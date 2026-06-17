@@ -18,8 +18,16 @@
 //                anyone submits the multisig payout (reused PayoutProposeButton).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatEther, parseEther } from "viem";
-import { useAccount, useChainId, useSendTransaction, useSwitchChain, useWaitForTransactionReceipt } from "wagmi";
+import {
+  useAccount,
+  useChainId,
+  usePublicClient,
+  useSendTransaction,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+} from "wagmi";
 import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
+import { MultisigAbi } from "~~/contracts/multisig";
 import type {
   EscrowSession,
   PeerMeshState,
@@ -390,10 +398,43 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
   // sign + execute it there (it's a multisig tx, not a plain send).
   const payoutTx = escrow.payoutTxId ? (mesh.walletTxs.find(t => t.id === escrow.payoutTxId) ?? null) : null;
   const threshold = mesh.wallet?.threshold ?? 0;
-  // The relay normally marks the table settled when it sees the payout tx
-  // execute. If that detection misses (e.g. the tx was executed straight
-  // from the multisig), offer a manual close after a grace period so the
-  // room isn't stranded. Cheap escape hatch — the money already moved.
+  // Detect the payout on-chain: once the multisig's nonce advances past the
+  // proposed payout's nonce, that tx executed (the money moved) — even if
+  // the relay's wallet-status watch missed it. Robust to re-proposes (they
+  // all share the same nonce) and to executing straight from the multisig.
+  const publicClient = usePublicClient({ chainId: escrow.chainId });
+  const [paidOut, setPaidOut] = useState(false);
+  useEffect(() => {
+    if (settled || !payoutTx || !publicClient) return;
+    let payoutNonce: bigint;
+    try {
+      payoutNonce = BigInt(payoutTx.nonce);
+    } catch {
+      return;
+    }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const onChain = (await publicClient.readContract({
+          address: escrow.multisig as `0x${string}`,
+          abi: MultisigAbi,
+          functionName: "nonce",
+        })) as bigint;
+        if (!cancelled && onChain > payoutNonce) setPaidOut(true);
+      } catch {
+        /* RPC hiccup — try again next tick */
+      }
+    };
+    void check();
+    const id = setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [settled, payoutTx, publicClient, escrow.multisig]);
+
+  // Belt-and-suspenders: even if on-chain detection can't run, offer a
+  // manual close after a grace period so the room is never stranded.
   const [canForceClose, setCanForceClose] = useState(false);
   useEffect(() => {
     if (settled) return;
@@ -428,10 +469,13 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           );
         })}
       </div>
-      {settled ? (
-        <button type="button" onClick={() => mesh.escrowClear()} style={{ ...btn(CYAN), alignSelf: "flex-start" }}>
-          New tournament
-        </button>
+      {settled || paidOut ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {paidOut && !settled && <div style={{ fontSize: 13, color: LIME }}>✓ Payout sent on-chain.</div>}
+          <button type="button" onClick={() => mesh.escrowClear()} style={{ ...btn(LIME), alignSelf: "flex-start" }}>
+            New tournament
+          </button>
+        </div>
       ) : payoutTx ? (
         // Proposed — now it has to be signed + executed in the Wallet app
         // (it's a multisig tx). Surface that clearly + a one-tap shortcut.
@@ -465,7 +509,7 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           onProposed={() => mesh.openWindow("wallet")}
         />
       )}
-      {!settled && canForceClose && (
+      {!settled && !paidOut && canForceClose && (
         <button
           type="button"
           onClick={() => mesh.escrowClear()}
