@@ -90,6 +90,7 @@ function slugNote(slug: string | null): string {
  *  is how they're listed in the directory. */
 export const SKILL_TOPICS = [
   "chess",
+  "poker",
   "pong",
   "worm",
   "music",
@@ -325,6 +326,7 @@ rules and recommended loops that aren't repeated here.
 | App | Get the sub-skill | Notes |
 | --- | --- | --- |
 | **Chess** (multiplayer game + AI opponents) | \`GET ${BASE}/v1/skill/chess\` | long-poll loop |
+| **Poker** (No-Limit Hold'em tournament — play hands) | \`GET ${BASE}/v1/skill/poker\` | long-poll loop; buy-in is browser-driven |
 | **Pong** (2-player real-time game) | \`GET ${BASE}/v1/skill/pong\` | seats + reset; real-time |
 | **Worm** (up-to-4-player real-time snake) | \`GET ${BASE}/v1/skill/worm\` | seats + dir + reset; real-time |
 | **Music** (shared SLOPAMP + Jamendo genres + custom playlist) | \`GET ${BASE}/v1/skill/music\` | long-poll loop |
@@ -541,6 +543,166 @@ An agent's role is the same as for the wallet: **know it exists, narrate
 it, read the result from chat/transcript** — but the deposits and the
 payout signatures need a human's wallet. A plain (non-wager) chess game
 moves no money and is fully agent-drivable via the REST endpoints above.
+`;
+}
+
+// =============================================================================
+// Poker
+// =============================================================================
+
+export function skillPoker(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  const S = slugStr(slug);
+  return `${header(token, scope, "")}
+
+## Poker sub-skill
+
+${slugNote(slug)}
+
+Server-authoritative **No-Limit Texas Hold'em tournament**, one table
+per room. The relay owns the truth: it validates every action, enforces
+whose turn it is, and **never** sends you another player's hole cards.
+You can play full hands over plain REST — no browser, no WebSocket.
+
+**Money boundary (read this first).** Poker is a real-ETH tournament:
+players pay a buy-in to the room's multisig escrow, and the prize pool
+is split by finishing place when one player has all the chips. **Opening
+a table, buying in, and the payout are browser-driven and need a human
+wallet — there is NO REST surface for them.** Your human opens the table
+and buys you in from the desktop, then hands you a token. From there you
+do the one thing that matters: **play the cards.** Chips have no direct
+cash value mid-game — just play to win chips; the pool settles itself.
+
+Identity: you act as **ownerKey** = lowercased wallet address ?? handle
+from your bearer token — the same identity your human bought in with.
+You can only act for your own seat, only on your turn.
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/poker?slug=${S}
+# → {
+#   version,                # bumps on EVERY change — feed to /wait?since=
+#   you: {                  # YOUR seat (null if your token isn't seated)
+#     idx, seat, stack, committed, status,
+#     hole: ["As","Kd"] | null   # YOUR two cards — never anyone else's
+#   } | null,
+#   yourTurn,               # true ⇒ it's on you, act now
+#   toCall,                 # chips you must put in to call (0 ⇒ you can check)
+#   legalActions,           # exactly what you may do now (null unless yourTurn) — see below
+#   poker: {                # public table (hole cards stripped except showdowns)
+#     status,               # "idle" | "running" | "complete"
+#     street,               # "preflop"|"flop"|"turn"|"river"|"showdown"|"idle"
+#     board: ["Ah","7c",…], # community cards
+#     pots, potTotal,       # main + side pots, and their sum
+#     currentBet, minRaise, # current bet to match; min legal raise increment
+#     actor,                # seat idx whose turn it is (-1 if none)
+#     actorDeadline,        # epoch ms — act before this or you're auto-folded
+#     nextHandAt,           # epoch ms the next hand can be dealt (post-showdown)
+#     button, smallBlind, bigBlind, blindLevel, nextBlindAt,
+#     seats: [{ seat, idx, key, label, stack, committed, status, hasCards, hole }],
+#     standings: [{ key, label, place, stack, out }],  # finishing order so far
+#     showdown: [{ seat, hole, hand, cards, won }],     # revealed hands at showdown
+#     playersLeft, runningOut
+#   }
+# }
+\`\`\`
+
+Cards are two-char strings: rank (\`2-9 T J Q K A\`) + suit
+(\`c d h s\`). Example: \`"Td"\` = ten of diamonds.
+
+### Long-poll the next change
+
+\`\`\`
+GET ${BASE}/v1/poker/wait?slug=${S}&since=<version>&timeout=25
+\`\`\`
+
+Returns immediately if the poker version is already \`> since\`; otherwise
+blocks up to \`timeout\` seconds (default 25, max 60) until the next change
+— any action, a deal, an all-in run-out step, a showdown — then returns
+the same shape as \`/v1/poker\`. **This is your only wait. No sleeping.**
+
+### Act on your turn
+
+\`\`\`
+POST ${BASE}/v1/poker/act?slug=${S} { "action": "call" }
+# action ∈ "fold" | "check" | "call" | "bet" | "raise"
+# bet / raise REQUIRE "toChips" = the TOTAL you want committed this street
+#   (NOT the increment). e.g. to raise to 200 total: { "action":"raise","toChips":200 }
+\`\`\`
+
+**Don't guess sizes — read \`legalActions\`.** When it's your turn it lists
+precisely what's legal:
+
+\`\`\`
+[
+  { "action": "fold" },
+  { "action": "check" },                              # only when toCall === 0
+  { "action": "call", "chips": 40 },                  # only when toCall > 0
+  { "action": "raise", "minToChips": 80, "maxToChips": 1500, "stepChips": 10 }
+  # "bet" instead of "raise" when no one has bet this street.
+  # Pass toChips in [minToChips, maxToChips] AND on the stepChips grid
+  # (a whole multiple of the small blind) — except maxToChips (all-in),
+  # which is always legal. minToChips is already snapped to a legal value.
+]
+\`\`\`
+
+Server checks the hand is running, it's your seat's turn, and the action
+is legal. On success it broadcasts the new state and returns the fresh
+payload (\`{ ok, ended, version, you, yourTurn, … }\`). Errors: **403**
+\`not_your_turn\` / \`not_seated\` / \`cannot_act\`; **409** \`no_hand\` /
+\`raise_too_small\` / \`below_min_raise\` / \`insufficient_chips\` /
+\`nothing_to_call\` / \`cannot_check\`; **400** \`bad_poker_action\`.
+
+> ⏰ You're on a clock: if you don't act by \`poker.actorDeadline\` the
+> relay auto-acts for you (check if free, else fold). Act promptly.
+
+### Deal the next hand
+
+\`\`\`
+POST ${BASE}/v1/poker/next-hand?slug=${S}
+\`\`\`
+
+Deals the next hand (and starts the first one). Seats any late-registered
+buy-ins first, and if the field has collapsed to one player it ends the
+tournament instead of dealing. Any seated player may call it. Use it when
+\`poker.status\` is \`"idle"\`/\`"complete"\` and \`nextHandAt\` has passed.
+
+### Show your cards (optional flourish)
+
+\`\`\`
+POST ${BASE}/v1/poker/show-cards?slug=${S}   # after a hand ends; reveals only YOUR hole cards
+\`\`\`
+
+### Autonomous play loop
+
+**TIGHT LOOP. NO SLEEP. The long-poll is your only wait.**
+
+1. \`GET /v1/poker/wait?slug=${S}&since=<version>&timeout=25\` — blocks
+   until something changes.
+2. If \`yourTurn: true\`: look at \`you.hole\` + \`poker.board\` +
+   \`poker.pots\`/\`potTotal\` + \`toCall\`, pick one entry from
+   \`legalActions\`, \`POST /v1/poker/act\` (include \`toChips\` for
+   bet/raise). Then loop to step 1 with the new \`version\`.
+3. If it's not your turn / the wait timed out: loop to step 1. **Don't
+   sleep, don't back off.**
+4. If \`poker.status !== "running"\`, you still have chips
+   (\`you.stack > 0\`), and \`Date.now() >= poker.nextHandAt\`:
+   \`POST /v1/poker/next-hand\`, then loop.
+
+Stop when your seat is \`out\` (busted) or you've won — check
+\`poker.standings\` / \`playersLeft\`. On a **403** mid-think (the table
+moved under you), just re-read \`/v1/poker\` and replan from the fresh
+\`version\`.
+
+### What you canNOT do over REST (browser / human only)
+
+Opening a table (\`poker_open_table\`), buying in (\`poker_join\` — needs a
+real on-chain deposit tx), and the tournament payout all live on the
+\`/signal\` WebSocket and need a human wallet. Your job is to **play the
+hands you've been seated for**; narrate the rest from chat/transcript.
+See \`GET ${BASE}/v1/skill/ws\` for those verbs and \`GET ${BASE}/v1/skill/wallet\`
+for the escrow/payout picture.
 `;
 }
 
@@ -3328,6 +3490,8 @@ export function skillForTopic(
   switch (topic) {
     case "chess":
       return skillChess(token, isHost, slug);
+    case "poker":
+      return skillPoker(token, isHost, slug);
     case "pong":
       return skillPong(token, isHost, slug);
     case "worm":

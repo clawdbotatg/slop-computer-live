@@ -76,3 +76,36 @@ test("poker settles from an open session (never locked)", () => {
   assert.equal(res.ok, true);
   assert.equal(e.get()!.status, "settling");
 });
+
+test("deposits are single-use: a replayed txHash is rejected (rebuy)", () => {
+  const e = tmp();
+  e.open({ game: "poker", chainId: 8453, multisig: MULTISIG, accounts: [], autoLock: false, createdBy: addr("1") });
+  e.addAccount({ key: addr("1"), label: "P1", role: "0", requiredWei: "100" });
+  assert.equal(e.recordDeposit(addr("1"), { txHash: "0xdupe", amountWei: "100" }).ok, true);
+  assert.equal(e.isTxConsumed("0xdupe"), true);
+  // Replaying the same hash (the rebuy inflation vector) is refused and
+  // leaves the balance untouched.
+  const replay = e.recordDeposit(addr("1"), { txHash: "0xdupe", amountWei: "100" });
+  assert.equal(replay.ok, false);
+  assert.equal((replay as { error: string }).error, "tx_already_used");
+  assert.equal(e.accountOf(addr("1"))!.depositedWei, "100");
+  // A genuinely new on-chain payment (distinct hash) still credits.
+  assert.equal(e.recordDeposit(addr("1"), { txHash: "0xfresh", amountWei: "50" }).ok, true);
+  assert.equal(e.accountOf(addr("1"))!.depositedWei, "150");
+});
+
+test("consumed txHashes survive clear() — no free re-entry next tournament", () => {
+  const e = tmp();
+  e.open({ game: "poker", chainId: 8453, multisig: MULTISIG, accounts: [], autoLock: false, createdBy: addr("1") });
+  e.addAccount({ key: addr("1"), label: "P1", role: "0", requiredWei: "100" });
+  assert.equal(e.recordDeposit(addr("1"), { txHash: "0xold", amountWei: "100" }).ok, true);
+  e.clear(); // tournament ends, lobby reopens
+  // New tournament, same room multisig + chain. The old buy-in hash can't
+  // be replayed to enter without paying again.
+  e.open({ game: "poker", chainId: 8453, multisig: MULTISIG, accounts: [], autoLock: false, createdBy: addr("1") });
+  assert.equal(e.isTxConsumed("0xold"), true);
+  e.addAccount({ key: addr("1"), label: "P1", role: "0", requiredWei: "100" });
+  const replay = e.recordDeposit(addr("1"), { txHash: "0xold", amountWei: "100" });
+  assert.equal(replay.ok, false);
+  assert.equal((replay as { error: string }).error, "tx_already_used");
+});

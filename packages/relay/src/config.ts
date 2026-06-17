@@ -120,4 +120,11 @@ export const config = {
   aiWalletLlmModel: env("AI_WALLET_LLM_MODEL", "claude-opus-4.7"),
   zerionApiKey: env("ZERION_API_KEY", ""),
   lifiApiKey: env("LIFI_API_KEY", ""),
+  // --- Personal-wallet deployer / facilitator (docs/PASSKEY-WALLET.md) -----
+  // The fixed address that broadcasts every passkey personal-wallet's
+  // createMultisig (baked into the CREATE2 address — never change it) and, in
+  // Phase 2, broadcasts + sponsors gas for their txs. The key is a hot wallet:
+  // gitignored, never committed. Empty until Phase 2 wires the facilitator.
+  personalWalletDeployer: env("PERSONAL_WALLET_DEPLOYER", ""),
+  personalWalletDeployerKey: env("PERSONAL_WALLET_DEPLOYER_KEY", ""),
 };

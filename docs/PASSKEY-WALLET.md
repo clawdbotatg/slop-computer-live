@@ -29,6 +29,28 @@
   is **UI + one new backend service: the facilitator** (a gas relayer that
   broadcasts threshold-met txs, since passkey users have no EOA/ETH).
 
+## 0. Origin / motivation
+
+This started from a "this is kind of freaky" observation that checked out:
+
+- **The burn trap.** Funds sent **directly to a raw passkey address are
+  permanently stuck.** The address is `keccak256(P-256 pubkey)[-20:]` — a
+  secp256r1 identifier, not a secp256k1 EOA and not a contract. There is no key
+  that can sign an Ethereum tx for it and no code deployed there, so anything
+  sent is unrecoverable. It looks like a wallet; it's a username.
+- **The system itself does *not* burn funds (audited clean).** Game deposits go
+  to the room **multisig**, not the passkey address: `WagerPanel.tsx` sends
+  `to: escrow.multisig`, and the relay's `verifyEthDeposit` (`wallet-data.ts`)
+  asserts `tx.to === escrow.multisig` before crediting. Payouts go back out via
+  `escrow.ts` `settle()` → `Multisig.execTransaction`. So the burn risk is a
+  **user footgun** (someone copying the identity address and sending to it),
+  not a code path — *unless* the UI ever presents the raw passkey address as
+  receivable (see §11).
+
+This plan removes the footgun (hide the raw address, §11) **and** turns the
+passkey into a genuinely useful, spendable, recoverable, Apple-Pay-fundable
+wallet — with no new Solidity.
+
 ## 1. Concepts / terminology
 
 | Term | What it is | Spendable? | Shown to user? |
@@ -235,7 +257,7 @@ displays driven by `usePeerMesh`. Replace raw-passkey-address receive
 affordances with the personal-multisig address; keep the raw id only as a
 non-copyable identity token where needed.
 
-## 11b. App surface — single-player Wallet vs multiplayer Multisig (Safe) app
+## 12. App surface — single-player Wallet vs multiplayer Multisig (Safe) app
 
 Introducing personal wallets forces a UI-architecture decision, because the
 thing called **"Wallet"** on the desktop today is actually a **multisig
@@ -283,12 +305,12 @@ friendly default; the builder becomes "Multisig."
   `wallet.png` migrates to the Multisig app (or its own new icon).
 - **Auth-mode behavior of the personal Wallet app:** passkey → personal
   multisig; SIWE/EOA → could show the connected EOA *or* also offer a personal
-  multisig; anon → no wallet (prompt to sign in). Decide per §12.
+  multisig; anon → no wallet (prompt to sign in). Decide per §14.
 - **`WalletWindow.tsx` reuse:** factor the simple personal view out of it (or a
   new `WalletAppWindow.tsx` that consumes the same hooks) so the two apps share
   the signing/exec plumbing rather than forking it.
 
-## 11c. On-ramp — Apple Pay → personal wallet (the smoothness unlock)
+## 13. On-ramp — Apple Pay → personal wallet (the smoothness unlock)
 
 This is what makes the whole thing feel magic: passkey sign-in → personal
 smart wallet → **Apple Pay** → funded → in the game, with no external wallet,
@@ -327,6 +349,13 @@ no seed phrase, no "go buy ETH somewhere else." Coinbase Onramp delivers it.
 wallet to the Coinbase offramp address (another session token, `offramp`) →
 back to bank/Apple Pay. Symmetric with the on-ramp; same endpoint shape.
 
+**Sources (verify before building — onramp terms change):**
+- Coinbase Onramp overview — https://docs.cdp.coinbase.com/onramp-&-offramp/onramp-apis/onramp-overview
+- Apple Pay onramp — https://www.coinbase.com/blog/Fiat-to-crypto-in-seconds-with-Apple-Pay
+- Zero-fee USDC on/offramp — https://www.coinbase.com/developer-platform/discover/launches/zero-fee-usdc
+- `<FundButton>` (OnchainKit) — https://docs.base.org/onchainkit/fund/fund-button
+- Create an onramp session (session token + destination addr) — https://docs.cdp.coinbase.com/api-reference/v2/rest-api/onramp/create-an-onramp-session
+
 **Constraints to design around:**
 - **US-only day 1**, requires a US phone number + USD. Need a graceful
   fallback/messaging for non-US users (or a second provider later — MoonPay etc.).
@@ -334,12 +363,12 @@ back to bank/Apple Pay. Symmetric with the on-ramp; same endpoint shape.
   poker buy-ins, but surface the cap so a user isn't surprised.
 - **CDP API key** is a server secret → relay env, **gitignored, never committed**
   (same hygiene as the facilitator key).
-- **ETH vs USDC denomination** is now a real decision (see §12): zero-fee ramp +
+- **ETH vs USDC denomination** is now a real decision (see §14): zero-fee ramp +
   gas-sponsorship both favor **USDC**, but today's escrow/buy-in path is
   **ETH-only** (`value: BigInt(owed)` in `WagerPanel.tsx`). USDC buy-ins need the
   escrow/poker flow to handle an ERC-20.
 
-## 12. Open decisions
+## 14. Open decisions
 
 1. **Deployer identity** for the CREATE2 salt — a single fixed slop deployer, or
    the facilitator's own address? (Affects address stability + who can init.)
@@ -359,7 +388,7 @@ back to bank/Apple Pay. Symmetric with the on-ramp; same endpoint shape.
 10. **Non-US on-ramp fallback** — Coinbase Onramp is US-first; what do non-US
     users get (messaging, a second provider, or external-wallet funding)?
 
-## 13. File touch-map (no new contracts)
+## 15. File touch-map (no new contracts)
 
 | Area | Files | Change |
 |------|-------|--------|
@@ -373,5 +402,3 @@ back to bank/Apple Pay. Symmetric with the on-ramp; same endpoint shape.
 | Room/escrow | `packages/relay/src/escrow.ts`, `wallet-data.ts`, `components/desktop/chess/WagerPanel.tsx` | buy-in from personal wallet; payouts to personal wallets |
 | **On-ramp (new)** | `packages/relay/src/index.ts` (new `POST /onramp/session`), Next.js `<FundButton>` / OnchainKitProvider | mint CDP session token scoped to personal-wallet addr; Apple Pay funding UI |
 | Config/secrets | relay env (gitignored) | facilitator hot-wallet key (per chain) + CDP API key + CDP Project ID, **never committed** |
-</content>
-</invoke>

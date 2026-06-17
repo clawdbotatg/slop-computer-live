@@ -45,7 +45,7 @@ import {
   type Room,
 } from "./room.js";
 import { hasAnyValidRoomCookie, roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
-import { generateCard } from "./card.js";
+import { generateCard, generateCardFromPrompt } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import { handleChatCommand } from "./chat-commands.js";
 import { TokenBucket } from "./rate-limit.js";
@@ -2835,6 +2835,55 @@ app.post(
   },
 );
 
+// Custom-vibe card: same per-room job + broadcast machinery as POST /v1/card,
+// but driven by a free-text prompt instead of a dropped PFP. The model invents
+// artwork for the green-dot spot from the vibe (e.g. "poker night"). One job at
+// a time per room, shared with the PFP path via the same `cardJobs` map.
+app.post("/v1/card/prompt", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+
+  const raw = (req.body as { prompt?: unknown } | undefined)?.prompt;
+  const vibe = typeof raw === "string" ? raw.trim() : "";
+  if (!vibe) {
+    return reply.code(400).send({ error: "empty-prompt", note: 'POST {"prompt":"poker night"}' });
+  }
+  if (vibe.length > 500) return reply.code(413).send({ error: "prompt-too-long" });
+
+  const room = roomFromReq(req);
+  const slug = room.id;
+
+  const existing = cardJobs.get(slug);
+  if (existing) {
+    return reply.code(409).send({ error: "already-generating", job: existing });
+  }
+
+  const startedBy = (a.session.address ?? a.session.handle ?? null) || null;
+  const job: CardJob = { startedAt: Date.now(), startedBy };
+  cardJobs.set(slug, job);
+  room.broadcast({ type: "card_job", job });
+  noteAction(room, a, "card", `🖼️ ${actorName(a.session)} is generating a custom title card`);
+
+  req.log.info({ slug, startedBy, vibeLen: vibe.length }, "card prompt job: accepted");
+  void (async () => {
+    try {
+      const { png } = await generateCardFromPrompt(vibe, req.log);
+      await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+      await _writeFile(cardFilePath(slug), png);
+      const snap = readCardSnapshot(slug);
+      room.broadcast({ type: "card_state", state: snap });
+      req.log.info({ slug, elapsedMs: Date.now() - job.startedAt }, "card prompt job: complete");
+    } catch (err) {
+      req.log.error({ err, slug, elapsedMs: Date.now() - job.startedAt }, "card prompt generation failed");
+    } finally {
+      cardJobs.delete(slug);
+      room.broadcast({ type: "card_job", job: null });
+    }
+  })();
+
+  return reply.code(202).send({ ok: true, job });
+});
+
 // Clear the current card — anyone in the room may reset, mirroring the
 // per-peer reset button in CardWindow. After delete the room falls back
 // to the template until someone drops a new PFP. Does NOT cancel an
@@ -3243,6 +3292,238 @@ app.post("/v1/chess/close", async (req, reply) => {
   const result = room.chess.clearGame();
   broadcastChessState(room, null);
   return { ok: true, aborted: result.aborted };
+});
+
+// =============================================================================
+// /v1/poker — agent surface for the poker tournament
+// -----------------------------------------------------------------------------
+// Mirrors the WS poker handlers (poker_act / poker_start / poker_show_cards)
+// with the same server-authoritative validation, so a BYO-AI agent can PLAY
+// poker over plain REST. Gameplay only: opening a table, buying in (the
+// on-chain tx), and tournament payout stay browser / WS-driven — see the
+// poker sub-skill. An agent signs in as its human, mints an agent token, then
+// plays hands purely over REST. The engine enforces turn + legality (and
+// strips other players' hole cards) so an agent can only act for its own seat,
+// in turn, and can never see cards it shouldn't.
+// =============================================================================
+
+type PokerPublicSeat = {
+  seat: number;
+  idx: number;
+  key: string;
+  label: string;
+  stack: number;
+  committed: number;
+  status: "active" | "folded" | "allin" | "out";
+  hasCards: boolean;
+  hole: [string, string] | null;
+};
+type PokerPublicView = {
+  status: "idle" | "running" | "complete";
+  currentBet: number;
+  minRaise: number;
+  smallBlind: number;
+  actor: number;
+  seats: PokerPublicSeat[];
+  [k: string]: unknown;
+};
+type PokerLegalAction = {
+  action: string;
+  chips?: number;
+  minToChips?: number;
+  maxToChips?: number;
+  stepChips?: number;
+};
+
+/** Build the response for /v1/poker and /v1/poker/wait. On top of the public
+ *  table view it adds the derived fields an agent's play loop needs — `you`
+ *  (your seat + your own private hole cards, which the public view never
+ *  carries), `yourTurn`, `toCall`, and `legalActions` (exactly what you may do
+ *  right now, with min/max bet sizing) — so the agent never has to reconstruct
+ *  No-Limit betting rules or guess a legal raise. */
+function buildPokerPayload(room: Room, callerKey: string | null) {
+  const poker = room.poker.publicView() as PokerPublicView;
+  const seats = poker.seats;
+  const mySeat = callerKey ? (seats.find(s => s.key === callerKey) ?? null) : null;
+  // Real hole cards come from the private frame — the public seat only carries
+  // them at a showdown reveal.
+  const hole = callerKey ? room.poker.privateFor(callerKey).hole : null;
+
+  let yourTurn = false;
+  let toCall = 0;
+  let legalActions: PokerLegalAction[] | null = null;
+
+  if (mySeat) {
+    toCall = Math.max(0, poker.currentBet - mySeat.committed);
+    const actorSeat = seats.find(s => s.idx === poker.actor) ?? null;
+    yourTurn =
+      poker.status === "running" && mySeat.status === "active" && !!actorSeat && actorSeat.key === callerKey;
+    if (yourTurn) {
+      const maxTo = mySeat.committed + mySeat.stack; // all-in ceiling for this seat
+      const actions: PokerLegalAction[] = [{ action: "fold" }];
+      if (toCall === 0) actions.push({ action: "check" });
+      else actions.push({ action: "call", chips: Math.min(toCall, mySeat.stack) });
+      // You can put more in only if your all-in ceiling beats the current bet.
+      // `bet` when nobody has bet this street, else `raise`. Either way the
+      // engine wants `toChips` = the TOTAL you commit to, not the increment.
+      // The engine also requires toChips to be a whole multiple of the small
+      // blind (all-in exempt), so round the advertised minimum UP to a legal
+      // value and expose the step — an in-range value that skips the step
+      // would 409 `bad_increment`.
+      if (maxTo > poker.currentBet) {
+        const sb = poker.smallBlind > 0 ? poker.smallBlind : 1;
+        const rawMin = Math.min(poker.currentBet + poker.minRaise, maxTo);
+        // Snap up to the next small-blind multiple, but never above the all-in
+        // ceiling (which is itself always legal).
+        const alignedMin = Math.min(maxTo, Math.ceil(rawMin / sb) * sb);
+        actions.push({
+          action: poker.currentBet === 0 ? "bet" : "raise",
+          minToChips: alignedMin,
+          maxToChips: maxTo,
+          stepChips: sb,
+        });
+      }
+      legalActions = actions;
+    }
+  }
+
+  return {
+    version: room.poker.getVersion(),
+    poker,
+    you: mySeat
+      ? {
+          idx: mySeat.idx,
+          seat: mySeat.seat,
+          stack: mySeat.stack,
+          committed: mySeat.committed,
+          status: mySeat.status,
+          hole,
+        }
+      : null,
+    yourTurn,
+    toCall,
+    legalActions,
+  };
+}
+
+app.get("/v1/poker", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
+  return buildPokerPayload(roomFromReq(req), callerKey);
+});
+
+/** Long-poll the poker table. Same contract as /v1/chess/wait: pass
+ *  `?since=<version>` (the `version` from a previous response); returns
+ *  immediately if the poker version is already greater, else blocks up to
+ *  `?timeout=<sec>` (default 25, max 60) for the next state change — any
+ *  action, a deal, an all-in run-out step, a showdown — then returns the same
+ *  shape as /v1/poker. Lets an agent wait cheaply for its turn. */
+app.get<{ Querystring: { since?: string; timeout?: string } }>("/v1/poker/wait", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  const room = roomFromReq(req);
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase() || null;
+  const since = Number(req.query?.since ?? 0);
+  const timeoutSec = Math.min(60, Math.max(1, Number(req.query?.timeout ?? 25)));
+
+  if (!Number.isFinite(since) || room.poker.getVersion() > since) {
+    return buildPokerPayload(room, callerKey);
+  }
+
+  return await new Promise<unknown>(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(buildPokerPayload(room, callerKey));
+    };
+    const timer = setTimeout(finish, timeoutSec * 1000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      room.poker.removeWaiter(entry);
+      try {
+        reply.raw.off("close", finish);
+      } catch {
+        /* ignore */
+      }
+    };
+    const entry = { wake: finish, cleanup };
+    room.poker.pushWaiter(entry);
+    // Client hung up mid-wait → drop them so we don't resolve a dead reply.
+    reply.raw.on("close", finish);
+  });
+});
+
+type PokerActBody = { action?: unknown; toChips?: unknown };
+app.post<{ Body: PokerActBody }>("/v1/poker/act", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const b = (req.body ?? {}) as PokerActBody;
+  const action = b.action;
+  if (action !== "fold" && action !== "check" && action !== "call" && action !== "bet" && action !== "raise") {
+    return reply.code(400).send({ error: "bad_poker_action" });
+  }
+  // Same ownerKey scheme as the WS handler + chess REST: lowercased address
+  // ?? lowercased handle. Seats are keyed by the lowercased buy-in address, so
+  // anything else fails "not_seated" / "not_your_turn".
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const room = roomFromReq(req);
+  const toChips = typeof b.toChips === "number" ? b.toChips : undefined;
+  const out = room.poker.act(callerKey, { action, toChips });
+  if (!out.ok) {
+    const code = out.error === "not_your_turn" || out.error === "not_seated" || out.error === "cannot_act" ? 403 : 409;
+    return reply.code(code).send({ error: out.error });
+  }
+  if (out.ended) {
+    notePokerHandResult(room);
+    maybeEndTournament(room);
+  }
+  broadcastPokerState(room);
+  return { ok: true, ended: out.ended, ...buildPokerPayload(room, callerKey) };
+});
+
+// Deal the next hand (also the way to start the first one once enough players
+// are seated). Mirrors poker_start / poker_next_hand: seats any newly-funded
+// late-reg entrants, ends the tournament if the field has collapsed to one,
+// else deals. Any seated player (or escrow account) may kick it off.
+app.post("/v1/poker/next-hand", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const room = roomFromReq(req);
+  if (!room.escrow.accountOf(callerKey) && !room.poker.getGame().seats.some(s => s.key === callerKey)) {
+    return reply.code(403).send({ error: "not_a_player" });
+  }
+  seatFundedPlayers(room);
+  if (maybeEndTournament(room)) {
+    broadcastPokerState(room);
+    return { ok: true, ended: true, ...buildPokerPayload(room, callerKey) };
+  }
+  const started = room.poker.startHand();
+  if (!started.ok) return reply.code(409).send({ error: started.error });
+  broadcastPokerState(room);
+  return { ok: true, ended: false, ...buildPokerPayload(room, callerKey) };
+});
+
+// Voluntarily flash your own hole cards after a hand ends (the classic move
+// after winning on a fold). The engine only reveals the caller's own cards,
+// and only while the hand is over.
+app.post("/v1/poker/show-cards", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const room = roomFromReq(req);
+  const out = room.poker.showCards(callerKey);
+  if (!out.ok) return reply.code(409).send({ error: out.error });
+  broadcastPokerState(room);
+  return { ok: true, ...buildPokerPayload(room, callerKey) };
 });
 
 // =============================================================================
@@ -7454,6 +7735,22 @@ app.register(async function signalRoutes(fastify) {
           // cancelled. After a deposit → settling with a refund plan (the
           // UI then proposes the refund batch, same path as a draw).
           // Generic across games.
+          //
+          // Gate it: only the table creator or the room host may cancel, so
+          // a random joiner/spectator can't grief a live escrow. And for a
+          // poker tournament, once the first hand is dealt the prize follows
+          // the chips — a refund-everyone cancel would let a losing player
+          // claw their buy-in back, so only the host can force-abort then.
+          const escForCancel = room.escrow.get();
+          if (!escForCancel) return send(socket, { type: "error", error: "no_escrow" });
+          const cancelKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const cancelIsHost = isHostInfo(info);
+          if (cancelKey !== escForCancel.createdBy && !cancelIsHost) {
+            return send(socket, { type: "error", error: "not_authorized" });
+          }
+          if (escForCancel.game === "poker" && room.poker.getGame().handId !== null && !cancelIsHost) {
+            return send(socket, { type: "error", error: "tournament_in_progress" });
+          }
           const res = room.escrow.cancel();
           if (!res.ok) return send(socket, { type: "error", error: res.error });
           room.transcript.appendAction({
@@ -7473,8 +7770,15 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "escrow_clear": {
-          // Reset the escrow slot so the lobby reopens (after settled or
-          // cancelled). Any peer can clear, mirroring chess_close.
+          // Reset the escrow slot so the lobby reopens. A *finished*
+          // (settled/cancelled) session is harmless to wipe — any peer may,
+          // mirroring chess_close. But a live session (open/locked/settling)
+          // still tracks who's owed what; only the host may force-clear it,
+          // so a single player can't nuke an in-progress game's ledger.
+          const escForClear = room.escrow.get();
+          if (escForClear && escForClear.status !== "settled" && escForClear.status !== "cancelled" && !isHostInfo(info)) {
+            return send(socket, { type: "error", error: "not_clearable" });
+          }
           room.escrow.clear();
           broadcastEscrowState(room);
           return;
@@ -7496,9 +7800,17 @@ app.register(async function signalRoutes(fastify) {
           }
           if (buyinWei <= 0n) return send(socket, { type: "error", error: "bad_amounts" });
           const startingStack = typeof msg.startingStack === "number" && msg.startingStack > 0 ? Math.floor(msg.startingStack) : 1500;
-          const smallBlind = typeof msg.smallBlind === "number" ? msg.smallBlind : 10;
-          const bigBlind = typeof msg.bigBlind === "number" ? msg.bigBlind : 20;
-          if (smallBlind <= 0 || bigBlind < smallBlind) return send(socket, { type: "error", error: "bad_blinds" });
+          // Blinds are whole chips — floor client input so the table can
+          // never run on fractional blinds (which would cascade into
+          // fractional bet increments).
+          const smallBlind = typeof msg.smallBlind === "number" && msg.smallBlind > 0 ? Math.floor(msg.smallBlind) : 10;
+          const bigBlind = typeof msg.bigBlind === "number" && msg.bigBlind > 0 ? Math.floor(msg.bigBlind) : 20;
+          // Big blind must be a whole multiple of the small blind, so every
+          // forced bet — and the UI's blind-stepped raise slider — lands on a
+          // small-blind increment that the engine accepts.
+          if (smallBlind <= 0 || bigBlind < smallBlind || bigBlind % smallBlind !== 0) {
+            return send(socket, { type: "error", error: "bad_blinds" });
+          }
           const blindIntervalMs = typeof msg.blindIntervalMs === "number" && msg.blindIntervalMs > 0 ? msg.blindIntervalMs : 0;
           const windowMs = typeof msg.buyinWindowMs === "number" && msg.buyinWindowMs > 0 ? msg.buyinWindowMs : 600_000;
           const cur = room.wallet.getCurrent();
@@ -7560,6 +7872,10 @@ app.register(async function signalRoutes(fastify) {
               return send(socket, { type: "poker_join_result", ok: false, reason: "table_gone", txHash });
             }
             if (room.escrow.accountOf(funder)) return send(socket, { type: "poker_join_result", ok: false, reason: "already_joined", txHash });
+            // Reject a replayed deposit before we reserve a seat/account for
+            // it — a past txHash can't buy a fresh entry. (recordDeposit
+            // enforces this again as the authoritative backstop.)
+            if (room.escrow.isTxConsumed(txHash)) return send(socket, { type: "poker_join_result", ok: false, reason: "tx_already_used", txHash });
             const taken = new Set(cur.accounts.map(a => Number.parseInt(a.role, 10)));
             let seatIdx = -1;
             for (let i = 0; i < MAX_SEATS; i++) if (!taken.has(i)) { seatIdx = i; break; }

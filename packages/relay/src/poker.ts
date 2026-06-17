@@ -523,9 +523,16 @@ export class PokerState {
 
   private applyRaise(seat: Seat, toChips: number): ActOutcome {
     const maxTo = seat.committed + seat.stack; // all-in ceiling for this seat
+    // Bet/raise targets are whole chips only — a float would inject
+    // fractional chips that break clean accounting (and odd-chip splits).
+    if (!Number.isInteger(toChips)) return { ok: false, error: "bad_amount" };
     if (toChips <= this.game.currentBet) return { ok: false, error: "raise_too_small" };
     if (toChips > maxTo) return { ok: false, error: "insufficient_chips" };
     const isAllIn = toChips === maxTo;
+    // Bets/raises must land on a whole small-blind increment, so the table
+    // only ever deals in small-blind units. An all-in is exempt — a short
+    // stack can't always shove to a clean multiple.
+    if (!isAllIn && toChips % this.game.smallBlind !== 0) return { ok: false, error: "bad_increment" };
     const raiseBy = toChips - this.game.currentBet;
     const fullRaise = raiseBy >= this.game.minRaise;
     if (!fullRaise && !isAllIn) return { ok: false, error: "below_min_raise" };

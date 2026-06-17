@@ -124,6 +124,12 @@ function isTerminal(status: EscrowStatus): boolean {
 
 export class EscrowState {
   private current: EscrowSession | null = null;
+  /** Deposit txHashes already credited, keyed `${chainId}:${txHash}`. A
+   *  deposit is single-use: the same on-chain payment can never be counted
+   *  twice (replay across rebuys OR across tournaments). Persisted SEPARATELY
+   *  from `current` so it survives `clear()` — otherwise reopening the lobby
+   *  would forget every consumed hash and reopen the replay window. */
+  private consumedTx: Record<string, true> = {};
   private loaded = false;
   private saveQueued = false;
 
@@ -134,8 +140,9 @@ export class EscrowState {
     this.loaded = true;
     try {
       const raw = readFileSync(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as { current?: EscrowSession | null };
+      const parsed = JSON.parse(raw) as { current?: EscrowSession | null; consumedTx?: Record<string, true> };
       if (parsed.current && typeof parsed.current === "object") this.current = parsed.current;
+      if (parsed.consumedTx && typeof parsed.consumedTx === "object") this.consumedTx = parsed.consumedTx;
     } catch {
       /* cold start — no session */
     }
@@ -147,11 +154,25 @@ export class EscrowState {
     queueMicrotask(() => {
       this.saveQueued = false;
       try {
-        writeFileAtomic(this.filePath, JSON.stringify({ current: this.current }));
+        writeFileAtomic(this.filePath, JSON.stringify({ current: this.current, consumedTx: this.consumedTx }));
       } catch (err) {
         console.error("[escrow] failed to persist:", err);
       }
     });
+  }
+
+  private txKey(txHash: string): string {
+    const chainId = this.current?.chainId ?? 0;
+    return `${chainId}:${txHash.toLowerCase()}`;
+  }
+
+  /** Has this deposit txHash already been credited to any session? The join
+   *  hooks check this right after the on-chain verify so a replayed hash is
+   *  rejected before a seat/account is created. `recordDeposit` enforces it
+   *  again as the authoritative backstop. */
+  isTxConsumed(txHash: string): boolean {
+    this.load();
+    return this.consumedTx[this.txKey(txHash)] === true;
   }
 
   private touch(): EscrowSession {
@@ -235,6 +256,11 @@ export class EscrowState {
     const acct = this.accountOf(key);
     if (!acct) return { ok: false, error: "not_a_participant" };
     if (!isWei(deposit.amountWei)) return { ok: false, error: "bad_amount" };
+    // Single-use: one on-chain payment is credited exactly once. Blocks
+    // replaying a past txHash to inflate a balance / rejoin without paying.
+    const txKey = this.txKey(deposit.txHash);
+    if (this.consumedTx[txKey]) return { ok: false, error: "tx_already_used" };
+    this.consumedTx[txKey] = true;
     acct.depositedWei = (BigInt(acct.depositedWei) + BigInt(deposit.amountWei)).toString();
     acct.balanceWei = (BigInt(acct.balanceWei) + BigInt(deposit.amountWei)).toString();
     acct.deposit = { txHash: deposit.txHash, amountWei: acct.depositedWei, confirmedAt: Date.now() };

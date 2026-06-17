@@ -463,6 +463,35 @@ test("publicView hides hole cards; privateFor reveals own", () => {
   assert.ok(Array.isArray(priv.hole) && priv.hole.length === 2);
 });
 
+// --- bet increment (whole small-blind units, no fractions) ------------
+
+test("raise must be a whole small-blind multiple; fractions rejected", () => {
+  const t = table(10, 20);
+  t.sit(0, "alice", "Alice", 1000); // button / SB
+  t.sit(1, "bob", "Bob", 1000); // BB
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  // currentBet = BB = 20. alice acts first heads-up.
+  const frac = t.act("alice", { action: "raise", toChips: 30.5 });
+  assert.equal(frac.ok, false);
+  assert.equal((frac as { error: string }).error, "bad_amount");
+  const offStep = t.act("alice", { action: "raise", toChips: 45 }); // not a multiple of 10
+  assert.equal(offStep.ok, false);
+  assert.equal((offStep as { error: string }).error, "bad_increment");
+  // A clean small-blind multiple that clears the min-raise is fine.
+  assert.equal(t.act("alice", { action: "raise", toChips: 40 }).ok, true);
+});
+
+test("all-in is exempt from the small-blind increment rule", () => {
+  const t = table(10, 20);
+  t.sit(0, "alice", "Alice", 995); // odd stack → all-in target isn't a multiple of 10
+  t.sit(1, "bob", "Bob", 1000);
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  // alice posted SB 10 → maxTo = 995, not a multiple of 10, but a shove is legal.
+  assert.equal(t.act("alice", { action: "raise", toChips: 995 }).ok, true);
+});
+
 // --- helpers ----------------------------------------------------------
 
 function seat(key: string, stack: number, status: Seat["status"]): Seat {

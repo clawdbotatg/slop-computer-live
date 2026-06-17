@@ -1534,6 +1534,29 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
   const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 20);
   const txsOnOtherChains = allTxs.filter(t => t.chainId !== activeChain);
 
+  // Auto-switch the picker to wherever a new pending tx actually landed.
+  // A poker/dapp/AI-wallet propose can target Base while the queue is
+  // showing Ethereum; the queue filters by chain, so without this the new
+  // tx hides behind the picker. Mirrors the window-level jump to the
+  // Transactions tab — surface what needs a signature, on the right
+  // network. Synced via setActiveChain, so every peer's picker follows.
+  // We track the pending count (not identity), so dismiss-then-arrive on
+  // a different chain still triggers. Only switch to a chain the multisig
+  // is actually deployed on (else the reset effect above bounces it back).
+  const pendingTotal = allTxs.filter(t => t.status === "pending").length;
+  const lastPendingTotalRef = useRef(pendingTotal);
+  useEffect(() => {
+    if (pendingTotal > lastPendingTotalRef.current) {
+      const newest = allTxs
+        .filter(t => t.status === "pending")
+        .reduce<WalletTx | null>((a, b) => (!a || b.createdAt > a.createdAt ? b : a), null);
+      if (newest && newest.chainId !== activeChain && deployedChainIds.includes(newest.chainId)) {
+        setActiveChain(newest.chainId);
+      }
+    }
+    lastPendingTotalRef.current = pendingTotal;
+  }, [pendingTotal, allTxs, activeChain, deployedChainIds, setActiveChain]);
+
   return (
     <div
       style={{

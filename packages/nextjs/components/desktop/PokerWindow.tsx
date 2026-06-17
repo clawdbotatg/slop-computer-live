@@ -188,6 +188,7 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
     if (buyinWei <= 0n) return setErr("Buy-in must be > 0.");
     if (startingStack <= 0) return setErr("Starting stack must be > 0.");
     if (bigBlind < smallBlind || smallBlind <= 0) return setErr("Bad blinds.");
+    if (bigBlind % smallBlind !== 0) return setErr("Big blind must be a multiple of the small blind.");
     mesh.pokerOpenTable({
       buyinWei: buyinWei.toString(),
       startingStack: Math.floor(startingStack),

@@ -81,6 +81,39 @@ const PROMPT = [
   "subject from the second image. No text overlays, no watermarks, no captions.",
 ].join(" ");
 
+// Prompt for the "custom vibe" path: no PFP is dropped, so there is only the
+// template (one reference image). Instead of compositing a subject, the model
+// INVENTS artwork for the green-dot spot from a free-text vibe the user typed
+// (e.g. "poker night", "a bird-watching meetup"). Everything else about the
+// card stays pixel-identical — same as the PFP path.
+function buildVibePrompt(vibe: string): string {
+  return [
+    "The bright green circular dot on the right side of the image is a",
+    "POSITION MARKER — it is NOT a mask, NOT a window, NOT a shape to fill.",
+    "It only marks WHERE to place a piece of artwork that you will INVENT.",
+    "",
+    "INVENT original artwork illustrating the following theme, then place it at",
+    "the green-dot location as a free-floating element composited into the card.",
+    "Do not borrow or paste any real photograph or person — generate the art:",
+    "",
+    `THEME: ${vibe}`,
+    "",
+    "Render the theme in the card's chunky cyberdelic Mac-OS-9 style — hot",
+    "magenta, cyan, and lime accents on deep purple, isometric 3/4 lighting.",
+    "Size the artwork so it fills the green-dot area nicely, with details",
+    "extending naturally around that spot, like a sticker dropped into the scene.",
+    "",
+    "The green color must be ENTIRELY REMOVED — no green ring, no green halo,",
+    "no green pixels anywhere — replaced with your invented artwork blended into",
+    "the card's dark/cyberdelic background tones and matching the magenta/cyan",
+    "lighting of the rest of the card.",
+    "DO NOT change any other element: keep the SLOP.COMPUTER wordmark, the guest",
+    "list, the camera/claude/chat windows, the ticker bars, balances, and every",
+    "label pixel-for-pixel identical. Only the green dot area changes — into the",
+    "artwork you invented. No text overlays, no watermarks, no captions.",
+  ].join(" ");
+}
+
 let cachedClient: OpenAI | null = null;
 function getClient(): OpenAI {
   if (cachedClient) return cachedClient;
@@ -95,28 +128,18 @@ export type CardGenerateResult = {
   png: Buffer;
 };
 
-export async function generateCard(
-  pfpBytes: Buffer,
-  pfpMime: string,
-  log: CardLogger = noopLog,
+// Shared gpt-image-2 call. Both entry points (PFP drop and custom vibe) load
+// the template, build their reference-image list + prompt, and hand off here
+// so the timeout/retry/logging/decode policy lives in one place.
+async function runCardEdit(
+  images: Awaited<ReturnType<typeof toFile>>[],
+  prompt: string,
+  log: CardLogger,
+  t0: number,
 ): Promise<CardGenerateResult> {
-  const t0 = Date.now();
-  log.info({ pfpBytes: pfpBytes.length, pfpMime }, "card gen: start");
-
-  if (!fs.existsSync(TEMPLATE_PATH)) {
-    log.error({ TEMPLATE_PATH }, "card gen: template missing");
-    throw new Error(`card template not found at ${TEMPLATE_PATH}`);
-  }
-  const templateBytes = await fs.promises.readFile(TEMPLATE_PATH);
-
-  const templateFile = await toFile(templateBytes, "template.png", { type: "image/png" });
-  const pfpExt = pfpMime.includes("png") ? "png" : pfpMime.includes("webp") ? "webp" : "jpg";
-  const pfpType = pfpMime.includes("png") ? "image/png" : pfpMime.includes("webp") ? "image/webp" : "image/jpeg";
-  const pfpFile = await toFile(pfpBytes, `pfp.${pfpExt}`, { type: pfpType });
-
   const client = getClient();
   log.info(
-    { model: MODEL, size: SIZE, templateBytes: templateBytes.length, pfpExt, timeoutMs: OPENAI_TIMEOUT_MS },
+    { model: MODEL, size: SIZE, refImages: images.length, timeoutMs: OPENAI_TIMEOUT_MS },
     "card gen: calling gpt-image-2",
   );
   const apiStart = Date.now();
@@ -125,18 +148,15 @@ export async function generateCard(
     result = await client.images.edit(
       {
         model: MODEL,
-        image: [templateFile, pfpFile],
-        prompt: PROMPT,
+        image: images,
+        prompt,
         size: SIZE,
         n: 1,
       },
       { timeout: OPENAI_TIMEOUT_MS, maxRetries: 1 },
     );
   } catch (err) {
-    log.error(
-      { err, apiMs: Date.now() - apiStart, totalMs: Date.now() - t0 },
-      "card gen: gpt-image-2 call failed",
-    );
+    log.error({ err, apiMs: Date.now() - apiStart, totalMs: Date.now() - t0 }, "card gen: gpt-image-2 call failed");
     throw err;
   }
   const apiMs = Date.now() - apiStart;
@@ -149,4 +169,42 @@ export async function generateCard(
   const png = Buffer.from(b64, "base64");
   log.info({ apiMs, totalMs: Date.now() - t0, pngBytes: png.length }, "card gen: done");
   return { png };
+}
+
+async function loadTemplateFile(log: CardLogger): Promise<Awaited<ReturnType<typeof toFile>>> {
+  if (!fs.existsSync(TEMPLATE_PATH)) {
+    log.error({ TEMPLATE_PATH }, "card gen: template missing");
+    throw new Error(`card template not found at ${TEMPLATE_PATH}`);
+  }
+  const templateBytes = await fs.promises.readFile(TEMPLATE_PATH);
+  return toFile(templateBytes, "template.png", { type: "image/png" });
+}
+
+export async function generateCard(
+  pfpBytes: Buffer,
+  pfpMime: string,
+  log: CardLogger = noopLog,
+): Promise<CardGenerateResult> {
+  const t0 = Date.now();
+  log.info({ pfpBytes: pfpBytes.length, pfpMime }, "card gen: start (pfp)");
+
+  const templateFile = await loadTemplateFile(log);
+  const pfpExt = pfpMime.includes("png") ? "png" : pfpMime.includes("webp") ? "webp" : "jpg";
+  const pfpType = pfpMime.includes("png") ? "image/png" : pfpMime.includes("webp") ? "image/webp" : "image/jpeg";
+  const pfpFile = await toFile(pfpBytes, `pfp.${pfpExt}`, { type: pfpType });
+
+  return runCardEdit([templateFile, pfpFile], PROMPT, log, t0);
+}
+
+// Custom-vibe path: no PFP. We pass only the template and let the model invent
+// artwork for the green-dot spot from the user's free-text vibe.
+export async function generateCardFromPrompt(
+  vibe: string,
+  log: CardLogger = noopLog,
+): Promise<CardGenerateResult> {
+  const t0 = Date.now();
+  log.info({ vibeLen: vibe.length }, "card gen: start (vibe)");
+
+  const templateFile = await loadTemplateFile(log);
+  return runCardEdit([templateFile], buildVibePrompt(vibe), log, t0);
 }

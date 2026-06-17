@@ -209,6 +209,46 @@ export const CardWindow = ({ mesh }: Props) => {
     }
   };
 
+  // Custom-vibe modal: type a theme like "poker night" and gpt-image-2
+  // invents artwork for the green-dot spot — no image dropped. Shares the
+  // exact job/broadcast pipeline as a PFP drop (same shared progress bar).
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptText, setPromptText] = useState("");
+  const handlePrompt = async (vibe: string) => {
+    const trimmed = vibe.trim();
+    if (!trimmed) return;
+    if (cardJob) {
+      setError("already generating — wait for this one to finish");
+      return;
+    }
+    setError(null);
+    setPromptOpen(false);
+    setUploading(true);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card/prompt`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: trimmed }),
+      });
+      if (!res.ok && res.status !== 409) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j?.error) detail = String(j.error);
+        } catch {
+          /* not json */
+        }
+        throw new Error(detail);
+      }
+      setPromptText("");
+    } catch (e) {
+      setError((e as Error).message || "generation failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleDragEnter = (e: React.DragEvent) => {
     if (!Array.from(e.dataTransfer.types).includes("Files")) return;
     e.preventDefault();
@@ -707,7 +747,7 @@ export const CardWindow = ({ mesh }: Props) => {
         </div>
       ) : null}
 
-      {resultUrl && !loading ? (
+      {!loading ? (
         <div
           style={{
             position: "absolute",
@@ -720,36 +760,162 @@ export const CardWindow = ({ mesh }: Props) => {
         >
           <button
             type="button"
-            onClick={() => void save()}
-            aria-label="save as unfurl"
-            title={saved ? "saved!" : "save as unfurl"}
-            style={overlayBtnStyle(saved)}
+            onClick={() => {
+              setError(null);
+              setPromptOpen(true);
+            }}
+            aria-label="custom prompt"
+            title="custom prompt — generate art from a vibe"
+            style={overlayBtnStyle(promptOpen)}
           >
-            <SaveIcon />
+            <CustomIcon />
           </button>
-          <button
-            type="button"
-            onClick={reset}
-            aria-label="reset card"
-            title="reset card"
-            style={overlayBtnStyle(false)}
+          {resultUrl ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void save()}
+                aria-label="save as unfurl"
+                title={saved ? "saved!" : "save as unfurl"}
+                style={overlayBtnStyle(saved)}
+              >
+                <SaveIcon />
+              </button>
+              <button
+                type="button"
+                onClick={reset}
+                aria-label="reset card"
+                title="reset card"
+                style={overlayBtnStyle(false)}
+              >
+                <ResetIcon />
+              </button>
+              <button
+                type="button"
+                onClick={() => void download()}
+                aria-label="download PNG"
+                title="download PNG"
+                style={overlayBtnStyle(false)}
+              >
+                <DownloadIcon />
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {promptOpen ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(6,3,13,0.72)",
+            backdropFilter: "blur(3px)",
+            zIndex: 13,
+            padding: 16,
+          }}
+          onPointerDown={e => {
+            // Click on the dim backdrop (not the panel) closes.
+            if (e.target === e.currentTarget) setPromptOpen(false);
+          }}
+        >
+          <div
+            style={{
+              width: "min(420px, 100%)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              padding: 16,
+              background: "rgba(10,4,30,0.95)",
+              border: "1px solid var(--slop-magenta, #ff3ec9)",
+              boxShadow: "0 8px 28px rgba(0,0,0,0.5), 0 0 12px rgba(255,62,201,0.3)",
+            }}
           >
-            <ResetIcon />
-          </button>
-          <button
-            type="button"
-            onClick={() => void download()}
-            aria-label="download PNG"
-            title="download PNG"
-            style={overlayBtnStyle(false)}
-          >
-            <DownloadIcon />
-          </button>
+            <div
+              style={{
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 13,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: "#fff",
+              }}
+            >
+              custom card
+            </div>
+            <div
+              style={{
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 11,
+                letterSpacing: "0.04em",
+                color: "#b79fd6",
+              }}
+            >
+              describe the vibe — art gets generated where the pfp goes
+            </div>
+            <textarea
+              autoFocus
+              value={promptText}
+              onChange={e => setPromptText(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setPromptOpen(false);
+                } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void handlePrompt(promptText);
+                }
+              }}
+              placeholder="poker night… a bird-watching meetup… synthwave rave…"
+              rows={3}
+              style={{
+                width: "100%",
+                resize: "none",
+                padding: "8px 10px",
+                background: "rgba(0,0,0,0.4)",
+                border: "1px solid var(--slop-bevel-light, #4a4a4a)",
+                color: "#3fcfff",
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 13,
+                letterSpacing: "0.02em",
+                outline: "none",
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => setPromptOpen(false)} style={modalBtnStyle(false)}>
+                cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePrompt(promptText)}
+                disabled={!promptText.trim()}
+                style={{ ...modalBtnStyle(true), opacity: promptText.trim() ? 1 : 0.45 }}
+              >
+                generate
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>
   );
 };
+
+// Modal action button — text variant of the overlay button, magenta fill
+// on the primary action.
+const modalBtnStyle = (primary: boolean): React.CSSProperties => ({
+  padding: "6px 14px",
+  background: primary ? "var(--slop-magenta, #ff3ec9)" : "rgba(6,3,13,0.7)",
+  border: `1px solid ${primary ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
+  color: "#fff",
+  fontFamily: "var(--slop-font-display)",
+  fontSize: 12,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  cursor: "pointer",
+});
 
 // Matches the VideoView / AudioVisualizer overlay button — translucent
 // dark bg, backdrop blur, magenta border on active.
@@ -768,6 +934,27 @@ const overlayBtnStyle = (active: boolean): React.CSSProperties => ({
 });
 
 // Mac OS 9-flavored monochrome icons. ~16px viewBox, currentColor.
+
+// Sparkle / magic-wand — "generate from a vibe". A big four-point star with
+// two small accent sparkles.
+const CustomIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M7 2.5 C7 5 7.5 5.5 10 5.5 C7.5 5.5 7 6 7 8.5 C7 6 6.5 5.5 4 5.5 C6.5 5.5 7 5 7 2.5 Z" />
+    <path d="M12 9 C12 10.2 12.2 10.4 13.4 10.4 C12.2 10.4 12 10.6 12 11.8 C12 10.6 11.8 10.4 10.6 10.4 C11.8 10.4 12 10.2 12 9 Z" />
+    <path d="M4 11 C4 11.9 4.1 12 5 12 C4.1 12 4 12.1 4 13 C4 12.1 3.9 12 3 12 C3.9 12 4 11.9 4 11 Z" />
+  </svg>
+);
+
 const ResetIcon = () => (
   <svg
     width="16"
