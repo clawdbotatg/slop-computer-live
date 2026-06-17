@@ -128,7 +128,7 @@ import {
   refreshGenre,
 } from "./jamendo.js";
 import { type ClockState } from "./clock.js";
-import type { WalletRecord, WalletSigner, WalletTx } from "./wallet.js";
+import type { WalletRecord, WalletSigner, WalletState, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { summarizeTranscript } from "./transcript-ai.js";
 import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
@@ -225,27 +225,30 @@ function broadcastToAllRooms(msg: unknown): void {
 // signer-dialog fallback for free without a second Claude call.
 // `overwriteSummary` is for `wallet_tx_resummarize` — the "retry" path
 // that intentionally clobbers a stale summary.
+// Fire-and-forget AI second-opinion on a proposed tx. Operates on the
+// specific WalletState the tx lives in (the Bank singleton OR a per-address
+// personal-wallet store) — `tx.multisigAddress` already carries the wallet
+// address, so no WalletRecord is needed.
 function fireWalletAi(
-  room: Room,
+  ws: WalletState,
   tx: WalletTx,
-  cur: WalletRecord,
   opts: { overwriteSummary?: boolean } = {},
 ): void {
   void summarizeTransaction({
     chainId: tx.chainId,
-    multisigAddress: cur.address,
+    multisigAddress: tx.multisigAddress,
     target: tx.target,
     value: tx.value,
     data: tx.data,
     calls: tx.calls,
   }).then(result => {
-    room.wallet.setTxAiAnalysis(tx.id, result);
+    ws.setTxAiAnalysis(tx.id, result);
     if (opts.overwriteSummary) {
-      room.wallet.setTxSummary(tx.id, result);
+      ws.setTxSummary(tx.id, result);
       return;
     }
-    const latest = room.wallet.findTx(tx.id);
-    if (latest && !latest.summary) room.wallet.setTxSummary(tx.id, result);
+    const latest = ws.findTx(tx.id);
+    if (latest && !latest.summary) ws.setTxSummary(tx.id, result);
   });
 }
 
@@ -4734,15 +4737,24 @@ type WalletProposeBody = {
   nonce?: unknown;
   summary?: unknown;
   chainId?: unknown;
+  address?: unknown;
 };
 
 app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const room = roomFromReq(req);
-  const cur = room.wallet.getCurrent();
-  if (!cur) return reply.code(409).send({ error: "no_wallet" });
   const body = (req.body ?? {}) as WalletProposeBody;
+  // PERSONAL wallet supplies `address` → per-address queue; the Bank omits it
+  // and uses the room's singleton `current` multisig.
+  const personalAddr =
+    typeof body.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(body.address)
+      ? body.address.toLowerCase()
+      : null;
+  const ws = personalAddr ? room.walletFor(personalAddr) : room.wallet;
+  const cur = personalAddr ? null : room.wallet.getCurrent();
+  if (!personalAddr && !cur) return reply.code(409).send({ error: "no_wallet" });
+  const multisigAddress = personalAddr ?? cur!.address;
   const target = typeof body.target === "string" ? body.target : "";
   const value = typeof body.value === "string" ? body.value : "";
   const data = typeof body.data === "string" ? body.data : "";
@@ -8261,20 +8273,31 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "wallet_tx_propose": {
+          // PERSONAL wallet (the desktop "Wallet" app) sends `address` — its
+          // own multisig — and we route to a per-address tx queue. The
+          // collaborative Bank omits `address` → the room's singleton wallet.
+          const personalAddr =
+            typeof msg.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(msg.address)
+              ? msg.address.toLowerCase()
+              : null;
+          const ws = personalAddr ? room.walletFor(personalAddr) : room.wallet;
           app.log.info(
             {
               slug: room.id,
               from: info.address,
               source: msg.source,
               browserId: msg.browserId,
+              personal: personalAddr,
               hasCurrent: !!room.wallet.getCurrent(),
               chainId: msg.chainId,
               target: msg.target,
             },
             "[SLOP-TX-DEBUG] wallet_tx_propose received",
           );
-          const cur = room.wallet.getCurrent();
-          if (!cur) {
+          // The Bank requires a deployed `current` multisig; a personal wallet
+          // supplies its own address directly (no room-level record).
+          const cur = personalAddr ? null : room.wallet.getCurrent();
+          if (!personalAddr && !cur) {
             app.log.warn({ slug: room.id, from: info.address }, "[SLOP-TX-DEBUG] propose rejected — no_wallet");
             return send(socket, { type: "error", error: "no_wallet" });
           }
@@ -8290,14 +8313,15 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "bad_propose" });
           }
           // chainId is now per-tx, not per-wallet — the client tells us
-          // which chain it's executing on. Fall back to a deployment we
-          // know exists when older clients send no chainId field.
+          // which chain it's executing on. The Bank falls back to a known
+          // deployment for older clients; personal wallets always send it.
           const incomingChainId = typeof msg.chainId === "number" ? msg.chainId : null;
-          const fallbackChain = Number(Object.keys(cur.deployments)[0] ?? "0");
+          const fallbackChain = cur ? Number(Object.keys(cur.deployments)[0] ?? "0") : 0;
           const chainId = incomingChainId ?? fallbackChain;
           if (!Number.isFinite(chainId) || chainId === 0) {
             return send(socket, { type: "error", error: "no_chain" });
           }
+          const multisigAddress = personalAddr ?? cur!.address;
           // Optional batched calls — when provided, exec uses
           // Multisig.execBatchTransaction and target/value/data are
           // sentinels (multisig self-address, "0", "0x").
@@ -8314,8 +8338,8 @@ app.register(async function signalRoutes(fastify) {
             if (!valid) return send(socket, { type: "error", error: "bad_calls" });
             batchCalls = (msg.calls as { target: string; value: string; data: string }[]).slice(0, 50);
           }
-          const tx = room.wallet.proposeTx({
-            multisigAddress: cur.address,
+          const tx = ws.proposeTx({
+            multisigAddress,
             chainId,
             from: info.address,
             fromLabel: info.handle ?? info.address ?? null,
@@ -8333,7 +8357,8 @@ app.register(async function signalRoutes(fastify) {
           // pays out the plan (winner takes pot, or a refund batch), adopt
           // it as the payout we watch — no separate link round-trip. The
           // user just signs+executes it in the normal Transactions tab.
-          {
+          // Bank-only: a personal wallet never settles room escrow.
+          if (!personalAddr) {
             const esc = room.escrow.get();
             if (esc && esc.status === "settling" && !esc.payoutTxId && room.escrow.payoutTxMatches(tx)) {
               if (room.escrow.linkPayout(tx.id).ok) broadcastEscrowState(room);
@@ -8345,7 +8370,7 @@ app.register(async function signalRoutes(fastify) {
           // proposer claim. Guard on `aiAnalysis` (the always-set field)
           // so a deduped second propose doesn't re-fire the model.
           if (!tx.aiAnalysis) {
-            fireWalletAi(room, tx, cur);
+            fireWalletAi(ws, tx);
           }
           // Every propose attempt — including the deduped second click
           // — pings the room so all peers' wallet windows surface to
@@ -8354,14 +8379,17 @@ app.register(async function signalRoutes(fastify) {
           // collapsed by the dedup guard without any UI feedback.
           room.broadcast({
             type: "wallet_tx_attention",
+            address: personalAddr,
             txId: tx.id,
             source: tx.source,
             at: Date.now(),
           });
-          // Narrate the proposal once. proposeTx collapses a double-click
+          // Narrate the proposal once into the room's PUBLIC transcript/chat.
+          // Bank-only — a personal wallet's activity is private and must not
+          // leak into the shared room feed. proposeTx collapses a double-click
           // onto the same execHash and returns the existing tx, so a fresh
           // id is the signal that this is a genuinely new proposal.
-          if (!room.narratedTxIds.has(tx.id)) {
+          if (!personalAddr && !room.narratedTxIds.has(tx.id)) {
             room.narratedTxIds.add(tx.id);
             const detail = batchCalls
               ? `a batch of ${batchCalls.length} transactions`
@@ -8393,7 +8421,11 @@ app.register(async function signalRoutes(fastify) {
           ) {
             return send(socket, { type: "error", error: "bad_sign" });
           }
-          room.wallet.addSignature(msg.id, {
+          const signAddr =
+            typeof msg.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(msg.address)
+              ? msg.address.toLowerCase()
+              : null;
+          (signAddr ? room.walletFor(signAddr) : room.wallet).addSignature(msg.id, {
             signer: msg.signer,
             sigType: msg.sigType,
             data: msg.data,
@@ -8478,13 +8510,22 @@ app.register(async function signalRoutes(fastify) {
           }
           const allowed: WalletTx["status"][] = ["pending", "executing", "executed", "failed", "expired", "cancelled"];
           if (!allowed.includes(msg.status as WalletTx["status"])) return;
+          const statusAddr =
+            typeof msg.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(msg.address)
+              ? msg.address.toLowerCase()
+              : null;
           const txHash = typeof msg.txHash === "string" ? msg.txHash : null;
-          room.wallet.setTxStatus(msg.id, msg.status as WalletTx["status"], txHash);
+          (statusAddr ? room.walletFor(statusAddr) : room.wallet).setTxStatus(
+            msg.id,
+            msg.status as WalletTx["status"],
+            txHash,
+          );
           // Money-game settlement: if this is the escrow's linked payout
           // (or refund) and it just executed on-chain, close out the
           // session. This is the "watch for it to go out" the whole payout
-          // window waits on. Generic across games.
-          if (msg.status === "executed" && room.escrow.isPayoutTx(msg.id)) {
+          // window waits on. Generic across games. Bank-only — a personal
+          // wallet's tx never settles room escrow.
+          if (!statusAddr && msg.status === "executed" && room.escrow.isPayoutTx(msg.id)) {
             const settled = room.escrow.markSettled(txHash);
             if (settled.ok) {
               broadcastEscrowState(room);
@@ -8508,18 +8549,26 @@ app.register(async function signalRoutes(fastify) {
         }
         case "wallet_tx_remove": {
           if (typeof msg.id !== "string") return;
-          room.wallet.removeTx(msg.id);
+          const removeAddr =
+            typeof msg.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(msg.address)
+              ? msg.address.toLowerCase()
+              : null;
+          (removeAddr ? room.walletFor(removeAddr) : room.wallet).removeTx(msg.id);
           return;
         }
         case "wallet_tx_resummarize": {
           if (typeof msg.id !== "string") return;
-          const tx = room.wallet.findTx(msg.id);
-          const cur = room.wallet.getCurrent();
-          if (!tx || !cur) return;
+          const resummAddr =
+            typeof msg.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(msg.address)
+              ? msg.address.toLowerCase()
+              : null;
+          const ws = resummAddr ? room.walletFor(resummAddr) : room.wallet;
+          const tx = ws.findTx(msg.id);
+          if (!tx) return;
           // "retry" overwrites both summary and aiAnalysis with a fresh
           // AI run — including a possibly-stale proposer claim. That
           // matches the prior behavior (where retry overwrote summary).
-          fireWalletAi(room, tx, cur, { overwriteSummary: true });
+          fireWalletAi(ws, tx, { overwriteSummary: true });
           return;
         }
         default:

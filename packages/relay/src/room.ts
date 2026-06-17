@@ -372,6 +372,17 @@ export class Room {
   readonly chyron: Chyron;
   readonly apps: RoomApps;
 
+  /** Per-address wallet tx-queue + chat state for PERSONAL wallets (the
+   *  desktop "Wallet" app), keyed by lowercased multisig/account address.
+   *  The collaborative Bank uses the singleton `wallet`/`walletChat` above;
+   *  these maps are strictly additive and lazily constructed by
+   *  walletFor()/walletChatFor(). Their broadcasts carry an `address` field
+   *  so clients route them to the right per-address store. */
+  private readonly walletStates = new Map<string, WalletState>();
+  private readonly walletChatStates = new Map<string, WalletChatState>();
+  /** Room data dir — used to derive per-address wallet file paths. */
+  private readonly roomDataDir: string;
+
   constructor(id: string) {
     if (!isValidSlug(id)) {
       throw new Error(`Invalid slug: ${JSON.stringify(id)}`);
@@ -379,6 +390,7 @@ export class Room {
     this.id = id;
 
     const paths = roomPaths(id);
+    this.roomDataDir = `./.slop-data/rooms/${id}`;
     this.greenRoomPath = paths.greenRoom.path;
     // Restore the standby flag from disk so a relay restart mid-show keeps
     // the stream parked in the green room. Broadcast/derive happens lazily
@@ -566,8 +578,52 @@ export class Room {
         history: state.history,
         draft: state.draft,
       });
-      this.broadcast({ type: "wallet_txs", txs: state.txs });
+      // `address` is additive: old clients ignore it, the per-address client
+      // store routes the Bank's queue under its own multisig address too.
+      this.broadcast({
+        type: "wallet_txs",
+        address: state.current ? state.current.address.toLowerCase() : null,
+        txs: state.txs,
+      });
     });
+  }
+
+  /** Per-address WalletState for the personal "Wallet" app. Lowercases the
+   *  address. If it matches the Bank's current multisig we return the Bank
+   *  singleton (so a personal-wallet code path that happens to point at the
+   *  Bank doesn't fork a duplicate store). Otherwise a per-address store is
+   *  lazily created and its mutations broadcast `wallet_txs` tagged with the
+   *  address. */
+  walletFor(address: string): WalletState {
+    const addr = address.toLowerCase();
+    const bank = this.wallet.getCurrent();
+    if (bank && bank.address.toLowerCase() === addr) return this.wallet;
+    let ws = this.walletStates.get(addr);
+    if (!ws) {
+      ws = new WalletState(`${this.roomDataDir}/wallet-${addr}.json`);
+      ws.subscribe(state => {
+        this.broadcast({ type: "wallet_txs", address: addr, txs: state.txs });
+      });
+      this.walletStates.set(addr, ws);
+    }
+    return ws;
+  }
+
+  /** Per-address WalletChatState for the personal "Wallet" app. Same
+   *  Bank-aliasing + lazy-construction rules as walletFor(). */
+  walletChatFor(address: string): WalletChatState {
+    const addr = address.toLowerCase();
+    const bank = this.wallet.getCurrent();
+    if (bank && bank.address.toLowerCase() === addr) return this.walletChat;
+    let wc = this.walletChatStates.get(addr);
+    if (!wc) {
+      wc = new WalletChatState(`${this.roomDataDir}/wallet-chat-${addr}.json`);
+      wc.subscribe(state => {
+        this.broadcast({ type: "wallet_chat", address: addr, state });
+      });
+      this.walletChatStates.set(addr, wc);
+    }
+    return wc;
   }
 
   touch(): void {
