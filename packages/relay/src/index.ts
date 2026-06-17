@@ -1090,8 +1090,8 @@ const DEFAULT_APPS: AppEntry[] = [
   },
   {
     id: "wallet",
-    label: "Wallet",
-    icon: "/icons/wallet.png",
+    label: "Bank",
+    icon: "/icons/bank.png",
     kind: "wallet",
   },
   {

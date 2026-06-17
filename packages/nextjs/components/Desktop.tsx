@@ -3936,7 +3936,7 @@ function DesktopInner({ slug }: { slug: string }) {
             <SharedAppWindow
               mesh={mesh}
               id="wallet"
-              title="WALLET"
+              title="BANK"
               defaultSlot={{ x: 400, y: 100, width: 640, height: 680 }}
               minWidth={420}
               minHeight={460}

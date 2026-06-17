@@ -261,6 +261,10 @@
     {
       "name": "poker",
       "prompt": "An isometric 3/4 stack of poker chips with two playing cards (an ace and a king) fanned out behind them, a glowing spade pip on the top chip."
+    },
+    {
+      "name": "bank",
+      "prompt": "A chunky isometric Mac OS 9 style bank building with marble columns and a triangular pediment, a glowing coin slot and a shield emblem on the front, vault-like and solid."
     }
   ],
   "sheet": {
