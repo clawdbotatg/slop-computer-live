@@ -4537,7 +4537,35 @@ app.post<{ Body: QrPatchBody }>("/v1/qr", { bodyLimit: QR_ROUTE_BODY_LIMIT }, as
 // in flight gets a 409. Read-only wallet data (portfolio/activity/etc.)
 // is served by the /v1/wallet/* GET routes below.
 
-type WalletChatBody = { message?: unknown; address?: unknown; chainId?: unknown };
+type WalletChatBody = {
+  message?: unknown;
+  address?: unknown;
+  chainId?: unknown;
+  // PERSONAL wallet (the desktop "Wallet" app) supplies its own signer set +
+  // threshold so the intent engine can reason about the wallet without the
+  // relay holding a room-level record for it. Advisory only — signers are
+  // never trusted to authorize anything (that still needs real signatures).
+  signers?: unknown;
+  threshold?: unknown;
+};
+
+/** Parse client-supplied signers from a /v1/wallet-chat body into the intent
+ *  engine's shape, or null if absent/malformed. */
+function parseClientSigners(raw: unknown): { address: string; kind: "account" | "passkey"; label: string }[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out: { address: string; kind: "account" | "passkey"; label: string }[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== "object") continue;
+    const o = s as { address?: unknown; kind?: unknown; label?: unknown };
+    if (typeof o.address !== "string" || !/^0x[a-fA-F0-9]{40}$/.test(o.address)) continue;
+    out.push({
+      address: o.address.toLowerCase(),
+      kind: o.kind === "passkey" ? "passkey" : "account",
+      label: typeof o.label === "string" ? o.label.slice(0, 64) : o.address.slice(0, 10),
+    });
+  }
+  return out.length > 0 ? out : null;
+}
 
 app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
   const a = v1AuthFromReq(req);
@@ -4547,15 +4575,21 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
   const address = typeof req.body?.address === "string" ? req.body.address.trim().toLowerCase() : "";
   if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
   const chainId = typeof req.body?.chainId === "number" ? req.body.chainId : 1;
+  const clientSigners = parseClientSigners(req.body?.signers);
+  const clientThreshold = typeof req.body?.threshold === "number" ? req.body.threshold : undefined;
 
   const room = roomFromReq(req);
-  if (room.walletChat.isProcessing()) {
-    return reply.code(409).send({ error: "already-processing", state: room.walletChat.current().state });
+  // Route to the conversation for THIS wallet address — the Bank's singleton
+  // when `address` is the room's current multisig, else a per-address store
+  // for a personal wallet.
+  const chat = room.walletChatFor(address);
+  if (chat.isProcessing()) {
+    return reply.code(409).send({ error: "already-processing", state: chat.current().state });
   }
 
   // Append the user turn — flips processing:true and broadcasts.
   const sender = (a.session.handle || a.session.address || null) || null;
-  const userMsg = room.walletChat.appendUser(message, sender);
+  const userMsg = chat.appendUser(message, sender);
 
   // Fire-and-forget: fetch fresh wallet context, run the intent engine,
   // append the AI's answer. Result delivery is via the `wallet_chat`
@@ -4766,9 +4800,10 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
     return reply.code(400).send({ error: "missing-fields", required: ["value", "deadline", "nonce"] });
   }
   // chainId: optional in body, otherwise fall back to a deployment we know
-  // exists. Mirrors the WS `wallet_tx_propose` path.
+  // exists. Mirrors the WS `wallet_tx_propose` path. Personal wallets carry
+  // no room-level deployments map, so they must send chainId explicitly.
   const incomingChainId = typeof body.chainId === "number" ? body.chainId : null;
-  const fallbackChain = Number(Object.keys(cur.deployments)[0] ?? "0");
+  const fallbackChain = cur ? Number(Object.keys(cur.deployments)[0] ?? "0") : 0;
   const chainId = incomingChainId ?? fallbackChain;
   if (!Number.isFinite(chainId) || chainId === 0) {
     return reply.code(400).send({ error: "no_chain" });
@@ -4780,7 +4815,7 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
         parseAbiParameters("uint256, address, uint256, uint256, address, uint256, bytes32"),
         [
           BigInt(chainId),
-          cur.address as `0x${string}`,
+          multisigAddress as `0x${string}`,
           BigInt(nonce),
           BigInt(deadline),
           target as `0x${string}`,
@@ -4792,8 +4827,8 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
   } catch {
     return reply.code(400).send({ error: "bad-bigint" });
   }
-  const tx = room.wallet.proposeTx({
-    multisigAddress: cur.address,
+  const tx = ws.proposeTx({
+    multisigAddress,
     chainId,
     from: a.session.address,
     fromLabel: a.session.handle ?? a.session.address ?? null,
@@ -4812,9 +4847,9 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
   // catches it. When no claim was supplied, the AI result mirrors into
   // `summary` for free (one Claude call covers both fields).
   const summary = typeof body.summary === "string" ? body.summary.slice(0, 1000) : "";
-  if (summary && !tx.summary) room.wallet.setTxSummary(tx.id, summary);
-  if (!tx.aiAnalysis) fireWalletAi(room, tx, cur);
-  room.broadcast({ type: "wallet_tx_attention", txId: tx.id, source: tx.source, at: Date.now() });
+  if (summary && !tx.summary) ws.setTxSummary(tx.id, summary);
+  if (!tx.aiAnalysis) fireWalletAi(ws, tx);
+  room.broadcast({ type: "wallet_tx_attention", address: personalAddr, txId: tx.id, source: tx.source, at: Date.now() });
   return { ok: true, id: tx.id };
 });
 
