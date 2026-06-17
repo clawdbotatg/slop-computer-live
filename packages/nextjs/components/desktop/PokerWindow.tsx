@@ -339,7 +339,56 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
   );
 };
 
-// Buy-in window banner: countdown + who's in + the join control.
+// One labelled stat in the config summary — small caption over a bold value.
+const Stat = ({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+    <span style={{ fontSize: 10, color: "var(--slop-text-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+      {label}
+    </span>
+    <span style={{ fontSize: 13, color: "var(--slop-text)", fontWeight: 700 }}>{value}</span>
+    {hint && <span style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>{hint}</span>}
+  </div>
+);
+
+// The full configuration of the tournament, so a joiner knows exactly what
+// they're buying into: blinds + escalation clock, starting stack, network.
+// Mirrors every field set on the open-table form ("first page").
+const TournamentConfig = ({ escrow }: { escrow: EscrowSession }) => {
+  const buyin = metaStr(escrow, "buyinWei");
+  const startingStack = metaNum(escrow, "startingStack");
+  const smallBlind = metaNum(escrow, "smallBlind");
+  const bigBlind = metaNum(escrow, "bigBlind");
+  const blindIntervalMs = metaNum(escrow, "blindIntervalMs");
+  const blindMin = blindIntervalMs > 0 ? Math.round(blindIntervalMs / 60_000) : 0;
+  const bbStacks = bigBlind > 0 && startingStack > 0 ? Math.round(startingStack / bigBlind) : 0;
+  const network = CHAIN_LABELS[escrow.chainId] ?? `chain ${escrow.chainId}`;
+  return (
+    <div
+      style={{
+        borderTop: "1px solid #2a1648",
+        paddingTop: 8,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+        gap: 10,
+      }}
+    >
+      <Stat label="Buy-in" value={`${fmtEth(buyin)} ETH`} hint={network} />
+      <Stat
+        label="Starting stack"
+        value={`${startingStack.toLocaleString()} chips`}
+        hint={bbStacks ? `${bbStacks} BB` : undefined}
+      />
+      <Stat label="Blinds" value={`${smallBlind} / ${bigBlind}`} hint="small / big" />
+      <Stat
+        label="Blinds go up"
+        value={blindMin > 0 ? `Every ${blindMin} min` : "Never"}
+        hint={blindMin > 0 ? "doubles each level" : "fixed blinds"}
+      />
+    </div>
+  );
+};
+
+// Buy-in window banner: countdown + who's in + full config + the join control.
 const BuyInBanner = ({
   mesh,
   myOwnerKey,
@@ -377,6 +426,7 @@ const BuyInBanner = ({
         {escrow.accounts.length}/8 players · buy-in {fmtEth(buyin)} ETH · prize pool{" "}
         <span style={{ color: GOLD }}>{fmtEth(pool)} ETH</span>
       </div>
+      <TournamentConfig escrow={escrow} />
       {open && !iAmIn && !full && <JoinButton mesh={mesh} escrow={escrow} />}
       {iAmIn && <div style={{ fontSize: 12, color: LIME }}>✓ You&apos;re in.</div>}
       {open && full && !iAmIn && <div style={{ fontSize: 12, color: ACCENT }}>Tournament full (8 players).</div>}
