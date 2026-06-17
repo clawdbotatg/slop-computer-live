@@ -49,6 +49,11 @@ import { generateCard, generateCardFromPrompt } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import { handleChatCommand } from "./chat-commands.js";
 import { TokenBucket } from "./rate-limit.js";
+import {
+  deployPersonalWallet,
+  isPersonalWalletDeployConfigured,
+  passkeyAddressFromCoords,
+} from "./personal-wallet.js";
 import { TIP_CHAIN_LABELS, parseTipIntent } from "./tip.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
@@ -2116,6 +2121,57 @@ app.get("/v1/wallet", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
   return { address: roomFromReq(req).wallet.getCurrent()?.address ?? null };
+});
+
+// Deploy a passkey user's personal ("single-player") wallet — a 1-of-2 slop
+// Multisig [passkey, coSigner] at threshold 1, deployed + gas-paid by the
+// relay's deployer hot wallet so a passkey-only user can make their wallet
+// executable. Idempotent. See docs/PASSKEY-WALLET.md.
+const personalWalletDeployBucket = new TokenBucket(5, 5 / 3600); // 5 burst, ~5/hour refill
+app.post("/personal-wallet/deploy", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!isPersonalWalletDeployConfigured()) return reply.code(503).send({ error: "deployer-not-configured" });
+
+  const body = (req.body ?? {}) as { qx?: unknown; qy?: unknown; credentialIdHash?: unknown; slug?: unknown };
+  const qx = (typeof body.qx === "string" ? body.qx : "") as `0x${string}`;
+  const qy = (typeof body.qy === "string" ? body.qy : "") as `0x${string}`;
+  const credentialIdHash = (typeof body.credentialIdHash === "string" ? body.credentialIdHash : "") as `0x${string}`;
+
+  // Integrity: a caller may only deploy THEIR OWN wallet — the passkey pubkey
+  // must derive to the authed session's address.
+  let passkeyAddress: string;
+  try {
+    passkeyAddress = passkeyAddressFromCoords(qx, qy).toLowerCase();
+  } catch {
+    return reply.code(400).send({ error: "bad-passkey-fields" });
+  }
+  const sessionAddr = a.session.address?.toLowerCase();
+  if (!sessionAddr || sessionAddr !== passkeyAddress) {
+    return reply.code(403).send({ error: "passkey-mismatch" });
+  }
+
+  // Gas guard: per-IP token bucket protects the deployer's ETH float against
+  // someone minting many passkeys and spamming first-deploys.
+  if (!personalWalletDeployBucket.allow(req.ip)) {
+    return reply.code(429).send({ error: "rate-limited" });
+  }
+
+  // Co-signer: this room's deployed Bank multisig, else the platform fallback,
+  // else the deployer itself (last-resort hot EOA).
+  const rawSlug = typeof body.slug === "string" && isValidSlug(body.slug) ? body.slug : null;
+  const roomMultisig = rawSlug ? (getOrCreateRoom(rawSlug).wallet.getCurrent()?.address ?? null) : null;
+  const coSigner = (roomMultisig ?? config.personalWalletPlatformCosigner ?? config.personalWalletDeployer) as `0x${string}`;
+  if (!coSigner) return reply.code(503).send({ error: "no-cosigner" });
+
+  const result = await deployPersonalWallet({ qx, qy, credentialIdHash, coSigner });
+  if (!result.ok) return reply.code(400).send({ error: result.error });
+  return {
+    address: result.address,
+    txHash: result.txHash,
+    alreadyDeployed: result.alreadyDeployed,
+    coSigner,
+  };
 });
 
 // --- Live transcript ---------------------------------------------------------

@@ -39,6 +39,7 @@ export type PersonalWallet = {
   deployerUnset: boolean;
   loading: boolean;
   refetchBalance: () => void;
+  refetchDeployed: () => void;
 };
 
 export function usePersonalWallet(): PersonalWallet {
@@ -80,7 +81,7 @@ export function usePersonalWallet(): PersonalWallet {
     query: { enabled: !!personalAddress },
   });
 
-  const { data: code } = useBytecode({
+  const { data: code, refetch: refetchDeployed } = useBytecode({
     address: personalAddress ?? undefined,
     chainId: base.id,
     query: { enabled: !!personalAddress },
@@ -97,5 +98,6 @@ export function usePersonalWallet(): PersonalWallet {
     deployerUnset,
     loading: !!salt && (addrLoading || balLoading),
     refetchBalance: () => void refetchBalance(),
+    refetchDeployed: () => void refetchDeployed(),
   };
 }

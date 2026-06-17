@@ -127,4 +127,8 @@ export const config = {
   // gitignored, never committed. Empty until Phase 2 wires the facilitator.
   personalWalletDeployer: env("PERSONAL_WALLET_DEPLOYER", ""),
   personalWalletDeployerKey: env("PERSONAL_WALLET_DEPLOYER_KEY", ""),
+  // Fallback co-signer for a passkey personal wallet when its room has no
+  // Bank multisig. Ideally a platform multisig; empty → falls back to the
+  // deployer address itself (a hot EOA — replace with a real multisig).
+  personalWalletPlatformCosigner: env("PERSONAL_WALLET_PLATFORM_COSIGNER", ""),
 };

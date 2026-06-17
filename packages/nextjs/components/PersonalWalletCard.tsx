@@ -11,6 +11,8 @@ import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey
 // deploy status. The raw passkey address is shown only as a muted, explicitly
 // non-receivable identity line — the contrast IS the point.
 
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
+
 function useCopy(): [boolean, (text: string) => void] {
   const [copied, setCopied] = useState(false);
   const copy = (text: string) => {
@@ -30,6 +32,40 @@ export function PersonalWalletCard() {
   const [copied, copy] = useCopy();
   const [busy, setBusy] = useState<null | "existing" | "create">(null);
   const [authStatus, setAuthStatus] = useState("");
+  const [deploying, setDeploying] = useState(false);
+  const [deployMsg, setDeployMsg] = useState("");
+
+  const deployWallet = async () => {
+    if (!pw.passkeyIdentity || deploying) return;
+    setDeploying(true);
+    setDeployMsg("");
+    try {
+      const slug = typeof window !== "undefined" ? (window.location.pathname.split("/").filter(Boolean)[0] ?? "") : "";
+      const res = await fetch(`${RELAY_HTTP}/personal-wallet/deploy`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          qx: pw.passkeyIdentity.qx,
+          qy: pw.passkeyIdentity.qy,
+          credentialIdHash: pw.passkeyIdentity.credentialIdHash,
+          slug,
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { error?: string; alreadyDeployed?: boolean };
+      if (!res.ok) {
+        setDeployMsg(`Deploy failed: ${j.error ?? res.status}`);
+        return;
+      }
+      setDeployMsg(j.alreadyDeployed ? "Already deployed ✓" : "Deployed ✓");
+      pw.refetchDeployed();
+      pw.refetchBalance();
+    } catch (err) {
+      setDeployMsg(`Deploy failed: ${(err as Error).message}`);
+    } finally {
+      setDeploying(false);
+    }
+  };
 
   const runAuth = async (mode: "existing" | "create") => {
     if (busy) return;
@@ -167,9 +203,44 @@ export function PersonalWalletCard() {
             </button>
           </div>
 
-          <div style={{ ...muted, marginTop: 10 }}>
-            {pw.deployed ? "● deployed on Base" : "○ not deployed yet — receiving still works (deploys on first spend)"}
-          </div>
+          {pw.deployed ? (
+            <div style={{ ...muted, marginTop: 10 }}>● deployed on Base</div>
+          ) : (
+            <div style={{ marginTop: 12 }}>
+              <div style={muted}>○ not deployed — receiving works now; deploy to make it spendable.</div>
+              <button
+                onClick={deployWallet}
+                disabled={deploying}
+                style={{
+                  width: "100%",
+                  marginTop: 8,
+                  fontFamily: "inherit",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  background: deploying ? "var(--slop-panel-2, #26262c)" : "var(--slop-accent, #2b6cff)",
+                  color: deploying ? "var(--slop-text-muted, #999)" : "#fff",
+                  border: "1px solid var(--slop-border, #444)",
+                  borderColor: "transparent",
+                  borderRadius: 6,
+                  padding: "10px 12px",
+                  cursor: deploying ? "default" : "pointer",
+                }}
+              >
+                {deploying ? "Deploying…" : "Deploy wallet"}
+              </button>
+              {deployMsg && (
+                <div
+                  style={{
+                    ...muted,
+                    marginTop: 6,
+                    color: deployMsg.includes("failed") ? "var(--slop-warn, #e6a700)" : "var(--slop-accent, #7cf)",
+                  }}
+                >
+                  {deployMsg}
+                </div>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div style={muted}>{pw.loading ? "Deriving address…" : "Could not derive address."}</div>
