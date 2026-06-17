@@ -288,6 +288,57 @@ friendly default; the builder becomes "Multisig."
   new `WalletAppWindow.tsx` that consumes the same hooks) so the two apps share
   the signing/exec plumbing rather than forking it.
 
+## 11c. On-ramp — Apple Pay → personal wallet (the smoothness unlock)
+
+This is what makes the whole thing feel magic: passkey sign-in → personal
+smart wallet → **Apple Pay** → funded → in the game, with no external wallet,
+no seed phrase, no "go buy ETH somewhere else." Coinbase Onramp delivers it.
+
+**Verified facts (Coinbase Onramp, mid-2026):**
+- **Apple Pay guest checkout** — no Coinbase account/login required for eligible
+  purchases (US, US phone number, pay in USD).
+- **$5 minimum**; small buy-ins are in range.
+- **USDC on Base via Apple Pay = zero fee** (Coinbase's zero-fee USDC on/offramp).
+- **Session token required** (since 2025-07-31): onramp URLs must be initialized
+  with a short-lived, one-time `sessionToken` **generated server-side** — so we
+  need a relay endpoint + a Coinbase Developer Platform (CDP) API key.
+- **Destination address is set at session-token creation** → funds land directly
+  at our **personal multisig** address. Counterfactual is fine (receiving needs
+  no deploy — §4).
+- **OnchainKit `<FundButton>` / `getOnrampBuyUrl`** are drop-in React for the
+  Next.js app; needs a CDP Project ID in `OnchainKitProvider`.
+
+**Why it pairs perfectly with this design:**
+- On-ramp **USDC on Base** straight into the personal wallet, zero fee.
+- The **facilitator sponsors gas** (§7), so the user **never needs ETH** — a
+  pure-USDC balance is fully usable. USDC for value + facilitator for gas is the
+  cleanest possible flow. This is the strongest argument for **denominating the
+  game in USDC** rather than ETH.
+
+**Integration sketch (document only):**
+1. New relay endpoint `POST /onramp/session` → calls CDP to mint a session token
+   scoped to `{ destinationAddress: personalMultisig, asset: USDC, chain: Base }`.
+2. Next.js `<FundButton>` (OnchainKit) opens the Apple Pay sheet using that token.
+3. Funds arrive at the personal wallet; balance updates via existing chain reads.
+4. Buy-in proceeds from the personal wallet via the facilitator (§6).
+
+**Closing the loop — off-ramp / cash-out:** Coinbase also offers (zero-fee USDC)
+**offramp**. End-of-game cash-out = facilitator sends USDC from the personal
+wallet to the Coinbase offramp address (another session token, `offramp`) →
+back to bank/Apple Pay. Symmetric with the on-ramp; same endpoint shape.
+
+**Constraints to design around:**
+- **US-only day 1**, requires a US phone number + USD. Need a graceful
+  fallback/messaging for non-US users (or a second provider later — MoonPay etc.).
+- **Guest-checkout limits** (KYC thresholds for larger amounts) — fine for small
+  poker buy-ins, but surface the cap so a user isn't surprised.
+- **CDP API key** is a server secret → relay env, **gitignored, never committed**
+  (same hygiene as the facilitator key).
+- **ETH vs USDC denomination** is now a real decision (see §12): zero-fee ramp +
+  gas-sponsorship both favor **USDC**, but today's escrow/buy-in path is
+  **ETH-only** (`value: BigInt(owed)` in `WagerPanel.tsx`). USDC buy-ins need the
+  escrow/poker flow to handle an ERC-20.
+
 ## 12. Open decisions
 
 1. **Deployer identity** for the CREATE2 salt — a single fixed slop deployer, or
@@ -302,6 +353,11 @@ friendly default; the builder becomes "Multisig."
 7. **Builder app name** — "Multisig" (preferred) vs "Safe" vs other.
 8. **Personal Wallet for non-passkey auth** — passkey gets a personal multisig;
    do SIWE/EOA users see their connected EOA, a personal multisig, or both?
+9. **Game denomination: USDC vs ETH** — zero-fee Apple Pay on-ramp + gas
+   sponsorship both favor **USDC on Base**, but the current escrow/buy-in path is
+   ETH-only. Move escrow to ERC-20 (USDC), or on-ramp ETH and keep ETH buy-ins?
+10. **Non-US on-ramp fallback** — Coinbase Onramp is US-first; what do non-US
+    users get (messaging, a second provider, or external-wallet funding)?
 
 ## 13. File touch-map (no new contracts)
 
@@ -315,6 +371,7 @@ friendly default; the builder becomes "Multisig."
 | **Facilitator (new)** | `packages/relay/src/facilitator.ts` (+ wire in `index.ts`) | hot-wallet broadcast of threshold-met txs; guardrails |
 | Relay sig assembly | port from `WalletWindow.tsx` `sortSignatures`/encode | server-side exec assembly |
 | Room/escrow | `packages/relay/src/escrow.ts`, `wallet-data.ts`, `components/desktop/chess/WagerPanel.tsx` | buy-in from personal wallet; payouts to personal wallets |
-| Config/secrets | relay env (gitignored) | facilitator hot-wallet key (per chain), **never committed** |
+| **On-ramp (new)** | `packages/relay/src/index.ts` (new `POST /onramp/session`), Next.js `<FundButton>` / OnchainKitProvider | mint CDP session token scoped to personal-wallet addr; Apple Pay funding UI |
+| Config/secrets | relay env (gitignored) | facilitator hot-wallet key (per chain) + CDP API key + CDP Project ID, **never committed** |
 </content>
 </invoke>
