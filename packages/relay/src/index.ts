@@ -462,12 +462,22 @@ setInterval(() => {
   const now = Date.now();
   for (const room of listRooms()) {
     const g = room.poker.getGame();
-    if (g.status !== "running") continue;
+    if (g.status !== "running") {
+      // Auto-finish a tournament that's over but not yet settled — a
+      // backstop covering any missed end-trigger (e.g. a game left mid-air
+      // by an older build). maybeEndTournament is a no-op unless one player
+      // is left and the escrow is still open, so this is cheap + idempotent.
+      if (maybeEndTournament(room)) broadcastPokerState(room);
+      continue;
+    }
     if (g.runningOut) {
       if (now - g.runoutStepAt >= RUNOUT_STEP_MS) {
         const out = room.poker.advanceRunout();
         if (out.ok) {
-          if (out.ended) notePokerHandResult(room);
+          if (out.ended) {
+            notePokerHandResult(room);
+            maybeEndTournament(room); // an all-in run-out can end the tournament
+          }
           broadcastPokerState(room);
         }
       }

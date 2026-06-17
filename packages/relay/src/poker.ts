@@ -38,7 +38,7 @@ export const SHOWDOWN_PAUSE_MS = 5_000;
 /** When everyone's all-in, the board is run out one street at a time with
  *  this gap between cards, for suspense, instead of dumping the whole board
  *  at once. The relay's poker ticker advances it. */
-export const RUNOUT_STEP_MS = 1_200;
+export const RUNOUT_STEP_MS = 2_500;
 
 export type SeatStatus =
   | "active" // in the hand, can still act

@@ -680,7 +680,6 @@ const Felt = ({
               blinds up <Countdown deadline={poker.nextBlindAt} urgentAt={20} />
             </span>
           )}
-          <span style={{ fontSize: 13, color: CYAN }}>Pot {poker.potTotal}</span>
         </span>
       </div>
 
@@ -696,6 +695,8 @@ const Felt = ({
           gap: 8,
         }}
       >
+        {/* Pot, centered right above the community cards. */}
+        <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 15, color: CYAN }}>💰 Pot {poker.potTotal}</div>
         <div style={{ display: "flex", gap: 6 }}>
           {[0, 1, 2, 3, 4].map(i => (
             <Card key={i} card={poker.board[i]} />
