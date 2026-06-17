@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
+import { notifySessionChanged } from "~~/hooks/useSession";
+import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey";
 
 // Phase-0 surface for docs/PASSKEY-WALLET.md: shows a passkey user their
 // spendable personal-wallet address (receive here), its Base balance, and
@@ -26,6 +28,26 @@ function useCopy(): [boolean, (text: string) => void] {
 export function PersonalWalletCard() {
   const pw = usePersonalWallet();
   const [copied, copy] = useCopy();
+  const [busy, setBusy] = useState<null | "existing" | "create">(null);
+  const [authStatus, setAuthStatus] = useState("");
+
+  const runAuth = async (mode: "existing" | "create") => {
+    if (busy) return;
+    setBusy(mode);
+    setAuthStatus("");
+    try {
+      if (mode === "existing") await loginWithExistingPasskey();
+      else await createPasskeyAndAuth();
+      // Hook listens for SESSION_CHANGED → refetches /auth/me and re-derives.
+      notifySessionChanged();
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      if (!/cancel|NotAllowed/i.test(msg))
+        setAuthStatus(`Passkey ${mode === "create" ? "create" : "sign-in"} failed: ${msg}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const box: React.CSSProperties = {
     maxWidth: 420,
@@ -38,14 +60,37 @@ export function PersonalWalletCard() {
   };
   const muted: React.CSSProperties = { color: "var(--slop-text-muted, #999)", fontSize: 11 };
 
+  const authBtn: React.CSSProperties = {
+    width: "100%",
+    fontFamily: "inherit",
+    fontSize: 13,
+    border: "1px solid var(--slop-border, #444)",
+    borderRadius: 6,
+    padding: "10px 12px",
+    cursor: busy ? "default" : "pointer",
+    color: "inherit",
+  };
+
   if (!pw.isPasskey) {
     return (
       <div style={box}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Personal wallet</div>
-        <div style={muted}>
-          Sign in with a passkey to get a personal wallet. (No passkey identity found in this browser for the current
-          session.)
-        </div>
+        <div style={{ ...muted, marginBottom: 14 }}>Sign in with a passkey to get your wallet.</div>
+        <button
+          onClick={() => runAuth("existing")}
+          disabled={!!busy}
+          style={{ ...authBtn, background: "var(--slop-accent, #2b6cff)", borderColor: "transparent", fontWeight: 600 }}
+        >
+          {busy === "existing" ? "Waiting for passkey…" : "Sign in with passkey"}
+        </button>
+        <button
+          onClick={() => runAuth("create")}
+          disabled={!!busy}
+          style={{ ...authBtn, background: "transparent", marginTop: 8 }}
+        >
+          {busy === "create" ? "Creating…" : "Create a new passkey"}
+        </button>
+        {authStatus && <div style={{ ...muted, color: "var(--slop-warn, #e6a700)", marginTop: 10 }}>{authStatus}</div>}
       </div>
     );
   }
