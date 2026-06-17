@@ -77,6 +77,12 @@ export type EscrowSession = {
   payoutTxId: string | null;
   payoutTxHash: string | null;
   settledAt: number | null;
+  /** When true, the session auto-flips open→locked once every account has
+   *  met its buy-in (chess: the roster is fixed, so funding completes the
+   *  lobby). When false, it stays `open` and keeps accepting new accounts +
+   *  deposits — the poker buy-in-window model, where players join over time
+   *  and the game runs while the window is still open. */
+  autoLock: boolean;
   /** Game-specific blob (chess: { outcome, winner, buyinWei }). */
   meta: Record<string, unknown>;
   createdBy: string;
@@ -91,6 +97,10 @@ export type OpenEscrowArgs = {
   accounts: { key: string; label: string; role: string; requiredWei: string }[];
   meta?: Record<string, unknown>;
   createdBy: string;
+  /** Default true (chess). Pass false for the poker buy-in-window model:
+   *  the session stays `open` and accepts addAccount()/recordDeposit()
+   *  while hands run. */
+  autoLock?: boolean;
 };
 
 type EscrowResult = { ok: true; session: EscrowSession } | { ok: false; error: string };
@@ -172,10 +182,12 @@ export class EscrowState {
     }
     const multisig = args.multisig.toLowerCase();
     if (!isAddress(multisig)) return { ok: false, error: "bad_multisig" };
-    if (!args.accounts || args.accounts.length < 1) return { ok: false, error: "no_accounts" };
+    // An empty roster is allowed (the poker buy-in window opens with no
+    // players; they join via addAccount). Chess always passes its two.
+    const inputAccounts = args.accounts ?? [];
     const keys = new Set<string>();
     const accounts: EscrowAccount[] = [];
-    for (const a of args.accounts) {
+    for (const a of inputAccounts) {
       const key = a.key.toLowerCase();
       if (!isAddress(key)) return { ok: false, error: "accounts_must_be_addresses" };
       if (keys.has(key)) return { ok: false, error: "duplicate_account" };
@@ -203,6 +215,7 @@ export class EscrowState {
       payoutTxId: null,
       payoutTxHash: null,
       settledAt: null,
+      autoLock: args.autoLock !== false,
       meta: args.meta ?? {},
       createdBy: args.createdBy.toLowerCase(),
       createdAt: now,
@@ -225,7 +238,33 @@ export class EscrowState {
     acct.depositedWei = (BigInt(acct.depositedWei) + BigInt(deposit.amountWei)).toString();
     acct.balanceWei = (BigInt(acct.balanceWei) + BigInt(deposit.amountWei)).toString();
     acct.deposit = { txHash: deposit.txHash, amountWei: acct.depositedWei, confirmedAt: Date.now() };
-    if (this.allFunded()) this.current.status = "locked";
+    // Fixed-roster games (chess) lock once everyone's funded. The poker
+    // buy-in window stays open so latecomers can still join.
+    if (this.current.autoLock !== false && this.allFunded()) this.current.status = "locked";
+    return { ok: true, session: this.touch() };
+  }
+
+  /** Add a participant to a live `open` session — the poker join hook: a
+   *  new player buys a seat mid-window. The caller verifies their deposit
+   *  on-chain first, then addAccount + recordDeposit. Rejects a duplicate
+   *  or a non-address key. */
+  addAccount(account: { key: string; label: string; role: string; requiredWei: string }): EscrowResult {
+    this.load();
+    if (!this.current) return { ok: false, error: "no_escrow" };
+    if (this.current.status !== "open") return { ok: false, error: "not_open" };
+    const key = account.key.toLowerCase();
+    if (!isAddress(key)) return { ok: false, error: "accounts_must_be_addresses" };
+    if (this.current.accounts.some(a => a.key === key)) return { ok: false, error: "duplicate_account" };
+    if (!isWei(account.requiredWei) || BigInt(account.requiredWei) <= 0n) return { ok: false, error: "bad_buyin" };
+    this.current.accounts.push({
+      key,
+      label: account.label || key,
+      role: account.role,
+      requiredWei: account.requiredWei,
+      depositedWei: "0",
+      balanceWei: "0",
+      deposit: null,
+    });
     return { ok: true, session: this.touch() };
   }
 

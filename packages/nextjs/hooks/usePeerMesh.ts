@@ -1026,6 +1026,11 @@ export type PokerTableView = {
   button: number;
   smallBlind: number;
   bigBlind: number;
+  /** Current blind level (0-based) + when blinds next double (null if
+   *  fixed or the clock hasn't started). */
+  blindLevel: number;
+  blindIntervalMs: number;
+  nextBlindAt: number | null;
   board: string[];
   pots: PokerPot[];
   potTotal: number;
@@ -1217,17 +1222,24 @@ export type PeerMeshState = {
    *  plus the local player's own hole cards (private channel). */
   pokerState: PokerTableView | null;
   pokerPrivate: PokerPrivate | null;
-  /** Open a poker cash-game escrow for the chosen roster. Chips are money:
-   *  chipValueWei maps a chip to wei; each buy-in must be a whole number of
-   *  chips. Blinds are in chips. */
-  pokerProposeTable: (args: {
-    accounts: { key: string; seat: number; buyinWei: string; label?: string }[];
+  /** Open a poker table with a buy-in window. No roster up front — players
+   *  join by buying in until the window closes. Chips are money:
+   *  chipValueWei maps a chip to wei; the buy-in must be a whole number of
+   *  chips. Blinds (in chips) double every blindIntervalMs (0 = fixed). */
+  pokerOpenTable: (args: {
+    buyinWei: string;
     chipValueWei: string;
     smallBlind: number;
     bigBlind: number;
+    blindIntervalMs: number;
+    buyinWindowMs: number;
     chainId: number;
   }) => void;
-  /** Seat funded players and deal the first hand (escrow must be locked). */
+  /** Buy in + take a seat during the window (report the deposit tx hash). */
+  pokerJoin: (txHash: string) => void;
+  /** Latest join-deposit verification result (per reported tx). */
+  pokerJoinResult: { ok: boolean; txHash: string; reason?: string } | null;
+  /** Seat any newly-funded players and deal a hand (≥2 players needed). */
   pokerStart: () => void;
   /** Take an action on your turn. `toChips` is the raise-to total (bet/raise). */
   pokerAct: (action: PokerActionKind, toChips?: number) => void;
@@ -1725,6 +1737,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
   const [pokerState, setPokerState] = useState<PokerTableView | null>(null);
   const [pokerPrivate, setPokerPrivate] = useState<PokerPrivate | null>(null);
+  const [pokerJoinResult, setPokerJoinResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(null);
   const [escrow, setEscrow] = useState<EscrowSession | null>(null);
   const [escrowFundResult, setEscrowFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(
     null,
@@ -2171,15 +2184,23 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   }, [send]);
   // Poker openers + actions. The relay validates turn/legality + owns the
   // deck; these just post intent.
-  const pokerProposeTable = useCallback(
+  const pokerOpenTable = useCallback(
     (args: {
-      accounts: { key: string; seat: number; buyinWei: string; label?: string }[];
+      buyinWei: string;
       chipValueWei: string;
       smallBlind: number;
       bigBlind: number;
+      blindIntervalMs: number;
+      buyinWindowMs: number;
       chainId: number;
     }) => {
-      send({ type: "poker_propose_table", ...args });
+      send({ type: "poker_open_table", ...args });
+    },
+    [send],
+  );
+  const pokerJoin = useCallback(
+    (txHash: string) => {
+      send({ type: "poker_join", txHash });
     },
     [send],
   );
@@ -3621,6 +3642,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "poker_join_result") {
+          setPokerJoinResult({
+            ok: !!msg.ok,
+            txHash: typeof msg.txHash === "string" ? msg.txHash : "",
+            reason: typeof msg.reason === "string" ? msg.reason : undefined,
+          });
+          return;
+        }
+
         if (msg.type === "escrow_state") {
           setEscrow((msg.escrow ?? null) as EscrowSession | null);
           return;
@@ -4121,7 +4151,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     chessCloseGame,
     pokerState,
     pokerPrivate,
-    pokerProposeTable,
+    pokerJoinResult,
+    pokerOpenTable,
+    pokerJoin,
     pokerStart,
     pokerAct,
     pokerNextHand,

@@ -80,8 +80,16 @@ export type PokerGame = {
   handId: string | null;
   seats: Seat[];
   button: number; // seat index of the dealer button
-  smallBlind: number;
-  bigBlind: number;
+  smallBlind: number; // current (escalated) small blind
+  bigBlind: number; // current (escalated) big blind
+  // Blind schedule: blinds = base × 2^level, level advances every
+  // blindIntervalMs after the first hand (blindClockStart). intervalMs = 0
+  // means fixed blinds (a pure cash game).
+  baseSmallBlind: number;
+  baseBigBlind: number;
+  blindIntervalMs: number;
+  blindClockStart: number | null;
+  blindLevel: number;
   board: Card[];
   pots: Pot[];
   street: Street;
@@ -133,6 +141,15 @@ function sameSet(a: number[], b: number[]): boolean {
   return b.every(x => s.has(x));
 }
 
+/** Blind size at a given level: base blinds doubled once per level. Level
+ *  is capped so the multiplier can't overflow a safe integer on a very
+ *  long session. */
+export function blindsAtLevel(baseSmallBlind: number, baseBigBlind: number, level: number): { sb: number; bb: number } {
+  const capped = Math.max(0, Math.min(level, 20));
+  const mult = 2 ** capped;
+  return { sb: baseSmallBlind * mult, bb: baseBigBlind * mult };
+}
+
 export class PokerState {
   private game: PokerGame;
   private deck: Card[] = [];
@@ -156,6 +173,11 @@ export class PokerState {
       button: -1,
       smallBlind: this.smallBlind,
       bigBlind: this.bigBlind,
+      baseSmallBlind: this.smallBlind,
+      baseBigBlind: this.bigBlind,
+      blindIntervalMs: 0,
+      blindClockStart: null,
+      blindLevel: 0,
       board: [],
       pots: [],
       street: "idle",
@@ -323,6 +345,16 @@ export class PokerState {
     this.game.handId = randomBytes(6).toString("hex");
     this.game.startedAt = Date.now();
     this.game.lastResult = null;
+
+    // Advance the blind level by elapsed play time. The clock starts on the
+    // first hand so the buy-in window never consumes blind levels.
+    const now = this.game.startedAt;
+    if (this.game.blindClockStart === null) this.game.blindClockStart = now;
+    this.game.blindLevel =
+      this.game.blindIntervalMs > 0 ? Math.floor((now - this.game.blindClockStart) / this.game.blindIntervalMs) : 0;
+    const blinds = blindsAtLevel(this.game.baseSmallBlind, this.game.baseBigBlind, this.game.blindLevel);
+    this.game.smallBlind = blinds.sb;
+    this.game.bigBlind = blinds.bb;
 
     // Button advances to the next seat that's in the hand.
     this.game.button = this.nextInHand(this.game.button);
@@ -642,11 +674,24 @@ export class PokerState {
     this.touch();
   }
 
-  /** Set the blind levels (chips). Between hands only. */
+  /** Set fixed blinds (no escalation). Between hands only. */
   setBlinds(smallBlind: number, bigBlind: number): { ok: true } | { ok: false; error: string } {
+    return this.setBlindSchedule(smallBlind, bigBlind, 0);
+  }
+
+  /** Set the blind schedule: base blinds + how often they double. A
+   *  positive intervalMs escalates (blinds × 2 each level); 0 keeps them
+   *  fixed. The level clock starts on the first hand, not here, so the
+   *  buy-in window doesn't burn blind levels. Between hands only. */
+  setBlindSchedule(smallBlind: number, bigBlind: number, intervalMs: number): { ok: true } | { ok: false; error: string } {
     this.load();
     if (this.game.status === "running") return { ok: false, error: "hand_in_progress" };
     if (smallBlind <= 0 || bigBlind < smallBlind) return { ok: false, error: "bad_blinds" };
+    this.game.baseSmallBlind = smallBlind;
+    this.game.baseBigBlind = bigBlind;
+    this.game.blindIntervalMs = Math.max(0, Math.floor(intervalMs));
+    this.game.blindClockStart = null;
+    this.game.blindLevel = 0;
     this.game.smallBlind = smallBlind;
     this.game.bigBlind = bigBlind;
     this.game.minRaise = bigBlind;
@@ -715,6 +760,14 @@ export class PokerState {
       button: g.button,
       smallBlind: g.smallBlind,
       bigBlind: g.bigBlind,
+      blindLevel: g.blindLevel,
+      blindIntervalMs: g.blindIntervalMs,
+      // When the blinds next double (drives the client's level countdown).
+      // Null when blinds are fixed or the clock hasn't started.
+      nextBlindAt:
+        g.blindIntervalMs > 0 && g.blindClockStart !== null
+          ? g.blindClockStart + (g.blindLevel + 1) * g.blindIntervalMs
+          : null,
       board: g.board,
       pots: g.pots,
       potTotal: g.pots.reduce((n, p) => n + p.amountChips, 0),

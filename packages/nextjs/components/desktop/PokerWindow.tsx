@@ -1,25 +1,31 @@
 "use client";
 
-// No-Limit Texas Hold'em, built on the generic escrow session
-// (mesh.escrow, game === "poker") + the server-authoritative poker engine
+// No-Limit Texas Hold'em with a BUY-IN WINDOW. Built on the generic escrow
+// session (mesh.escrow, game === "poker") + the server-authoritative engine
 // (mesh.pokerState public view + mesh.pokerPrivate hole cards). The relay
-// owns the deck, the betting state machine, and every transition; this
-// surface renders the table and posts intent. Money flow mirrors chess:
+// owns the deck, the betting state machine, the deadline, and every
+// transition; this surface renders the table and posts intent.
 //
-//   1. Lobby   — a host opens a table with a roster + buy-in. Chips are
-//                money: chipValueWei maps a chip to wei.
-//   2. Buy-in  — each player sends a plain ETH transfer to the multisig
-//                (reused FundButton). The relay verifies on-chain.
-//   3. Play    — once all buy-ins land, any player deals. Hands run; chips
-//                move via the engine; the relay keeps the escrow ledger in
-//                sync (applyDeltas per hand).
-//   4. Cash out — closing the table settles every stack to its owner in
-//                one multisig batch (reused PayoutProposeButton).
+//   1. Open    — a host opens a table: buy-in, chip value, blinds (which can
+//                escalate), and a buy-in-window length. No roster up front.
+//   2. Join    — any player buys in (plain ETH → multisig, verified) and
+//                takes the next seat, until the window closes. Latecomers
+//                who join mid-hand sit out and are dealt in next hand.
+//   3. Start   — once ≥2 players are seated, anyone can deal. The window
+//                keeps counting down during play; blinds escalate on a clock.
+//   4. Cash out — closing settles every stack to its owner in one multisig
+//                batch (reused PayoutProposeButton).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatEther, parseEther } from "viem";
-import { useAccount } from "wagmi";
-import { FundButton, PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
-import type { EscrowSession, PeerMeshState, PokerActionKind, PokerSeatPublic } from "~~/hooks/usePeerMesh";
+import { useAccount, useChainId, useSendTransaction, useSwitchChain, useWaitForTransactionReceipt } from "wagmi";
+import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
+import type {
+  EscrowSession,
+  PeerMeshState,
+  PokerActionKind,
+  PokerSeatPublic,
+  PokerTableView,
+} from "~~/hooks/usePeerMesh";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const CYAN = "var(--slop-cyan, #2ee6d6)";
@@ -29,7 +35,6 @@ const FELT = "#0c2a1e";
 
 type Props = { mesh: PeerMeshState; myOwnerKey: string | null; myLabel: string | null };
 
-const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const fmtEth = (wei: string) => {
   try {
     const n = Number(formatEther(BigInt(wei)));
@@ -38,6 +43,8 @@ const fmtEth = (wei: string) => {
     return "0";
   }
 };
+const metaStr = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "string" ? (esc.meta[k] as string) : "");
+const metaNum = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "number" ? (esc.meta[k] as number) : 0);
 
 function btn(color: string, disabled = false): React.CSSProperties {
   return {
@@ -102,8 +109,8 @@ const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?
   );
 };
 
-// Live turn countdown — ticks each second toward the auto-act deadline.
-const TurnClock = ({ deadline }: { deadline: number | null }) => {
+// Live countdown to a deadline — ticks each second. Formats m:ss past 60s.
+const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgentAt?: number }) => {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!deadline) return;
@@ -112,28 +119,22 @@ const TurnClock = ({ deadline }: { deadline: number | null }) => {
   }, [deadline]);
   if (!deadline) return null;
   const secs = Math.max(0, Math.ceil((deadline - now) / 1000));
-  return <span style={{ fontSize: 12, color: secs <= 10 ? ACCENT : "var(--slop-text-muted)" }}>⏱ {secs}s</span>;
+  const label = secs >= 60 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : `${secs}s`;
+  return <span style={{ fontSize: 12, color: secs <= urgentAt ? ACCENT : "var(--slop-text-muted)" }}>⏱ {label}</span>;
 };
 
-// ─── Lobby (open a table) ────────────────────────────────────────────
+// ─── Open a table ────────────────────────────────────────────────────
 
-const LobbyForm = ({ mesh, myOwnerKey, myLabel }: Props) => {
+const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
   const { chainId } = useAccount();
   const [buyinEth, setBuyinEth] = useState("0.01");
   const [chipsPerBuyin, setChipsPerBuyin] = useState(1000);
   const [smallBlind, setSmallBlind] = useState(5);
   const [bigBlind, setBigBlind] = useState(10);
-  const [rows, setRows] = useState<{ key: string; label: string }[]>(
-    myOwnerKey ? [{ key: myOwnerKey, label: myLabel ?? short(myOwnerKey) }] : [{ key: "", label: "" }],
-  );
+  const [blindUpMin, setBlindUpMin] = useState(10); // 0 = fixed blinds
+  const [windowMin, setWindowMin] = useState(10);
   const [err, setErr] = useState<string | null>(null);
-
   const noWallet = !mesh.wallet;
-
-  const addRow = () => setRows(r => (r.length >= 6 ? r : [...r, { key: "", label: "" }]));
-  const setRow = (i: number, patch: Partial<{ key: string; label: string }>) =>
-    setRows(r => r.map((row, j) => (j === i ? { ...row, ...patch } : row)));
-  const delRow = (i: number) => setRows(r => r.filter((_, j) => j !== i));
 
   const onOpen = useCallback(() => {
     setErr(null);
@@ -150,25 +151,16 @@ const LobbyForm = ({ mesh, myOwnerKey, myLabel }: Props) => {
       return setErr("Buy-in doesn't divide evenly into chips — tweak the amount or chip count.");
     }
     if (bigBlind < smallBlind || smallBlind <= 0) return setErr("Bad blinds.");
-    const seen = new Set<string>();
-    const accounts: { key: string; seat: number; buyinWei: string; label?: string }[] = [];
-    rows.forEach((row, i) => {
-      const key = row.key.trim().toLowerCase();
-      if (!/^0x[a-f0-9]{40}$/.test(key)) return;
-      if (seen.has(key)) return;
-      seen.add(key);
-      accounts.push({ key, seat: i, buyinWei: buyinWei.toString(), label: row.label.trim() || short(key) });
-    });
-    if (accounts.length < 2) return setErr("Need at least 2 players with valid addresses.");
-    const chipValueWei = (buyinWei / BigInt(chipsPerBuyin)).toString();
-    mesh.pokerProposeTable({
-      accounts,
-      chipValueWei,
+    mesh.pokerOpenTable({
+      buyinWei: buyinWei.toString(),
+      chipValueWei: (buyinWei / BigInt(chipsPerBuyin)).toString(),
       smallBlind,
       bigBlind,
+      blindIntervalMs: Math.max(0, blindUpMin) * 60_000,
+      buyinWindowMs: Math.max(1, windowMin) * 60_000,
       chainId: chainId ?? 8453,
     });
-  }, [noWallet, buyinEth, chipsPerBuyin, smallBlind, bigBlind, rows, mesh, chainId]);
+  }, [noWallet, buyinEth, chipsPerBuyin, smallBlind, bigBlind, blindUpMin, windowMin, mesh, chainId]);
 
   const inp: React.CSSProperties = {
     background: "#160e2e",
@@ -179,20 +171,21 @@ const LobbyForm = ({ mesh, myOwnerKey, myLabel }: Props) => {
     fontSize: 13,
     width: "100%",
   };
+  const lbl: React.CSSProperties = { fontSize: 12, color: "var(--slop-text-muted)" };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: LIME }}>♠ New poker table</div>
       <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
-        No-Limit Hold&apos;em cash game. Each player buys in for chips; stacks cash out of the room multisig when the
-        table closes.
+        No-Limit Hold&apos;em. Open the table, then anyone can buy in during the window — a few friends can start early
+        and others join if they make it in time.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <label style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+        <label style={lbl}>
           Buy-in (ETH)
           <input style={inp} value={buyinEth} onChange={e => setBuyinEth(e.target.value)} />
         </label>
-        <label style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+        <label style={lbl}>
           Chips per buy-in
           <input
             style={inp}
@@ -201,48 +194,22 @@ const LobbyForm = ({ mesh, myOwnerKey, myLabel }: Props) => {
             onChange={e => setChipsPerBuyin(Number(e.target.value))}
           />
         </label>
-        <label style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+        <label style={lbl}>
           Small blind (chips)
           <input style={inp} type="number" value={smallBlind} onChange={e => setSmallBlind(Number(e.target.value))} />
         </label>
-        <label style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+        <label style={lbl}>
           Big blind (chips)
           <input style={inp} type="number" value={bigBlind} onChange={e => setBigBlind(Number(e.target.value))} />
         </label>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>Players (2–6, wallet addresses)</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {rows.map((row, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "var(--slop-text-muted)", width: 16 }}>{i + 1}</span>
-            <input
-              style={{ ...inp, flex: 2 }}
-              placeholder="0x… address"
-              value={row.key}
-              onChange={e => setRow(i, { key: e.target.value })}
-            />
-            <input
-              style={{ ...inp, flex: 1 }}
-              placeholder="label"
-              value={row.label}
-              onChange={e => setRow(i, { label: e.target.value })}
-            />
-            {rows.length > 2 && (
-              <button type="button" onClick={() => delRow(i)} style={{ ...btn(ACCENT), padding: "4px 8px" }}>
-                ✕
-              </button>
-            )}
-          </div>
-        ))}
-        {rows.length < 6 && (
-          <button
-            type="button"
-            onClick={addRow}
-            style={{ ...btn(CYAN), alignSelf: "flex-start", padding: "4px 10px", fontSize: 11 }}
-          >
-            + add player
-          </button>
-        )}
+        <label style={lbl}>
+          Blinds double every (min, 0 = never)
+          <input style={inp} type="number" value={blindUpMin} onChange={e => setBlindUpMin(Number(e.target.value))} />
+        </label>
+        <label style={lbl}>
+          Buy-in window (min)
+          <input style={inp} type="number" value={windowMin} onChange={e => setWindowMin(Number(e.target.value))} />
+        </label>
       </div>
       <button type="button" onClick={onOpen} disabled={noWallet} style={btn(LIME, noWallet)}>
         Open table
@@ -253,9 +220,90 @@ const LobbyForm = ({ mesh, myOwnerKey, myLabel }: Props) => {
   );
 };
 
-// ─── Buy-in collection ───────────────────────────────────────────────
+// ─── Join (buy in during the window) ─────────────────────────────────
 
-const FundingView = ({
+const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const currentChainId = useChainId();
+  const { switchChainAsync, isPending: switching } = useSwitchChain();
+  const { sendTransactionAsync, isPending: sending } = useSendTransaction();
+  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
+  const [reported, setReported] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const { isLoading: waiting, data: receipt } = useWaitForTransactionReceipt({
+    hash: txHash ?? undefined,
+    chainId: escrow.chainId,
+  });
+  const buyinWei = metaStr(escrow, "buyinWei") || "0";
+
+  useEffect(() => {
+    if (receipt && txHash && !reported) {
+      setReported(true);
+      mesh.pokerJoin(txHash);
+    }
+  }, [receipt, txHash, reported, mesh]);
+
+  const result = mesh.pokerJoinResult;
+  const rejected = reported && result && !result.ok && result.txHash === txHash ? result.reason : null;
+
+  const onJoin = useCallback(async () => {
+    setErr(null);
+    try {
+      if (currentChainId !== escrow.chainId) await switchChainAsync({ chainId: escrow.chainId });
+      const hash = await sendTransactionAsync({
+        to: escrow.multisig as `0x${string}`,
+        value: BigInt(buyinWei),
+        chainId: escrow.chainId,
+      });
+      setReported(false);
+      setTxHash(hash);
+    } catch (e) {
+      setErr(String(e).slice(0, 160));
+    }
+  }, [currentChainId, escrow.chainId, escrow.multisig, buyinWei, switchChainAsync, sendTransactionAsync]);
+
+  const busy = switching || sending || (!!txHash && (waiting || (reported && !rejected)));
+  const statusText = switching
+    ? "Switching chain…"
+    : sending
+      ? "Confirm in your wallet…"
+      : waiting
+        ? "Waiting for confirmation…"
+        : reported && !rejected
+          ? "Verifying buy-in…"
+          : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <button type="button" onClick={onJoin} disabled={busy} style={btn(LIME, busy)}>
+        {busy ? "Buying in…" : `Buy in — ${fmtEth(buyinWei)} ETH`}
+      </button>
+      {statusText && <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>{statusText}</div>}
+      {rejected && (
+        <div style={{ fontSize: 12, color: ACCENT }}>
+          {rejected === "not_mined"
+            ? "Not confirmed yet — give it a moment, then retry."
+            : `Buy-in rejected: ${rejected}`}
+          {rejected === "not_mined" && txHash && (
+            <button
+              type="button"
+              onClick={() => {
+                setReported(false);
+                mesh.pokerJoin(txHash);
+              }}
+              style={{ ...btn(CYAN), padding: "4px 10px", marginLeft: 8, fontSize: 11 }}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+      {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}
+    </div>
+  );
+};
+
+// Buy-in window banner: countdown + who's in + the join control.
+const BuyInBanner = ({
   mesh,
   myOwnerKey,
   escrow,
@@ -264,53 +312,34 @@ const FundingView = ({
   myOwnerKey: string | null;
   escrow: EscrowSession;
 }) => {
-  const myAccount = escrow.accounts.find(a => a.key === myOwnerKey);
-  const allFunded = escrow.accounts.every(a => BigInt(a.depositedWei) >= BigInt(a.requiredWei));
+  const deadline = metaNum(escrow, "buyinDeadline") || null;
+  const open = !!deadline && deadline > Date.now();
+  const iAmIn = escrow.accounts.some(a => a.key === myOwnerKey);
+  const full = escrow.accounts.length >= 6;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: CYAN }}>♠ Collecting buy-ins</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {escrow.accounts.map(a => {
-          const funded = BigInt(a.depositedWei) >= BigInt(a.requiredWei);
-          return (
-            <div
-              key={a.key}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                background: "#160e2e",
-                borderRadius: 8,
-                padding: "8px 12px",
-              }}
-            >
-              <span style={{ fontSize: 13 }}>
-                Seat {a.role} · {a.label}
-              </span>
-              <span style={{ fontSize: 12, color: funded ? LIME : "var(--slop-text-muted)" }}>
-                {funded
-                  ? "✓ funded"
-                  : `owes ${fmtEth((BigInt(a.requiredWei) - BigInt(a.depositedWei)).toString())} ETH`}
-              </span>
-            </div>
-          );
-        })}
+    <div
+      style={{
+        background: "#160e2e",
+        border: `1px solid ${CYAN}`,
+        borderRadius: 10,
+        padding: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: CYAN, fontFamily: "var(--slop-font-display)" }}>
+          {open ? "Buy-in window open" : "Buy-in window closed"}
+        </span>
+        {open && <Countdown deadline={deadline} urgentAt={30} />}
       </div>
-      {myAccount && BigInt(myAccount.depositedWei) < BigInt(myAccount.requiredWei) && (
-        <FundButton mesh={mesh} escrow={escrow} account={myAccount} />
-      )}
-      {allFunded && (
-        <button type="button" onClick={() => mesh.pokerStart()} style={btn(LIME)}>
-          Deal first hand
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={() => mesh.escrowCancel()}
-        style={{ ...btn(ACCENT), alignSelf: "flex-start", padding: "4px 10px", fontSize: 11 }}
-      >
-        Cancel table
-      </button>
+      <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
+        {escrow.accounts.length}/6 players in · buy-in {fmtEth(metaStr(escrow, "buyinWei"))} ETH
+      </div>
+      {open && !iAmIn && !full && <JoinButton mesh={mesh} escrow={escrow} />}
+      {iAmIn && <div style={{ fontSize: 12, color: LIME }}>✓ You&apos;re in.</div>}
+      {open && full && !iAmIn && <div style={{ fontSize: 12, color: ACCENT }}>Table full.</div>}
     </div>
   );
 };
@@ -363,6 +392,7 @@ const SeatBox = ({
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
   const folded = seat.status === "folded" || seat.status === "out";
+  const concealed = seat.hasCards && !(isMe && myHole) && !revealed;
   return (
     <div
       style={{
@@ -382,12 +412,14 @@ const SeatBox = ({
         <span style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>{seat.status}</span>
       </div>
       <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
-        <Card card={cards[0]} hidden={seat.hasCards && !(isMe && myHole) && !revealed} small />
-        <Card card={cards[1]} hidden={seat.hasCards && !(isMe && myHole) && !revealed} small />
+        <Card card={cards[0]} hidden={concealed} small />
+        <Card card={cards[1]} hidden={concealed} small />
       </div>
       <div style={{ fontSize: 12 }}>
         💰 {seat.stack}{" "}
-        <span style={{ color: "var(--slop-text-muted)" }}>({(seat.stack / bigBlind).toFixed(0)} BB)</span>
+        <span style={{ color: "var(--slop-text-muted)" }}>
+          ({bigBlind > 0 ? (seat.stack / bigBlind).toFixed(0) : "—"} BB)
+        </span>
       </div>
       {seat.committed > 0 && <div style={{ fontSize: 11, color: LIME }}>bet {seat.committed}</div>}
     </div>
@@ -460,25 +492,37 @@ const ActionBar = ({
   );
 };
 
-const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: string | null }) => {
-  const poker = mesh.pokerState!;
+const Felt = ({
+  mesh,
+  myOwnerKey,
+  poker,
+}: {
+  mesh: PeerMeshState;
+  myOwnerKey: string | null;
+  poker: PokerTableView;
+}) => {
   const myHole = mesh.pokerPrivate && mesh.pokerPrivate.handId === poker.handId ? mesh.pokerPrivate.hole : null;
   const mySeat = poker.seats.find(s => s.key === myOwnerKey) ?? null;
   const myTurn = mySeat && poker.status === "running" && poker.actor === mySeat.idx;
-  const handOver = poker.status === "complete";
-  const between = poker.status === "complete" || poker.status === "idle";
-  const isParticipant = !!mySeat;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 16, color: LIME }}>
-          ♠ {poker.smallBlind}/{poker.bigBlind} · {poker.street === "idle" ? "between hands" : poker.street}
+          ♠ {poker.smallBlind}/{poker.bigBlind}
+          {poker.blindLevel > 0 ? ` · L${poker.blindLevel + 1}` : ""} ·{" "}
+          {poker.street === "idle" ? "between hands" : poker.street}
         </span>
-        <span style={{ fontSize: 13, color: CYAN }}>Pot {poker.potTotal}</span>
+        <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {poker.nextBlindAt && (
+            <span style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
+              blinds up <Countdown deadline={poker.nextBlindAt} urgentAt={20} />
+            </span>
+          )}
+          <span style={{ fontSize: 13, color: CYAN }}>Pot {poker.potTotal}</span>
+        </span>
       </div>
 
-      {/* Felt: board + pots */}
       <div
         style={{
           background: FELT,
@@ -503,7 +547,6 @@ const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: stri
         )}
       </div>
 
-      {/* Seats */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {poker.seats.map(seat => (
           <SeatBox
@@ -518,8 +561,7 @@ const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: stri
         ))}
       </div>
 
-      {/* Showdown summary */}
-      {handOver && poker.showdown.length > 0 && (
+      {poker.status === "complete" && poker.showdown.length > 0 && (
         <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
           Showdown:{" "}
           {poker.showdown
@@ -528,12 +570,11 @@ const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: stri
         </div>
       )}
 
-      {/* Actions */}
       {myTurn && mySeat && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span style={{ fontSize: 13, color: LIME, fontWeight: 700 }}>Your turn</span>
-            <TurnClock deadline={poker.actorDeadline} />
+            <Countdown deadline={poker.actorDeadline} />
           </div>
           <ActionBar mesh={mesh} mySeat={mySeat} currentBet={poker.currentBet} minRaise={poker.minRaise} />
         </div>
@@ -541,19 +582,69 @@ const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: stri
       {!myTurn && poker.status === "running" && (
         <div style={{ fontSize: 13, color: "var(--slop-text-muted)", display: "flex", gap: 8, alignItems: "center" }}>
           <span>Waiting on {poker.seats.find(s => s.idx === poker.actor)?.label ?? "…"}</span>
-          <TurnClock deadline={poker.actorDeadline} />
+          <Countdown deadline={poker.actorDeadline} />
         </div>
       )}
+    </div>
+  );
+};
 
-      {/* Between-hand controls */}
-      {between && isParticipant && (
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={() => mesh.pokerNextHand()} style={btn(LIME)}>
-            Deal next hand
-          </button>
-          <button type="button" onClick={() => mesh.pokerCloseTable()} style={btn(CYAN)}>
-            Close table &amp; cash out
-          </button>
+// The whole live table: buy-in banner + felt + start/close controls.
+const LiveTable = ({
+  mesh,
+  myOwnerKey,
+  escrow,
+}: {
+  mesh: PeerMeshState;
+  myOwnerKey: string | null;
+  escrow: EscrowSession;
+}) => {
+  const poker = mesh.pokerState;
+  const seated = poker?.seats ?? [];
+  const playable = seated.filter(s => s.stack > 0).length;
+  const running = poker?.status === "running";
+  const iAmParticipant = escrow.accounts.some(a => a.key === myOwnerKey) || seated.some(s => s.key === myOwnerKey);
+  const neverStarted = !poker || poker.status === "idle";
+  // A joiner who bought in mid-hand isn't seated until the next deal.
+  const pendingJoin = escrow.accounts.some(a => a.key === myOwnerKey) && !seated.some(s => s.key === myOwnerKey);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <BuyInBanner mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} />
+      {pendingJoin && <div style={{ fontSize: 12, color: CYAN }}>You&apos;re dealt in on the next hand.</div>}
+
+      {poker && seated.length > 0 && <Felt mesh={mesh} myOwnerKey={myOwnerKey} poker={poker} />}
+      {seated.length === 0 && (
+        <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>Waiting for players to buy in…</div>
+      )}
+
+      {!running && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {playable >= 2 && (
+            <button
+              type="button"
+              onClick={() => (neverStarted ? mesh.pokerStart() : mesh.pokerNextHand())}
+              style={btn(LIME)}
+            >
+              {neverStarted ? "Start game" : "Deal next hand"}
+            </button>
+          )}
+          {playable < 2 && neverStarted && (
+            <span style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>Need ≥2 players to start.</span>
+          )}
+          {/* Before the first hand anyone can cancel (refunds any buy-ins);
+              once playing, only a player can cash the table out. */}
+          {neverStarted ? (
+            <button type="button" onClick={() => mesh.escrowCancel()} style={btn(ACCENT)}>
+              Cancel table
+            </button>
+          ) : (
+            iAmParticipant && (
+              <button type="button" onClick={() => mesh.pokerCloseTable()} style={btn(CYAN)}>
+                Close table &amp; cash out
+              </button>
+            )
+          )}
         </div>
       )}
     </div>
@@ -562,27 +653,18 @@ const TableView = ({ mesh, myOwnerKey }: { mesh: PeerMeshState; myOwnerKey: stri
 
 // ─── Root ────────────────────────────────────────────────────────────
 
-export const PokerWindow = ({ mesh, myOwnerKey, myLabel }: Props) => {
+export const PokerWindow = ({ mesh, myOwnerKey }: Props) => {
   const escrow = mesh.escrow && mesh.escrow.game === "poker" ? mesh.escrow : null;
-  const poker = mesh.pokerState;
 
   const body = useMemo(() => {
-    // Settling / settled → cash-out flow.
     if (escrow && (escrow.status === "settling" || escrow.status === "settled")) {
       return <CashOutView mesh={mesh} escrow={escrow} />;
     }
-    // Locked + an active/idle engine table → live table.
-    if (escrow && escrow.status === "locked" && poker && poker.seats.length > 0) {
-      return <TableView mesh={mesh} myOwnerKey={myOwnerKey} />;
+    if (escrow && escrow.status === "open") {
+      return <LiveTable mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} />;
     }
-    // Collecting buy-ins, OR all funded but not yet dealt (locked, no seats
-    // seated in the engine yet) — the funding view shows the "Deal" button.
-    if (escrow && (escrow.status === "open" || escrow.status === "locked")) {
-      return <FundingView mesh={mesh} myOwnerKey={myOwnerKey} escrow={escrow} />;
-    }
-    // No live poker escrow → lobby.
-    return <LobbyForm mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />;
-  }, [escrow, poker, mesh, myOwnerKey, myLabel]);
+    return <OpenTableForm mesh={mesh} />;
+  }, [escrow, mesh, myOwnerKey]);
 
   return (
     <div

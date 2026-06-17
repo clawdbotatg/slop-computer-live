@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { type Card, makeDeck } from "./poker-eval.js";
-import { PokerState, type Seat, buildPots } from "./poker.js";
+import { PokerState, type Seat, blindsAtLevel, buildPots } from "./poker.js";
 
 // A throwaway file path — PokerState persists, but in tests we just point
 // each instance at a unique tmp path it never reads back.
@@ -250,6 +250,35 @@ test("autoAct returns null when no hand is running", () => {
   t.sit(0, "alice", "Alice", 100);
   t.sit(1, "bob", "Bob", 100);
   assert.equal(t.autoAct(), null);
+});
+
+test("blindsAtLevel doubles per level (capped)", () => {
+  assert.deepEqual(blindsAtLevel(5, 10, 0), { sb: 5, bb: 10 });
+  assert.deepEqual(blindsAtLevel(5, 10, 1), { sb: 10, bb: 20 });
+  assert.deepEqual(blindsAtLevel(5, 10, 3), { sb: 40, bb: 80 });
+});
+
+test("setBlindSchedule keeps level 0 blinds on the first hand", () => {
+  const t = table();
+  t.setBlindSchedule(5, 10, 60_000); // double every minute
+  t.sit(0, "alice", "Alice", 1000);
+  t.sit(1, "bob", "Bob", 1000);
+  t.startHand(makeDeck());
+  const g = t.getGame();
+  // First hand starts the clock → level 0 → base blinds.
+  assert.equal(g.blindLevel, 0);
+  assert.equal(g.smallBlind, 5);
+  assert.equal(g.bigBlind, 10);
+});
+
+test("fixed blinds (interval 0) never escalate", () => {
+  const t = table();
+  t.setBlindSchedule(5, 10, 0);
+  t.sit(0, "alice", "Alice", 1000);
+  t.sit(1, "bob", "Bob", 1000);
+  t.startHand(makeDeck());
+  assert.equal(t.getGame().blindLevel, 0);
+  assert.equal(t.getGame().bigBlind, 10);
 });
 
 test("cannot start a hand with one player", () => {
