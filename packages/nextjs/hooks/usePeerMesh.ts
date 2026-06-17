@@ -999,6 +999,55 @@ export type ChessGame = {
   moveTimings: number[];
 };
 
+// --- Poker (server-authoritative; hole cards arrive separately) --------
+export type PokerSeatStatus = "active" | "folded" | "allin" | "out";
+
+export type PokerSeatPublic = {
+  /** Physical seat around the felt (0..5). */
+  seat: number;
+  /** Index into the seats array (engine order). */
+  idx: number;
+  key: string;
+  label: string;
+  stack: number;
+  committed: number;
+  status: PokerSeatStatus;
+  /** True when this seat holds (hidden) hole cards this hand. */
+  hasCards: boolean;
+  /** Only populated for hands revealed at showdown. */
+  hole: [string, string] | null;
+};
+
+export type PokerPot = { amountChips: number; eligible: number[] };
+
+/** Public table view — never contains live hole cards. */
+export type PokerTableView = {
+  handId: string | null;
+  button: number;
+  smallBlind: number;
+  bigBlind: number;
+  board: string[];
+  pots: PokerPot[];
+  potTotal: number;
+  street: "preflop" | "flop" | "turn" | "river" | "showdown" | "idle";
+  currentBet: number;
+  minRaise: number;
+  actor: number;
+  status: "idle" | "running" | "complete";
+  showdown: { seat: number; hole: [string, string]; hand: string }[];
+  startedAt: number | null;
+  actorSince: number;
+  /** Epoch ms when the current actor will be auto-acted if idle; null when
+   *  no one is on the clock. Drives the turn countdown. */
+  actorDeadline: number | null;
+  seats: PokerSeatPublic[];
+};
+
+/** The private hole-card frame for the local player only. */
+export type PokerPrivate = { handId: string | null; hole: [string, string] | null };
+
+export type PokerActionKind = "fold" | "check" | "call" | "bet" | "raise";
+
 export type ChessResult = {
   whiteKey: string;
   blackKey: string;
@@ -1164,6 +1213,28 @@ export type PeerMeshState = {
   chessMove: (from: string, to: string, promotion?: string) => void;
   chessResign: () => void;
   chessCloseGame: () => void;
+  /** Server-authoritative poker table (public view — no live hole cards)
+   *  plus the local player's own hole cards (private channel). */
+  pokerState: PokerTableView | null;
+  pokerPrivate: PokerPrivate | null;
+  /** Open a poker cash-game escrow for the chosen roster. Chips are money:
+   *  chipValueWei maps a chip to wei; each buy-in must be a whole number of
+   *  chips. Blinds are in chips. */
+  pokerProposeTable: (args: {
+    accounts: { key: string; seat: number; buyinWei: string; label?: string }[];
+    chipValueWei: string;
+    smallBlind: number;
+    bigBlind: number;
+    chainId: number;
+  }) => void;
+  /** Seat funded players and deal the first hand (escrow must be locked). */
+  pokerStart: () => void;
+  /** Take an action on your turn. `toChips` is the raise-to total (bet/raise). */
+  pokerAct: (action: PokerActionKind, toChips?: number) => void;
+  /** Deal the next hand (between hands). */
+  pokerNextHand: () => void;
+  /** Cash out every stack through the multisig and close the table. */
+  pokerCloseTable: () => void;
   /** The current money-game escrow session (chess wager, etc.). */
   escrow: EscrowSession | null;
   /** Latest deposit-verification result from the relay (per reported tx),
@@ -1652,6 +1723,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [musicState, setMusicStateLocal] = useState<MusicState | null>(null);
   const [chessGame, setChessGame] = useState<ChessGame | null>(null);
   const [chessHistory, setChessHistory] = useState<ChessResult[]>([]);
+  const [pokerState, setPokerState] = useState<PokerTableView | null>(null);
+  const [pokerPrivate, setPokerPrivate] = useState<PokerPrivate | null>(null);
   const [escrow, setEscrow] = useState<EscrowSession | null>(null);
   const [escrowFundResult, setEscrowFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(
     null,
@@ -2095,6 +2168,35 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
   const chessWagerStart = useCallback(() => {
     send({ type: "wager_start" });
+  }, [send]);
+  // Poker openers + actions. The relay validates turn/legality + owns the
+  // deck; these just post intent.
+  const pokerProposeTable = useCallback(
+    (args: {
+      accounts: { key: string; seat: number; buyinWei: string; label?: string }[];
+      chipValueWei: string;
+      smallBlind: number;
+      bigBlind: number;
+      chainId: number;
+    }) => {
+      send({ type: "poker_propose_table", ...args });
+    },
+    [send],
+  );
+  const pokerStart = useCallback(() => {
+    send({ type: "poker_start" });
+  }, [send]);
+  const pokerAct = useCallback(
+    (action: PokerActionKind, toChips?: number) => {
+      send({ type: "poker_act", action, toChips });
+    },
+    [send],
+  );
+  const pokerNextHand = useCallback(() => {
+    send({ type: "poker_next_hand" });
+  }, [send]);
+  const pokerCloseTable = useCallback(() => {
+    send({ type: "poker_close_table" });
   }, [send]);
   // Generic escrow actions (any game):
   const escrowFund = useCallback(
@@ -3033,6 +3135,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.chessHistory)) {
             setChessHistory(msg.chessHistory as ChessResult[]);
           }
+          if (msg.pokerState === null || (msg.pokerState && typeof msg.pokerState === "object")) {
+            setPokerState((msg.pokerState ?? null) as PokerTableView | null);
+          }
+          if (msg.pokerPrivate === null || (msg.pokerPrivate && typeof msg.pokerPrivate === "object")) {
+            setPokerPrivate((msg.pokerPrivate ?? null) as PokerPrivate | null);
+          }
           if (msg.escrow === null || (msg.escrow && typeof msg.escrow === "object")) {
             setEscrow((msg.escrow ?? null) as EscrowSession | null);
           }
@@ -3496,6 +3604,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (msg.type === "chess_history" && Array.isArray(msg.history)) {
           setChessHistory(msg.history as ChessResult[]);
+          return;
+        }
+
+        if (msg.type === "poker_state") {
+          setPokerState((msg.poker ?? null) as PokerTableView | null);
+          return;
+        }
+
+        if (msg.type === "poker_private") {
+          // Our own hole cards — arrives over our own socket only.
+          setPokerPrivate({
+            handId: (msg.handId ?? null) as string | null,
+            hole: (msg.hole ?? null) as [string, string] | null,
+          });
           return;
         }
 
@@ -3997,6 +4119,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     chessMove,
     chessResign,
     chessCloseGame,
+    pokerState,
+    pokerPrivate,
+    pokerProposeTable,
+    pokerStart,
+    pokerAct,
+    pokerNextHand,
+    pokerCloseTable,
     escrow,
     escrowFundResult,
     chessWagerPropose,

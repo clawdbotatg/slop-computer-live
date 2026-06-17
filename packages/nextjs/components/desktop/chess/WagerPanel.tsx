@@ -345,7 +345,9 @@ const FundingControls = ({
 // The buy-in: a plain ETH transfer FROM the player's wallet TO the
 // multisig. After it's mined we report the hash; the relay verifies it
 // before counting the account as funded.
-const FundButton = ({
+// Exported + game-agnostic: reads the generic escrow + account shape, so
+// poker (and any future money game) reuses the exact buy-in flow.
+export const FundButton = ({
   mesh,
   escrow,
   account,
@@ -503,7 +505,10 @@ const SettleControls = ({
 // Propose the settlement tx straight from the relay's canonical
 // `payouts` plan — single send (winner) or batch (refund). The relay
 // auto-adopts a matching proposal and watches it execute.
-const PayoutProposeButton = ({
+// Exported + game-agnostic: proposes the multisig tx matching the relay's
+// canonical `escrow.payouts` plan (single send or batch). Poker's cash-out
+// is a batch of one leg per remaining stack — the same path handles it.
+export const PayoutProposeButton = ({
   mesh,
   escrow,
   isRefund,

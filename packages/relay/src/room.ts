@@ -16,6 +16,7 @@ import { RoomApps } from "./apps.js";
 import { BrowserRegistry } from "./browsers.js";
 import { ChatHistory } from "./chat.js";
 import { ChessState } from "./chess.js";
+import { PokerState } from "./poker.js";
 import { Clock } from "./clock.js";
 import { config } from "./config.js";
 import { DesktopState } from "./desktop.js";
@@ -113,6 +114,7 @@ function roomPaths(id: string): {
   desktop: { slotsFile: string; legacySlotsFile: string | null; legacyHostKey: string | null };
   geometry: { path: string };
   chess: SubsystemPath;
+  poker: { path: string };
   music: { path: string };
   wallet: SubsystemPath;
   escrow: { path: string };
@@ -190,6 +192,10 @@ function roomPaths(id: string): {
     chess: {
       path: `${dir}/chess.json`,
       legacy: legacy ? (process.env.CHESS_PATH ?? "/var/lib/slop-relay/chess.json") : null,
+    },
+    poker: {
+      // No legacy path — poker is new; cold start = empty idle table.
+      path: `${dir}/poker.json`,
     },
     music: {
       // No legacy path — music state has always been in-memory until
@@ -358,6 +364,7 @@ export class Room {
   readonly uiState = new UIState();
   readonly chess: ChessState;
   readonly aiMover: AIMover;
+  readonly poker: PokerState;
   readonly wallet: WalletState;
   readonly escrow: EscrowState;
   readonly walletChat: WalletChatState;
@@ -412,6 +419,7 @@ export class Room {
     );
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
+    this.poker = new PokerState(paths.poker.path);
     this.music = new MusicState(paths.music.path);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
     this.escrow = new EscrowState(paths.escrow.path);
@@ -810,6 +818,23 @@ export class Room {
     if (!peer) return false;
     send(peer.ws, msg);
     return true;
+  }
+
+  /** Send to every socket whose stable owner key (lowercased address or
+   *  handle) matches — a player may have several tabs open. This is the
+   *  private channel poker uses to deal hole cards to one player without
+   *  leaking them to the table. Returns the number of sockets reached. */
+  sendToOwner(ownerKey: string, msg: unknown): number {
+    const k = ownerKey.toLowerCase();
+    let sent = 0;
+    for (const peer of this.peers.values()) {
+      const key = (peer.address ?? peer.handle ?? "").toLowerCase();
+      if (key && key === k) {
+        send(peer.ws, msg);
+        sent++;
+      }
+    }
+    return sent;
   }
 }
 

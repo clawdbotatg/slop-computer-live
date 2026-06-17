@@ -31,6 +31,7 @@ import { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { NewsWindow } from "~~/components/desktop/NewsWindow";
 import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
+import { PokerWindow } from "~~/components/desktop/PokerWindow";
 import { PongWindow } from "~~/components/desktop/PongWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
@@ -108,6 +109,7 @@ const WINDOW_MAX: Record<string, { w: number; h: number }> = {
   card: { w: 520, h: 660 },
   wallet: { w: 440, h: 600 },
   chess: { w: 520, h: 560 },
+  poker: { w: 760, h: 640 },
   pong: { w: 680, h: 520 },
   worm: { w: 520, h: 520 },
   gas: { w: 420, h: 520 },
@@ -171,6 +173,7 @@ type AppEntry = {
     | "screen"
     | "music"
     | "chess"
+    | "poker"
     | "pong"
     | "worm"
     | "qr"
@@ -2560,6 +2563,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "chat":
         case "music":
         case "chess":
+        case "poker":
         case "pong":
         case "worm":
         case "qr":
@@ -3828,6 +3832,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={420}
             >
               <ChessWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="poker"
+              title="POKER"
+              defaultSlot={{ x: 140, y: 70, width: 720, height: 600 }}
+              minWidth={520}
+              minHeight={460}
+            >
+              <PokerWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

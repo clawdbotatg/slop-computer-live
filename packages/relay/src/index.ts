@@ -140,6 +140,7 @@ import {
 } from "./wallet-data.js";
 import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
 import { chessPayouts, winnerFromChessStatus } from "./wager.js";
+import { TURN_TIMEOUT_MS } from "./poker.js";
 
 // Shared cookie options for the slop_session cookie. The session cookie
 // gates both live.slop.computer (host/guest desktop) and slop.computer
@@ -450,6 +451,26 @@ setInterval(() => {
   for (const room of listRooms()) kickChessAI(room);
 }, 30_000).unref();
 
+// Poker turn clock: every 3s, auto-act for any seat that's been on the
+// clock longer than TURN_TIMEOUT_MS (check if free, else fold). This is
+// what stops one AFK/disconnected player from stalling the table and
+// stranding the pot — the same "don't strand money" concern chess solves
+// by refusing to abort a locked wager. autoAct() is a no-op unless a hand
+// is running with a real actor past the deadline.
+setInterval(() => {
+  const now = Date.now();
+  for (const room of listRooms()) {
+    const g = room.poker.getGame();
+    if (g.status !== "running" || g.actor < 0) continue;
+    if (now - g.actorSince < TURN_TIMEOUT_MS) continue;
+    const out = room.poker.autoAct();
+    if (out && out.ok) {
+      if (out.ended) notePokerHandResult(room);
+      broadcastPokerState(room);
+    }
+  }
+}, 3_000).unref();
+
 // Push the current escrow session to every peer. Call this after any
 // escrow mutation (WS handler, settle hook, payout-executed hook) so all
 // clients converge on the same funding/settling/settled state.
@@ -491,6 +512,74 @@ function noteChessSettlement(room: Room, game: ChessGame | null): void {
     text,
     meta: { escrowId: esc.id, outcome: game.status, winner, potWei },
   });
+}
+
+// --- Poker -------------------------------------------------------------
+//
+// Poker is imperfect-information: there is no single broadcast snapshot of
+// truth. We broadcast the PUBLIC table view (hole cards stripped) to
+// everyone, then push each seated player their own hole cards over only
+// their own socket(s) via room.sendToOwner. Spectators/the stream see the
+// board + bets but never live hole cards. See ops/PLAN-poker.md.
+function broadcastPokerState(room: Room): void {
+  room.broadcast({ type: "poker_state", poker: room.poker.publicView() });
+  room.poker.bumpVersion();
+  // Private hole-card frames — one per seated player, never broadcast.
+  for (const seat of room.poker.getGame().seats) {
+    room.sendToOwner(seat.key, { type: "poker_private", ...room.poker.privateFor(seat.key) });
+  }
+}
+
+// Read the chip↔wei factor a poker escrow was opened with.
+function pokerChipValueWei(meta: Record<string, unknown>): bigint | null {
+  const raw = meta.chipValueWei;
+  if (typeof raw !== "string" && typeof raw !== "number") return null;
+  try {
+    const v = BigInt(raw);
+    return v > 0n ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// After a hand resolves, push its zero-sum chip movement into the escrow
+// ledger as wei deltas so balanceWei always tracks each seat's real stack.
+// The table is settled (paid out) separately, on close. Mirrors the
+// money/game boundary noteChessSettlement keeps: the escrow stays
+// game-agnostic; this is the only place poker chips become money.
+function notePokerHandResult(room: Room): void {
+  const g = room.poker.getGame();
+  const result = g.lastResult;
+  if (!result) return;
+  const esc = room.escrow.get();
+  if (!esc || esc.game !== "poker" || esc.status !== "locked") return;
+  const chipValueWei = pokerChipValueWei(esc.meta);
+  if (!chipValueWei) return;
+  const deltas = result.deltas
+    .filter(d => d.deltaChips !== 0)
+    .map(d => ({ key: d.key, deltaWei: (BigInt(d.deltaChips) * chipValueWei).toString() }));
+  if (deltas.length > 0) {
+    const res = room.escrow.applyDeltas(deltas);
+    if (!res.ok) {
+      console.error("[poker] applyDeltas failed:", res.error);
+      return;
+    }
+  }
+  broadcastEscrowState(room);
+  // Narrate the winner(s) of the hand.
+  const winners = result.deltas.filter(d => d.deltaChips > 0);
+  if (winners.length > 0) {
+    const seatByKey = new Map(g.seats.map(s => [s.key, s] as const));
+    const names = winners.map(w => seatByKey.get(w.key)?.label ?? w.key).join(", ");
+    const potChips = winners.reduce((n, w) => n + w.deltaChips, 0);
+    room.transcript.appendAction({
+      kind: "wallet",
+      address: null,
+      handle: null,
+      text: `🃏 ${names} won a ${potChips}-chip pot`,
+      meta: { handId: result.handId, escrowId: esc.id },
+    });
+  }
 }
 
 // Narrate chess into the transcript: notable moves (captures, checks,
@@ -759,6 +848,7 @@ type AppEntry = {
     | "screen"
     | "music"
     | "chess"
+    | "poker"
     | "pong"
     | "worm"
     | "qr"
@@ -826,6 +916,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Chess",
     icon: "/icons/chess.png",
     kind: "chess",
+  },
+  {
+    id: "poker",
+    label: "Poker",
+    icon: "/icons/poker.png",
+    kind: "poker",
   },
   {
     id: "pong",
@@ -6447,6 +6543,10 @@ app.register(async function signalRoutes(fastify) {
       musicState: room.music.current().state,
       chessGame: room.chess.getCurrentGame(),
       chessHistory: room.chess.getHistory(),
+      // Public poker table view (hole cards stripped) + this joiner's own
+      // hole cards if they're seated — so a reconnect mid-hand resumes.
+      pokerState: room.poker.publicView(),
+      pokerPrivate: info.address ? room.poker.privateFor(info.address) : null,
       aiPlayers: listAvailableAIPlayers(),
       todos: room.todos.list(),
       notes: room.notes.list(),
@@ -7275,6 +7375,167 @@ app.register(async function signalRoutes(fastify) {
           // cancelled). Any peer can clear, mirroring chess_close.
           room.escrow.clear();
           broadcastEscrowState(room);
+          return;
+        }
+        case "poker_propose_table": {
+          // Open a poker cash-game escrow. The lobby has already chosen the
+          // roster: a list of {key (address), seat, buyinWei}. Each player
+          // funds their own buy-in (escrow_fund, reused) and signs their own
+          // cash-out at close. Chips ARE money: chipValueWei maps a chip to
+          // wei; each buy-in must be a whole number of chips. Blinds are in
+          // chips. Fixed roster for v1 — no joining mid-session.
+          const rawAccounts = Array.isArray(msg.accounts) ? msg.accounts : null;
+          if (!rawAccounts || rawAccounts.length < 2 || rawAccounts.length > 6) {
+            return send(socket, { type: "error", error: "bad_poker_roster" });
+          }
+          if (typeof msg.chipValueWei !== "string") return send(socket, { type: "error", error: "bad_chip_value" });
+          let chipValueWei: bigint;
+          try {
+            chipValueWei = BigInt(msg.chipValueWei);
+          } catch {
+            return send(socket, { type: "error", error: "bad_chip_value" });
+          }
+          if (chipValueWei <= 0n) return send(socket, { type: "error", error: "bad_chip_value" });
+          const smallBlind = typeof msg.smallBlind === "number" ? msg.smallBlind : 1;
+          const bigBlind = typeof msg.bigBlind === "number" ? msg.bigBlind : 2;
+          if (smallBlind <= 0 || bigBlind < smallBlind) return send(socket, { type: "error", error: "bad_blinds" });
+          const cur = room.wallet.getCurrent();
+          if (!cur) return send(socket, { type: "error", error: "no_escrow_wallet" });
+          const chainId = typeof msg.chainId === "number" ? msg.chainId : 8453;
+          const accounts: { key: string; label: string; role: string; requiredWei: string }[] = [];
+          const seatByKey: Record<string, number> = {};
+          const seen = new Set<number>();
+          for (const a of rawAccounts as Array<Record<string, unknown>>) {
+            if (typeof a.key !== "string" || typeof a.buyinWei !== "string" || typeof a.seat !== "number") {
+              return send(socket, { type: "error", error: "bad_poker_account" });
+            }
+            const seat = a.seat;
+            if (seat < 0 || seat >= 6 || seen.has(seat)) return send(socket, { type: "error", error: "bad_poker_seat" });
+            seen.add(seat);
+            let buyin: bigint;
+            try {
+              buyin = BigInt(a.buyinWei);
+            } catch {
+              return send(socket, { type: "error", error: "bad_buyin" });
+            }
+            // Must be a whole number of chips so chip ledger stays exact.
+            if (buyin <= 0n || buyin % chipValueWei !== 0n) return send(socket, { type: "error", error: "buyin_not_chip_multiple" });
+            const key = a.key.toLowerCase();
+            const label = typeof a.label === "string" ? a.label : (shortHex(key) ?? key);
+            accounts.push({ key, label, role: String(seat), requiredWei: a.buyinWei });
+            seatByKey[key] = seat;
+          }
+          const result = room.escrow.open({
+            game: "poker",
+            chainId,
+            multisig: cur.address,
+            accounts,
+            meta: { chipValueWei: msg.chipValueWei, smallBlind, bigBlind, seatByKey },
+            createdBy: (info.address ?? info.handle ?? info.id).toLowerCase(),
+          });
+          if (!result.ok) return send(socket, { type: "error", error: result.error });
+          room.poker.clearTable();
+          broadcastEscrowState(room);
+          broadcastPokerState(room);
+          room.transcript.appendAction({
+            kind: "wallet",
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            text: `🃏 ${actorName(info)} opened a ${accounts.length}-seat poker table (${smallBlind}/${bigBlind} blinds)`,
+            meta: { escrowId: result.session.id, chainId, seats: accounts.length },
+          });
+          return;
+        }
+        case "poker_start": {
+          // Seat every funded player and deal the first hand. Only allowed
+          // once the escrow is locked (all buy-ins in). Caller must be a
+          // participant. Chips = depositedWei / chipValueWei.
+          if (!info.address) return send(socket, { type: "error", error: "poker_needs_address" });
+          const esc = room.escrow.get();
+          if (!esc || esc.game !== "poker" || esc.status !== "locked") {
+            return send(socket, { type: "error", error: "not_ready" });
+          }
+          if (!room.escrow.accountOf(info.address.toLowerCase())) {
+            return send(socket, { type: "error", error: "not_a_player" });
+          }
+          const chipValueWei = pokerChipValueWei(esc.meta);
+          if (!chipValueWei) return send(socket, { type: "error", error: "bad_chip_value" });
+          room.poker.clearTable();
+          const sb = typeof esc.meta.smallBlind === "number" ? esc.meta.smallBlind : 1;
+          const bb = typeof esc.meta.bigBlind === "number" ? esc.meta.bigBlind : 2;
+          room.poker.setBlinds(sb, bb);
+          for (const acct of esc.accounts) {
+            const seatIdx = Number.parseInt(acct.role, 10);
+            const chips = Number(BigInt(acct.depositedWei) / chipValueWei);
+            const r = room.poker.sit(seatIdx, acct.key, acct.label, chips);
+            if (!r.ok) return send(socket, { type: "error", error: `seat_failed:${r.error}` });
+          }
+          const started = room.poker.startHand();
+          if (!started.ok) return send(socket, { type: "error", error: started.error });
+          broadcastPokerState(room);
+          return;
+        }
+        case "poker_act": {
+          // A seated player acts. The engine validates turn + legality;
+          // clients can't fake an out-of-turn or illegal action.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const action = msg.action;
+          if (action !== "fold" && action !== "check" && action !== "call" && action !== "bet" && action !== "raise") {
+            return send(socket, { type: "error", error: "bad_poker_action" });
+          }
+          const toChips = typeof msg.toChips === "number" ? msg.toChips : undefined;
+          const out = room.poker.act(callerKey, { action, toChips });
+          if (!out.ok) return send(socket, { type: "error", error: out.error });
+          if (out.ended) notePokerHandResult(room);
+          broadcastPokerState(room);
+          return;
+        }
+        case "poker_next_hand": {
+          // Deal the next hand (between hands). Any seated player can start it.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          if (!room.poker.getGame().seats.some(s => s.key === callerKey)) {
+            return send(socket, { type: "error", error: "not_seated" });
+          }
+          const started = room.poker.startHand();
+          if (!started.ok) return send(socket, { type: "error", error: started.error });
+          broadcastPokerState(room);
+          return;
+        }
+        case "poker_close_table": {
+          // Cash out: settle every remaining stack to its owner in one
+          // multisig batch (the existing payout-proposal/adoption path then
+          // pays it). Only between hands — mid-hand, committed chips aren't
+          // yet reflected in escrow balances. Reuses the generic settle().
+          const esc = room.escrow.get();
+          if (!esc || esc.game !== "poker" || esc.status !== "locked") {
+            return send(socket, { type: "error", error: "no_poker_table" });
+          }
+          if (room.poker.getGame().status === "running") {
+            return send(socket, { type: "error", error: "hand_in_progress" });
+          }
+          const payouts = esc.accounts
+            .filter(a => BigInt(a.balanceWei) > 0n)
+            .map(a => ({ to: a.key, amountWei: a.balanceWei }));
+          if (payouts.length === 0) {
+            // Everyone busted to 0 — nothing to pay. Just clear.
+            room.escrow.clear();
+            room.poker.clearTable();
+            broadcastEscrowState(room);
+            broadcastPokerState(room);
+            return;
+          }
+          const res = room.escrow.settle(payouts, { settleKind: "cashout" });
+          if (!res.ok) return send(socket, { type: "error", error: res.error });
+          broadcastEscrowState(room);
+          room.transcript.appendAction({
+            kind: "wallet",
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            text: `🃏 ${actorName(info)} closed the poker table — ${payouts.length} stack(s) cashing out`,
+            meta: { escrowId: esc.id },
+          });
           return;
         }
         case "pong_claim": {

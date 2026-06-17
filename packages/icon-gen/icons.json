@@ -257,6 +257,10 @@
     {
       "name": "leftclaw",
       "prompt": "An isometric chunky left-facing robotic crab claw pincer, hot magenta and cyan accents on deep purple, glossy cyberdelic Mac OS 9 style, no text."
+    },
+    {
+      "name": "poker",
+      "prompt": "An isometric 3/4 stack of poker chips with two playing cards (an ace and a king) fanned out behind them, a glowing spade pip on the top chip."
     }
   ],
   "sheet": {
