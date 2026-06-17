@@ -1,5 +1,6 @@
 // Engine tests. Run: yarn tsx --test src/poker.test.ts
 import { strict as assert } from "node:assert";
+import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { type Card, makeDeck } from "./poker-eval.js";
 import { PokerState, type Seat, blindsAtLevel, buildPots } from "./poker.js";
@@ -210,6 +211,39 @@ test("all-in board runs out one street at a time", () => {
   assert.equal(g.runningOut, false);
   assert.equal(g.seats.find(s => s.key === "alice")!.stack, 200);
   assert.equal(sumDeltas(t), 0);
+});
+
+test("loads a legacy persisted game without the new fields (no crash)", () => {
+  // A game persisted by an older build — no eliminatedOrder, no blind
+  // schedule. Loading + publicView/standings must backfill, not throw.
+  const path = `/tmp/poker-legacy-${process.pid}-${n++}.json`;
+  writeFileSync(
+    path,
+    JSON.stringify({
+      game: {
+        handId: null,
+        seats: [],
+        button: -1,
+        smallBlind: 1,
+        bigBlind: 2,
+        board: [],
+        pots: [],
+        street: "idle",
+        currentBet: 0,
+        minRaise: 2,
+        actor: -1,
+        status: "idle",
+        showdown: [],
+        startedAt: null,
+        actorSince: 0,
+        lastResult: null,
+      },
+    }),
+  );
+  const t = new PokerState(path, 1, 2);
+  assert.doesNotThrow(() => t.publicView());
+  assert.deepEqual(t.standings(), []);
+  assert.deepEqual(t.getGame().eliminatedOrder, []);
 });
 
 test("busting a player records tournament finishing order", () => {

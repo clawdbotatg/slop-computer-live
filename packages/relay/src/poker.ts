@@ -257,7 +257,10 @@ export class PokerState {
     try {
       const raw = readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as { game?: PokerGame; deck?: Card[] };
-      if (parsed.game && typeof parsed.game === "object") this.game = parsed.game;
+      // Backfill any fields added after this game was persisted (e.g.
+      // eliminatedOrder, the blind schedule) so a game saved by an older
+      // build doesn't crash newer code (`[...undefined]` on standings()).
+      if (parsed.game && typeof parsed.game === "object") this.game = { ...this.emptyGame(), ...parsed.game };
       if (Array.isArray(parsed.deck)) this.deck = parsed.deck;
     } catch {
       /* cold start */
