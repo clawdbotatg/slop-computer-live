@@ -2161,7 +2161,9 @@ app.post("/personal-wallet/deploy", async (req, reply) => {
   // else the deployer itself (last-resort hot EOA).
   const rawSlug = typeof body.slug === "string" && isValidSlug(body.slug) ? body.slug : null;
   const roomMultisig = rawSlug ? (getOrCreateRoom(rawSlug).wallet.getCurrent()?.address ?? null) : null;
-  const coSigner = (roomMultisig ?? config.personalWalletPlatformCosigner ?? config.personalWalletDeployer) as `0x${string}`;
+  // `||` (not `??`): the platform-cosigner config defaults to "", which must
+  // fall through to the deployer address, not short-circuit on the empty string.
+  const coSigner = (roomMultisig || config.personalWalletPlatformCosigner || config.personalWalletDeployer) as `0x${string}`;
   if (!coSigner) return reply.code(503).send({ error: "no-cosigner" });
 
   const result = await deployPersonalWallet({ qx, qy, credentialIdHash, coSigner });
