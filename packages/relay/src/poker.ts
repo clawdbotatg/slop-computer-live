@@ -19,15 +19,26 @@
 
 import { randomBytes, randomInt } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { type Card, type HandEval, bestOf, evaluate7, handName, makeDeck } from "./poker-eval.js";
+import { type Card, type HandEval, bestOf, describeHand, evaluate7, makeDeck } from "./poker-eval.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 
-export const MAX_SEATS = 6;
+export const MAX_SEATS = 8;
 
 /** How long the seat to act has before the relay auto-acts for them
  *  (check if free, else fold). Keeps one disconnected/AFK player from
  *  stalling the table — and stranding the pot. */
 export const TURN_TIMEOUT_MS = 60_000;
+
+/** After a contested showdown, hold the table for this long before the
+ *  next hand can be dealt, so everyone can see the revealed hands + who
+ *  won. Enforced server-side (startHand rejects early) and surfaced to the
+ *  UI as a countdown. Fold-wins (no reveal) skip the pause. */
+export const SHOWDOWN_PAUSE_MS = 5_000;
+
+/** When everyone's all-in, the board is run out one street at a time with
+ *  this gap between cards, for suspense, instead of dumping the whole board
+ *  at once. The relay's poker ticker advances it. */
+export const RUNOUT_STEP_MS = 1_200;
 
 export type SeatStatus =
   | "active" // in the hand, can still act
@@ -62,7 +73,16 @@ export type Seat = {
 
 export type Pot = { amountChips: number; eligible: number[] };
 
-export type ShowdownEntry = { seat: number; hole: [Card, Card]; hand: string };
+export type ShowdownEntry = {
+  seat: number;
+  hole: [Card, Card];
+  /** Natural-language hand, e.g. "Kings full of queens". */
+  hand: string;
+  /** The best 5 cards that make the hand (for highlighting). */
+  cards: Card[];
+  /** True if this seat won (any part of) the pot. */
+  won: boolean;
+};
 
 export type PokerActionKind = "fold" | "check" | "call" | "bet" | "raise";
 
@@ -102,6 +122,17 @@ export type PokerGame = {
   startedAt: number | null;
   /** Date.now() when the current actor started thinking (UI clock). */
   actorSince: number;
+  /** Date.now() a contested showdown finished (null otherwise) — gates the
+   *  post-showdown pause before the next hand. */
+  handEndedAt: number | null;
+  /** True while an all-in board is being run out one street at a time. */
+  runningOut: boolean;
+  /** Date.now() of the last run-out step (relay paces the next off this). */
+  runoutStepAt: number;
+  /** Tournament finishing order: keys in the order they busted (earliest
+   *  out first = worst place). The lone survivor isn't listed — they're
+   *  1st. The relay reads this to split the prize pool by place. */
+  eliminatedOrder: string[];
   lastResult: HandResult | null;
 };
 
@@ -188,6 +219,10 @@ export class PokerState {
       showdown: [],
       startedAt: null,
       actorSince: 0,
+      handEndedAt: null,
+      runningOut: false,
+      runoutStepAt: 0,
+      eliminatedOrder: [],
       lastResult: null,
     };
   }
@@ -323,8 +358,14 @@ export class PokerState {
   startHand(deckOverride?: Card[]): { ok: true } | { ok: false; error: string } {
     this.load();
     if (this.game.status === "running") return { ok: false, error: "hand_in_progress" };
+    // Hold for the post-showdown pause so everyone can see the cards.
+    if (this.game.handEndedAt !== null && Date.now() - this.game.handEndedAt < SHOWDOWN_PAUSE_MS) {
+      return { ok: false, error: "showdown_pause" };
+    }
     const playing = this.game.seats.filter(s => s.stack > 0);
     if (playing.length < 2) return { ok: false, error: "need_two_players" };
+    this.game.handEndedAt = null;
+    this.game.runningOut = false;
 
     // Reset per-hand seat state.
     for (const s of this.game.seats) {
@@ -392,7 +433,8 @@ export class PokerState {
     this.game.actor = this.firstToAct(this.game.actor);
     this.game.actorSince = Date.now();
 
-    this.maybeAutoAdvance();
+    // Everyone all-in from the blinds (tiny stacks) → run the board out.
+    if (this.isRunOut()) this.beginRunout();
     this.touch();
     return { ok: true };
   }
@@ -502,11 +544,14 @@ export class PokerState {
     if (this.bettingClosed()) {
       this.closeStreet();
       if (this.game.status === "complete") return { ok: true, ended: true };
+      // No more betting possible (everyone all-in) → run the board out one
+      // street at a time. closeStreet already dealt the next street; the
+      // relay paces the rest. endHand fires when the run-out reaches river.
+      if (this.isRunOut()) this.beginRunout();
     } else {
       this.game.actor = this.nextActor(this.game.actor);
       this.game.actorSince = Date.now();
     }
-    this.maybeAutoAdvance();
     return { ok: true, ended: this.game.status === "complete" };
   }
 
@@ -558,31 +603,57 @@ export class PokerState {
     }
   }
 
-  /** When everyone left is all-in (or only one can act), there's no more
-   *  betting — deal out the rest of the board and go to showdown. */
-  private maybeAutoAdvance(): void {
-    if (this.game.status !== "running") return;
+  /** True when no further betting is possible (≤1 player can act and no one
+   *  owes a call) but ≥2 are still contesting an unfinished board — i.e. an
+   *  all-in run-out is due. */
+  private isRunOut(): boolean {
+    if (this.game.status !== "running" || this.game.street === "showdown") return false;
     const canAct = this.game.seats.filter(s => s.status === "active");
-    if (canAct.length > 1) return; // real betting still possible
-    // 0 or 1 players can act. If exactly 1 still owes chips, they get to
-    // act (handled by normal flow). Otherwise run it out.
-    const owing = canAct.filter(s => s.committed < this.game.currentBet);
-    if (owing.length > 0) return;
-    // Run out remaining streets with no betting.
-    let guard = 0;
-    while (this.game.status === "running" && this.game.street !== "showdown" && guard++ < 6) {
-      for (const s of this.game.seats) s.committed = 0;
-      this.game.pots = buildPots(this.game.seats);
-      this.game.currentBet = 0;
-      const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
-      const i = order.indexOf(this.game.street);
-      this.game.street = order[i + 1]!;
-      if (this.game.street === "showdown") {
-        this.endHand();
-        return;
-      }
-      this.dealBoard(this.game.street);
+    if (canAct.length > 1) return false; // real betting still possible
+    if (canAct.some(s => s.committed < this.game.currentBet)) return false; // someone still owes
+    const contenders = this.game.seats.filter(s => s.status === "active" || s.status === "allin").length;
+    return contenders >= 2;
+  }
+
+  private beginRunout(): void {
+    this.game.runningOut = true;
+    this.game.runoutStepAt = Date.now();
+    this.game.actor = -1;
+  }
+
+  /** Reveal the next board street of an all-in run-out (or resolve the
+   *  showdown if the river is already out). The relay calls this on a timer
+   *  so the board comes out one card at a time. No-op unless runningOut. */
+  advanceRunout(): { ok: boolean; ended: boolean } {
+    this.load();
+    if (this.game.status !== "running" || !this.game.runningOut) {
+      return { ok: false, ended: this.game.status === "complete" };
     }
+    // No betting in a run-out: fold any commitments into the pots.
+    for (const s of this.game.seats) s.committed = 0;
+    this.game.pots = buildPots(this.game.seats);
+    this.game.currentBet = 0;
+    const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
+    const next = order[order.indexOf(this.game.street) + 1]!;
+    if (next === "showdown") {
+      this.endHand();
+      this.game.runningOut = false;
+      this.scheduleSave();
+      return { ok: true, ended: true };
+    }
+    this.game.street = next;
+    this.dealBoard(next);
+    this.game.runoutStepAt = Date.now();
+    this.scheduleSave();
+    return { ok: true, ended: false };
+  }
+
+  /** Run an in-progress all-in board out to showdown synchronously. The
+   *  relay reveals it slowly via advanceRunout; this is the all-at-once
+   *  path for unit tests (and a safety fallback). */
+  finishRunout(): void {
+    let guard = 0;
+    while (this.game.runningOut && guard++ < 8) this.advanceRunout();
   }
 
   /** Resolve the hand: build final pots, award each pot to its best
@@ -602,7 +673,9 @@ export class PokerState {
       const winner = contenders[0]!.i;
       for (const pot of this.game.pots) this.game.seats[winner]!.stack += pot.amountChips;
     } else {
-      // Contested showdown. Award each pot independently.
+      // Contested showdown. Award each pot independently, tracking every
+      // seat that won any part of a pot.
+      const overallWinners = new Set<number>();
       for (const pot of this.game.pots) {
         const eligible = pot.eligible.filter(i => {
           const st = this.game.seats[i]!.status;
@@ -615,11 +688,19 @@ export class PokerState {
         }));
         const winners = bestOf(hands);
         this.awardSplit(pot.amountChips, winners);
+        for (const w of winners) overallWinners.add(w);
       }
-      // Reveal contenders' hands (showdown is public; folded muck isn't).
+      // Reveal contenders' hands (showdown is public; folded muck isn't),
+      // each with a readable description, its best 5 cards, and won flag.
       for (const c of contenders) {
         const ev: HandEval = evaluate7([...c.s.hole!, ...this.game.board]);
-        showdownEntries.push({ seat: c.i, hole: c.s.hole!, hand: handName(ev.category) });
+        showdownEntries.push({
+          seat: c.i,
+          hole: c.s.hole!,
+          hand: describeHand(ev),
+          cards: ev.cards,
+          won: overallWinners.has(c.i),
+        });
       }
     }
 
@@ -627,6 +708,8 @@ export class PokerState {
     this.game.street = "showdown";
     this.game.status = "complete";
     this.game.actor = -1;
+    // Only a contested reveal needs the "look at the cards" pause.
+    this.game.handEndedAt = showdownEntries.length > 0 ? Date.now() : null;
 
     const deltas = this.game.seats.map(s => ({ key: s.key, deltaChips: s.stack - s.startStack }));
     this.game.lastResult = {
@@ -635,6 +718,14 @@ export class PokerState {
       showdown: showdownEntries,
       endedAt: Date.now(),
     };
+    // Record tournament eliminations: a seat that played this hand and is
+    // now at 0 has busted. If several bust together, the shorter starting
+    // stack finishes lower (standard rule), so append in that order.
+    const justBusted = this.game.seats
+      .filter(s => s.stack === 0 && s.startStack > 0 && !this.game.eliminatedOrder.includes(s.key))
+      .sort((a, b) => a.startStack - b.startStack);
+    for (const s of justBusted) this.game.eliminatedOrder.push(s.key);
+
     // Mark busted seats out so they're skipped next hand.
     for (const s of this.game.seats) if (s.stack === 0) s.status = "out";
   }
@@ -749,6 +840,27 @@ export class PokerState {
 
   // --- views ---------------------------------------------------------
 
+  /** Tournament standings, best first. Survivors (still have chips) come
+   *  first ranked by stack, then eliminated players in reverse bust order
+   *  (last out finished higher). `place` is 1-based. Provisional while the
+   *  tournament runs; final once one player remains. The relay reads this
+   *  to split the prize pool by finishing place. */
+  standings(): { key: string; label: string; place: number; stack: number; out: boolean }[] {
+    const byKey = new Map(this.game.seats.map(s => [s.key, s] as const));
+    const alive = this.game.seats.filter(s => s.stack > 0).sort((a, b) => b.stack - a.stack);
+    const eliminated = [...this.game.eliminatedOrder]
+      .reverse()
+      .map(k => byKey.get(k))
+      .filter((s): s is Seat => !!s);
+    return [...alive, ...eliminated].map((s, i) => ({
+      key: s.key,
+      label: s.label,
+      place: i + 1,
+      stack: s.stack,
+      out: s.stack === 0,
+    }));
+  }
+
   /** Public snapshot: hole cards stripped (except revealed showdown
    *  hands). Safe to broadcast to everyone, including spectators. */
   publicView(): unknown {
@@ -782,6 +894,13 @@ export class PokerState {
       // When the current actor will be auto-acted if idle (drives the
       // client's turn countdown). Null when no one is on the clock.
       actorDeadline: g.status === "running" && g.actor >= 0 ? g.actorSince + TURN_TIMEOUT_MS : null,
+      // When the next hand can be dealt (post-showdown pause). Null unless
+      // we're holding on a contested showdown.
+      nextHandAt: g.handEndedAt !== null ? g.handEndedAt + SHOWDOWN_PAUSE_MS : null,
+      runningOut: g.runningOut,
+      // Players with chips left, and the finishing order so far (best first).
+      playersLeft: g.seats.filter(s => s.stack > 0).length,
+      standings: this.standings(),
       seats: g.seats.map((s, i) => ({
         seat: s.seatIdx,
         idx: i,

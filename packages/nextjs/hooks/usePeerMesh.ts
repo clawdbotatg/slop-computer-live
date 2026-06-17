@@ -1039,12 +1039,21 @@ export type PokerTableView = {
   minRaise: number;
   actor: number;
   status: "idle" | "running" | "complete";
-  showdown: { seat: number; hole: [string, string]; hand: string }[];
+  showdown: { seat: number; hole: [string, string]; hand: string; cards: string[]; won: boolean }[];
   startedAt: number | null;
   actorSince: number;
   /** Epoch ms when the current actor will be auto-acted if idle; null when
    *  no one is on the clock. Drives the turn countdown. */
   actorDeadline: number | null;
+  /** Epoch ms when the next hand can be dealt (post-showdown pause); null if
+   *  not currently held. */
+  nextHandAt: number | null;
+  /** True while an all-in board is being run out one street at a time. */
+  runningOut: boolean;
+  /** Players who still have chips. */
+  playersLeft: number;
+  /** Tournament finishing order so far, best first (1-based place). */
+  standings: { key: string; label: string; place: number; stack: number; out: boolean }[];
   seats: PokerSeatPublic[];
 };
 
@@ -1222,13 +1231,14 @@ export type PeerMeshState = {
    *  plus the local player's own hole cards (private channel). */
   pokerState: PokerTableView | null;
   pokerPrivate: PokerPrivate | null;
-  /** Open a poker table with a buy-in window. No roster up front — players
-   *  join by buying in until the window closes. Chips are money:
-   *  chipValueWei maps a chip to wei; the buy-in must be a whole number of
-   *  chips. Blinds (in chips) double every blindIntervalMs (0 = fixed). */
+  /** Open a poker TOURNAMENT with a buy-in window. No roster up front —
+   *  players join by buying in until the window closes (late registration).
+   *  Everyone gets the same startingStack of (value-less) chips; the prize
+   *  pool (Σ buy-ins) is split by finishing place. Blinds (in chips) double
+   *  every blindIntervalMs (0 = fixed). */
   pokerOpenTable: (args: {
     buyinWei: string;
-    chipValueWei: string;
+    startingStack: number;
     smallBlind: number;
     bigBlind: number;
     blindIntervalMs: number;
@@ -1245,8 +1255,6 @@ export type PeerMeshState = {
   pokerAct: (action: PokerActionKind, toChips?: number) => void;
   /** Deal the next hand (between hands). */
   pokerNextHand: () => void;
-  /** Cash out every stack through the multisig and close the table. */
-  pokerCloseTable: () => void;
   /** The current money-game escrow session (chess wager, etc.). */
   escrow: EscrowSession | null;
   /** Latest deposit-verification result from the relay (per reported tx),
@@ -2187,7 +2195,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const pokerOpenTable = useCallback(
     (args: {
       buyinWei: string;
-      chipValueWei: string;
+      startingStack: number;
       smallBlind: number;
       bigBlind: number;
       blindIntervalMs: number;
@@ -2215,9 +2223,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
   const pokerNextHand = useCallback(() => {
     send({ type: "poker_next_hand" });
-  }, [send]);
-  const pokerCloseTable = useCallback(() => {
-    send({ type: "poker_close_table" });
   }, [send]);
   // Generic escrow actions (any game):
   const escrowFund = useCallback(
@@ -4157,7 +4162,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     pokerStart,
     pokerAct,
     pokerNextHand,
-    pokerCloseTable,
     escrow,
     escrowFundResult,
     chessWagerPropose,

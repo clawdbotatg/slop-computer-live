@@ -513,11 +513,14 @@ export const PayoutProposeButton = ({
   escrow,
   isRefund,
   canPropose,
+  claimText,
 }: {
   mesh: PeerMeshState;
   escrow: EscrowSession;
   isRefund: boolean;
   canPropose: boolean;
+  /** Override the non-refund button label (poker: "Pay out winners"). */
+  claimText?: string;
 }) => {
   const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [state, setState] = useState<"idle" | "proposing" | "done">("idle");
@@ -608,7 +611,11 @@ export const PayoutProposeButton = ({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <button type="button" onClick={onPropose} disabled={state !== "idle"} style={btn(LIME, state !== "idle")}>
-        {state === "proposing" ? "Proposing…" : isRefund ? "Propose refund" : `Claim ${fmtEth(total)} ETH pot`}
+        {state === "proposing"
+          ? "Proposing…"
+          : isRefund
+            ? "Propose refund"
+            : (claimText ?? `Claim ${fmtEth(total)} ETH pot`)}
       </button>
       {state === "proposing" && <LoadingBar />}
       {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}

@@ -56,6 +56,40 @@ export function handName(category: HandCategory): string {
   return CATEGORY_NAMES[category];
 }
 
+const RANK_SINGULAR = ["two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "jack", "queen", "king", "ace"];
+const RANK_PLURAL = ["twos", "threes", "fours", "fives", "sixes", "sevens", "eights", "nines", "tens", "jacks", "queens", "kings", "aces"];
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const sing = (i: number) => RANK_SINGULAR[i] ?? "card";
+const plur = (i: number) => RANK_PLURAL[i] ?? "cards";
+
+/** A natural-language description of a hand, e.g. "Kings full of queens",
+ *  "Ace-high flush", "Pair of jacks". Used so the showdown shows what
+ *  actually won, not just the category. */
+export function describeHand(ev: HandEval): string {
+  const tb = ev.tiebreak;
+  const hi = tb[0] ?? 0;
+  switch (ev.category) {
+    case HandCategory.StraightFlush:
+      return hi === 12 ? "Royal flush" : `${cap(sing(hi))}-high straight flush`;
+    case HandCategory.Quads:
+      return `Four ${plur(hi)}`;
+    case HandCategory.FullHouse:
+      return `${cap(plur(hi))} full of ${plur(tb[1] ?? 0)}`;
+    case HandCategory.Flush:
+      return `${cap(sing(hi))}-high flush`;
+    case HandCategory.Straight:
+      return `${cap(sing(hi))}-high straight`;
+    case HandCategory.Trips:
+      return `Three ${plur(hi)}`;
+    case HandCategory.TwoPair:
+      return `${cap(plur(hi))} and ${plur(tb[1] ?? 0)}`;
+    case HandCategory.Pair:
+      return `Pair of ${plur(hi)}`;
+    default:
+      return `${cap(sing(hi))}-high`;
+  }
+}
+
 /** 0-based rank value: '2'→0 … 'A'→12. */
 export function rankValue(card: Card): number {
   const idx = RANKS.indexOf(card[0]!);

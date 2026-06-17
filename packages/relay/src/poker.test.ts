@@ -93,6 +93,7 @@ test("heads-up all-in preflop: best hand wins the pot, zero-sum", () => {
   assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
   const out = t.act("bob", { action: "call" });
   assert.equal(out.ok, true);
+  t.finishRunout(); // all-in: deal the board out to showdown
   const g = t.getGame();
   assert.equal(g.status, "complete");
   const alice = g.seats.find(s => s.key === "alice")!;
@@ -116,6 +117,7 @@ test("three-way all-in builds a side pot the short stack can't win", () => {
   assert.equal(t.act("alice", { action: "raise", toChips: 50 }).ok, true); // all-in 50
   assert.equal(t.act("bob", { action: "raise", toChips: 100 }).ok, true); // all-in 100
   assert.equal(t.act("carol", { action: "call" }).ok, true); // calls 100
+  t.finishRunout(); // all-in: deal the board out to showdown
   const g = t.getGame();
   assert.equal(g.status, "complete");
   const get = (k: string) => g.seats.find(s => s.key === k)!;
@@ -138,10 +140,103 @@ test("split pot chops evenly (board plays)", () => {
   assert.equal(t.startHand(deck).ok, true);
   assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
   assert.equal(t.act("bob", { action: "call" }).ok, true);
+  t.finishRunout(); // all-in: deal the board out to showdown
   const g = t.getGame();
   assert.equal(g.seats.find(s => s.key === "alice")!.stack, 100);
   assert.equal(g.seats.find(s => s.key === "bob")!.stack, 100);
   assert.equal(sumDeltas(t), 0);
+  // Both shown hands are flagged as winners (a chop), with a description.
+  assert.equal(g.showdown.length, 2);
+  assert.ok(g.showdown.every(s => s.won));
+  assert.ok(g.showdown.every(s => typeof s.hand === "string" && s.hand.length > 0));
+});
+
+test("contested showdown marks the winner + describes the hand", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
+  assert.equal(t.act("bob", { action: "call" }).ok, true);
+  t.finishRunout(); // all-in: deal the board out to showdown
+  const g = t.getGame();
+  const alice = g.showdown.find(s => g.seats[s.seat]!.key === "alice")!;
+  const bob = g.showdown.find(s => g.seats[s.seat]!.key === "bob")!;
+  assert.equal(alice.won, true); // pair of aces
+  assert.equal(bob.won, false);
+  assert.equal(alice.hand, "Pair of aces");
+  assert.equal(alice.cards.length, 5);
+});
+
+test("contested showdown blocks the next hand until the pause elapses", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  // A chop leaves both with chips so a re-deal is otherwise possible.
+  const deck = deckFor([["2c", "3d"], ["2h", "3s"]], ["As", "Kd", "Qh", "Jc", "Td"]);
+  assert.equal(t.startHand(deck).ok, true);
+  assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
+  assert.equal(t.act("bob", { action: "call" }).ok, true);
+  t.finishRunout(); // all-in: deal the board out to showdown
+  // Immediately after a contested showdown → blocked.
+  const tooSoon = t.startHand(makeDeck());
+  assert.equal(tooSoon.ok, false);
+  assert.equal((tooSoon as { error: string }).error, "showdown_pause");
+  const pub = t.publicView() as { nextHandAt: number | null };
+  assert.ok(typeof pub.nextHandAt === "number"); // countdown exposed to the UI
+});
+
+test("all-in board runs out one street at a time", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
+  assert.equal(t.act("bob", { action: "call" }).ok, true);
+  // After the all-in the hand is NOT instantly resolved — it's running out.
+  let g = t.getGame();
+  assert.equal(g.runningOut, true);
+  assert.equal(g.status, "running");
+  assert.equal(g.board.length, 3); // flop is shown, turn/river still to come
+  assert.equal(t.advanceRunout().ended, false);
+  assert.equal(t.getGame().board.length, 4); // turn
+  assert.equal(t.advanceRunout().ended, false);
+  assert.equal(t.getGame().board.length, 5); // river
+  assert.equal(t.advanceRunout().ended, true); // showdown
+  g = t.getGame();
+  assert.equal(g.status, "complete");
+  assert.equal(g.runningOut, false);
+  assert.equal(g.seats.find(s => s.key === "alice")!.stack, 200);
+  assert.equal(sumDeltas(t), 0);
+});
+
+test("busting a player records tournament finishing order", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  assert.equal(t.act("alice", { action: "raise", toChips: 100 }).ok, true);
+  assert.equal(t.act("bob", { action: "call" }).ok, true);
+  t.finishRunout();
+  assert.deepEqual(t.getGame().eliminatedOrder, ["bob"]); // bob busted
+  const s = t.standings();
+  assert.equal(s[0]!.key, "alice");
+  assert.equal(s[0]!.place, 1);
+  assert.equal(s[1]!.key, "bob");
+  assert.equal(s[1]!.place, 2);
+  assert.equal(s[1]!.out, true);
+});
+
+test("fold-win has no showdown pause (re-deal immediately)", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 100);
+  t.sit(1, "bob", "Bob", 100);
+  assert.equal(t.startHand(makeDeck()).ok, true);
+  assert.equal(t.act("alice", { action: "fold" }).ok, true); // uncontested
+  assert.equal(t.startHand(makeDeck()).ok, true); // no pause
 });
 
 test("heads-up SB fold gives BB the blind, no showdown", () => {
