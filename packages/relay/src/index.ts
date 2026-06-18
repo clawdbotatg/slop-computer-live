@@ -6376,9 +6376,19 @@ const startClipJob = (slug: string, researchContext?: string, force = false, reg
   void (async () => {
     try {
       const { spawn } = await import("node:child_process");
-      const { readFile } = await import("node:fs/promises");
+      const { readFile, mkdir } = await import("node:fs/promises");
+      const { createWriteStream } = await import("node:fs");
       const { join } = await import("node:path");
       const bin = join(config.clipperDir, "node_modules", ".bin", "tsx");
+      // Tee the clipper's full stdout/stderr to out/<slug>/clipper.log. The WS
+      // progress stream is ephemeral (in-memory, lost on disconnect), so when a
+      // run dies as the opaque "clipper exited 1" there was no durable record of
+      // the real `✗ …`. This file is it — `tail out/<slug>/clipper.log` on the
+      // box to see why a job failed without re-running it live.
+      const slugOutDir = join(config.clipperDir, "out", slug);
+      await mkdir(slugOutDir, { recursive: true }).catch(() => {});
+      const logStream = createWriteStream(join(slugOutDir, "clipper.log"), { flags: "a" });
+      logStream.write(`\n===== ${new Date().toISOString()} generate-clips slug=${slug} force=${force} regenTweets=${regenTweets} =====\n`);
       // Pass the pre-show guest-research dossier so the clipper's selection +
       // caption passes get the same correctly-spelled proper nouns the meta pass
       // does. Absent for rooms with no research → clipper just runs without it.
@@ -6395,10 +6405,13 @@ const startClipJob = (slug: string, researchContext?: string, force = false, reg
       else if (regenTweets) cliArgs.push("--regen-tweets");
       const child = spawn(bin, cliArgs, { cwd: config.clipperDir, env });
 
-      // Buffer + broadcast the clipper's stdout/stderr lines as progress.
+      // Buffer + broadcast the clipper's stdout/stderr lines as progress, and
+      // tee the raw bytes to the durable per-slug log.
       let buf = "";
       const pump = (d: Buffer) => {
-        buf += d.toString();
+        const text = d.toString();
+        logStream.write(text);
+        buf += text;
         let nl: number;
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl).replace(/\s+$/, "");
@@ -6410,6 +6423,8 @@ const startClipJob = (slug: string, researchContext?: string, force = false, reg
       child.stderr?.on("data", pump);
       const code: number = await new Promise(res => child.on("close", c => res(c ?? 0)));
       if (buf.trim()) clipJobEmit(job, { phase: "log", line: buf.trim() });
+      logStream.write(`\n===== exit ${code} =====\n`);
+      logStream.end();
       if (code !== 0) throw new Error(`clipper exited ${code}`);
       let result: ClipJobResult;
       try {
