@@ -65,6 +65,7 @@ import {
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { FlyingTipCard } from "~~/components/ui/FlyingTipCard";
+import { PasskeyWalletProvider } from "~~/components/ui/PasskeyWalletContext";
 import { useAudioBusOwner } from "~~/hooks/useAudioBus";
 import { useAutoplayBlocked } from "~~/hooks/useAutoplayBlocked";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
@@ -83,6 +84,7 @@ import { DEFAULT_SLUG, withSlug } from "~~/lib/slug";
 import { audioBus } from "~~/utils/audioBus";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 import { prewarmDenoise } from "~~/utils/noiseSuppression";
+import { getStoredPasskeyIdentity } from "~~/utils/passkey";
 
 export const dynamic = "force-dynamic";
 
@@ -587,6 +589,21 @@ function DesktopInner({ slug }: { slug: string }) {
   // an admin with a stale session would auto-connect and the server's
   // password-required gate would close the socket in a reconnect loop.
   const mesh = usePeerMesh(session.authenticated && roomAuthed === true, selfHint, slug);
+
+  // Genuine passkey identity addresses to resolve to spendable wallet addresses
+  // for display (guest list, transcript, signer rows, …). ONLY passkey users —
+  // never an EOA, whose salt-derived "wallet" isn't their wallet. Sources:
+  // connected passkey peers, the Bank's passkey signers, and the local user
+  // (self isn't in mesh.peers, so add separately when signed in via passkey).
+  const selfSessionAddress = session.authenticated ? (session.address ?? null) : null;
+  const passkeyAddressesForResolve = useMemo(() => {
+    const out = new Set<string>();
+    for (const p of mesh.peers) if (p.passkey && p.address) out.add(p.address.toLowerCase());
+    for (const s of mesh.wallet?.signers ?? []) if (s.signerType === "passkey") out.add(s.address.toLowerCase());
+    const selfAddr = selfSessionAddress?.toLowerCase();
+    if (selfAddr && getStoredPasskeyIdentity(selfAddr)) out.add(selfAddr);
+    return [...out];
+  }, [mesh.peers, mesh.wallet, selfSessionAddress]);
   // Publish the relay WS state into the module-level pub/sub so
   // UpgradeModal (mounted in the providers shell) can react to deploy-
   // induced WS drops in real time, without a context bridge.
@@ -3095,7 +3112,7 @@ function DesktopInner({ slug }: { slug: string }) {
   );
 
   return (
-    <>
+    <PasskeyWalletProvider passkeyAddresses={passkeyAddressesForResolve}>
       <DesktopBackground />
       <IncomingTxModal incomingForwards={mesh.incomingForwards} dismissIncomingForward={mesh.dismissIncomingForward} />
       <MenuBar
@@ -4431,7 +4448,7 @@ function DesktopInner({ slug }: { slug: string }) {
           mesh={mesh}
         />
       ) : null}
-    </>
+    </PasskeyWalletProvider>
   );
 }
 

@@ -5,6 +5,7 @@ import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import { AddressBlockie } from "~~/components/scaffold-eth";
 import { BandFlag } from "~~/components/ui/BandFlag";
+import { useResolveWalletAddress } from "~~/components/ui/PasskeyWalletContext";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 
 // The canonical identity row used everywhere a user is shown by their
@@ -42,6 +43,8 @@ export const SlopAddress = ({ address, handle, anonId, fallback, customNames, bl
   // (set via the set_custom_name WS path), anonId for anon (set via
   // POST /auth/handle). Either way, the same dictionary holds the
   // user's chosen display name and broadcasts updates as `peer_name`.
+  // NB: name + color identity stay keyed by the ORIGINAL (passkey/SIWE)
+  // address so they're stable; only what's shown/copied is swapped below.
   const lookupKey = (address ?? anonId)?.toLowerCase();
   const customName = lookupKey && customNames ? customNames[lookupKey] : undefined;
   const bands = useMemo(
@@ -49,20 +52,26 @@ export const SlopAddress = ({ address, handle, anonId, fallback, customNames, bl
     [address, anonId, handle, fallback],
   );
 
+  // Swap a passkey identity address for its spendable personal-wallet address
+  // so the shown/copied value is fundable (the raw passkey address locks ETH).
+  // No-op for EOA / anon / unknown addresses. Display-only — see context doc.
+  const resolveWalletAddress = useResolveWalletAddress();
+  const displayAddress = resolveWalletAddress(address);
+
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
       <BandFlag bands={bands} />
       {customName && address ? (
         <>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{customName}</span>
-          <AddressBlockie address={address as AddressType} size={blockieSize} />
+          <AddressBlockie address={(displayAddress ?? address) as AddressType} size={blockieSize} />
         </>
       ) : customName ? (
         // Anon with a chosen name — no blockie (no underlying address)
         // and no copy icon, just the name.
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{customName}</span>
       ) : address ? (
-        <Address address={address as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
+        <Address address={(displayAddress ?? address) as AddressType} size="xs" onlyEnsOrAddress disableAddressLink />
       ) : (
         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
           {handle ?? fallback?.slice(0, 6) ?? "anon"}

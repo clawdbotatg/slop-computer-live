@@ -745,6 +745,14 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                     >
                       <SlopAddress address={s.address} customNames={mesh.customNames} />
                       {s.isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
+                      {s.passkey ? (
+                        <span
+                          style={{ color: "var(--slop-text-muted)", fontSize: 10 }}
+                          title="passkey signer address — do not send funds here"
+                        >
+                          · passkey ({short(s.address)})
+                        </span>
+                      ) : null}
                       {s.source === "custom" ? (
                         <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>· added</span>
                       ) : null}
@@ -943,10 +951,18 @@ const DeployedSummary = ({
                 minWidth: 0,
               }}
             >
+              {/* SlopAddress shows the spendable wallet address for a passkey
+                  signer; the raw passkey address (the ACTUAL signer) is shown
+                  subtly in parens — don't send funds there. */}
               <SlopAddress address={s.address} customNames={customNames} />
               {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
               {s.signerType === "passkey" ? (
-                <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>· passkey</span>
+                <span
+                  style={{ color: "var(--slop-text-muted)", fontSize: 10 }}
+                  title="passkey signer address — do not send funds here"
+                >
+                  · passkey ({short(s.address)})
+                </span>
               ) : null}
             </li>
           );
