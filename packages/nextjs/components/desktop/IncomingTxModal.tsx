@@ -12,7 +12,9 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { Button } from "~~/components/ui";
+import { useEthPrice } from "~~/hooks/useEthPrice";
 import type { ForwardedTx } from "~~/hooks/usePeerMesh";
+import { usdSuffixFromWei } from "~~/utils/usd";
 
 // Modal that surfaces captured eth_sendTransaction requests forwarded to
 // us because someone is impersonating our wallet address. Each forward is
@@ -62,6 +64,7 @@ function parseTx(forward: ForwardedTx): ParsedTx | null {
 }
 
 const IncomingTxCard = ({ forward, onResolve }: CardProps) => {
+  const ethUsd = useEthPrice();
   const { address: connectedAddress } = useAccount();
   const currentChainId = useChainId();
   const chains = useChains();
@@ -275,6 +278,7 @@ const IncomingTxCard = ({ forward, onResolve }: CardProps) => {
             </div>
             <div>
               <span style={{ color: "var(--slop-text-muted)" }}>value</span> {valueEth} ETH
+              {parsed ? usdSuffixFromWei(parsed.value, ethUsd) : ""}
             </div>
             <details>
               <summary style={{ cursor: "pointer", color: "var(--slop-text-muted)", fontSize: 11 }}>calldata</summary>

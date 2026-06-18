@@ -143,28 +143,46 @@ export function sfxCheck(): void {
   burst(a.c, a.m, t, 0.03, { type: "highpass", freq: 1600, gain: 0.14 });
 }
 
-// Bet / call / raise / blinds — a stack of clay chips clattering into the pot.
-// Each chip is a sharp noise clack (the impact) layered with a short pitched
-// ring (the ceramic ping) so it reads as a solid, satisfying chip rather than a
-// faint hiss. Loud on purpose — this is the headline sound of the table.
+// Bet / call / raise / blinds — a stack of clay chips set down on the felt.
+// The sound is a soft low thud (the stack meeting the table) under a tight
+// clatter of short, dry clay clicks (chip-on-chip as they settle). Crucially
+// there is NO pitched ring: a cluster of random high pings reads as a tonal,
+// warbly screech, not chips. Each click is a broadband mid burst with low Q,
+// so it sounds percussive — a clack, not a note.
 export function sfxChips(): void {
   if (muted) return;
   const a = audio();
   if (!a) return;
   const t = a.c.currentTime;
-  const n = 7 + Math.floor(Math.random() * 4);
+
+  // The body — a quick low thud as the stack lands, giving the bet weight.
+  const thud = a.c.createOscillator();
+  thud.type = "sine";
+  thud.frequency.setValueAtTime(150, t);
+  thud.frequency.exponentialRampToValueAtTime(68, t + 0.09);
+  const tg = a.c.createGain();
+  tg.gain.setValueAtTime(0.0001, t);
+  tg.gain.exponentialRampToValueAtTime(0.22, t + 0.006);
+  tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+  thud.connect(tg).connect(a.m);
+  thud.start(t);
+  thud.stop(t + 0.15);
+
+  // The clatter — clay clicks bunched tight like a stack settling. Mid-band,
+  // low Q (broadband = percussive, not tonal), very short decay, dropping a
+  // touch in pitch and energy toward the tail as the stack comes to rest.
+  const n = 6 + Math.floor(Math.random() * 4); // 6-9 clicks
+  let dt = 0;
   for (let i = 0; i < n; i++) {
-    const dt = i * 0.018 + Math.random() * 0.014;
-    const ring = 1900 + Math.random() * 2400;
-    // The clack — a punchy broadband impact transient.
-    burst(a.c, a.m, t + dt, 0.045, {
+    const settle = 1 - i / n; // earliest clicks are the loudest/brightest
+    const freq = 850 + Math.random() * 1350 + settle * 350;
+    burst(a.c, a.m, t + dt, 0.018 + Math.random() * 0.012, {
       type: "bandpass",
-      freq: ring,
-      q: 2.2,
-      gain: 0.5 + Math.random() * 0.22,
+      freq,
+      q: 1.1,
+      gain: 0.2 + settle * 0.22 + Math.random() * 0.1,
     });
-    // The ring — a quick pitched ping that gives the chip its body.
-    tone(a.c, a.m, t + dt, ring, 0.05 + Math.random() * 0.03, 0.16 + Math.random() * 0.08, "triangle");
+    dt += 0.011 + Math.random() * 0.022; // tight, irregular spacing
   }
 }
 

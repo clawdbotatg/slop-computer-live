@@ -2,7 +2,9 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { EmojiConfetti, FallingEmoji, confettiForAmount } from "~~/components/ui/EmojiConfetti";
+import { useEthPrice } from "~~/hooks/useEthPrice";
 import type { TipCard } from "~~/hooks/usePeerMesh";
+import { usdSuffixFromEth } from "~~/utils/usd";
 
 // How long the card takes to fly from the chat window to the vault. Slow +
 // deliberate so the tip reads as a real event, not a flicker. Confetti fires
@@ -34,6 +36,7 @@ type Geom = { startX: number; startY: number; dx: number; dy: number };
 // the vault." Pure CSS transition (no animation lib), matching the house
 // ClickRipple/Cursor style. Self-removed by the mesh after ~2.6s.
 export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames: Record<string, string> }) => {
+  const ethUsd = useEthPrice();
   const name = useMemo(() => {
     const key = (tip.address ?? tip.anonId ?? "").toLowerCase();
     const custom = customNames[key] ?? customNames[tip.anonId ?? ""];
@@ -174,7 +177,7 @@ export const FlyingTipCard = ({ tip, customNames }: { tip: TipCard; customNames:
             boxShadow: "0 6px 34px rgba(255,62,201,0.6)",
           }}
         >
-          🎉 {name} tipped {tip.amountEth} {chain} ETH
+          🎉 {name} tipped {tip.amountEth} {chain} ETH{usdSuffixFromEth(tip.amountEth, ethUsd)}
         </span>
       </div>
       {drips.map(d => (

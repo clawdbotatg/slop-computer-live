@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
 import { useResolveWalletAddress } from "~~/components/ui/PasskeyWalletContext";
-import { formatBalanceShort, usePeerBalances } from "~~/hooks/usePeerBalances";
 import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
+import { usePeerPortfolios } from "~~/hooks/usePeerPortfolios";
+import { formatUsd } from "~~/utils/usd";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -28,6 +29,9 @@ export type PinnedPeersProps = {
    *  the small bar meter next to each name. Missing keys render as a
    *  gray "no signal" stack. */
   peerPings: Record<string, number>;
+  /** Room slug — scopes the relay portfolio fetch (Zerion proxy) that
+   *  drives each guest's USD balance. */
+  slug: string;
 };
 
 // 3-bar cell-signal style meter. Color + bar count step on relay RTT —
@@ -124,7 +128,7 @@ const playChime = (up: boolean) => {
   osc.stop(now + 0.16);
 };
 
-export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPings }: PinnedPeersProps) => {
+export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPings, slug }: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -143,16 +147,20 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
   const isAnon = !!me && !me.address;
   const canEdit = !!me;
 
-  // Each guest's on-chain balance, shown next to their name. We resolve to the
-  // SAME spendable address SlopAddress displays (passkey → personal wallet),
-  // then batch-read every balance in one multicall. Anon peers have no address
+  // Each guest's total account value (USD), shown next to their name. We
+  // resolve to the SAME spendable address SlopAddress displays (passkey →
+  // personal wallet), then ask Zerion (via the relay proxy) for the whole
+  // account's dollar value — not just native ETH. Anon peers have no address
   // → no balance. Keyed by lowercased resolved address.
   const resolveWalletAddress = useResolveWalletAddress();
   const peerBalanceAddr = useMemo(
     () => new Map(peers.map(p => [p.id, resolveWalletAddress(p.address) ?? null] as const)),
     [peers, resolveWalletAddress],
   );
-  const balances = usePeerBalances(useMemo(() => [...peerBalanceAddr.values()], [peerBalanceAddr]));
+  const portfolios = usePeerPortfolios(
+    useMemo(() => [...peerBalanceAddr.values()], [peerBalanceAddr]),
+    slug,
+  );
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -249,7 +257,7 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
             const isMe = p.id === myId;
             const showEditor = isMe && editing;
             const balAddr = peerBalanceAddr.get(p.id);
-            const bal = balAddr ? balances[balAddr.toLowerCase()] : undefined;
+            const usd = balAddr ? portfolios[balAddr.toLowerCase()] : undefined;
             return (
               <li
                 key={p.id}
@@ -335,20 +343,18 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                   {balAddr ? (
                     <span
-                      title={bal != null ? `${formatBalanceShort(bal)} ETH on Base` : "loading balance…"}
+                      title={usd != null ? `${formatUsd(usd)} total account value (Zerion)` : "loading balance…"}
                       style={{
                         display: "inline-flex",
                         alignItems: "baseline",
-                        gap: 2,
-                        color: bal && bal > 0n ? "#7be88a" : "var(--slop-text-muted)",
+                        color: usd && usd > 0 ? "#7be88a" : "var(--slop-text-muted)",
                         fontSize: 10,
                         fontFamily: "var(--slop-font-display)",
                         fontVariantNumeric: "tabular-nums",
                         letterSpacing: "0.04em",
                       }}
                     >
-                      {bal != null ? formatBalanceShort(bal) : "…"}
-                      <span style={{ opacity: 0.6 }}>Ξ</span>
+                      {usd != null ? formatUsd(usd) : "…"}
                     </span>
                   ) : null}
                   <PingMeter rtt={peerPings[p.id]} />

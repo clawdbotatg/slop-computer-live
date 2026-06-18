@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { useEthPrice } from "~~/hooks/useEthPrice";
 import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
 import { notifySessionChanged } from "~~/hooks/useSession";
 import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey";
+import { usdSuffixFromWei } from "~~/utils/usd";
 
 // Phase-0 surface for docs/PASSKEY-WALLET.md: shows a passkey user their
 // spendable personal-wallet address (receive here), its Base balance, and
@@ -29,6 +31,7 @@ function useCopy(): [boolean, (text: string) => void] {
 
 export function PersonalWalletCard() {
   const pw = usePersonalWallet();
+  const ethUsd = useEthPrice();
   const [copied, copy] = useCopy();
   const [busy, setBusy] = useState<null | "existing" | "create">(null);
   const [authStatus, setAuthStatus] = useState("");
@@ -217,7 +220,9 @@ export function PersonalWalletCard() {
             <div>
               <div style={muted}>Balance</div>
               <div style={{ fontSize: 18, fontWeight: 600 }}>
-                {pw.balanceFormatted != null ? `${pw.balanceFormatted} ETH` : "…"}
+                {pw.balanceFormatted != null
+                  ? `${pw.balanceFormatted} ETH${pw.balanceWei != null ? usdSuffixFromWei(pw.balanceWei, ethUsd) : ""}`
+                  : "…"}
               </div>
             </div>
             <button
