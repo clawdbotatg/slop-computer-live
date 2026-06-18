@@ -6,6 +6,8 @@ import { WalletAssetsPanel } from "./wallet/WalletAssetsPanel";
 import { type ChatSigner, WalletChatPanel } from "./wallet/WalletChatPanel";
 import { type WalletTxMode } from "./wallet/WalletTxCard";
 import { type Portfolio } from "./wallet/types";
+import { Address } from "@scaffold-ui/components";
+import { type Address as AddressType } from "viem";
 import { base } from "viem/chains";
 import { useAccount, useChainId } from "wagmi";
 import { PersonalWalletCard } from "~~/components/PersonalWalletCard";
@@ -224,16 +226,7 @@ export function WalletAppWindow({
               {isPasskeyMultisig ? `passkey · ${pw.deployed ? "deployed" : "counterfactual"}` : "connected EOA"}
             </span>
           </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--slop-text-muted, #999)",
-              wordBreak: "break-all",
-              fontFamily: "monospace",
-            }}
-          >
-            {activeAddress}
-          </div>
+          <Address address={activeAddress as AddressType} size="sm" />
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           {isPasskeyMultisig ? (

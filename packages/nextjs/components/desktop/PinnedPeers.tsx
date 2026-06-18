@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SlopAddress } from "~~/components/ui";
+import { useResolveWalletAddress } from "~~/components/ui/PasskeyWalletContext";
+import { formatBalanceShort, usePeerBalances } from "~~/hooks/usePeerBalances";
 import { type Peer, peerLabel } from "~~/hooks/usePeerMesh";
 
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
@@ -141,6 +143,17 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
   const isAnon = !!me && !me.address;
   const canEdit = !!me;
 
+  // Each guest's on-chain balance, shown next to their name. We resolve to the
+  // SAME spendable address SlopAddress displays (passkey → personal wallet),
+  // then batch-read every balance in one multicall. Anon peers have no address
+  // → no balance. Keyed by lowercased resolved address.
+  const resolveWalletAddress = useResolveWalletAddress();
+  const peerBalanceAddr = useMemo(
+    () => new Map(peers.map(p => [p.id, resolveWalletAddress(p.address) ?? null] as const)),
+    [peers, resolveWalletAddress],
+  );
+  const balances = usePeerBalances(useMemo(() => [...peerBalanceAddr.values()], [peerBalanceAddr]));
+
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus();
@@ -235,6 +248,8 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
           {peers.map(p => {
             const isMe = p.id === myId;
             const showEditor = isMe && editing;
+            const balAddr = peerBalanceAddr.get(p.id);
+            const bal = balAddr ? balances[balAddr.toLowerCase()] : undefined;
             return (
               <li
                 key={p.id}
@@ -318,6 +333,24 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
                   )}
                 </span>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                  {balAddr ? (
+                    <span
+                      title={bal != null ? `${formatBalanceShort(bal)} ETH on Base` : "loading balance…"}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "baseline",
+                        gap: 2,
+                        color: bal && bal > 0n ? "#7be88a" : "var(--slop-text-muted)",
+                        fontSize: 10,
+                        fontFamily: "var(--slop-font-display)",
+                        fontVariantNumeric: "tabular-nums",
+                        letterSpacing: "0.04em",
+                      }}
+                    >
+                      {bal != null ? formatBalanceShort(bal) : "…"}
+                      <span style={{ opacity: 0.6 }}>Ξ</span>
+                    </span>
+                  ) : null}
                   <PingMeter rtt={peerPings[p.id]} />
                   <span
                     style={{
