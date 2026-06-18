@@ -143,45 +143,48 @@ export function sfxCheck(): void {
   burst(a.c, a.m, t, 0.03, { type: "highpass", freq: 1600, gain: 0.14 });
 }
 
-// Bet / call / raise / blinds — a stack of clay chips set down on the felt.
-// A soft low thud (the stack landing) under a tight clatter of resonant chip
-// clinks. The two failure modes this threads between: random high pitches read
-// as a warbly screech; NO pitch at all reads as the broadband hiss of the
-// card riffle/deal. The fix is a CLINK that is clearly pitched (so it can't be
-// mistaken for the deal) but coherent — every chip rings near ONE clay pitch
-// (chips of a denomination match), so it never screeches.
+// Bet / call / raise / blinds — clay chips clacking onto a stack.
+//
+// Lesson from three bad takes: ANYTHING that holds a pitch here sings, and a
+// few of them at slightly different pitches *warble* — that warble is the
+// "alien" sound. High-Q filter rings do it; oscillator tones do it. So this
+// has NEITHER. Clay is a hard, damped material: it makes sharp, dry clacks
+// with a short low-mid body and no ring whatsoever. Built entirely from very
+// short filtered-noise transients — nothing in here can sustain a pitch long
+// enough to warble. The low-mid body (~300-600 Hz) is what separates a chip
+// "clack" from the card riffle's high-frequency hiss (so it can't be the deal).
 export function sfxChips(): void {
   if (muted) return;
   const a = audio();
   if (!a) return;
   const t = a.c.currentTime;
 
-  // The body — a quick low thud as the stack lands, giving the bet weight.
-  const thud = a.c.createOscillator();
-  thud.type = "sine";
-  thud.frequency.setValueAtTime(140, t);
-  thud.frequency.exponentialRampToValueAtTime(62, t + 0.1);
-  const tg = a.c.createGain();
-  tg.gain.setValueAtTime(0.0001, t);
-  tg.gain.exponentialRampToValueAtTime(0.2, t + 0.006);
-  tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
-  thud.connect(tg).connect(a.m);
-  thud.start(t);
-  thud.stop(t + 0.16);
+  // A soft low thump as the stack meets the felt — lowpassed noise (NOT a tone),
+  // so it adds weight without a pitched "boom".
+  burst(a.c, a.m, t, 0.05, { type: "lowpass", freq: 220, q: 0.7, gain: 0.16 });
 
-  // The clinks. One base ring per bet, low in the register (warm clay, not a
-  // shrill ping). Each chip rings at that base ± a tiny detune: a high-Q
-  // bandpass burst (noise rung through a sharp resonator = a "tink", not a
-  // hiss) doubled by a soft triangle tone at the same pitch so the note is
-  // unmistakable. Tight irregular spacing = a stack clattering down to rest.
-  const base = 1450 + Math.random() * 450; // ~1.45-1.9kHz
-  const n = 5 + Math.floor(Math.random() * 3); // 5-7 chips
+  // The clacks. Each chip = a brief bright contact click over a short, dull
+  // low-mid clay body. Both are low-Q (a click, not a tone). Bunched tight and
+  // slightly irregular = a stack settling; energy eases off toward the tail.
+  const n = 6 + Math.floor(Math.random() * 4); // 6-9 chips
   let dt = 0;
   for (let i = 0; i < n; i++) {
-    const freq = base * (1 + (Math.random() - 0.5) * 0.16); // ±8% detune, tight cluster
-    burst(a.c, a.m, t + dt, 0.07, { type: "bandpass", freq, q: 18, gain: 0.26 + Math.random() * 0.12 });
-    tone(a.c, a.m, t + dt, freq, 0.05 + Math.random() * 0.025, 0.1 + Math.random() * 0.05, "triangle");
-    dt += 0.022 + Math.random() * 0.028;
+    const settle = 1 - (i / n) * 0.6; // earliest clacks loudest
+    // Contact click — brief, bright, broadband (low Q ⇒ a tick, never a pitch).
+    burst(a.c, a.m, t + dt, 0.01, {
+      type: "bandpass",
+      freq: 2200 + Math.random() * 1200,
+      q: 0.9,
+      gain: (0.16 + Math.random() * 0.08) * settle,
+    });
+    // Clay body — short, dull, low-mid "clack". This is what says CHIP not card.
+    burst(a.c, a.m, t + dt, 0.028, {
+      type: "bandpass",
+      freq: 320 + Math.random() * 260,
+      q: 2.0,
+      gain: (0.3 + Math.random() * 0.12) * settle,
+    });
+    dt += 0.016 + Math.random() * 0.022; // tight, irregular clatter
   }
 }
 
