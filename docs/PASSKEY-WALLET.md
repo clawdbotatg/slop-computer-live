@@ -1,11 +1,14 @@
 # Passkey Personal Wallets (smart-account mode for passkey sign-in)
 
-> Status: **plan / not built.** This describes a new mode where signing in
-> with a passkey gives you a real, spendable wallet address — a personal
-> multisig the passkey controls — instead of the un-spendable raw passkey
-> identifier. The raw passkey address keeps doing its existing job (signer
-> on the main/room multisig); we just stop ever showing it as a place to
-> receive funds.
+> Status: **partially built.** Derivation, receive, Apple-Pay on-ramp, deploy,
+> and now a **minimal single-send facilitator** (`POST /personal-wallet/exec`)
+> are live — enough for a passkey wallet to **buy into a poker/chess escrow**
+> (its first real spend). See §7 for what's built vs. the fuller subscriber
+> design still planned. This describes a mode where signing in with a passkey
+> gives you a real, spendable wallet address — a personal multisig the passkey
+> controls — instead of the un-spendable raw passkey identifier. The raw passkey
+> address keeps doing its existing job (signer on the main/room multisig); we
+> just stop ever showing it as a place to receive funds.
 
 ## TL;DR
 
@@ -160,6 +163,22 @@ address  = MultisigFactory.getMultisigAddress(deployer, salt)
    watches receipt → reports back to the room.
 
 ## 7. The facilitator (the one new backend service)
+
+> **Built (v1, minimal):** `POST /personal-wallet/exec` in `index.ts`, backed by
+> `execPersonalWalletTx()` in `personal-wallet.ts`. It's a **synchronous
+> request/response** facilitator, not the tx-state subscriber sketched below: the
+> browser computes the exec hash, the passkey signs it
+> (`signMultisigExecWithPasskey`), and the signed `execTransaction` is POSTed; the
+> relay **simulates** (so a bad sig / revert fails for free), then broadcasts from
+> the deployer hot wallet and returns the tx hash — the frontend waits for the
+> receipt itself. Guardrails in place: per-IP rate limit (`personalWalletExecBucket`),
+> per-tx value cap (`PERSONAL_WALLET_MAX_SPEND_WEI`, default 0.05 ETH), and an
+> ownership check (the target multisig must derive from the caller's session
+> passkey). The frontend path is `hooks/usePersonalWalletSend.ts`, wired into the
+> escrow buy-in (`WagerPanel.tsx` `FundButton`, `PokerWindow.tsx` `JoinButton`).
+> **Still planned below:** batch (`execBatchTransaction`) support, multi-chain,
+> auto-deploy-then-exec in one call, and the threshold>1 / multi-signer subscriber
+> model. v1 handles single-send, threshold-1 personal wallets (the buy-in case).
 
 A relay-side module (new `packages/relay/src/facilitator.ts`), reusing the
 existing viem + `config.alchemyApiKey` plumbing (`gas.ts`, `wallet-data.ts`).

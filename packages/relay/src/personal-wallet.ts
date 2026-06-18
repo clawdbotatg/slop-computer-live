@@ -53,7 +53,37 @@ const FACTORY_ABI = [
   },
 ] as const;
 
+// Minimal Multisig ABI — just execTransaction, for the facilitator's sponsored
+// send. The contract recomputes the exec hash from (chainId, this, nonce,
+// deadline, target, value, keccak(data)) and verifies every signature against
+// its signer set internally, so a bad/forged signature reverts here — the
+// facilitator can't be tricked into moving funds without a valid passkey sig.
+const MULTISIG_ABI = [
+  {
+    type: "function",
+    name: "execTransaction",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "target", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "data", type: "bytes" },
+      { name: "deadline", type: "uint256" },
+      {
+        name: "signatures",
+        type: "tuple[]",
+        components: [
+          { name: "sigType", type: "uint8" },
+          { name: "signer", type: "address" },
+          { name: "data", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [{ name: "result", type: "bytes" }],
+  },
+] as const;
+
 const isHex32 = (v: unknown): v is Hex => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v);
+const isHex = (v: unknown): v is Hex => typeof v === "string" && /^0x[0-9a-fA-F]*$/.test(v);
 
 /** keccak256(qx ‖ qy)[-20:] — the raw passkey address (matches passkey.ts and
  *  utils/multisig.ts passkeyAddressFromCoords). */
@@ -147,5 +177,133 @@ export async function deployPersonalWallet(input: DeployInput): Promise<DeployRe
     return { ok: false, error: msg.split("\n")[0] ?? "deploy-failed" };
   } finally {
     inFlight.delete(key);
+  }
+}
+
+// ── Facilitator: sponsored exec (docs/PASSKEY-WALLET.md §7) ───────────────────
+//
+// A passkey user has no EOA and no ETH to pay gas, so the relay broadcasts their
+// already-signed `Multisig.execTransaction` from the deployer hot wallet and
+// eats the gas (fractions of a cent on Base). The personal wallet itself holds
+// the ETH being SENT; the facilitator only fronts the OUTER-tx gas.
+//
+// Trust model: two independent gates.
+//   1. On-chain — the Multisig verifies the passkey signature over the exec
+//      hash; a forged/replayed sig reverts (caught cheaply by simulate below).
+//   2. Off-chain — the caller proves (via the auth session) that `multisig` is
+//      THEIR OWN personal wallet (see the route's integrity check), so the
+//      facilitator never broadcasts execs for someone else's wallet.
+
+export type ExecInput = {
+  multisig: Address;
+  target: Address;
+  value: bigint;
+  data: Hex;
+  deadline: bigint;
+  signatures: { sigType: number; signer: Address; data: Hex }[];
+};
+
+export type ExecResult = { ok: true; txHash: Hex } | { ok: false; error: string };
+
+export function isPersonalWalletExecConfigured(): boolean {
+  return isPersonalWalletDeployConfigured();
+}
+
+/** The deployer (facilitator) hot-wallet address — the CREATE2 deployer baked
+ *  into every personal-wallet address. Null until the key is configured. */
+export function facilitatorAddress(): Address | null {
+  const pk = config.personalWalletDeployerKey;
+  if (!pk) return null;
+  return privateKeyToAccount(pk.startsWith("0x") ? (pk as Hex) : (`0x${pk}` as Hex)).address;
+}
+
+/** Predict a passkey's personal-wallet address on Base (deployer baked in).
+ *  Mirrors deployPersonalWallet's derivation so the route can verify a caller
+ *  is acting on their OWN wallet. Returns null if unconfigured / unreadable. */
+export async function personalWalletAddressFor(passkeyAddress: Address): Promise<Address | null> {
+  const rpc = baseRpcUrl();
+  const facilitator = facilitatorAddress();
+  if (!rpc || !facilitator) return null;
+  try {
+    const pub = createPublicClient({ chain: base, transport: http(rpc) });
+    const salt = personalWalletSalt(passkeyAddress);
+    return (await pub.readContract({
+      address: FACTORY_ADDRESS,
+      abi: FACTORY_ABI,
+      functionName: "getMultisigAddress",
+      args: [facilitator, salt],
+    })) as Address;
+  } catch {
+    return null;
+  }
+}
+
+// One-at-a-time per wallet: serialize a wallet's sponsored sends so two
+// near-simultaneous execs don't reuse the same on-chain nonce (the second would
+// revert on a stale exec hash, wasting gas). Keyed by lowercased multisig addr.
+const execInFlight = new Set<string>();
+
+/** Broadcast a passkey wallet's signed `execTransaction` from the facilitator
+ *  hot wallet, paying gas. Validates the value cap, simulates (so a bad sig or
+ *  revert fails cheaply without a broadcast), then sends. Returns the broadcast
+ *  tx hash — the caller (frontend) waits for the receipt itself. Base-only. */
+export async function execPersonalWalletTx(input: ExecInput): Promise<ExecResult> {
+  const rpc = baseRpcUrl();
+  const pk = config.personalWalletDeployerKey;
+  if (!pk || !rpc) return { ok: false, error: "facilitator-not-configured" };
+  if (!isAddress(input.multisig) || !isAddress(input.target)) return { ok: false, error: "bad-address" };
+  if (!isHex(input.data)) return { ok: false, error: "bad-data" };
+  if (input.value < 0n) return { ok: false, error: "bad-value" };
+
+  const maxSpend = BigInt(config.personalWalletMaxSpendWei || "0");
+  if (maxSpend > 0n && input.value > maxSpend) return { ok: false, error: "value-exceeds-cap" };
+
+  if (!Array.isArray(input.signatures) || input.signatures.length === 0) {
+    return { ok: false, error: "no-signatures" };
+  }
+  for (const s of input.signatures) {
+    if (!isAddress(s.signer) || !isHex(s.data) || (s.sigType !== 0 && s.sigType !== 1)) {
+      return { ok: false, error: "bad-signature" };
+    }
+  }
+
+  const key = input.multisig.toLowerCase();
+  if (execInFlight.has(key)) return { ok: false, error: "exec-in-progress" };
+  execInFlight.add(key);
+  try {
+    const account = privateKeyToAccount(pk.startsWith("0x") ? (pk as Hex) : (`0x${pk}` as Hex));
+    const chain = { ...base, rpcUrls: { default: { http: [rpc] }, public: { http: [rpc] } } } as const;
+    const pub = createPublicClient({ chain, transport: http(rpc) });
+
+    // execTransaction needs code at the wallet — receiving works pre-deploy, but
+    // spending does not. Surface a clear error the UI can turn into "deploy first".
+    const code = await pub.getBytecode({ address: input.multisig });
+    if (!code || code === "0x") return { ok: false, error: "wallet-not-deployed" };
+
+    const sigs = input.signatures.map(s => ({
+      sigType: s.sigType,
+      signer: s.signer as Address,
+      data: s.data,
+    }));
+    const args = [input.target, input.value, input.data, input.deadline, sigs] as const;
+
+    // Simulate first: a bad/expired signature or a reverting inner call fails
+    // here for free, before we spend a single wei of the facilitator's gas.
+    const { request } = await pub.simulateContract({
+      account,
+      address: input.multisig,
+      abi: MULTISIG_ABI,
+      functionName: "execTransaction",
+      args: args as never,
+    });
+    const wallet = createWalletClient({ account, chain, transport: http(rpc) });
+    const txHash = await wallet.writeContract(request);
+    return { ok: true, txHash };
+  } catch (err) {
+    const msg =
+      (err as { shortMessage?: string; message?: string }).shortMessage ?? (err as Error).message ?? "exec-failed";
+    return { ok: false, error: msg.split("\n")[0] ?? "exec-failed" };
+  } finally {
+    execInFlight.delete(key);
   }
 }

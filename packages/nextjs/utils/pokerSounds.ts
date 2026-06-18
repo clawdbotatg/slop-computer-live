@@ -144,11 +144,12 @@ export function sfxCheck(): void {
 }
 
 // Bet / call / raise / blinds — a stack of clay chips set down on the felt.
-// The sound is a soft low thud (the stack meeting the table) under a tight
-// clatter of short, dry clay clicks (chip-on-chip as they settle). Crucially
-// there is NO pitched ring: a cluster of random high pings reads as a tonal,
-// warbly screech, not chips. Each click is a broadband mid burst with low Q,
-// so it sounds percussive — a clack, not a note.
+// A soft low thud (the stack landing) under a tight clatter of resonant chip
+// clinks. The two failure modes this threads between: random high pitches read
+// as a warbly screech; NO pitch at all reads as the broadband hiss of the
+// card riffle/deal. The fix is a CLINK that is clearly pitched (so it can't be
+// mistaken for the deal) but coherent — every chip rings near ONE clay pitch
+// (chips of a denomination match), so it never screeches.
 export function sfxChips(): void {
   if (muted) return;
   const a = audio();
@@ -158,31 +159,29 @@ export function sfxChips(): void {
   // The body — a quick low thud as the stack lands, giving the bet weight.
   const thud = a.c.createOscillator();
   thud.type = "sine";
-  thud.frequency.setValueAtTime(150, t);
-  thud.frequency.exponentialRampToValueAtTime(68, t + 0.09);
+  thud.frequency.setValueAtTime(140, t);
+  thud.frequency.exponentialRampToValueAtTime(62, t + 0.1);
   const tg = a.c.createGain();
   tg.gain.setValueAtTime(0.0001, t);
-  tg.gain.exponentialRampToValueAtTime(0.22, t + 0.006);
-  tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+  tg.gain.exponentialRampToValueAtTime(0.2, t + 0.006);
+  tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
   thud.connect(tg).connect(a.m);
   thud.start(t);
-  thud.stop(t + 0.15);
+  thud.stop(t + 0.16);
 
-  // The clatter — clay clicks bunched tight like a stack settling. Mid-band,
-  // low Q (broadband = percussive, not tonal), very short decay, dropping a
-  // touch in pitch and energy toward the tail as the stack comes to rest.
-  const n = 6 + Math.floor(Math.random() * 4); // 6-9 clicks
+  // The clinks. One base ring per bet, low in the register (warm clay, not a
+  // shrill ping). Each chip rings at that base ± a tiny detune: a high-Q
+  // bandpass burst (noise rung through a sharp resonator = a "tink", not a
+  // hiss) doubled by a soft triangle tone at the same pitch so the note is
+  // unmistakable. Tight irregular spacing = a stack clattering down to rest.
+  const base = 1450 + Math.random() * 450; // ~1.45-1.9kHz
+  const n = 5 + Math.floor(Math.random() * 3); // 5-7 chips
   let dt = 0;
   for (let i = 0; i < n; i++) {
-    const settle = 1 - i / n; // earliest clicks are the loudest/brightest
-    const freq = 850 + Math.random() * 1350 + settle * 350;
-    burst(a.c, a.m, t + dt, 0.018 + Math.random() * 0.012, {
-      type: "bandpass",
-      freq,
-      q: 1.1,
-      gain: 0.2 + settle * 0.22 + Math.random() * 0.1,
-    });
-    dt += 0.011 + Math.random() * 0.022; // tight, irregular spacing
+    const freq = base * (1 + (Math.random() - 0.5) * 0.16); // ±8% detune, tight cluster
+    burst(a.c, a.m, t + dt, 0.07, { type: "bandpass", freq, q: 18, gain: 0.26 + Math.random() * 0.12 });
+    tone(a.c, a.m, t + dt, freq, 0.05 + Math.random() * 0.025, 0.1 + Math.random() * 0.05, "triangle");
+    dt += 0.022 + Math.random() * 0.028;
   }
 }
 

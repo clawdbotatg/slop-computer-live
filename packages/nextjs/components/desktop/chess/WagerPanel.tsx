@@ -20,6 +20,7 @@
 // session. White/black come from account.role; the winner from meta.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type Address as AddressType, type Hex, formatEther, parseEther } from "viem";
+import { base } from "viem/chains";
 import {
   useAccount,
   useChainId,
@@ -30,8 +31,11 @@ import {
 } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
+import { useEthPrice } from "~~/hooks/useEthPrice";
 import type { EscrowAccount, EscrowSession, PeerMeshState } from "~~/hooks/usePeerMesh";
+import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
+import { usdSuffixFromEth, usdSuffixFromWei } from "~~/utils/usd";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const CYAN = "var(--slop-cyan, #2ee6d6)";
@@ -136,6 +140,7 @@ export const WagerProposeCard = ({
   blackKey: string;
   blackLabel: string;
 }) => {
+  const ethUsd = useEthPrice();
   const [buyin, setBuyin] = useState<string>("0.001");
   const [err, setErr] = useState<string | null>(null);
 
@@ -212,12 +217,15 @@ export const WagerProposeCard = ({
             />
           </div>
           <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
-            Each side sends the buy-in to escrow. Winner takes the <span style={{ color: LIME }}>{pot} ETH</span> pot. A
-            draw refunds both.
+            Each side sends the buy-in to escrow. Winner takes the{" "}
+            <span style={{ color: LIME }}>
+              {pot} ETH{usdSuffixFromEth(Number(buyin || "0") * 2, ethUsd)}
+            </span>{" "}
+            pot. A draw refunds both.
           </div>
           {err && <div style={{ color: ACCENT, fontSize: 12 }}>{err}</div>}
           <button type="button" onClick={onChallenge} style={btn(ACCENT)}>
-            Play for {pot} ETH
+            Play for {pot} ETH{usdSuffixFromEth(Number(buyin || "0") * 2, ethUsd)}
           </button>
         </>
       )}
@@ -230,6 +238,7 @@ export const WagerProposeCard = ({
 // =====================================================================
 
 export const WagerStage = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const ethUsd = useEthPrice();
   const { address } = useAccount();
   const white = seat(escrow, "white");
   const black = seat(escrow, "black");
@@ -246,7 +255,8 @@ export const WagerStage = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: Escr
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: ACCENT }}>♟ Money Chess</div>
         <div style={{ fontSize: 12, color: CYAN }}>
-          {fmtEth(buyinWei(escrow))} ETH buy-in · {pot} ETH pot · {chainLabel(escrow.chainId)}
+          {fmtEth(buyinWei(escrow))} ETH{usdSuffixFromWei(buyinWei(escrow), ethUsd)} buy-in · {pot} ETH
+          {usdSuffixFromWei(potWei(escrow), ethUsd)} pot · {chainLabel(escrow.chainId)}
         </div>
       </div>
 
@@ -263,6 +273,7 @@ export const WagerStage = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: Escr
 };
 
 const PlayerRow = ({ escrow, account }: { escrow: EscrowSession; account: EscrowAccount }) => {
+  const ethUsd = useEthPrice();
   const isWhite = account.role === "white";
   const won = (escrow.meta.winner as string | undefined) === account.role;
   return (
@@ -283,7 +294,9 @@ const PlayerRow = ({ escrow, account }: { escrow: EscrowSession; account: Escrow
         {won && <span style={{ color: LIME, fontSize: 12, fontWeight: 700 }}>WINNER</span>}
       </div>
       <div style={{ fontSize: 12, color: isFunded(account) ? LIME : "var(--slop-text-muted)" }}>
-        {isFunded(account) ? `✓ funded ${fmtEth(account.depositedWei)} ETH` : "waiting for buy-in…"}
+        {isFunded(account)
+          ? `✓ funded ${fmtEth(account.depositedWei)} ETH${usdSuffixFromWei(account.depositedWei, ethUsd)}`
+          : "waiting for buy-in…"}
       </div>
     </div>
   );
@@ -356,9 +369,11 @@ export const FundButton = ({
   escrow: EscrowSession;
   account: EscrowAccount;
 }) => {
+  const ethUsd = useEthPrice();
   const currentChainId = useChainId();
   const { switchChainAsync, isPending: switching } = useSwitchChain();
   const { sendTransactionAsync, isPending: sending } = useSendTransaction();
+  const { send: personalSend, phase: personalPhase, isPasskey } = usePersonalWalletSend();
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   const [reported, setReported] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -384,36 +399,62 @@ export const FundButton = ({
   const onFund = useCallback(async () => {
     setErr(null);
     try {
-      if (currentChainId !== escrow.chainId) {
-        await switchChainAsync({ chainId: escrow.chainId });
+      let hash: `0x${string}`;
+      if (isPasskey) {
+        // Passkey wallet: no EOA to send from. Spend from the personal multisig
+        // via the relay facilitator (Base-only). See usePersonalWalletSend.
+        if (escrow.chainId !== base.id) {
+          setErr("Passkey wallets can buy in on Base only.");
+          return;
+        }
+        hash = await personalSend({ to: escrow.multisig as AddressType, valueWei: BigInt(owed) });
+      } else {
+        if (currentChainId !== escrow.chainId) {
+          await switchChainAsync({ chainId: escrow.chainId });
+        }
+        hash = await sendTransactionAsync({
+          to: escrow.multisig as AddressType,
+          value: BigInt(owed),
+          chainId: escrow.chainId,
+        });
       }
-      const hash = await sendTransactionAsync({
-        to: escrow.multisig as AddressType,
-        value: BigInt(owed),
-        chainId: escrow.chainId,
-      });
       setReported(false);
       setTxHash(hash);
     } catch (e) {
       setErr(String(e).slice(0, 160));
     }
-  }, [currentChainId, escrow.chainId, escrow.multisig, owed, switchChainAsync, sendTransactionAsync]);
+  }, [
+    isPasskey,
+    personalSend,
+    currentChainId,
+    escrow.chainId,
+    escrow.multisig,
+    owed,
+    switchChainAsync,
+    sendTransactionAsync,
+  ]);
 
-  const busy = switching || sending || (!!txHash && (waiting || (reported && !relayRejected)));
-  const statusText = switching
-    ? "Switching chain…"
-    : sending
-      ? "Confirm in your wallet…"
-      : waiting
-        ? "Waiting for confirmation…"
-        : reported && !relayRejected
-          ? "Verifying deposit…"
-          : null;
+  const busy = switching || sending || !!personalPhase || (!!txHash && (waiting || (reported && !relayRejected)));
+  const statusText = personalPhase
+    ? personalPhase === "deploying"
+      ? "Deploying your wallet…"
+      : personalPhase === "signing"
+        ? "Approve with your passkey…"
+        : "Submitting buy-in…"
+    : switching
+      ? "Switching chain…"
+      : sending
+        ? "Confirm in your wallet…"
+        : waiting
+          ? "Waiting for confirmation…"
+          : reported && !relayRejected
+            ? "Verifying deposit…"
+            : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <button type="button" onClick={onFund} disabled={busy} style={btn(CYAN, busy)}>
-        {busy ? "Sending buy-in…" : `Send ${fmtEth(owed)} ETH buy-in`}
+        {busy ? "Sending buy-in…" : `Send ${fmtEth(owed)} ETH${usdSuffixFromWei(owed, ethUsd)} buy-in`}
       </button>
       {busy && <LoadingBar />}
       {statusText && <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>{statusText}</div>}
@@ -452,6 +493,7 @@ const SettleControls = ({
   escrow: EscrowSession;
   isParticipant: boolean;
 }) => {
+  const ethUsd = useEthPrice();
   const { address } = useAccount();
   const winner = escrow.meta.winner as string | undefined;
   const isRefund = !winner || winner === "draw";
@@ -478,8 +520,8 @@ const SettleControls = ({
           : isRefund
             ? "↩️ Wager cancelled — buy-ins to be refunded"
             : iWon
-              ? `🏆 You won the ${fmtEth(potWei(escrow))} ETH pot!`
-              : `🏆 ${winnerLabel} won the ${fmtEth(potWei(escrow))} ETH pot`}
+              ? `🏆 You won the ${fmtEth(potWei(escrow))} ETH${usdSuffixFromWei(potWei(escrow), ethUsd)} pot!`
+              : `🏆 ${winnerLabel} won the ${fmtEth(potWei(escrow))} ETH${usdSuffixFromWei(potWei(escrow), ethUsd)} pot`}
       </div>
 
       {!payoutTx ? (
@@ -526,6 +568,7 @@ export const PayoutProposeButton = ({
    *  so the multisig tx is right there to sign + execute). */
   onProposed?: () => void;
 }) => {
+  const ethUsd = useEthPrice();
   const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [state, setState] = useState<"idle" | "proposing" | "done">("idle");
   const [err, setErr] = useState<string | null>(null);
@@ -620,7 +663,7 @@ export const PayoutProposeButton = ({
           ? "Proposing…"
           : isRefund
             ? "Propose refund"
-            : (claimText ?? `Claim ${fmtEth(total)} ETH pot`)}
+            : (claimText ?? `Claim ${fmtEth(total)} ETH${usdSuffixFromWei(total, ethUsd)} pot`)}
       </button>
       {state === "proposing" && <LoadingBar />}
       {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}
@@ -631,6 +674,7 @@ export const PayoutProposeButton = ({
 // ─── Settled ────────────────────────────────────────────────────────
 
 const SettledView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const ethUsd = useEthPrice();
   const winner = escrow.meta.winner as string | undefined;
   const isRefund = !winner || winner === "draw";
   const winnerLabel = winner && winner !== "draw" ? (seat(escrow, winner as "white" | "black")?.label ?? winner) : null;
@@ -640,8 +684,8 @@ const SettledView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 16, color: LIME }}>
         {isRefund
-          ? `↩️ Refunded — ${fmtEth(buyinWei(escrow))} ETH returned`
-          : `🏆 Paid out — ${fmtEth(total)} ETH to ${winnerLabel}`}
+          ? `↩️ Refunded — ${fmtEth(buyinWei(escrow))} ETH${usdSuffixFromWei(buyinWei(escrow), ethUsd)} returned`
+          : `🏆 Paid out — ${fmtEth(total)} ETH${usdSuffixFromWei(total, ethUsd)} to ${winnerLabel}`}
       </div>
       {escrow.payoutTxHash && explorer && (
         <a
@@ -664,22 +708,25 @@ const SettledView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
 // Banner — thin pot strip shown above the board while playing.
 // =====================================================================
 
-export const WagerBanner = ({ escrow }: { escrow: EscrowSession }) => (
-  <div
-    style={{
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 8,
-      padding: "5px 12px",
-      background: "linear-gradient(90deg, rgba(255,62,201,0.18), rgba(46,230,214,0.18))",
-      borderBottom: "1px solid rgba(255,62,201,0.3)",
-      fontFamily: "var(--slop-font-display)",
-      fontSize: 12,
-      letterSpacing: "0.04em",
-      color: LIME,
-    }}
-  >
-    💰 Playing for {fmtEth(potWei(escrow))} ETH · winner takes the pot
-  </div>
-);
+export const WagerBanner = ({ escrow }: { escrow: EscrowSession }) => {
+  const ethUsd = useEthPrice();
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        padding: "5px 12px",
+        background: "linear-gradient(90deg, rgba(255,62,201,0.18), rgba(46,230,214,0.18))",
+        borderBottom: "1px solid rgba(255,62,201,0.3)",
+        fontFamily: "var(--slop-font-display)",
+        fontSize: 12,
+        letterSpacing: "0.04em",
+        color: LIME,
+      }}
+    >
+      💰 Playing for {fmtEth(potWei(escrow))} ETH{usdSuffixFromWei(potWei(escrow), ethUsd)} · winner takes the pot
+    </div>
+  );
+};

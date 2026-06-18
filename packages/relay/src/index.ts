@@ -51,8 +51,11 @@ import { handleChatCommand } from "./chat-commands.js";
 import { TokenBucket } from "./rate-limit.js";
 import {
   deployPersonalWallet,
+  execPersonalWalletTx,
   isPersonalWalletDeployConfigured,
+  isPersonalWalletExecConfigured,
   passkeyAddressFromCoords,
+  personalWalletAddressFor,
 } from "./personal-wallet.js";
 import { createOnrampSession, isOnrampConfigured } from "./onramp.js";
 import { TIP_CHAIN_LABELS, parseTipIntent } from "./tip.js";
@@ -2178,6 +2181,83 @@ app.post("/personal-wallet/deploy", async (req, reply) => {
     alreadyDeployed: result.alreadyDeployed,
     coSigner,
   };
+});
+
+// Facilitator: broadcast a passkey wallet's signed `execTransaction` and pay
+// gas (docs/PASSKEY-WALLET.md §7). This is what makes a passkey personal wallet
+// *spendable* — e.g. buying into a poker/chess escrow. The wallet holds the ETH
+// being sent; the relay only fronts the outer-tx gas. Two gates: the Multisig
+// verifies the passkey signature on-chain (a bad sig reverts in simulate), and
+// here we verify the caller owns the wallet (its address derives from their
+// session's passkey). Base-only in v1, matching deploy.
+const personalWalletExecBucket = new TokenBucket(8, 8 / 600); // 8 burst, ~8 / 10 min per IP
+app.post("/personal-wallet/exec", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!isPersonalWalletExecConfigured()) return reply.code(503).send({ error: "facilitator-not-configured" });
+
+  const hexRe = /^0x[0-9a-fA-F]*$/;
+  const addrRe = /^0x[0-9a-fA-F]{40}$/;
+  const b = (req.body ?? {}) as {
+    multisig?: unknown;
+    target?: unknown;
+    value?: unknown;
+    data?: unknown;
+    deadline?: unknown;
+    signatures?: unknown;
+  };
+  const multisig = typeof b.multisig === "string" ? b.multisig : "";
+  const target = typeof b.target === "string" ? b.target : "";
+  const data = typeof b.data === "string" && hexRe.test(b.data) ? (b.data as `0x${string}`) : "0x";
+  if (!addrRe.test(multisig) || !addrRe.test(target)) return reply.code(400).send({ error: "bad-address" });
+
+  let value: bigint;
+  let deadline: bigint;
+  try {
+    value = BigInt(String(b.value ?? "0"));
+    deadline = BigInt(String(b.deadline ?? "0"));
+  } catch {
+    return reply.code(400).send({ error: "bad-numeric" });
+  }
+  if (!Array.isArray(b.signatures) || b.signatures.length === 0) {
+    return reply.code(400).send({ error: "no-signatures" });
+  }
+  const signatures = (b.signatures as unknown[]).map(s => {
+    const o = (s ?? {}) as { sigType?: unknown; signer?: unknown; data?: unknown };
+    return {
+      sigType: Number(o.sigType),
+      signer: (typeof o.signer === "string" ? o.signer : "") as `0x${string}`,
+      data: (typeof o.data === "string" ? o.data : "") as `0x${string}`,
+    };
+  });
+
+  // Gas guard: per-IP token bucket protects the facilitator's ETH float.
+  if (!personalWalletExecBucket.allow(req.ip)) return reply.code(429).send({ error: "rate-limited" });
+
+  // Integrity: the caller may only spend from THEIR OWN personal wallet — the
+  // target multisig must derive from the authed session's passkey address.
+  const sessionAddr = a.session.address?.toLowerCase();
+  if (!sessionAddr || !addrRe.test(sessionAddr)) return reply.code(403).send({ error: "no-session-address" });
+  const expected = await personalWalletAddressFor(sessionAddr as `0x${string}`);
+  if (!expected || expected.toLowerCase() !== multisig.toLowerCase()) {
+    return reply.code(403).send({ error: "wallet-mismatch" });
+  }
+
+  const result = await execPersonalWalletTx({
+    multisig: multisig as `0x${string}`,
+    target: target as `0x${string}`,
+    value,
+    data,
+    deadline,
+    signatures,
+  });
+  if (!result.ok) {
+    // wallet-not-deployed is a precondition the UI can act on (deploy first);
+    // value-exceeds-cap / rate-limited are policy. Map the rest to 400.
+    const code = result.error === "facilitator-not-configured" ? 503 : 400;
+    return reply.code(code).send({ error: result.error });
+  }
+  return { txHash: result.txHash };
 });
 
 // Mint a single-use Coinbase Onramp session (Apple Pay → ETH on Base) aimed at

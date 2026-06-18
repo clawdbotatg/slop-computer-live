@@ -131,6 +131,12 @@ export const config = {
   // Bank multisig. Ideally a platform multisig; empty → falls back to the
   // deployer address itself (a hot EOA — replace with a real multisig).
   personalWalletPlatformCosigner: env("PERSONAL_WALLET_PLATFORM_COSIGNER", ""),
+  // Per-tx value ceiling (wei) for the facilitator's sponsored exec endpoint —
+  // a passkey wallet can't move more than this in a single sponsored tx. Caps
+  // blast radius if a key/sig is ever abused; tune up for higher-stakes games.
+  // Default 0.05 ETH — comfortably above a poker/chess buy-in, well below a
+  // drain. See docs/PASSKEY-WALLET.md §7.1.
+  personalWalletMaxSpendWei: env("PERSONAL_WALLET_MAX_SPEND_WEI", "50000000000000000"),
   // --- Apple Pay → personal-wallet on-ramp (Coinbase Onramp; docs §13) -------
   // A CDP Secret API key used to mint single-use Coinbase Onramp session tokens
   // server-side (required since 2025-07-31). The key never touches the browser —
