@@ -969,6 +969,9 @@ export type WalletChat = {
 };
 
 const DEFAULT_WALLET_CHAT: WalletChat = { messages: [], processing: false };
+// Stable empty-queue reference so walletTxsFor() returns the same array
+// identity for addresses with no txs yet (avoids needless re-renders).
+const EMPTY_WALLET_TXS: WalletTx[] = [];
 
 // Server-authoritative chess state. Mirrors `packages/relay/src/chess.ts`.
 export type ChessGameStatus =
@@ -1536,16 +1539,27 @@ export type PeerMeshState = {
    *  JSON-serializable; the relay caps it at 4KB serialized. */
   setUIState: (key: string, value: unknown) => void;
   /** Shared AI-wallet conversation — messages + in-flight flag.
-   *  Replaces the old per-iframe wallet chat. */
+   *  Replaces the old per-iframe wallet chat. (The Bank's conversation.) */
   walletChat: WalletChat;
-  /** Send a message to the room's wallet AI. `address` is the multisig
-   *  operating wallet; `chainId` its primary deployed chain. The relay
-   *  appends the turn, runs the intent engine, and broadcasts the
-   *  result — no optimistic local update. */
-  walletChatSend: (message: string, address: string, chainId: number) => void;
-  /** Clear the wallet conversation for the whole room. Refused
+  /** Send a message to a wallet AI. `address` is the operating wallet;
+   *  `chainId` its primary chain. PERSONAL wallets also pass their
+   *  `signers`/`threshold` (the relay holds no record for them); the Bank
+   *  omits them. The relay appends the turn, runs the intent engine, and
+   *  broadcasts the result — no optimistic local update. */
+  walletChatSend: (
+    message: string,
+    address: string,
+    chainId: number,
+    signers?: { address: string; kind: "account" | "passkey"; label: string }[],
+    threshold?: number,
+  ) => void;
+  /** Clear a wallet conversation. Pass a personal wallet's `address` to
+   *  reset its thread; omit for the Bank's room-wide conversation. Refused
    *  server-side while a turn is processing. */
-  walletChatReset: () => void;
+  walletChatReset: (address?: string) => void;
+  /** The AI conversation for a PERSONAL wallet address (empty until its
+   *  first turn). The Bank uses `walletChat` above. */
+  walletChatFor: (address: string) => WalletChat;
   /** Catalog of music genres exposed by the Jamendo integration.
    *  Populated from /v1/state on hello; the music player renders one
    *  tab per genre. */
@@ -1600,8 +1614,12 @@ export type PeerMeshState = {
   walletDraftUpdate: (draft: WalletDraft | null) => void;
   /** Archive of past-episode multisigs (newest first). */
   walletHistory: WalletRecord[];
-  /** Pending tx queue for `wallet` plus a tail of executed/failed txs. */
+  /** Pending tx queue for `wallet` (the Bank) plus a tail of executed/failed
+   *  txs. */
   walletTxs: WalletTx[];
+  /** Pending+recent tx queue for a PERSONAL wallet address (empty until its
+   *  first broadcast). The Bank uses `walletTxs` above. */
+  walletTxsFor: (address: string) => WalletTx[];
   /** Most recent `wallet_tx_propose` ping from the relay — bumps on
    *  every propose attempt including dedup hits, so UI can surface
    *  the wallet window even when walletTxs didn't change. */
@@ -1627,11 +1645,14 @@ export type PeerMeshState = {
     browserId?: string | null;
     /** When set + non-empty, becomes a batched execBatchTransaction. */
     calls?: WalletTxCall[];
+    /** PERSONAL wallet: its own multisig address → per-address queue.
+     *  Omit for the Bank. */
+    address?: string;
   }) => void;
-  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => void;
-  walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null) => void;
-  walletRemoveTx: (id: string) => void;
-  walletResummarize: (id: string) => void;
+  walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }, address?: string) => void;
+  walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null, address?: string) => void;
+  walletRemoveTx: (id: string, address?: string) => void;
+  walletResummarize: (id: string, address?: string) => void;
   /** Ask a contract-signer wallet (another slop wallet in its own room) to
    *  attest to this wallet's execHash. The relay routes an attestation
    *  proposal into that wallet's room. */
@@ -1758,6 +1779,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [walletHistory, setWalletHistory] = useState<WalletRecord[]>([]);
   const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
   const [walletDraft, setWalletDraft] = useState<WalletDraft | null>(null);
+  // Per-address tx-queue + chat stores for PERSONAL wallets (the desktop
+  // "Wallet" app). The Bank uses the singletons above (`walletTxs`/
+  // `walletChat`); these maps hold one entry per personal multisig/account
+  // address, fed by address-tagged `wallet_txs`/`wallet_chat` broadcasts.
+  const [walletTxsByAddr, setWalletTxsByAddr] = useState<Record<string, WalletTx[]>>({});
+  const [walletChatByAddr, setWalletChatByAddr] = useState<Record<string, WalletChat>>({});
   // Server pings this every time `wallet_tx_propose` is processed —
   // including double-click dedup hits that don't add a new tx. UI
   // surfaces (Desktop, WalletWindow) watch the timestamp to refocus
@@ -2760,22 +2787,40 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // intent engine, and broadcasts `wallet_chat` back to every peer —
   // no optimistic local update; the WS echo is authoritative.
   const walletChatSend = useCallback(
-    (message: string, address: string, chainId: number) => {
+    (
+      message: string,
+      address: string,
+      chainId: number,
+      // PERSONAL wallet: its signer set + threshold so the intent engine can
+      // reason about the wallet (the relay holds no record for it). Advisory.
+      signers?: { address: string; kind: "account" | "passkey"; label: string }[],
+      threshold?: number,
+    ) => {
       fetch(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, address, chainId }),
+        body: JSON.stringify({
+          message,
+          address,
+          chainId,
+          ...(signers && signers.length > 0 ? { signers, threshold } : {}),
+        }),
       }).catch(err => console.warn("walletChatSend failed", err));
     },
     [slug],
   );
-  const walletChatReset = useCallback(() => {
-    fetch(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat`, slug), {
-      method: "DELETE",
-      credentials: "include",
-    }).catch(err => console.warn("walletChatReset failed", err));
-  }, [slug]);
+  const walletChatReset = useCallback(
+    (address?: string) => {
+      const url = new URL(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat`, slug));
+      if (address) url.searchParams.set("address", address);
+      fetch(url.toString(), {
+        method: "DELETE",
+        credentials: "include",
+      }).catch(err => console.warn("walletChatReset failed", err));
+    },
+    [slug],
+  );
 
   // AI fallback for fuzzy /tip phrasing (rate-limited server-side). The
   // clean case is parsed client-side and never hits this.
@@ -2912,6 +2957,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       source: WalletTx["source"];
       browserId?: string | null;
       calls?: WalletTxCall[];
+      /** PERSONAL wallet: its own multisig address → per-address queue.
+       *  Omit for the Bank (the room's singleton wallet). */
+      address?: string;
     }) => {
       send({
         type: "wallet_tx_propose",
@@ -2925,13 +2973,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         source: req.source,
         browserId: req.browserId ?? null,
         ...(req.calls && req.calls.length > 0 ? { calls: req.calls } : {}),
+        ...(req.address ? { address: req.address } : {}),
       });
     },
     [send],
   );
   const walletSignTx = useCallback(
-    (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) => {
-      send({ type: "wallet_tx_sign", id, signer: sig.signer, sigType: sig.sigType, data: sig.data });
+    (id: string, sig: { signer: string; sigType: 0 | 1; data: string }, address?: string) => {
+      send({
+        type: "wallet_tx_sign",
+        id,
+        signer: sig.signer,
+        sigType: sig.sigType,
+        data: sig.data,
+        ...(address ? { address } : {}),
+      });
     },
     [send],
   );
@@ -2979,22 +3035,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
   const walletSetTxStatus = useCallback(
-    (id: string, status: WalletTxStatus, txHash?: string | null) => {
-      send({ type: "wallet_tx_status", id, status, txHash: txHash ?? null });
+    (id: string, status: WalletTxStatus, txHash?: string | null, address?: string) => {
+      send({ type: "wallet_tx_status", id, status, txHash: txHash ?? null, ...(address ? { address } : {}) });
     },
     [send],
   );
   const walletRemoveTx = useCallback(
-    (id: string) => {
-      send({ type: "wallet_tx_remove", id });
+    (id: string, address?: string) => {
+      send({ type: "wallet_tx_remove", id, ...(address ? { address } : {}) });
     },
     [send],
   );
   const walletResummarize = useCallback(
-    (id: string) => {
-      send({ type: "wallet_tx_resummarize", id });
+    (id: string, address?: string) => {
+      send({ type: "wallet_tx_resummarize", id, ...(address ? { address } : {}) });
     },
     [send],
+  );
+  // Per-address read accessors for personal wallets. Default to an empty
+  // queue / fresh conversation until the first broadcast for that address.
+  const walletTxsFor = useCallback(
+    (address: string): WalletTx[] => walletTxsByAddr[address.toLowerCase()] ?? EMPTY_WALLET_TXS,
+    [walletTxsByAddr],
+  );
+  const walletChatFor = useCallback(
+    (address: string): WalletChat => walletChatByAddr[address.toLowerCase()] ?? DEFAULT_WALLET_CHAT,
+    [walletChatByAddr],
   );
 
   const setCustomName = useCallback(
@@ -3592,7 +3658,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
 
         if (msg.type === "wallet_chat" && msg.state && typeof msg.state === "object") {
-          setWalletChatLocal(msg.state as WalletChat);
+          // Address-tagged → a personal wallet's conversation; untagged → Bank.
+          const addr = typeof msg.address === "string" ? msg.address.toLowerCase() : null;
+          if (addr) {
+            setWalletChatByAddr(prev => ({ ...prev, [addr]: msg.state as WalletChat }));
+          } else {
+            setWalletChatLocal(msg.state as WalletChat);
+          }
           return;
         }
 
@@ -3908,11 +3980,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
 
         if (msg.type === "wallet_txs" && Array.isArray(msg.txs)) {
-          setWalletTxs(msg.txs as WalletTx[]);
+          // Address-tagged → a personal wallet's queue; untagged → Bank.
+          const addr = typeof msg.address === "string" ? msg.address.toLowerCase() : null;
+          if (addr) {
+            setWalletTxsByAddr(prev => ({ ...prev, [addr]: msg.txs as WalletTx[] }));
+          } else {
+            setWalletTxs(msg.txs as WalletTx[]);
+          }
           return;
         }
 
         if (msg.type === "wallet_tx_attention") {
+          // Only the Bank's address-less attention pings drive the shared
+          // wallet-window auto-surface; a personal wallet is single-player and
+          // already in focus, so its address-tagged pings are ignored here.
+          if (typeof msg.address === "string") return;
           const source = msg.source === "browser" ? "browser" : "manual";
           const at = typeof msg.at === "number" ? msg.at : Date.now();
           setWalletAttention({ at, source });
@@ -4264,6 +4346,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletChat,
     walletChatSend,
     walletChatReset,
+    walletChatFor,
     tips,
     tipParse,
     tipAnnounce,
@@ -4274,6 +4357,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     wallet,
     walletHistory,
     walletTxs,
+    walletTxsFor,
     walletAttention,
     walletDraft,
     walletDraftUpdate,

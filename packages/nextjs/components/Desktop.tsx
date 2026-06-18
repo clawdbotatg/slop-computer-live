@@ -3955,11 +3955,11 @@ function DesktopInner({ slug }: { slug: string }) {
               mesh={mesh}
               id="mywallet"
               title="WALLET"
-              defaultSlot={{ x: 430, y: 130, width: 420, height: 560 }}
-              minWidth={340}
-              minHeight={420}
+              defaultSlot={{ x: 430, y: 130, width: 480, height: 640 }}
+              minWidth={360}
+              minHeight={460}
             >
-              <WalletAppWindow />
+              <WalletAppWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

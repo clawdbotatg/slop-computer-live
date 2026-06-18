@@ -1500,9 +1500,13 @@ type ActivityProps = {
   mesh: PeerMeshState;
   wallet: WalletRecord;
   myAddress: string | null;
+  /** PERSONAL wallet (the desktop "Wallet" app): when set, this queue reads
+   *  and mutates the per-address tx store for that multisig instead of the
+   *  Bank's room singleton. Undefined → the Bank (behavior unchanged). */
+  walletAddress?: string;
 };
 
-const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
+export const ActivityTxQueue = ({ mesh, wallet, myAddress, walletAddress }: ActivityProps) => {
   // Default to the most recently deployed chain.
   const deployedChainIds = useMemo(
     () =>
@@ -1515,9 +1519,11 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
   // The selected chain is multiplayer too: switch the network and every
   // peer's queue follows. Fallback is the most-recently-deployed chain
   // (the same derived value on every peer) until anyone picks.
+  // A personal wallet scopes the chain-picker key by address so it doesn't
+  // collide with the Bank's picker (or another personal wallet's).
   const [activeChain, setActiveChain] = useSyncedUIState<number>(
     mesh,
-    "wallet:activeChain",
+    walletAddress ? `wallet:activeChain:${walletAddress.toLowerCase()}` : "wallet:activeChain",
     deployedChainIds[0] ?? mainnet.id,
   );
   useEffect(() => {
@@ -1527,8 +1533,9 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
 
   // Distinct from chainTxs below — used by the "txs exist on other
   // chains" hint so the user knows to switch the chain picker if their
-  // tx landed on a chain that isn't currently selected.
-  const allTxs = mesh.walletTxs;
+  // tx landed on a chain that isn't currently selected. A personal wallet
+  // reads its own per-address queue; the Bank reads the room singleton.
+  const allTxs = walletAddress ? mesh.walletTxsFor(walletAddress) : mesh.walletTxs;
   const chainTxs = allTxs.filter(t => t.chainId === activeChain);
   const pendingTxs = chainTxs.filter(t => t.status === "pending");
   const otherTxs = chainTxs.filter(t => t.status !== "pending").slice(0, 20);
@@ -1605,14 +1612,31 @@ const ActivityTxQueue = ({ mesh, wallet, myAddress }: ActivityProps) => {
             )}
           </div>
         ) : (
-          pendingTxs.map(tx => <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} />)
+          pendingTxs.map(tx => (
+            <TxCard
+              key={tx.id}
+              tx={tx}
+              wallet={wallet}
+              mesh={mesh}
+              myAddress={myAddress}
+              walletAddress={walletAddress}
+            />
+          ))
         )}
       </Section>
 
       {otherTxs.length > 0 ? (
         <Section title="Recent">
           {otherTxs.map(tx => (
-            <TxCard key={tx.id} tx={tx} wallet={wallet} mesh={mesh} myAddress={myAddress} compact />
+            <TxCard
+              key={tx.id}
+              tx={tx}
+              wallet={wallet}
+              mesh={mesh}
+              myAddress={myAddress}
+              walletAddress={walletAddress}
+              compact
+            />
           ))}
         </Section>
       ) : null}
@@ -2236,10 +2260,24 @@ type TxCardProps = {
   mesh: PeerMeshState;
   myAddress: string | null;
   compact?: boolean;
+  /** PERSONAL wallet: routes this card's queue mutations to the per-address
+   *  store. Undefined → the Bank's room singleton (behavior unchanged). */
+  walletAddress?: string;
 };
 
-const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
+const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardProps) => {
   const { address: connectedAddress } = useAccount();
+  // Per-address-aware queue mutations: a personal wallet threads its
+  // `walletAddress` so signatures/status/removal land in its own store; the
+  // Bank passes undefined and these behave exactly as the bare mesh calls.
+  const { walletSetTxStatus: meshSetTxStatus, walletSignTx: meshSignTx } = mesh;
+  const { walletRemoveTx: meshRemoveTx, walletResummarize: meshResummarize } = mesh;
+  const txStatus = (id: string, status: WalletTx["status"], txHash?: string | null) =>
+    meshSetTxStatus(id, status, txHash, walletAddress);
+  const txSign = (id: string, sig: { signer: string; sigType: 0 | 1; data: string }) =>
+    meshSignTx(id, sig, walletAddress);
+  const txRemove = (id: string) => meshRemoveTx(id, walletAddress);
+  const txResummarize = (id: string) => meshResummarize(id, walletAddress);
   const { signMessageAsync, isPending: signing } = useSignMessage();
   const { writeContractAsync, isPending: writing } = useWriteContract();
   // The connected wallet's ACTIVE network (what MetaMask is pointed at) —
@@ -2300,7 +2338,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     try {
       const r = await txPublicClient.getTransactionReceipt({ hash: watchedHash });
       // viem throws if not found; if we got here we have one.
-      mesh.walletSetTxStatus(tx.id, r.status === "success" ? "executed" : "failed", r.transactionHash);
+      txStatus(tx.id, r.status === "success" ? "executed" : "failed", r.transactionHash);
       setExecHash(null);
     } catch (e) {
       const msg = String((e as { shortMessage?: string; message?: string }).shortMessage ?? e);
@@ -2411,11 +2449,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
 
   useEffect(() => {
     if (execReceipt) {
-      mesh.walletSetTxStatus(
-        tx.id,
-        execReceipt.status === "success" ? "executed" : "failed",
-        execReceipt.transactionHash,
-      );
+      txStatus(tx.id, execReceipt.status === "success" ? "executed" : "failed", execReceipt.transactionHash);
       setExecHash(null);
     }
   }, [execReceipt, mesh, tx.id]);
@@ -2453,10 +2487,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
     // — leave it set and the receipt watcher keeps `execWaiting` true, which
     // re-disables the Execute button we just tried to free up.
     setExecHash(null);
-    mesh.walletSetTxStatus(tx.id, "pending");
+    txStatus(tx.id, "pending");
   }, [mesh, tx.id]);
   const onRemoveTx = useCallback(() => {
-    mesh.walletRemoveTx(tx.id);
+    txRemove(tx.id);
   }, [mesh, tx.id]);
 
   const onSign = useCallback(async () => {
@@ -2494,7 +2528,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
           qy,
         });
         console.log("[wallet] onSign passkey: got signature", { len: data?.length });
-        mesh.walletSignTx(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
+        txSign(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
       } catch (e) {
         console.error("[wallet] onSign passkey error", e);
         setErr(String(e).slice(0, 200));
@@ -2516,7 +2550,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       console.log("[wallet] onSign EOA: calling signMessageAsync…");
       const sig = await signMessageAsync({ message: { raw: tx.execHash as Hex } });
       console.log("[wallet] onSign EOA: got signature", { len: sig?.length });
-      mesh.walletSignTx(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
+      txSign(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
     } catch (e) {
       console.error("[wallet] onSign EOA error", e);
       setErr(String(e).slice(0, 200));
@@ -2560,7 +2594,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       console.log("[wallet] onExecute sorted signatures", {
         sorted: sorted.map(s => ({ signer: s.signer, sigType: s.sigType, dataLen: s.data.length })),
       });
-      mesh.walletSetTxStatus(tx.id, "executing");
+      txStatus(tx.id, "executing");
       // Estimate gas with a 50% buffer. eth_estimateGas returns the minimum
       // viable amount, but the 63/64 forwarding rule plus heavy inner calls
       // (LI.FI swaps, multi-hop bridges) starve the inner frame if we don't
@@ -2664,7 +2698,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
       // resolve the receipt. Previously the hash was only broadcast
       // on receipt — meaning if the submitter's tab stalled, nobody
       // else had the hash to recover from.
-      mesh.walletSetTxStatus(tx.id, "executing", hash);
+      txStatus(tx.id, "executing", hash);
     } catch (e) {
       console.error("[wallet] onExecute FAILED", {
         totalMs: Math.round(performance.now() - t0),
@@ -2672,7 +2706,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
         shortMessage: (e as { shortMessage?: string })?.shortMessage,
         message: (e as { message?: string })?.message,
       });
-      mesh.walletSetTxStatus(tx.id, "pending");
+      txStatus(tx.id, "pending");
       setErr(String(e).slice(0, 200));
     }
   }, [
@@ -2697,7 +2731,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact }: TxCardProps) => {
   ]);
 
   const onResummarize = useCallback(() => {
-    mesh.walletResummarize(tx.id);
+    txResummarize(tx.id);
   }, [mesh, tx.id]);
 
   const valueEth = (() => {

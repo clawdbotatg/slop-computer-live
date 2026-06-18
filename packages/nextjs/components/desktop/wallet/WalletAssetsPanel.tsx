@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CHAIN_ICONS, TokenAvatar } from "./TokenAvatar";
+import { type WalletTxMode } from "./WalletTxCard";
 import { type Portfolio, type PortfolioAsset, toRawUnits, zerionChainToId } from "./types";
 import { AddressInput } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex, encodeFunctionData, erc20Abi, formatUnits } from "viem";
-import { usePublicClient } from "wagmi";
+import { usePublicClient, useSendTransaction } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState, WalletRecord } from "~~/hooks/usePeerMesh";
@@ -248,13 +249,40 @@ export type WalletAssetsPanelProps = {
   portfolio: Portfolio | null;
   loading: boolean;
   error: string | null;
+  /** "multisig" (Bank or personal multisig — propose to a queue) or "eoa"
+   *  (personal connected wallet — bubble sends straight to MetaMask). */
+  mode?: WalletTxMode;
+  /** PERSONAL multisig: route proposals to its per-address queue. */
+  walletAddress?: string;
+  /** EOA: the connected chain (no deployments map to derive from). */
+  chainIdOverride?: number;
 };
 
-export const WalletAssetsPanel = ({ wallet, mesh, portfolio, loading, error }: WalletAssetsPanelProps) => {
+export const WalletAssetsPanel = ({
+  wallet,
+  mesh,
+  portfolio,
+  loading,
+  error,
+  mode = "multisig",
+  walletAddress,
+  chainIdOverride,
+}: WalletAssetsPanelProps) => {
   const slug = useRoomSlug();
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
   const [selected, setSelected] = useState<PortfolioAsset | null>(null);
   const [sendAsset, setSendAsset] = useState<PortfolioAsset | null>(null);
+  const [sweeping, setSweeping] = useState(false);
+
+  // The chain a "sweep all" runs on. EOA → the connected chain; a multisig →
+  // its (single) deployed chain. Sweep is single-chain because a batch shares
+  // one multisig nonce, and an EOA only transacts on its connected chain.
+  const sweepChainId = useMemo<number | null>(() => {
+    if (mode === "eoa") return chainIdOverride ?? null;
+    const ids = Object.keys(wallet.deployments).map(Number).filter(Number.isFinite);
+    return ids[0] ?? null;
+  }, [mode, chainIdOverride, wallet.deployments]);
+  const canSweep = sweepChainId != null && (portfolio?.assets.length ?? 0) > 0;
 
   // Activity has its own fetch (it's not used outside this panel, so
   // there's no reason to hoist it the way portfolio is). Re-runs only
@@ -298,7 +326,31 @@ export const WalletAssetsPanel = ({ wallet, mesh, portfolio, loading, error }: W
 
       {portfolio && portfolio.assets.length > 0 ? (
         <div>
-          <SectionLabel>Assets ({portfolio.assets.length})</SectionLabel>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <SectionLabel>Assets ({portfolio.assets.length})</SectionLabel>
+            {canSweep ? (
+              <button
+                type="button"
+                onClick={() => setSweeping(true)}
+                title="Send every token on this chain to one address"
+                style={{
+                  padding: "3px 10px",
+                  fontSize: 9,
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  fontWeight: 700,
+                  background: "transparent",
+                  color: ACCENT,
+                  border: `1px solid ${ACCENT}`,
+                  borderRadius: 3,
+                  cursor: "pointer",
+                }}
+              >
+                Sweep all →
+              </button>
+            ) : null}
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {portfolio.assets.map((a, i) => (
               <AssetRow
@@ -375,7 +427,26 @@ export const WalletAssetsPanel = ({ wallet, mesh, portfolio, loading, error }: W
 
       {selected ? <AssetDetailModal asset={selected} slug={slug} onClose={() => setSelected(null)} /> : null}
       {sendAsset ? (
-        <SendAssetModal asset={sendAsset} wallet={wallet} mesh={mesh} onClose={() => setSendAsset(null)} />
+        <SendAssetModal
+          asset={sendAsset}
+          wallet={wallet}
+          mesh={mesh}
+          mode={mode}
+          walletAddress={walletAddress}
+          onClose={() => setSendAsset(null)}
+        />
+      ) : null}
+
+      {sweeping && portfolio && sweepChainId != null ? (
+        <SweepModal
+          assets={portfolio.assets}
+          wallet={wallet}
+          mesh={mesh}
+          mode={mode}
+          walletAddress={walletAddress}
+          sweepChainId={sweepChainId}
+          onClose={() => setSweeping(false)}
+        />
       ) : null}
     </div>
   );
@@ -812,14 +883,20 @@ const SendAssetModal = ({
   wallet,
   mesh,
   onClose,
+  mode = "multisig",
+  walletAddress,
 }: {
   asset: PortfolioAsset;
   wallet: WalletRecord;
   mesh: PeerMeshState;
   onClose: () => void;
+  mode?: WalletTxMode;
+  walletAddress?: string;
 }) => {
   const chainId = zerionChainToId(asset.blockchain);
   const publicClient = usePublicClient({ chainId: chainId ?? undefined });
+  const { sendTransactionAsync } = useSendTransaction();
+  const isEoa = mode === "eoa";
   const native = isNativeAsset(asset);
   const decimals = asset.tokenDecimals ?? 18;
 
@@ -848,20 +925,17 @@ const SendAssetModal = ({
   const overMax = amountRaw > maxRaw;
   const chainSupported = chainId != null;
   const deployedOnChain = chainId != null && chainId in wallet.deployments;
-  const canSend = recipientValid && amountValid && chainSupported && deployedOnChain && !submitting;
+  // An EOA has no multisig deployment — it just signs + sends directly.
+  const canSend = recipientValid && amountValid && chainSupported && (isEoa || deployedOnChain) && !submitting;
 
   const onSend = useCallback(async () => {
     setError(null);
     if (!chainId) {
-      setError(`${asset.blockchain} isn't supported by the multisig`);
+      setError(`${asset.blockchain} isn't supported`);
       return;
     }
-    if (!deployedOnChain) {
-      setError(`multisig isn't deployed on ${asset.blockchain} yet`);
-      return;
-    }
-    if (!publicClient) {
-      setError("no RPC client for this chain");
+    if (!isEoa && !deployedOnChain) {
+      setError(`wallet isn't deployed on ${asset.blockchain} yet`);
       return;
     }
     if (!recipientValid) {
@@ -872,27 +946,40 @@ const SendAssetModal = ({
       setError(overMax ? "amount exceeds balance" : "amount must be greater than 0");
       return;
     }
+    const to = recipient.trim() as AddressType;
+    // ERC-20 row → encode `transfer(to, amount)`, send to the token contract
+    // with value=0. Native row → send raw to recipient with amount as value
+    // and empty calldata.
+    const target: AddressType = native ? to : (asset.contractAddress as AddressType);
+    const value: bigint = native ? amountRaw : 0n;
+    const data: Hex = native
+      ? "0x"
+      : encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [to, amountRaw],
+        });
+
     setSubmitting(true);
     try {
+      // EOA: bubble straight up to the connected wallet (pops MetaMask).
+      if (isEoa) {
+        await sendTransactionAsync({ to: target, value, data, chainId });
+        setSent(true);
+        onClose();
+        return;
+      }
+      if (!publicClient) {
+        setError("no RPC client for this chain");
+        setSubmitting(false);
+        return;
+      }
       const nonce = (await publicClient.readContract({
         address: wallet.address as AddressType,
         abi: MultisigAbi,
         functionName: "nonce",
       })) as bigint;
       const deadline = defaultDeadline();
-      const to = recipient.trim() as AddressType;
-      // ERC-20 row → encode `transfer(to, amount)`, send to the token
-      // contract with value=0. Native row → send raw to recipient with
-      // amount as value and empty calldata.
-      const target: AddressType = native ? to : (asset.contractAddress as AddressType);
-      const value: bigint = native ? amountRaw : 0n;
-      const data: Hex = native
-        ? "0x"
-        : encodeFunctionData({
-            abi: erc20Abi,
-            functionName: "transfer",
-            args: [to, amountRaw],
-          });
       const execHash = computeExecHash({
         chainId,
         multisig: wallet.address as AddressType,
@@ -912,19 +999,20 @@ const SendAssetModal = ({
         execHash,
         source: "manual",
         browserId: null,
+        ...(walletAddress ? { address: walletAddress } : {}),
       });
       setSent(true);
-      // Close so the user lands on the Transactions tab — WalletWindow
-      // auto-jumps on the wallet_tx_attention ping that the relay
-      // broadcasts for every successful propose.
+      // Close so the user lands on the Transactions tab — the queue
+      // auto-surfaces on the wallet_tx_attention ping the relay broadcasts.
       onClose();
     } catch (err) {
-      setError(String(err).slice(0, 200));
+      setError(String((err as { shortMessage?: string }).shortMessage ?? err).slice(0, 200));
     } finally {
       setSubmitting(false);
     }
   }, [
     chainId,
+    isEoa,
     deployedOnChain,
     publicClient,
     recipient,
@@ -936,8 +1024,10 @@ const SendAssetModal = ({
     asset.contractAddress,
     asset.blockchain,
     wallet.address,
+    walletAddress,
     mesh,
     onClose,
+    sendTransactionAsync,
   ]);
 
   return (
@@ -1031,9 +1121,9 @@ const SendAssetModal = ({
             <div style={{ fontSize: 11, color: "#ff9a9a" }}>
               The multisig factory isn&apos;t deployed on {asset.blockchain} — sends from this chain are not supported.
             </div>
-          ) : !deployedOnChain ? (
+          ) : !isEoa && !deployedOnChain ? (
             <div style={{ fontSize: 11, color: "#ff9a9a" }}>
-              The multisig isn&apos;t deployed on {asset.blockchain} yet — deploy it on that chain first.
+              Your wallet isn&apos;t deployed on {asset.blockchain} yet — deploy it on that chain first.
             </div>
           ) : null}
 
@@ -1151,13 +1241,300 @@ const SendAssetModal = ({
               cursor: canSend ? "pointer" : "default",
             }}
           >
-            {sent ? "✓ In multisig queue" : submitting ? "Proposing…" : "Propose send"}
+            {sent
+              ? isEoa
+                ? "✓ Sent"
+                : "✓ In queue"
+              : submitting
+                ? isEoa
+                  ? "Confirm in wallet…"
+                  : "Proposing…"
+                : isEoa
+                  ? "Send"
+                  : "Propose send"}
           </button>
           {sent ? (
             <div style={{ fontSize: 10, color: "var(--slop-text-muted)", textAlign: "center" }}>
               Open the Transactions tab to sign + execute.
             </div>
           ) : null}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// SweepModal — "send everything to one address" on a single chain.
+//   - multisig: ONE batched proposal (execBatchTransaction). getBatchExecHash
+//     reads the contract's nonce internally, so this is correct even with many
+//     tokens (N separate proposals would share one nonce and only the first
+//     could execute). Sign once, exec once.
+//   - eoa: sequential sends (each independent), leaving a gas buffer on native.
+// ============================================================================
+
+// ~0.0002 ETH held back on a native EOA sweep so the last send can pay gas.
+const EOA_NATIVE_GAS_BUFFER = 200_000_000_000_000n;
+
+const SweepModal = ({
+  assets,
+  wallet,
+  mesh,
+  mode,
+  walletAddress,
+  sweepChainId,
+  onClose,
+}: {
+  assets: PortfolioAsset[];
+  wallet: WalletRecord;
+  mesh: PeerMeshState;
+  mode: WalletTxMode;
+  walletAddress?: string;
+  sweepChainId: number;
+  onClose: () => void;
+}) => {
+  const publicClient = usePublicClient({ chainId: sweepChainId });
+  const { sendTransactionAsync } = useSendTransaction();
+  const [recipient, setRecipient] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Only tokens that live on the sweep chain with a non-zero balance.
+  const chainAssets = useMemo(
+    () =>
+      assets.filter(
+        a => zerionChainToId(a.blockchain) === sweepChainId && toRawUnits(a.balance, a.tokenDecimals ?? 18) > 0n,
+      ),
+    [assets, sweepChainId],
+  );
+  const recipientValid = /^0x[a-fA-F0-9]{40}$/.test(recipient.trim());
+  const canSweep = recipientValid && chainAssets.length > 0 && !busy;
+
+  const onSweep = useCallback(async () => {
+    setError(null);
+    if (!recipientValid) {
+      setError("recipient is not a valid address");
+      return;
+    }
+    if (chainAssets.length === 0) {
+      setError("nothing to sweep on this chain");
+      return;
+    }
+    const to = recipient.trim() as AddressType;
+    setBusy(true);
+    try {
+      if (mode === "eoa") {
+        let i = 0;
+        for (const a of chainAssets) {
+          i += 1;
+          setProgress(`${i}/${chainAssets.length} · ${a.tokenSymbol}`);
+          const decimals = a.tokenDecimals ?? 18;
+          const raw = toRawUnits(a.balance, decimals);
+          if (isNativeAsset(a)) {
+            if (raw <= EOA_NATIVE_GAS_BUFFER) continue; // dust — leave it for gas
+            await sendTransactionAsync({ to, value: raw - EOA_NATIVE_GAS_BUFFER, chainId: sweepChainId });
+          } else {
+            const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, raw] });
+            await sendTransactionAsync({
+              to: a.contractAddress as AddressType,
+              value: 0n,
+              data,
+              chainId: sweepChainId,
+            });
+          }
+        }
+      } else {
+        // Multisig: one batched proposal.
+        if (!publicClient) {
+          setError("no RPC client for this chain");
+          setBusy(false);
+          return;
+        }
+        const calls = chainAssets.map(a => {
+          const decimals = a.tokenDecimals ?? 18;
+          const raw = toRawUnits(a.balance, decimals);
+          if (isNativeAsset(a)) return { target: to, value: raw, data: "0x" as Hex };
+          return {
+            target: a.contractAddress as AddressType,
+            value: 0n,
+            data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, raw] }),
+          };
+        });
+        const deadline = defaultDeadline();
+        const nonce = (await publicClient.readContract({
+          address: wallet.address as AddressType,
+          abi: MultisigAbi,
+          functionName: "nonce",
+        })) as bigint;
+        // The contract computes the batch hash over the current nonce + calls.
+        const execHash = (await publicClient.readContract({
+          address: wallet.address as AddressType,
+          abi: MultisigAbi,
+          functionName: "getBatchExecHash",
+          args: [calls.map(c => ({ target: c.target, value: c.value, data: c.data })), deadline],
+        })) as `0x${string}`;
+        mesh.walletProposeTx({
+          chainId: sweepChainId,
+          // Batched txs carry sentinels in the top-level fields; calls drive exec.
+          target: wallet.address,
+          value: "0",
+          data: "0x",
+          deadline: deadline.toString(),
+          nonce: nonce.toString(),
+          execHash,
+          source: "manual",
+          browserId: null,
+          calls: calls.map(c => ({ target: c.target, value: c.value.toString(), data: c.data })),
+          ...(walletAddress ? { address: walletAddress } : {}),
+        });
+      }
+      onClose();
+    } catch (err) {
+      setError(String((err as { shortMessage?: string }).shortMessage ?? err).slice(0, 200));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    recipientValid,
+    chainAssets,
+    recipient,
+    mode,
+    publicClient,
+    wallet.address,
+    walletAddress,
+    mesh,
+    sweepChainId,
+    sendTransactionAsync,
+    onClose,
+  ]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 50,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: "min(420px, 92vw)",
+          background: "#0a061a",
+          border: "1px solid rgba(255,62,201,0.4)",
+          borderRadius: 8,
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: "var(--slop-font-display)",
+            fontSize: 13,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: ACCENT,
+          }}
+        >
+          Sweep {chainAssets.length} token{chainAssets.length === 1 ? "" : "s"}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--slop-text-muted)", lineHeight: 1.5 }}>
+          Send every token on this chain to one address.
+          {mode === "eoa"
+            ? " Each is a separate transaction you confirm in your wallet (a little native is kept back for gas)."
+            : " Bundled into one batched proposal you sign once."}
+        </div>
+        <div>
+          <label
+            style={{
+              fontSize: 10,
+              color: "var(--slop-text-muted)",
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              display: "block",
+              marginBottom: 4,
+            }}
+          >
+            Recipient
+          </label>
+          <AddressInput
+            value={recipient}
+            placeholder="0x… or vitalik.eth"
+            onChange={next => setRecipient(next ?? "")}
+          />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 140, overflow: "auto" }}>
+          {chainAssets.map((a, i) => (
+            <div
+              key={`${a.contractAddress}-${i}`}
+              style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+            >
+              <span>{a.tokenSymbol}</span>
+              <span style={{ color: "var(--slop-text-muted)" }}>
+                {parseFloat(a.balance).toLocaleString("en-US", { maximumFractionDigits: 6 })}
+              </span>
+            </div>
+          ))}
+        </div>
+        {error ? <div style={{ fontSize: 11, color: "#ff7676" }}>{error}</div> : null}
+        {busy && progress ? (
+          <div style={{ fontSize: 11, color: "var(--slop-accent, #7cf)" }}>sending {progress}…</div>
+        ) : null}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              fontSize: 11,
+              fontFamily: "var(--slop-font-display)",
+              background: "transparent",
+              color: "var(--slop-text-muted)",
+              border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: 4,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void onSweep()}
+            disabled={!canSweep}
+            style={{
+              flex: 2,
+              padding: "8px 12px",
+              fontSize: 11,
+              fontFamily: "var(--slop-font-display)",
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              fontWeight: 700,
+              background: canSweep ? ACCENT : "rgba(255,62,201,0.25)",
+              color: canSweep ? "#06030d" : "var(--slop-text-muted)",
+              border: "none",
+              borderRadius: 4,
+              cursor: canSweep ? "pointer" : "default",
+            }}
+          >
+            {busy ? "Sweeping…" : mode === "eoa" ? "Sweep (send all)" : "Propose sweep"}
+          </button>
         </div>
       </div>
     </div>

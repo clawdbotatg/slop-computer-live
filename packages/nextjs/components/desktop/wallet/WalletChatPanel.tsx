@@ -1,10 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { WalletTxCard } from "./WalletTxCard";
+import { WalletTxCard, type WalletTxMode } from "./WalletTxCard";
 import { LoadingBar } from "~~/components/ui";
 import type { PeerMeshState, WalletChatMessage, WalletRecord } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
+
+// Signer descriptor the personal Wallet app hands the intent engine so it can
+// reason about the wallet's signers/threshold (the relay holds no record for a
+// personal wallet). Advisory only.
+export type ChatSigner = { address: string; kind: "account" | "passkey"; label: string };
 
 // Multiplayer AI-wallet chat. The whole room shares one conversation —
 // mesh.walletChat. Any peer types a message, the relay runs the agentic
@@ -20,10 +25,14 @@ const MessageBubble = ({
   msg,
   wallet,
   mesh,
+  mode,
+  walletAddress,
 }: {
   msg: WalletChatMessage;
   wallet: WalletRecord;
   mesh: PeerMeshState;
+  mode: WalletTxMode;
+  walletAddress?: string;
 }) => {
   const isUser = msg.role === "user";
   return (
@@ -61,28 +70,55 @@ const MessageBubble = ({
       {msg.error ? <div style={{ fontSize: 10, color: "#ff7676", maxWidth: "90%" }}>{msg.error}</div> : null}
       {!isUser && (msg.transaction || msg.multistep) ? (
         <div style={{ width: "90%" }}>
-          <WalletTxCard message={msg} wallet={wallet} mesh={mesh} />
+          <WalletTxCard message={msg} wallet={wallet} mesh={mesh} mode={mode} walletAddress={walletAddress} />
         </div>
       ) : null}
     </div>
   );
 };
 
-export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet: WalletRecord }) => {
-  const { messages, processing } = mesh.walletChat;
+export const WalletChatPanel = ({
+  mesh,
+  wallet,
+  mode = "multisig",
+  walletAddress,
+  chainIdOverride,
+  signers,
+  threshold,
+}: {
+  mesh: PeerMeshState;
+  wallet: WalletRecord;
+  /** "multisig" (Bank or personal multisig — propose to a queue) or "eoa"
+   *  (personal connected wallet — bubble tx straight to MetaMask). */
+  mode?: WalletTxMode;
+  /** PERSONAL wallet: its address → per-address conversation + queue. Omit
+   *  for the Bank (the room's singleton conversation). */
+  walletAddress?: string;
+  /** Override the operating chain (EOA has no deployments to derive from). */
+  chainIdOverride?: number;
+  /** PERSONAL wallet: signer set + threshold handed to the intent engine. */
+  signers?: ChatSigner[];
+  threshold?: number;
+}) => {
+  // The Bank uses the room's singleton conversation; a personal wallet has its
+  // own per-address thread.
+  const chat = walletAddress ? mesh.walletChatFor(walletAddress) : mesh.walletChat;
+  const { messages, processing } = chat;
+  const chatAddress = (walletAddress ?? wallet.address).toLowerCase();
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // The chat operates against the multisig as the wallet, on its
-  // most-recently-deployed chain (the agent can still target other
-  // deployed chains in a transaction it builds).
+  // The chat operates against the wallet on its most-recently-deployed chain
+  // (the agent can still target other deployed chains in a tx it builds). An
+  // EOA has no deployments, so the caller passes chainIdOverride.
   const primaryChainId = useMemo<number | null>(() => {
+    if (chainIdOverride != null) return chainIdOverride;
     const ids = Object.keys(wallet.deployments)
       .map(Number)
       .filter(Number.isFinite)
       .sort((a, b) => wallet.deployments[b].deployedAt - wallet.deployments[a].deployedAt);
     return ids[0] ?? null;
-  }, [wallet.deployments]);
+  }, [wallet.deployments, chainIdOverride]);
 
   // Pin to bottom whenever a message lands or the spinner toggles.
   useEffect(() => {
@@ -90,15 +126,16 @@ export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet:
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, processing]);
 
-  // Multiplayer scroll sync — peers can scroll back through the
-  // wallet AI conversation together.
-  const onScroll = useSyncedScroll(mesh, "wallet:chat", listRef);
+  // Multiplayer scroll sync — peers can scroll back through the wallet AI
+  // conversation together. Scoped by address so a personal wallet's scroll
+  // doesn't fight the Bank's (or another personal wallet's).
+  const onScroll = useSyncedScroll(mesh, walletAddress ? `wallet:chat:${chatAddress}` : "wallet:chat", listRef);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const text = draft.trim();
     if (!text || processing || primaryChainId == null) return;
-    mesh.walletChatSend(text, wallet.address, primaryChainId);
+    mesh.walletChatSend(text, chatAddress, primaryChainId, signers, threshold);
     setDraft("");
   };
 
@@ -118,12 +155,12 @@ export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet:
         }}
       >
         <span style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
-          Talking to the multisig — ask it to swap, send, bridge, check balances…
+          Talking to your wallet — ask it to swap, send, bridge, check balances…
         </span>
         {messages.length > 0 ? (
           <button
             type="button"
-            onClick={() => mesh.walletChatReset()}
+            onClick={() => mesh.walletChatReset(walletAddress)}
             disabled={processing}
             title={processing ? "wait for the current turn to finish" : "clear the conversation for everyone"}
             style={{
@@ -178,7 +215,9 @@ export const WalletChatPanel = ({ mesh, wallet }: { mesh: PeerMeshState; wallet:
             <span style={{ fontSize: 11, opacity: 0.8 }}>Everyone in the room sees the conversation.</span>
           </div>
         ) : (
-          messages.map(m => <MessageBubble key={m.id} msg={m} wallet={wallet} mesh={mesh} />)
+          messages.map(m => (
+            <MessageBubble key={m.id} msg={m} wallet={wallet} mesh={mesh} mode={mode} walletAddress={walletAddress} />
+          ))
         )}
         {processing ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

@@ -4600,10 +4600,12 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
         fetchPortfolio(address).catch(() => null),
         fetchActivity(address).catch(() => null),
       ]);
-      // If the chat is about THIS room's current multisig, hand the AI its
-      // signer set + threshold so it can reason about add/remove/threshold.
+      // Hand the AI the wallet's signer set + threshold so it can reason
+      // about add/remove/threshold. A personal wallet sends these in the
+      // request body (it knows its own signers); otherwise, if the chat is
+      // about THIS room's current Bank multisig, derive them from the record.
       const curWallet = room.wallet.getCurrent();
-      const walletSigners =
+      const bankSigners =
         curWallet && curWallet.address.toLowerCase() === address
           ? curWallet.signers.map(s => ({
               address: s.address,
@@ -4611,12 +4613,18 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
               label: s.label,
             }))
           : undefined;
+      const walletSigners = clientSigners ?? bankSigners;
+      const walletThreshold = clientSigners
+        ? (clientThreshold ?? 1)
+        : bankSigners
+          ? curWallet?.threshold
+          : undefined;
       const intentInput: WalletIntentInput = {
         message,
         address,
         chainId,
         signers: walletSigners,
-        threshold: walletSigners ? curWallet?.threshold : undefined,
+        threshold: walletThreshold,
         portfolio: (portfolio?.assets ?? []).map(x => ({
           tokenSymbol: x.tokenSymbol,
           balance: x.balance,
@@ -4642,12 +4650,12 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
           in: x.in ? { symbol: x.in.symbol, amount: x.in.amount } : null,
           valueUsd: x.valueUsd,
         })),
-        recentMessages: room.walletChat.recentForIntent(userMsg.id),
+        recentMessages: chat.recentForIntent(userMsg.id),
       };
       const result = await runWalletIntent(intentInput);
-      room.walletChat.appendAssistant(result);
+      chat.appendAssistant(result);
     } catch (err) {
-      room.walletChat.appendAssistant({
+      chat.appendAssistant({
         type: "chat",
         message: "Sorry — the wallet AI hit an unexpected error. Try again.",
         error: String(err).slice(0, 300),
@@ -4656,20 +4664,24 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
   })();
 
   reply.header("cache-control", "no-store");
-  return reply.code(202).send({ ok: true, state: room.walletChat.current().state, userMessageId: userMsg.id });
+  return reply.code(202).send({ ok: true, state: chat.current().state, userMessageId: userMsg.id });
 });
 
 // Reset the conversation. Any peer — same permissive model as the
 // research "Start over". Refused while a turn is processing so a reset
 // can't orphan an in-flight intent call onto a cleared conversation.
-app.delete("/v1/wallet-chat", async (req, reply) => {
+app.delete<{ Querystring: { address?: string } }>("/v1/wallet-chat", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const room = roomFromReq(req);
-  if (room.walletChat.isProcessing()) {
-    return reply.code(409).send({ error: "processing", state: room.walletChat.current().state });
+  // A personal wallet passes ?address= to reset its own conversation; the
+  // Bank omits it and resets the room's singleton.
+  const addr = (req.query.address ?? "").trim().toLowerCase();
+  const chat = /^0x[a-f0-9]{40}$/.test(addr) ? room.walletChatFor(addr) : room.walletChat;
+  if (chat.isProcessing()) {
+    return reply.code(409).send({ error: "processing", state: chat.current().state });
   }
-  const next = room.walletChat.reset();
+  const next = chat.reset();
   return { ok: true, state: next };
 });
 

@@ -578,13 +578,11 @@ export class Room {
         history: state.history,
         draft: state.draft,
       });
-      // `address` is additive: old clients ignore it, the per-address client
-      // store routes the Bank's queue under its own multisig address too.
-      this.broadcast({
-        type: "wallet_txs",
-        address: state.current ? state.current.address.toLowerCase() : null,
-        txs: state.txs,
-      });
+      // The Bank's queue is broadcast WITHOUT an `address` field — clients
+      // treat an address-less `wallet_txs` as the Bank (mesh.walletTxs) and
+      // an address-tagged one as a personal wallet (walletTxsByAddr). This
+      // unambiguous split avoids any Bank/personal routing race on the client.
+      this.broadcast({ type: "wallet_txs", txs: state.txs });
     });
   }
 

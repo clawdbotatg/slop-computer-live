@@ -2,10 +2,16 @@
 
 import { useCallback, useState } from "react";
 import { type Address as AddressType, type Hex } from "viem";
-import { usePublicClient } from "wagmi";
+import { usePublicClient, useSendTransaction } from "wagmi";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState, WalletChatMessage, WalletRecord } from "~~/hooks/usePeerMesh";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
+
+// The Wallet/Bank can run a chat tx card in two modes:
+//   - "multisig": propose into the (per-address) multisig queue for signing.
+//   - "eoa": bubble the tx straight up to the connected EOA (pops MetaMask),
+//     since a plain account has no queue/signers — it just signs + sends.
+export type WalletTxMode = "multisig" | "eoa";
 
 // Renders the transaction / multi-step payload attached to an assistant
 // message in the wallet chat. "Send to multisig" computes the exec hash
@@ -42,19 +48,44 @@ const SendButton = ({
   mesh,
   label,
   disabled,
+  mode = "multisig",
+  walletAddress,
 }: {
   tx: SingleTx;
   wallet: WalletRecord;
   mesh: PeerMeshState;
   label: string;
   disabled?: boolean;
+  mode?: WalletTxMode;
+  /** Personal multisig: route the proposal to its per-address queue. */
+  walletAddress?: string;
 }) => {
   const publicClient = usePublicClient({ chainId: tx.chainId });
+  const { sendTransactionAsync } = useSendTransaction();
   const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
   const [error, setError] = useState<string | null>(null);
 
   const onSend = useCallback(async () => {
     const t0 = performance.now();
+    setError(null);
+    const target = tx.to as AddressType;
+    const valueWei = BigInt(tx.value || "0");
+    const data = (tx.data || "0x") as Hex;
+
+    // EOA mode: bubble straight up to the connected wallet — no queue, no
+    // signers. MetaMask pops; we're done once it accepts.
+    if (mode === "eoa") {
+      setState("sending");
+      try {
+        await sendTransactionAsync({ to: target, value: valueWei, data, chainId: tx.chainId });
+        setState("sent");
+      } catch (err) {
+        setState("idle");
+        setError(String((err as { shortMessage?: string }).shortMessage ?? err).slice(0, 160));
+      }
+      return;
+    }
+
     console.log("[wallet] WalletTxCard SendButton clicked", {
       to: tx.to,
       chainId: tx.chainId,
@@ -63,10 +94,9 @@ const SendButton = ({
       multisig: wallet.address,
       deployedChains: Object.keys(wallet.deployments),
     });
-    setError(null);
     if (!(tx.chainId in wallet.deployments)) {
       console.warn("[wallet] SendButton abort: multisig not deployed on chain", tx.chainId);
-      setError(`multisig isn't deployed on chain ${tx.chainId}`);
+      setError(`wallet isn't deployed on chain ${tx.chainId}`);
       return;
     }
     if (!publicClient) {
@@ -83,9 +113,6 @@ const SendButton = ({
         functionName: "nonce",
       })) as bigint;
       const deadline = defaultDeadline();
-      const target = tx.to as AddressType;
-      const valueWei = BigInt(tx.value || "0");
-      const data = (tx.data || "0x") as Hex;
       const execHash = computeExecHash({
         chainId: tx.chainId,
         multisig: wallet.address as AddressType,
@@ -111,6 +138,7 @@ const SendButton = ({
         execHash,
         source: "manual",
         browserId: null,
+        ...(walletAddress ? { address: walletAddress } : {}),
       });
       setState("sent");
     } catch (err) {
@@ -118,7 +146,10 @@ const SendButton = ({
       setState("idle");
       setError(String(err).slice(0, 160));
     }
-  }, [tx, wallet, mesh, publicClient]);
+  }, [tx, wallet, mesh, publicClient, mode, walletAddress, sendTransactionAsync]);
+
+  const sentLabel = mode === "eoa" ? "✓ Sent" : "✓ In queue";
+  const sendingLabel = mode === "eoa" ? "Confirm in wallet…" : "Sending…";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -140,7 +171,7 @@ const SendButton = ({
           cursor: disabled || state !== "idle" ? "default" : "pointer",
         }}
       >
-        {state === "sending" ? "Sending…" : state === "sent" ? "✓ In multisig queue" : label}
+        {state === "sending" ? sendingLabel : state === "sent" ? sentLabel : label}
       </button>
       {error ? <div style={{ fontSize: 10, color: "#ff7676" }}>{error}</div> : null}
     </div>
@@ -178,14 +209,21 @@ export const WalletTxCard = ({
   message,
   wallet,
   mesh,
+  mode = "multisig",
+  walletAddress,
 }: {
   message: WalletChatMessage;
   wallet: WalletRecord;
   mesh: PeerMeshState;
+  mode?: WalletTxMode;
+  /** Personal multisig: per-address queue routing. Ignored in eoa mode. */
+  walletAddress?: string;
 }) => {
   const tx = message.transaction;
   const multi = message.multistep;
   if (!tx && !multi) return null;
+  // EOA bubbles straight to the wallet; a multisig queues for signing.
+  const sendLabel = mode === "eoa" ? "Send from wallet" : "Send to wallet";
 
   return (
     <div
@@ -227,7 +265,9 @@ export const WalletTxCard = ({
             tx={{ to: tx.to, data: tx.data, value: hexValueToDecimal(tx.value), chainId: tx.chainId }}
             wallet={wallet}
             mesh={mesh}
-            label="Send to multisig"
+            label={sendLabel}
+            mode={mode}
+            walletAddress={walletAddress}
           />
         </>
       ) : null}
@@ -261,12 +301,16 @@ export const WalletTxCard = ({
                 tx={{ to: step.to, data: step.data, value: hexValueToDecimal(step.value), chainId: step.chainId }}
                 wallet={wallet}
                 mesh={mesh}
-                label={`Send step ${i + 1} to multisig`}
+                label={mode === "eoa" ? `Send step ${i + 1}` : `Send step ${i + 1} to wallet`}
+                mode={mode}
+                walletAddress={walletAddress}
               />
             </div>
           ))}
           <div style={{ fontSize: 10, color: "var(--slop-text-muted)", fontStyle: "italic" }}>
-            Each step queues separately — execute them in order from the Transactions tab.
+            {mode === "eoa"
+              ? "Each step is a separate transaction — confirm them in order in your wallet."
+              : "Each step queues separately — execute them in order from the Transactions tab."}
           </div>
         </>
       ) : null}
