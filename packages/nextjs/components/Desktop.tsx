@@ -48,7 +48,7 @@ import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
-import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
+import { WalletDialog } from "~~/components/desktop/WalletDialog";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
@@ -889,6 +889,9 @@ function DesktopInner({ slug }: { slug: string }) {
   // never drops.
   const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
   const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
+  // Personal Wallet is single-player: a local overlay (see WalletDialog), not a
+  // shared mesh window. Its open state lives here and is never broadcast.
+  const [walletOpen, setWalletOpen] = useState(false);
 
   // === Adding a new desktop app ===
   // 1. Add an entry to DEFAULT_APPS in packages/relay/src/index.ts (or
@@ -2593,7 +2596,6 @@ function DesktopInner({ slug }: { slug: string }) {
         case "gas":
         case "clock":
         case "wallet":
-        case "mywallet":
         case "ens":
         case "research":
         case "leftclaw":
@@ -2601,6 +2603,11 @@ function DesktopInner({ slug }: { slug: string }) {
         case "transcript":
         case "card":
           focusApp(app.id);
+          return;
+        case "mywallet":
+          // Single-player: open the local overlay, not a shared mesh window.
+          dismissHint();
+          setWalletOpen(true);
           return;
         case "audio":
           dismissHint();
@@ -3970,16 +3977,6 @@ function DesktopInner({ slug }: { slug: string }) {
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}
-              id="mywallet"
-              title="WALLET"
-              defaultSlot={{ x: 430, y: 130, width: 480, height: 640 }}
-              minWidth={360}
-              minHeight={460}
-            >
-              <WalletAppWindow mesh={mesh} myAddress={session.address} myHandle={session.handle} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
               id="ens"
               title="ENS"
               defaultSlot={{ x: 420, y: 120, width: 460, height: 560 }}
@@ -4283,6 +4280,15 @@ function DesktopInner({ slug }: { slug: string }) {
 
       {videoDialog ? (
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
+      ) : null}
+
+      {walletOpen ? (
+        <WalletDialog
+          mesh={mesh}
+          myAddress={selfSessionAddress}
+          myHandle={session.authenticated ? (session.handle ?? null) : null}
+          onClose={() => setWalletOpen(false)}
+        />
       ) : null}
 
       {saveLayoutOpen ? (
