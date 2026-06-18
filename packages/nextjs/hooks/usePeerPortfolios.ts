@@ -5,20 +5,20 @@ import { withSlug } from "~~/lib/slug";
 
 // Per-guest USD portfolio totals, sourced from Zerion via the relay's
 // /v1/wallet/portfolio proxy (which holds the Zerion key — the browser
-// never sees it). Unlike the native-ETH multicall in usePeerBalances,
-// this is the *whole account's* dollar value across every chain + token
-// Zerion indexes, so the guest list can show "$1,234" instead of a bare
-// ETH number.
+// never sees it). This is the *whole account's* dollar value across every
+// chain + token Zerion indexes, so the guest list can show "$1,234"
+// instead of a bare ETH number. (The same proxy + totalBalanceUsd field
+// backs the wallet window and the menubar balance chip.)
 //
-// One fetch per unique address (deduped + lowercased + validated, same
-// rule as usePeerBalances). Pass the SPENDABLE addresses (already
-// passkey→personal-wallet resolved). The relay endpoint is session-gated,
-// so we send credentials; `slug` scopes the request to the caller's room.
-// Returns a map keyed by lowercased address → total USD (number).
+// One fetch per unique address (deduped + lowercased + validated). Pass
+// the SPENDABLE addresses (already passkey→personal-wallet resolved). The
+// relay endpoint is session-gated, so we send credentials; `slug` scopes
+// the request to the caller's room. Returns a map keyed by lowercased
+// address → total USD (number).
 //
 // Quota note: the Zerion quota is shared across all peers, so we poll
-// gently (60s) rather than the 30s the cheap multicall uses, and only
-// re-fetch when the address set actually changes or the tab regains focus.
+// gently (60s) and only re-fetch when the address set actually changes or
+// the tab regains focus.
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const POLL_MS = 60_000;
 
