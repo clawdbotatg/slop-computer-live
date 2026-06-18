@@ -8,8 +8,8 @@ import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey
 
 // Phase-0 surface for docs/PASSKEY-WALLET.md: shows a passkey user their
 // spendable personal-wallet address (receive here), its Base balance, and
-// deploy status. The raw passkey address is shown only as a muted, explicitly
-// non-receivable identity line — the contrast IS the point.
+// deploy status. The raw (unspendable) passkey identity address is intentionally
+// not surfaced here — only the spendable personal-wallet address is shown.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -303,12 +303,6 @@ export function PersonalWalletCard() {
       ) : (
         <div style={muted}>{pw.loading ? "Deriving address…" : "Could not derive address."}</div>
       )}
-
-      <div style={{ ...muted, marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--slop-border, #444)" }}>
-        identity (do <b>not</b> send funds — unspendable):
-        <br />
-        <span style={{ wordBreak: "break-all", opacity: 0.7 }}>{pw.passkeyAddress}</span>
-      </div>
     </div>
   );
 }

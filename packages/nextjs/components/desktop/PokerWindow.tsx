@@ -178,7 +178,7 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const onOpen = useCallback(() => {
     setErr(null);
-    if (noWallet) return setErr("Deploy a room multisig first (Wallet app).");
+    if (noWallet) return setErr("Deploy the Bank using the Bank app first.");
     let buyinWei: bigint;
     try {
       buyinWei = parseEther(buyinEth as `${number}`);
@@ -263,7 +263,7 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
       <button type="button" onClick={onOpen} disabled={noWallet} style={btn(LIME, noWallet)}>
         Open tournament
       </button>
-      {noWallet && <div style={{ fontSize: 12, color: ACCENT }}>Deploy a room multisig in the Wallet app first.</div>}
+      {noWallet && <div style={{ fontSize: 12, color: ACCENT }}>Deploy the Bank using the Bank app first.</div>}
       {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}
     </div>
   );

@@ -146,7 +146,7 @@ export const WagerProposeCard = ({
       <div style={{ ...card, borderColor: "rgba(255,255,255,0.12)" }}>
         <div style={label}>♟ Play for ETH</div>
         <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>
-          Deploy the room multisig (Wallet app) first — it&apos;s the escrow that holds the pot.
+          Deploy the Bank using the Bank app first — it&apos;s the escrow that holds the pot.
         </div>
       </div>
     );
