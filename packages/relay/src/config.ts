@@ -131,4 +131,12 @@ export const config = {
   // Bank multisig. Ideally a platform multisig; empty → falls back to the
   // deployer address itself (a hot EOA — replace with a real multisig).
   personalWalletPlatformCosigner: env("PERSONAL_WALLET_PLATFORM_COSIGNER", ""),
+  // --- Apple Pay → personal-wallet on-ramp (Coinbase Onramp; docs §13) -------
+  // A CDP Secret API key used to mint single-use Coinbase Onramp session tokens
+  // server-side (required since 2025-07-31). The key never touches the browser —
+  // only the resulting one-time onramp URL does. `cdpApiKeyId` is the key UUID;
+  // `cdpApiKeySecret` is its base64-encoded 64-byte Ed25519 secret. Both from
+  // portal.cdp.coinbase.com → gitignored, never committed. Empty → /onramp/session 503s.
+  cdpApiKeyId: env("CDP_API_KEY_ID", ""),
+  cdpApiKeySecret: env("CDP_API_KEY_SECRET", ""),
 };

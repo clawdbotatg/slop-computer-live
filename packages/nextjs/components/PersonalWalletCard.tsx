@@ -34,6 +34,40 @@ export function PersonalWalletCard() {
   const [authStatus, setAuthStatus] = useState("");
   const [deploying, setDeploying] = useState(false);
   const [deployMsg, setDeployMsg] = useState("");
+  const [funding, setFunding] = useState(false);
+  const [fundMsg, setFundMsg] = useState("");
+
+  // Apple Pay → ETH on Base, straight into this wallet. The relay mints a
+  // single-use Coinbase Onramp session (CDP key is server-only) and returns the
+  // one-time onramp URL; we open it to launch the Apple Pay sheet. Works for a
+  // counterfactual address (receiving needs no deploy). See docs/PASSKEY-WALLET.md §13.
+  const fundWithApplePay = async () => {
+    if (!pw.personalAddress || funding) return;
+    setFunding(true);
+    setFundMsg("");
+    try {
+      const res = await fetch(`${RELAY_HTTP}/onramp/session`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: pw.personalAddress }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !j.url) {
+        setFundMsg(
+          j.error === "onramp-not-configured"
+            ? "Apple Pay funding isn't set up yet."
+            : `Couldn't start: ${j.error ?? res.status}`,
+        );
+        return;
+      }
+      window.open(j.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setFundMsg(`Couldn't start: ${(err as Error).message}`);
+    } finally {
+      setFunding(false);
+    }
+  };
 
   const deployWallet = async () => {
     if (!pw.passkeyIdentity || deploying) return;
@@ -202,6 +236,30 @@ export function PersonalWalletCard() {
               ↻ refresh
             </button>
           </div>
+
+          {/* Apple Pay on-ramp — fund this wallet with ETH on Base, no external
+              wallet or seed phrase. US-only guest checkout, $5 min. */}
+          <button
+            onClick={fundWithApplePay}
+            disabled={funding}
+            style={{
+              width: "100%",
+              marginTop: 12,
+              fontFamily: "inherit",
+              fontSize: 13,
+              fontWeight: 600,
+              background: funding ? "var(--slop-panel-2, #26262c)" : "#000",
+              color: funding ? "var(--slop-text-muted, #999)" : "#fff",
+              border: "1px solid var(--slop-border, #444)",
+              borderRadius: 6,
+              padding: "10px 12px",
+              cursor: funding ? "default" : "pointer",
+            }}
+          >
+            {funding ? "Starting…" : " Add funds with Apple Pay"}
+          </button>
+          <div style={{ ...muted, marginTop: 4 }}>Apple Pay → ETH on Base · US only · $5 min</div>
+          {fundMsg && <div style={{ ...muted, marginTop: 4, color: "var(--slop-warn, #e6a700)" }}>{fundMsg}</div>}
 
           {pw.deployed ? (
             <div style={{ ...muted, marginTop: 10 }}>● deployed on Base</div>

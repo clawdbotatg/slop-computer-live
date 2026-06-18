@@ -337,12 +337,32 @@ no seed phrase, no "go buy ETH somewhere else." Coinbase Onramp delivers it.
   cleanest possible flow. This is the strongest argument for **denominating the
   game in USDC** rather than ETH.
 
-**Integration sketch (document only):**
-1. New relay endpoint `POST /onramp/session` → calls CDP to mint a session token
-   scoped to `{ destinationAddress: personalMultisig, asset: USDC, chain: Base }`.
-2. Next.js `<FundButton>` (OnchainKit) opens the Apple Pay sheet using that token.
+**Implemented (2026-06-17) — ETH on Base:**
+1. Relay endpoint **`POST /onramp/session`** (`packages/relay/src/index.ts`) mints
+   a **single-use Coinbase Onramp session** via `packages/relay/src/onramp.ts` →
+   `POST https://api.cdp.coinbase.com/platform/v2/onramp/sessions` with
+   `{ destinationAddress: personalWallet, purchaseCurrency: "ETH", destinationNetwork: "base" }`,
+   and returns the ready-to-use `session.onrampUrl` (token embedded). Auth is a
+   120 s **EdDSA (Ed25519) JWT** hand-rolled with `@noble/curves` (no
+   `@coinbase/cdp-sdk` dep). Auth-gated, address-validated, IP rate-limited
+   (10/hr). CDP key in relay env (`CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`),
+   gitignored. 503s with `onramp-not-configured` when unset.
+2. **No OnchainKit / `<FundButton>` / Project ID needed** — the v2 sessions API
+   returns the full onramp URL, so the client just opens it. The
+   `PersonalWalletCard` "Add funds with Apple Pay" button POSTs the wallet
+   address to the relay and `window.open()`s the returned URL → Apple Pay sheet.
 3. Funds arrive at the personal wallet; balance updates via existing chain reads.
 4. Buy-in proceeds from the personal wallet via the facilitator (§6).
+
+**Denomination decision:** shipped as **ETH on Base** (not USDC) — it matches the
+wallet's ETH balance display and the existing ETH-only escrow/buy-in path, so no
+escrow changes were needed. The zero-fee-USDC argument below still stands as the
+future direction once escrow moves to ERC-20; switching is a one-line change
+(`purchaseCurrency` in `onramp.ts`) plus the escrow work.
+
+> Note: Coinbase's Apple Pay *guest checkout* is slated to change on 2026-06-30 —
+> if the session flow regresses, re-check the CDP onramp docs (the Headless
+> Onramp API is the named successor).
 
 **Closing the loop — off-ramp / cash-out:** Coinbase also offers (zero-fee USDC)
 **offramp**. End-of-game cash-out = facilitator sends USDC from the personal

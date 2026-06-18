@@ -54,6 +54,7 @@ import {
   isPersonalWalletDeployConfigured,
   passkeyAddressFromCoords,
 } from "./personal-wallet.js";
+import { createOnrampSession, isOnrampConfigured } from "./onramp.js";
 import { TIP_CHAIN_LABELS, parseTipIntent } from "./tip.js";
 import {
   MAX_TEXT_LEN as TRANSCRIPT_MAX_TEXT,
@@ -2177,6 +2178,30 @@ app.post("/personal-wallet/deploy", async (req, reply) => {
     alreadyDeployed: result.alreadyDeployed,
     coSigner,
   };
+});
+
+// Mint a single-use Coinbase Onramp session (Apple Pay → ETH on Base) aimed at
+// the caller's personal-wallet address, and hand back the one-time onramp URL.
+// The CDP key is server-only; the browser only ever sees the resulting URL.
+// Receiving needs no deploy, so this works for a counterfactual wallet too.
+// See docs/PASSKEY-WALLET.md §13.
+const onrampSessionBucket = new TokenBucket(10, 10 / 3600); // 10 burst, ~10/hour refill per IP
+app.post("/onramp/session", async (req, reply) => {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!isOnrampConfigured()) return reply.code(503).send({ error: "onramp-not-configured" });
+  reply.header("cache-control", "no-store");
+
+  const body = (req.body ?? {}) as { address?: unknown };
+  const address = typeof body.address === "string" ? body.address.trim() : "";
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+
+  // Guard the CDP key against being used as a free session-minting service.
+  if (!onrampSessionBucket.allow(req.ip)) return reply.code(429).send({ error: "rate-limited" });
+
+  const result = await createOnrampSession(address);
+  if ("error" in result) return reply.code(502).send({ error: result.error });
+  return { url: result.url };
 });
 
 // --- Live transcript ---------------------------------------------------------
