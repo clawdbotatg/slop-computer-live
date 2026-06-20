@@ -7264,6 +7264,7 @@ app.register(async function signalRoutes(fastify) {
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
       walletChat: room.walletChat.current().state,
+      walletChatByAddr: room.allWalletChats(),
       chyronState: room.chyron.getState(),
       escrow: room.escrow.get(),
       godViewport: room.getGodViewport(),

@@ -8,7 +8,7 @@
 // room (and iterates all rooms for cross-room ops like kick/find/close).
 // See ops/PLAN-rooms.md.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import type { Peer, PeerInfo } from "./peers.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { AIMover } from "./ai-mover.js";
@@ -39,7 +39,7 @@ import { ResearchCorpus } from "./research-corpus.js";
 import { ResearchState } from "./research-state.js";
 import { LeftclawState } from "./leftclaw-state.js";
 import { RoomAuth } from "./room-auth.js";
-import { WalletChatState } from "./wallet-chat.js";
+import { WalletChatState, type WalletChatSnapshot } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
 import { TldrState } from "./tldr-state.js";
 import { TodoList } from "./todos.js";
@@ -625,6 +625,32 @@ export class Room {
       this.walletChatStates.set(addr, wc);
     }
     return wc;
+  }
+
+  /** Snapshot of every per-address personal-wallet chat (the Bank's singleton
+   *  is carried separately as the hello's `walletChat`). Enumerates the room's
+   *  data dir so the map survives a relay restart — the in-memory
+   *  `walletChatStates` cache is empty on a cold boot, but the `wallet-chat-*`
+   *  JSON files on disk are the source of truth. walletChatFor() lazy-loads +
+   *  caches each one. Seeds the hello payload so a reloading browser rehydrates
+   *  its personal-wallet history instead of seeing an empty thread. */
+  allWalletChats(): Record<string, WalletChatSnapshot> {
+    const out: Record<string, WalletChatSnapshot> = {};
+    let files: string[] = [];
+    try {
+      files = readdirSync(this.roomDataDir);
+    } catch {
+      return out; // data dir not created yet — no per-address chats
+    }
+    for (const f of files) {
+      // wallet-chat-<addr>.json — the bare `wallet-chat.json` singleton (no
+      // address) is excluded by the required `-0x…` segment.
+      const m = /^wallet-chat-(0x[a-f0-9]{40})\.json$/.exec(f);
+      if (!m) continue;
+      const addr = m[1]!;
+      out[addr] = this.walletChatFor(addr).current().state;
+    }
+    return out;
   }
 
   touch(): void {

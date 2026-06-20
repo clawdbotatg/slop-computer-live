@@ -3394,6 +3394,17 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.walletChat && typeof msg.walletChat === "object") {
             setWalletChatLocal(msg.walletChat as WalletChat);
           }
+          // Personal ("Wallet") chats are keyed per address and aren't part of
+          // the singleton `walletChat`. Without this, a page reload showed an
+          // empty thread for personal wallets until the next message arrived —
+          // the relay seeds the full map (loaded from disk) in the hello.
+          if (msg.walletChatByAddr && typeof msg.walletChatByAddr === "object") {
+            const map: Record<string, WalletChat> = {};
+            for (const [addr, state] of Object.entries(msg.walletChatByAddr as Record<string, unknown>)) {
+              if (state && typeof state === "object") map[addr.toLowerCase()] = state as WalletChat;
+            }
+            setWalletChatByAddr(prev => ({ ...prev, ...map }));
+          }
           if (Array.isArray(msg.previewMedia)) {
             const map: Record<string, PreviewMediaSnapshot> = {};
             for (const entry of msg.previewMedia as Array<{ fileId: unknown; state: unknown }>) {
