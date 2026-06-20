@@ -48,6 +48,7 @@ import {
   sfxTick,
   sfxWin,
   unlockPokerAudio,
+  warmPokerAudio,
 } from "~~/utils/pokerSounds";
 import { usdSuffixFromWei } from "~~/utils/usd";
 
@@ -345,7 +346,10 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
   });
 
   useEffect(() => {
-    if (receipt && txHash && !reported) {
+    // Only report the receipt that belongs to the CURRENT txHash. Without this
+    // a stale receipt from a prior deposit can re-fire the effect and report
+    // the wrong (already-consumed) hash.
+    if (receipt && txHash && !reported && receipt.transactionHash.toLowerCase() === txHash.toLowerCase()) {
       setReported(true);
       mesh.pokerJoin(txHash);
     }
@@ -356,8 +360,12 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
 
   const onJoin = useCallback(async () => {
     setErr(null);
+    // Drop any prior hash + reported flag BEFORE awaiting the wallet, so the
+    // previous deposit's cached receipt can't trigger the effect against the
+    // stale hash while the new tx is still being signed.
+    setReported(false);
+    setTxHash(null);
     try {
-      setReported(false);
       setTxHash(await sendDeposit());
     } catch (e) {
       setErr(String(e).slice(0, 160));
@@ -439,7 +447,13 @@ const SponsorPanel = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSes
   const botName = name.trim() || chosen?.label || "a bot";
 
   useEffect(() => {
-    if (receipt && txHash && !reported && chosen) {
+    // Only report the receipt that belongs to the CURRENT txHash. Sponsoring
+    // is the one flow where the same panel sends multiple deposits in a
+    // session, so a stale receipt from the previous bot would otherwise
+    // re-fire here and report an already-consumed hash — flipping `reported`
+    // true and gating off the real (second) deposit. That stranded the ETH in
+    // the multisig with no bot and the button stuck on "Sponsoring…".
+    if (receipt && txHash && !reported && chosen && receipt.transactionHash.toLowerCase() === txHash.toLowerCase()) {
       setReported(true);
       mesh.pokerSponsorAi({ txHash, modelId: chosen.id, name: name.trim() || chosen.label });
     }
@@ -455,8 +469,12 @@ const SponsorPanel = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSes
       setErr("Pick a model first.");
       return;
     }
+    // Clear the prior deposit's hash + reported flag BEFORE awaiting the
+    // wallet, so its cached receipt can't fire the effect against the stale
+    // hash while the new tx is still being signed.
+    setReported(false);
+    setTxHash(null);
     try {
-      setReported(false);
       setTxHash(await sendDeposit());
     } catch (e) {
       setErr(String(e).slice(0, 160));
@@ -1626,6 +1644,13 @@ const VictoryPause = ({
 
 export const PokerWindow = ({ mesh, myOwnerKey }: Props) => {
   const escrow = mesh.escrow && mesh.escrow.game === "poker" ? mesh.escrow : null;
+
+  // Warm the foley sample cache as soon as the poker window opens, so the first
+  // bet/flip/deal isn't silent. Decoding doesn't need a user gesture (only
+  // playback does, which slop-computer already unlocks), so this can run on mount.
+  useEffect(() => {
+    warmPokerAudio();
+  }, []);
 
   // Victory pause: when the tournament's final hand ends, the relay flips the
   // escrow to "settling" (broadcast a tick before the poker "complete" frame).

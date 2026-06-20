@@ -37,9 +37,11 @@ export function setPokerMuted(m: boolean): void {
   }
 }
 
-// Build (once) and resume the context. Returns the graph, or null if Web Audio
-// is unavailable. Honours the mute flag separately so callers can no-op early.
-function audio(): { c: AudioContext; m: GainNode } | null {
+// Build the context+graph ONCE without resuming it. A freshly-built context is
+// "suspended" until a user gesture, but that's fine for everything except actual
+// playback: decodeAudioData works on a suspended context, so this is all we need
+// to warm the sample cache on load. Returns null if Web Audio is unavailable.
+function ensureAudio(): { c: AudioContext; m: GainNode } | null {
   if (typeof window === "undefined") return null;
   if (!ctx || !master) {
     const AC =
@@ -57,12 +59,30 @@ function audio(): { c: AudioContext; m: GainNode } | null {
       return null;
     }
   }
-  if (ctx.state === "suspended") void ctx.resume();
   return { c: ctx, m: master };
 }
 
-// Call from a real user gesture (a pointerdown on the table) to unlock audio
-// and warm the sample cache so the first foley hit isn't silent.
+// Same, but also resume — call this on/after a user gesture and when actually
+// making sound. Resuming a suspended context needs a gesture; before one it's a
+// harmless no-op.
+function audio(): { c: AudioContext; m: GainNode } | null {
+  const a = ensureAudio();
+  if (a && a.c.state === "suspended") void a.c.resume();
+  return a;
+}
+
+// Warm the sample cache: fetch + decode every foley clip ahead of time so the
+// first bet/flip/deal isn't silent. Safe to call on load (e.g. when the poker
+// window mounts) WITHOUT a user gesture — decoding doesn't need a running
+// context. Idempotent; loadSample dedupes so repeat calls are free.
+export function warmPokerAudio(): void {
+  const a = ensureAudio();
+  if (!a) return;
+  for (const u of ALL_SAMPLES) loadSample(a.c, u);
+}
+
+// Call from a real user gesture (a pointerdown on the table) to unlock audio for
+// playback. Also warms the cache, in case warmPokerAudio() hasn't run yet.
 export function unlockPokerAudio(): void {
   const a = audio();
   if (!a) return;
