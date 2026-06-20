@@ -157,12 +157,15 @@ const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgen
   return <span style={{ fontSize: 12, color: secs <= urgentAt ? ACCENT : "var(--slop-text-muted)" }}>⏱ {label}</span>;
 };
 
-// Think time as whole seconds, no decimals — keeps the clock tight in the box.
-const fmtThink = (ms: number): string => `${Math.max(0, Math.round((ms || 0) / 1000))}s`;
+// Whole seconds, no unit — the trailing "s" reads like a 5 next to the digits.
+const fmtThink = (ms: number): string => `${Math.max(0, Math.round((ms || 0) / 1000))}`;
 
-// Per-seat clock: TOTAL time this seat has spent thinking all game (cyan),
-// then THIS turn's seconds in parens — live-ticking + lime while on the clock,
-// or its last action's time (muted) otherwise. Whole seconds. All public.
+// Per-seat clock, two values:
+//   • TEAL  = seconds spent on THIS turn — live-ticking while on the clock
+//             (its last turn's time when idle).
+//   • GRAY  = total time spent thinking all game — static; it only jumps when
+//             a turn completes (the server folds the turn into the total), so
+//             it does NOT tick per second.
 const SeatThinkTime = ({
   live,
   actorSince,
@@ -177,17 +180,16 @@ const SeatThinkTime = ({
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!live) return;
-    const id = window.setInterval(() => setTick(t => t + 1), 1000); // tick once a second (whole-second display)
+    const id = window.setInterval(() => setTick(t => t + 1), 1000); // ticks the teal this-turn value
     return () => window.clearInterval(id);
   }, [live]);
-  const liveMs = live ? Math.max(0, Date.now() - actorSince) : 0;
-  const turn = live ? liveMs : lastMs; // seconds spent on this/last turn
-  const total = (totalMs || 0) + liveMs; // whole-game total, incl. the live turn
+  const turn = live ? Math.max(0, Date.now() - actorSince) : lastMs; // teal, increments while live
+  const total = totalMs || 0; // gray, static (server-accumulated, no live add)
   if (turn == null && total <= 0) return null; // nothing yet
   return (
     <div style={{ fontSize: 10, whiteSpace: "nowrap" }}>
-      <span style={{ color: CYAN }}>⏱ {fmtThink(total)}</span>
-      {turn != null && <span style={{ color: live ? LIME : "var(--slop-text-muted)" }}> ({fmtThink(turn)})</span>}
+      <span style={{ color: "var(--slop-text-muted)" }}>⏱ {fmtThink(total)}</span>
+      {turn != null && <span style={{ color: CYAN }}> ({fmtThink(turn)})</span>}
     </div>
   );
 };
