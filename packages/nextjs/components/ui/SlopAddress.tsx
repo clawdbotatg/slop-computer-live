@@ -36,9 +36,20 @@ export type SlopAddressProps = {
   /** Pixel size of the inline blockie when a custom name is shown.
    *  Defaults to 14 to match the BandFlag height. */
   blockieSize?: number;
+  /** Suppress the inline BandFlag swatch — for callers that render the band
+   *  colors elsewhere (e.g. the poker seat draws them as a bottom edge). */
+  hideFlag?: boolean;
 };
 
-export const SlopAddress = ({ address, handle, anonId, fallback, customNames, blockieSize = 14 }: SlopAddressProps) => {
+export const SlopAddress = ({
+  address,
+  handle,
+  anonId,
+  fallback,
+  customNames,
+  blockieSize = 14,
+  hideFlag = false,
+}: SlopAddressProps) => {
   // Lookup key for the global customNames map. Address for SIWE/passkey
   // (set via the set_custom_name WS path), anonId for anon (set via
   // POST /auth/handle). Either way, the same dictionary holds the
@@ -60,7 +71,7 @@ export const SlopAddress = ({ address, handle, anonId, fallback, customNames, bl
 
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-      <BandFlag bands={bands} />
+      {!hideFlag && <BandFlag bands={bands} />}
       {customName && address ? (
         <>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{customName}</span>

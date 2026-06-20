@@ -38,6 +38,7 @@ import type {
   PokerTableView,
 } from "~~/hooks/usePeerMesh";
 import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
+import { bandsFromIdentity } from "~~/utils/blockieBands";
 import {
   isPokerMuted,
   setPokerMuted,
@@ -1004,6 +1005,10 @@ const SeatBox = ({
   const concealed = seat.hasCards && !(isMe && myHole) && !revealed;
   const borderColor = isActor ? LIME : isWinner ? GOLD : isMe ? CYAN : "#2a1648";
   const glow = isActor ? `0 0 18px ${LIME}` : isWinner ? `0 0 16px ${GOLD}` : "none";
+  // The player's identity band colors (address bands for a human, a stable
+  // hash for an AI seat) — painted as a strip across the bottom of the plate
+  // instead of an inline flag, so it reads as the card's edge + saves space.
+  const bands = useMemo(() => bandsFromIdentity({ address: seat.key, fallback: seat.key }), [seat.key]);
   return (
     <div
       style={{
@@ -1014,6 +1019,7 @@ const SeatBox = ({
         boxShadow: glow,
         borderRadius: 10,
         padding: 9,
+        paddingBottom: 13, // clearance for the band strip pinned to the bottom edge
         opacity: folded ? 0.45 : 1,
         transition: "box-shadow 0.2s, border-color 0.2s, background 0.2s",
         // A one-shot bump (replayed on remount each turn — see the key on
@@ -1104,7 +1110,7 @@ const SeatBox = ({
           // Real player: the standard slop address chip (ENS / blockie / name),
           // scaled down a touch so it sits neatly in the seat plate.
           <span style={{ display: "inline-flex", transform: "scale(0.82)", transformOrigin: "center" }}>
-            <SlopAddress address={seat.key} customNames={customNames} blockieSize={14} />
+            <SlopAddress address={seat.key} customNames={customNames} blockieSize={14} hideFlag />
           </span>
         )}
       </div>
@@ -1116,7 +1122,7 @@ const SeatBox = ({
           style={{ display: "flex", justifyContent: "center", marginBottom: 4, fontSize: 9, opacity: 0.85 }}
         >
           <span style={{ display: "inline-flex", transform: "scale(0.8)", transformOrigin: "center" }}>
-            <SlopAddress address={backer} customNames={customNames} blockieSize={11} />
+            <SlopAddress address={backer} customNames={customNames} blockieSize={11} hideFlag />
           </span>
         </div>
       )}
@@ -1132,6 +1138,20 @@ const SeatBox = ({
       <div style={{ textAlign: "center" }}>
         <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} totalMs={seat.thinkMsTotal} />
       </div>
+      {/* The player's band colors as a strip along the bottom edge — the old
+          inline flag, moved here so it reads as the card's edge. */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 6,
+          borderRadius: "0 0 8px 8px",
+          background: `linear-gradient(to right, ${bands.band1} 0 33.33%, ${bands.band2} 33.33% 66.66%, ${bands.band3} 66.66% 100%)`,
+        }}
+      />
     </div>
   );
 };
