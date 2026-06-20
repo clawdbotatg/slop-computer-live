@@ -256,6 +256,27 @@ export function sfxDeal(): void {
   playSample(DEAL, 0.85);
 }
 
+// Between hands — a riffle shuffle: two halves of the deck bridged together, a
+// rapid flurry of soft card-edge clicks that bunches toward the middle (the
+// bridge springs fast then slows), capped by a dull "square-up" tap as the deck
+// is knocked level on the felt. Synthesized (not the deal sample) so the
+// between-hands reset reads as its own distinct moment, not a second deal.
+export function sfxShuffle(): void {
+  if (muted) return;
+  const a = audio();
+  if (!a) return;
+  const t = a.c.currentTime;
+  const N = 26;
+  for (let i = 0; i < N; i++) {
+    const u = i / (N - 1); // 0..1 across the riffle
+    // ease the spacing so clicks bunch toward the centre of the riffle
+    const t0 = t + 0.5 * (u - 0.1 * Math.sin(u * Math.PI * 2));
+    burst(a.c, a.m, t0, 0.018, { type: "bandpass", freq: 2200 + Math.random() * 2600, q: 5, gain: 0.07 });
+  }
+  // The deck squared up against the felt — a soft low thud to close it off.
+  burst(a.c, a.m, t + 0.6, 0.05, { type: "lowpass", freq: 380, gain: 0.16 });
+}
+
 // Fold — cards mucked, a real card shove across the felt (random variant).
 export function sfxFold(): void {
   if (muted) return;

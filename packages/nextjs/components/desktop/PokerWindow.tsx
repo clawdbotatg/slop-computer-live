@@ -48,6 +48,7 @@ import {
   sfxChips,
   sfxDeal,
   sfxFold,
+  sfxShuffle,
   sfxTick,
   sfxWin,
   unlockPokerAudio,
@@ -1362,8 +1363,27 @@ const PULSE_CSS = `@keyframes pokerActorPulse {
   0%   { transform: scale(0.9); opacity: 0; }
   55%  { transform: scale(1.04); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
+}
+/* Between-hands "shuffle" interstitial: a felt-coloured curtain that wipes over
+   the whole table for a beat (clearing the last hand) then lifts to reveal the
+   fresh deal. Mounted only while shuffling; the keyframe ends fully transparent
+   so the unmount is invisible. Paired with sfxShuffle() → sfxDeal(). */
+@keyframes pokerShuffleVeil {
+  0%   { opacity: 0; }
+  16%  { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes pokerShuffleRiffle {
+  0%   { transform: translateX(-9px) rotate(-8deg); }
+  50%  { transform: translateX(9px)  rotate(8deg); }
+  100% { transform: translateX(-9px) rotate(-8deg); }
 }`;
 const PokerStyles = () => <style id="poker-fx-styles">{PULSE_CSS}</style>;
+
+// How long the between-hands shuffle curtain stays up (must match the
+// pokerShuffleVeil keyframe so the unmount lands on opacity 0).
+const SHUFFLE_MS = 750;
 
 // Seat coordinates around the table oval. p=0 is the bottom-centre (anchored to
 // "me" when I'm seated) and p increases clockwise — i.e. action moves to my
@@ -1409,6 +1429,19 @@ const Felt = ({
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(isPokerMuted()), []);
 
+  // Between-hands "shuffle" interstitial: when a new hand begins we drop a
+  // felt-coloured curtain over the whole table for a beat — clearing the last
+  // hand from view, riffling (sfxShuffle), then lifting it as the deal lands
+  // (sfxDeal). A deliberate mental break between hands so they don't blur.
+  const [shuffling, setShuffling] = useState(false);
+  const shuffleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (shuffleTimer.current) clearTimeout(shuffleTimer.current);
+    },
+    [],
+  );
+
   // Sound effects, driven by diffing consecutive public snapshots so the whole
   // table is audible (every player's action, not just mine). `wagered` =
   // pot + everyone's current-street commitment, which only ever rises within a
@@ -1421,7 +1454,17 @@ const Felt = ({
     if (!prev) return; // first snapshot — nothing to compare, stay silent
 
     if (prev.handId !== poker.handId) {
-      if (poker.handId) sfxDeal(); // new hand dealt
+      if (poker.handId) {
+        // New hand: riffle now, drop the curtain over the old hand, then lift it
+        // ~SHUFFLE_MS later as the cards are dealt out.
+        sfxShuffle();
+        setShuffling(true);
+        if (shuffleTimer.current) clearTimeout(shuffleTimer.current);
+        shuffleTimer.current = setTimeout(() => {
+          setShuffling(false);
+          sfxDeal(); // cards dealt out as the curtain lifts
+        }, SHUFFLE_MS);
+      }
       return;
     }
     if (poker.status === "complete" && prev.status !== "complete") {
@@ -1599,6 +1642,47 @@ const Felt = ({
             </div>
           );
         })}
+
+        {/* The shuffle curtain — wipes the whole table (board, seats, chips) for
+            a beat between hands, then lifts as the new deal lands. */}
+        {shuffling && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 5,
+              pointerEvents: "none",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 14,
+              borderRadius: 16,
+              background: "radial-gradient(ellipse at 50% 45%, rgba(17,64,44,0.97), rgba(8,20,16,0.99))",
+              animation: `pokerShuffleVeil ${SHUFFLE_MS}ms ease-in-out forwards`,
+            }}
+          >
+            <div style={{ display: "flex", gap: 10 }}>
+              {[0, 1].map(i => (
+                <div
+                  key={i}
+                  style={{
+                    width: 30,
+                    height: 42,
+                    borderRadius: 5,
+                    border: `1.5px solid ${CYAN}`,
+                    background: "repeating-linear-gradient(45deg, rgba(255,62,201,0.28) 0 5px, #1a0f33 5px 10px)",
+                    boxShadow: "0 0 14px rgba(255,62,201,0.6)",
+                    animation: `pokerShuffleRiffle 0.26s ease-in-out ${i * 0.13}s infinite`,
+                  }}
+                />
+              ))}
+            </div>
+            <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 14, letterSpacing: 1, color: LIME }}>
+              Shuffling…
+            </span>
+          </div>
+        )}
       </div>
 
       {poker.status === "complete" && poker.showdown.length > 0 && (
