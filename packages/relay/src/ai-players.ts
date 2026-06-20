@@ -173,22 +173,11 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
-  // Kimi K2.6 — re-added by request. NOTE: this is the model the header
-  // flags as the WORST performer at the Kaggle chess arena (lost every
-  // game in under 8 moves, misplacing pieces) — re-added knowingly.
-  // Non-reasoning (0 reasoning tokens) but smoke-tested slow at ~13s/move,
-  // so it doesn't cleanly fit the ⚡ "1-4s" promise; watch its games.
-  {
-    id: "bankr-kimi-k2.6",
-    label: "Kimi K2.6 (Bankr) ⚡",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "kimi-k2.6",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-    // Secretly a heavy reasoner (~1800 reasoning tokens) — hit the token cap
-    // and returned EMPTY content at poker. Low effort makes it answer cleanly.
-    reasoningEffort: "low",
-  },
+  // Kimi K2.6 — PULLED (again) for poker. It's secretly a heavy reasoner
+  // (~1800 reasoning tokens), routinely hit the 2048 token cap and returned
+  // EMPTY content; even throttled to low effort it was the slowest of the
+  // fast-tier and stalled the table. Also the WORST performer at the Kaggle
+  // chess arena (lost every game in under 8 moves). Gone for now.
   // ---- Venice — Anthropic via Venice's gateway --------------------
   // Same flagship Bankr exposes, via a second provider — kept so users
   // can pit two gateways' "Claude Opus 4.8" against each other (latency /
@@ -225,20 +214,10 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "qwen3-235b-a22b-instruct-2507",
     envVar: "VENICE_API_KEY",
   },
-  // MiniMax M3 — new frontier reasoning model (supersedes the M2.7 we
-  // rotated out for resigning 1–4 moves in). Reasoning-capable, so it's
-  // 🧠 tier; watch its first few games — the M2.x line had a weak chess
-  // track record, but M3 is a fresh generation.
-  {
-    id: "venice-minimax-m3",
-    label: "MiniMax M3 (Venice) 🧠",
-    baseURL: "https://api.venice.ai/api/v1",
-    model: "minimax-m3",
-    envVar: "VENICE_API_KEY",
-    // Slowest reasoner in the lineup at poker (~31s/decision). Low effort
-    // cuts that to ~12s with no change to the action it picks.
-    reasoningEffort: "low",
-  },
+  // MiniMax M3 — PULLED for poker. The slowest reasoner in the lineup
+  // (~31s/decision; ~12s even throttled to low effort), it stalled the table
+  // on a live stream. The M2.x line also had a weak chess track record. Gone
+  // for now; revisit if Venice ships a faster variant.
 ];
 
 const PREFIX = "ai:";
