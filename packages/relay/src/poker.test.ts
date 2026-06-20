@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { type Card, makeDeck } from "./poker-eval.js";
-import { PokerState, type Seat, blindsAtLevel, buildPots } from "./poker.js";
+import { AWAY_TIMEOUT_MS, PokerState, type Seat, blindsAtLevel, buildPots } from "./poker.js";
 
 // A throwaway file path — PokerState persists, but in tests we just point
 // each instance at a unique tmp path it never reads back.
@@ -407,6 +407,43 @@ test("autoAct folds the timed-out actor when facing a bet", () => {
   assert.equal(g.seats.find(s => s.key === "bob")!.stack, 101);
 });
 
+test("two straight timeouts flag a seat away; a short clock; acting wakes them", () => {
+  const t = table();
+  t.sit(0, "alice", "Alice", 1000);
+  t.sit(1, "bob", "Bob", 1000);
+  // Idle through hands — each timeout auto-folds the actor. Heads-up the button
+  // (and so the actor) alternates, so within a few hands one seat times out
+  // twice in a row and gets flagged away.
+  for (let i = 0; i < 8 && !t.getGame().seats.some(s => s.away); i++) {
+    if (t.getGame().status !== "running") t.startHand(makeDeck());
+    t.autoAct();
+  }
+  const awayKey = t.getGame().seats.find(s => s.away)?.key;
+  assert.ok(awayKey, "a seat should be flagged away after two straight timeouts");
+  assert.ok(t.getGame().seats.find(s => s.key === awayKey)!.timeoutStreak >= 2);
+
+  // Drive to a hand where the away seat is on the clock: its deadline is the
+  // short AWAY clock, and a voluntary action wakes it (clears away + streak).
+  let checked = false;
+  for (let i = 0; i < 8 && !checked; i++) {
+    if (t.getGame().status !== "running") t.startHand(makeDeck());
+    const g = t.getGame();
+    if (g.actor >= 0 && g.seats[g.actor]!.key === awayKey) {
+      const v = t.publicView() as { actorDeadline: number | null };
+      assert.equal(v.actorDeadline! - g.actorSince, AWAY_TIMEOUT_MS);
+      const toCall = g.currentBet - g.seats[g.actor]!.committed;
+      t.act(awayKey, { action: toCall > 0 ? "call" : "check" });
+      checked = true;
+    } else {
+      t.autoAct();
+    }
+  }
+  assert.ok(checked, "the away seat should come on the clock within a few hands");
+  const woke = t.getGame().seats.find(s => s.key === awayKey)!;
+  assert.equal(woke.away, false);
+  assert.equal(woke.timeoutStreak, 0);
+});
+
 test("autoAct returns null when no hand is running", () => {
   const t = table();
   t.sit(0, "alice", "Alice", 100);
@@ -540,5 +577,7 @@ function seat(key: string, stack: number, status: Seat["status"]): Seat {
     hole: null,
     hasActed: false,
     thinkMsTotal: 0,
+    timeoutStreak: 0,
+    away: false,
   };
 }
