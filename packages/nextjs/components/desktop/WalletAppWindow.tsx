@@ -336,7 +336,12 @@ export function WalletAppWindow({
             mesh={mesh}
             wallet={record}
             mode={mode}
-            walletAddress={isPasskeyMultisig ? activeAddress : undefined}
+            // Both the passkey multisig AND a connected EOA are PERSONAL wallets
+            // with their own per-address conversation — never the Bank singleton.
+            // Passing undefined for the EOA routed reads to mesh.walletChat (Bank)
+            // while sends went to the EOA's per-address store, so messages
+            // vanished. Always key the chat to the active wallet address.
+            walletAddress={activeAddress}
             chainIdOverride={chainIdOverride}
             signers={chatSigners}
             threshold={record.threshold}

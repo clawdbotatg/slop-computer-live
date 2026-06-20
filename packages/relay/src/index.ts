@@ -81,7 +81,7 @@ import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword }
 import { bytesToBase64Url, bytesToHex, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import type { ChessGame } from "./chess.js";
-import { listAvailableAIPlayers } from "./ai-players.js";
+import { listAvailableAIPlayers, isAIKey } from "./ai-players.js";
 import {
   create as glossaryCreate,
   list as glossaryList,
@@ -150,6 +150,7 @@ import {
 import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
 import { chessPayouts, winnerFromChessStatus } from "./wager.js";
 import { MAX_SEATS, RUNOUT_STEP_MS, TURN_TIMEOUT_MS } from "./poker.js";
+import { mergePayouts, payoutAddrOf } from "./escrow.js";
 
 // Shared cookie options for the slop_session cookie. The session cookie
 // gates both live.slop.computer (host/guest desktop) and slop.computer
@@ -496,6 +497,17 @@ setInterval(() => {
       continue;
     }
     if (g.actor < 0) continue;
+    // Sponsored AI seat to act → hand it to the poker mover (it asks the
+    // model, validates/clamps, submits, and always falls back to a safe
+    // default so it can't stall). It owns the AI's clock; the inFlight guard
+    // keeps at most one request per room in flight, so re-ticking is cheap.
+    // We don't also run the human auto-act watchdog for an AI seat — the
+    // mover's own timeout + fallback is the backstop.
+    const actorSeat = g.seats[g.actor];
+    if (actorSeat && isAIKey(actorSeat.key)) {
+      void room.pokerAiMover.tick(() => finishPokerAiAction(room));
+      continue;
+    }
     if (now - g.actorSince < TURN_TIMEOUT_MS) continue;
     const out = room.poker.autoAct();
     if (out && out.ok) {
@@ -507,6 +519,19 @@ setInterval(() => {
     }
   }
 }, 500).unref();
+
+// Re-broadcast + run the end-of-hand hooks after the poker mover submits an
+// AI action (its `notifyAfterAction` callback). Mirrors the human poker_act
+// path: if that action ended the hand, narrate it and maybe settle the
+// tournament; otherwise just push the new table state.
+function finishPokerAiAction(room: Room): void {
+  const g = room.poker.getGame();
+  if (g.status === "complete") {
+    notePokerHandResult(room);
+    maybeEndTournament(room);
+  }
+  broadcastPokerState(room);
+}
 
 // Push the current escrow session to every peer. Call this after any
 // escrow mutation (WS handler, settle hook, payout-executed hook) so all
@@ -630,6 +655,16 @@ function seatFundedPlayers(room: Room): void {
   }
 }
 
+// May this caller deal/advance the tournament? A seated player, an escrow
+// account holder, OR the backer of any account (a sponsor who funded a bot but
+// didn't buy themselves in still has skin in the game). Keeps randos out.
+function isPokerParticipant(room: Room, callerKey: string): boolean {
+  if (room.escrow.accountOf(callerKey)) return true;
+  if (room.poker.getGame().seats.some(s => s.key === callerKey)) return true;
+  const esc = room.escrow.get();
+  return !!esc && esc.accounts.some(a => a.backer === callerKey);
+}
+
 // Has every funded entrant been seated (no late-reg buy-in still pending)?
 // We only end a tournament once this holds, so a player who just bought in
 // can't be stranded out of the prize pool by a premature finish.
@@ -656,6 +691,11 @@ function maybeEndTournament(room: Room): boolean {
 
   const pool = esc.accounts.reduce((s, a) => s + BigInt(a.depositedWei), 0n);
   if (pool <= 0n) return false;
+  // A finisher's prize pays out to its escrow account's payout address — the
+  // seat key for an ordinary player, the sponsor's (backer's) address for a
+  // sponsored AI seat. Resolve every leg through this before settling.
+  const recipientByKey = new Map(esc.accounts.map(a => [a.key, payoutAddrOf(a)]));
+  const recipientOf = (k: string): string => recipientByKey.get(k) ?? k;
   const bps = payoutStructureBps(standings.length);
   const payouts: { to: string; amountWei: string }[] = [];
   let paid = 0n;
@@ -663,17 +703,25 @@ function maybeEndTournament(room: Room): boolean {
     const finisher = standings[i];
     if (!finisher) return;
     const amt = (pool * BigInt(b)) / 10000n;
-    if (amt > 0n) payouts.push({ to: finisher.key, amountWei: amt.toString() });
+    if (amt > 0n) payouts.push({ to: recipientOf(finisher.key), amountWei: amt.toString() });
     paid += amt;
   });
-  // Rounding dust goes to 1st place so Σ payouts == pool exactly.
+  // Rounding dust goes to 1st place so Σ payouts == pool exactly (added to the
+  // raw 1st-place leg before the merge below).
   const dust = pool - paid;
   if (dust > 0n && payouts[0]) payouts[0].amountWei = (BigInt(payouts[0].amountWei) + dust).toString();
   if (payouts.length === 0) return false;
 
-  const res = room.escrow.settle(payouts, {
+  // Merge legs that resolve to the same address (e.g. a sponsor who both
+  // placed AND had a backed bot place) into one leg — the on-chain payout
+  // proposal is built 1:1 from this plan and matched leg-by-leg.
+  const merged = mergePayouts(payouts);
+
+  const res = room.escrow.settle(merged, {
     settleKind: "tournament",
-    standings: standings.map(s => ({ key: s.key, label: s.label, place: s.place })),
+    // `recipient` lets the client show each prize next to the right standings
+    // row even when the payout was redirected to a sponsor's address.
+    standings: standings.map(s => ({ key: s.key, label: s.label, place: s.place, recipient: recipientOf(s.key) })),
   });
   if (!res.ok) {
     console.error("[poker] tournament settle failed:", res.error);
@@ -3670,7 +3718,7 @@ app.post("/v1/poker/next-hand", async (req, reply) => {
   const callerKey = (a.session.address ?? a.session.handle ?? "").toLowerCase();
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
   const room = roomFromReq(req);
-  if (!room.escrow.accountOf(callerKey) && !room.poker.getGame().seats.some(s => s.key === callerKey)) {
+  if (!isPokerParticipant(room, callerKey)) {
     return reply.code(403).send({ error: "not_a_player" });
   }
   seatFundedPlayers(room);
@@ -8143,13 +8191,80 @@ app.register(async function signalRoutes(fastify) {
           })().catch(err => console.error("[poker] join failed:", err));
           return;
         }
+        case "poker_sponsor_ai": {
+          // Sponsor an LLM into the tournament: the sponsor pays the buy-in
+          // from THEIR wallet (same deposit as poker_join), and the relay
+          // seats an autonomous AI player whose prize pays back to the
+          // sponsor. The AI seat is keyed `ai:<model>#<nonce>` (unique, so one
+          // sponsor can back several bots and play their own seat too); the
+          // escrow account records `backer = sponsor` so settlement redirects
+          // the AI's winnings to the sponsor's address. The poker mover drives
+          // the seat's play once it's seated.
+          if (!info.address) return send(socket, { type: "error", error: "escrow_needs_address" });
+          if (typeof msg.txHash !== "string") return send(socket, { type: "error", error: "bad_poker_sponsor" });
+          if (typeof msg.modelId !== "string") return send(socket, { type: "error", error: "bad_poker_sponsor" });
+          const model = listAvailableAIPlayers().find(p => p.id === msg.modelId);
+          if (!model) return send(socket, { type: "error", error: "unknown_model" });
+          const esc = room.escrow.get();
+          if (!esc || esc.game !== "poker" || esc.status !== "open") {
+            return send(socket, { type: "error", error: "no_open_table" });
+          }
+          const deadline = typeof esc.meta.buyinDeadline === "number" ? esc.meta.buyinDeadline : 0;
+          if (Date.now() > deadline) return send(socket, { type: "error", error: "buyin_closed" });
+          const sponsor = info.address.toLowerCase();
+          const buyinWei = typeof esc.meta.buyinWei === "string" ? esc.meta.buyinWei : null;
+          if (!buyinWei) return send(socket, { type: "error", error: "bad_table" });
+          // Sanitise the bot's name: strip control chars, clamp length, fall
+          // back to the model's label.
+          const rawName = typeof msg.name === "string" ? msg.name : "";
+          const botName = rawName.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 24) || model.label;
+          const txHash = msg.txHash;
+          const sponsorInfo = info;
+          void (async () => {
+            // Verify the SPONSOR funded the multisig — `backer` is derived from
+            // the verified on-chain sender, never from client input, so nobody
+            // can redirect another player's deposit.
+            const check = await verifyEthDeposit({ chainId: esc.chainId, txHash, from: sponsor, to: esc.multisig, minValueWei: BigInt(buyinWei) });
+            if (!check.ok) return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: check.reason, txHash });
+            const cur = room.escrow.get();
+            if (!cur || cur.game !== "poker" || cur.status !== "open") {
+              return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: "table_gone", txHash });
+            }
+            if (room.escrow.isTxConsumed(txHash)) return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: "tx_already_used", txHash });
+            const taken = new Set(cur.accounts.map(a => Number.parseInt(a.role, 10)));
+            let seatIdx = -1;
+            for (let i = 0; i < MAX_SEATS; i++) if (!taken.has(i)) { seatIdx = i; break; }
+            if (seatIdx < 0) return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: "table_full", txHash });
+            // Unique seat key: ai:<model>#<nonce>. getAIPlayer strips the nonce
+            // to recover the model config.
+            let aiKey = `ai:${model.id}#${randomBytes(3).toString("hex")}`;
+            while (cur.accounts.some(a => a.key === aiKey)) aiKey = `ai:${model.id}#${randomBytes(3).toString("hex")}`;
+            const added = room.escrow.addAccount({ key: aiKey, label: botName, role: String(seatIdx), requiredWei: buyinWei, backer: sponsor });
+            if (!added.ok) return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: added.error, txHash });
+            const rec = room.escrow.recordDeposit(aiKey, { txHash, amountWei: check.valueWei });
+            if (!rec.ok) return send(socket, { type: "poker_sponsor_ai_result", ok: false, reason: rec.error, txHash });
+            seatFundedPlayers(room); // seats now if between hands; otherwise next deal
+            broadcastEscrowState(room);
+            broadcastPokerState(room);
+            send(socket, { type: "poker_sponsor_ai_result", ok: true, txHash, aiKey });
+            room.transcript.appendAction({
+              kind: "wallet",
+              address: sponsorInfo.address,
+              handle: sponsorInfo.handle,
+              anonId: sponsorInfo.anonId,
+              text: `🤖 ${actorName(sponsorInfo)} sponsored ${botName} (${model.label}) into the poker tournament — bought in for ${formatEth(buyinWei)} ETH`,
+              meta: { escrowId: cur.id, seat: seatIdx, model: model.id, aiKey, txHash },
+            });
+          })().catch(err => console.error("[poker] sponsor failed:", err));
+          return;
+        }
         case "poker_start":
         case "poker_next_hand": {
           // Deal a hand. Seats any newly-joined funded players first, then
           // starts. Needs ≥2 seated players with chips. Any participant can
           // kick it off ("optionally start" once enough players are in).
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
-          if (!room.escrow.accountOf(callerKey) && !room.poker.getGame().seats.some(s => s.key === callerKey)) {
+          if (!isPokerParticipant(room, callerKey)) {
             return send(socket, { type: "error", error: "not_a_player" });
           }
           seatFundedPlayers(room);

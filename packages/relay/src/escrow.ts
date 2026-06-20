@@ -39,12 +39,21 @@ export type EscrowDeposit = {
 };
 
 export type EscrowAccount = {
-  /** Lowercased address — must be able to fund AND sign the payout. */
+  /** Stable account identity. Usually a lowercased address (which then both
+   *  funds AND receives the payout). But it may be a non-address seat id —
+   *  e.g. a sponsored AI poker seat "ai:<model>#<nonce>" — in which case
+   *  `backer` carries the address that funds + receives instead. The
+   *  fund/sign invariant belongs to `backer ?? key`, not `key`. */
   key: string;
   label: string;
   /** Game-defined role/seat, e.g. "white"/"black" for chess, seat index
    *  for poker. Purely for the game's UI; the escrow ignores it. */
   role: string;
+  /** Optional payout/funder address. Set when `key` is not itself a
+   *  spendable address (a sponsored AI seat): the sponsor funds the buy-in
+   *  and every payout/refund for this account is redirected here. Undefined
+   *  for ordinary seats (key is the address). Always lowercased. */
+  backer?: string;
   /** Buy-in this account must deposit to count as funded. */
   requiredWei: string;
   /** Total verified deposits (accumulates across rebuys). */
@@ -94,7 +103,7 @@ export type OpenEscrowArgs = {
   game: string;
   chainId: number;
   multisig: string;
-  accounts: { key: string; label: string; role: string; requiredWei: string }[];
+  accounts: { key: string; label: string; role: string; requiredWei: string; backer?: string }[];
   meta?: Record<string, unknown>;
   createdBy: string;
   /** Default true (chess). Pass false for the poker buy-in-window model:
@@ -120,6 +129,28 @@ function isWei(v: string): boolean {
 
 function isTerminal(status: EscrowStatus): boolean {
   return status === "settled" || status === "cancelled";
+}
+
+/** The spendable address a payout/refund for this account is sent to: the
+ *  backer if one was set (a sponsored AI seat funded by its sponsor), else the
+ *  key itself (an ordinary address-keyed seat). Exported so the game layer
+ *  builds settlement legs against the same address the escrow validates. */
+export function payoutAddrOf(a: { key: string; backer?: string }): string {
+  return a.backer ?? a.key;
+}
+
+/** Sum a list of payout/refund legs by recipient address into one leg each.
+ *  A sponsor who plays their own seat AND backs an AI (or backs several AIs)
+ *  produces multiple legs that resolve to the same address; the on-chain
+ *  payout proposal is built 1:1 from the stored plan and matched leg-by-leg,
+ *  so the plan must carry a single merged leg per address. */
+export function mergePayouts(legs: EscrowPayout[]): EscrowPayout[] {
+  const byAddr = new Map<string, bigint>();
+  for (const l of legs) {
+    const to = l.to.toLowerCase();
+    byAddr.set(to, (byAddr.get(to) ?? 0n) + BigInt(l.amountWei));
+  }
+  return [...byAddr].map(([to, amt]) => ({ to, amountWei: amt.toString() }));
 }
 
 export class EscrowState {
@@ -210,7 +241,11 @@ export class EscrowState {
     const accounts: EscrowAccount[] = [];
     for (const a of inputAccounts) {
       const key = a.key.toLowerCase();
-      if (!isAddress(key)) return { ok: false, error: "accounts_must_be_addresses" };
+      const backer = a.backer?.toLowerCase();
+      if (backer !== undefined && !isAddress(backer)) return { ok: false, error: "bad_backer" };
+      // A non-address key (a sponsored AI seat) is allowed ONLY with a backer
+      // address that funds + receives in its place.
+      if (!isAddress(key) && !backer) return { ok: false, error: "accounts_must_be_addresses" };
       if (keys.has(key)) return { ok: false, error: "duplicate_account" };
       keys.add(key);
       if (!isWei(a.requiredWei) || BigInt(a.requiredWei) <= 0n) return { ok: false, error: "bad_buyin" };
@@ -218,6 +253,7 @@ export class EscrowState {
         key,
         label: a.label || key,
         role: a.role,
+        backer,
         requiredWei: a.requiredWei,
         depositedWei: "0",
         balanceWei: "0",
@@ -274,18 +310,26 @@ export class EscrowState {
    *  new player buys a seat mid-window. The caller verifies their deposit
    *  on-chain first, then addAccount + recordDeposit. Rejects a duplicate
    *  or a non-address key. */
-  addAccount(account: { key: string; label: string; role: string; requiredWei: string }): EscrowResult {
+  addAccount(account: { key: string; label: string; role: string; requiredWei: string; backer?: string }): EscrowResult {
     this.load();
     if (!this.current) return { ok: false, error: "no_escrow" };
     if (this.current.status !== "open") return { ok: false, error: "not_open" };
     const key = account.key.toLowerCase();
-    if (!isAddress(key)) return { ok: false, error: "accounts_must_be_addresses" };
+    const backer = account.backer?.toLowerCase();
+    if (backer !== undefined && !isAddress(backer)) return { ok: false, error: "bad_backer" };
+    // A non-address key (a sponsored AI seat "ai:<model>#<nonce>") is allowed
+    // ONLY when a backer address is supplied — that address funds the buy-in
+    // and receives this account's payout/refund in its place.
+    if (!isAddress(key) && !backer) return { ok: false, error: "accounts_must_be_addresses" };
+    // The duplicate check stays on `key` (the unique seat id), NOT the backer —
+    // one sponsor can back several AI seats, all sharing one backer address.
     if (this.current.accounts.some(a => a.key === key)) return { ok: false, error: "duplicate_account" };
     if (!isWei(account.requiredWei) || BigInt(account.requiredWei) <= 0n) return { ok: false, error: "bad_buyin" };
     this.current.accounts.push({
       key,
       label: account.label || key,
       role: account.role,
+      backer,
       requiredWei: account.requiredWei,
       depositedWei: "0",
       balanceWei: "0",
@@ -340,12 +384,15 @@ export class EscrowState {
       return { ok: false, error: "not_settleable" };
     }
     if (!payouts || payouts.length === 0) return { ok: false, error: "no_payouts" };
-    const keys = new Set(this.current.accounts.map(a => a.key));
+    // Validate against the set of RESOLVED recipient addresses (backer ?? key),
+    // not the raw account keys — a sponsored AI seat's key isn't an address but
+    // its payout lands on the sponsor's (backer's) address.
+    const recipients = new Set(this.current.accounts.map(a => payoutAddrOf(a)));
     const totalDeposited = this.current.accounts.reduce((s, a) => s + BigInt(a.depositedWei), 0n);
     let totalPayout = 0n;
     for (const p of payouts) {
       const to = p.to.toLowerCase();
-      if (!keys.has(to)) return { ok: false, error: "payout_to_non_participant" };
+      if (!recipients.has(to)) return { ok: false, error: "payout_to_non_participant" };
       if (!isWei(p.amountWei) || BigInt(p.amountWei) <= 0n) return { ok: false, error: "bad_payout_amount" };
       totalPayout += BigInt(p.amountWei);
     }
@@ -417,8 +464,10 @@ export class EscrowState {
       this.current.status = "cancelled";
       return { ok: true, session: this.touch(), needsRefund: false };
     }
+    // Refund each funder to its payout address (the sponsor's, for AI seats),
+    // merging legs so a sponsor who backed several seats is refunded once.
     const res = this.settle(
-      funded.map(a => ({ to: a.key, amountWei: a.depositedWei })),
+      mergePayouts(funded.map(a => ({ to: payoutAddrOf(a), amountWei: a.depositedWei }))),
       { settleKind: "refund" },
     );
     if (!res.ok) return res;

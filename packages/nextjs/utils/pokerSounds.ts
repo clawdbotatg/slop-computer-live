@@ -1,12 +1,16 @@
-// Synthesized poker-table sound effects via the Web Audio API. There are NO
-// audio assets — every sound (chip clatter, felt tap, card flick, deal riffle,
-// muck swish, win chime) is generated on the fly, so there is nothing to
-// download or commit. The PokerWindow diffs the public game state and calls
-// these so the whole table is audible: chips when anyone pushes money in, a
-// tap when someone checks, card flicks as the board comes out, a chime on a win.
+// Poker-table sound effects via the Web Audio API. Two kinds of source:
+//   • FOLEY (chips, card flicks, deal, fold) = real CC0 recordings from Kenney's
+//     "Casino Audio" pack, served as mono MP3 from /public/sounds/poker. These
+//     used to be synthesized and read as "alien" — a recording of clay chips is
+//     just clay chips, so we play the real thing.
+//   • TONAL cues (felt tap on check, slider tick, win chime) = still synthesized;
+//     those are simple and sound right generated on the fly.
+// Both play through one master gain, so mute/volume cover everything. PokerWindow
+// diffs the public game state and calls these so the whole table is audible.
 //
 // Browsers won't let an AudioContext make sound until a user gesture, so the
-// first local interaction with the table unlocks it (see unlockPokerAudio).
+// first local interaction with the table unlocks it AND warms the sample cache
+// (see unlockPokerAudio), so the first bet isn't silent.
 
 const MUTE_KEY = "slop-poker-muted-v1";
 
@@ -57,9 +61,64 @@ function audio(): { c: AudioContext; m: GainNode } | null {
   return { c: ctx, m: master };
 }
 
-// Call from a real user gesture (a pointerdown on the table) to unlock audio.
+// Call from a real user gesture (a pointerdown on the table) to unlock audio
+// and warm the sample cache so the first foley hit isn't silent.
 export function unlockPokerAudio(): void {
-  audio();
+  const a = audio();
+  if (!a) return;
+  for (const u of ALL_SAMPLES) loadSample(a.c, u);
+}
+
+// ─── Recorded samples (CC0, Kenney "Casino Audio") ───────────────────
+// Foley cues are real recordings. Files live under /public/sounds/poker as mono
+// MP3 (universal browser support — .ogg won't decode on Safari/iOS). Each is
+// decoded once into an AudioBuffer and played through the master gain, so the
+// mute flag and volume still apply. Several variants per cue → natural variation
+// (a different chip clack every bet) the old synth faked with randomness.
+const SOUNDS_BASE = "/sounds/poker";
+const CHIP_BET = [1, 2, 3, 4, 5, 6].map(n => `${SOUNDS_BASE}/chips-stack-${n}.mp3`);
+const CARD_SLIDE = [1, 2, 3, 4, 5, 6].map(n => `${SOUNDS_BASE}/card-slide-${n}.mp3`);
+const CARD_SHOVE = [1, 2, 3, 4].map(n => `${SOUNDS_BASE}/card-shove-${n}.mp3`);
+const DEAL = `${SOUNDS_BASE}/deal.mp3`;
+const ALL_SAMPLES = [...CHIP_BET, ...CARD_SLIDE, ...CARD_SHOVE, DEAL];
+
+const buffers = new Map<string, AudioBuffer>();
+const loadingSamples = new Set<string>();
+
+function loadSample(c: AudioContext, url: string): void {
+  if (buffers.has(url) || loadingSamples.has(url)) return;
+  loadingSamples.add(url);
+  fetch(url)
+    .then(r => r.arrayBuffer())
+    .then(b => c.decodeAudioData(b))
+    .then(buf => void buffers.set(url, buf))
+    .catch(() => {
+      /* missing/undecodable sample — that cue just stays silent rather than throwing */
+    })
+    .finally(() => loadingSamples.delete(url));
+}
+
+// Play a decoded sample through the master gain. If it isn't decoded yet (only
+// possible before unlock warms the cache), kick off a load so the next trigger
+// has it, and skip this one. `when` offsets the start (for staggering a flop).
+function playSample(url: string, gain = 1, when = 0): void {
+  const a = audio();
+  if (!a) return;
+  const buf = buffers.get(url);
+  if (!buf) {
+    loadSample(a.c, url);
+    return;
+  }
+  const src = a.c.createBufferSource();
+  src.buffer = buf;
+  const g = a.c.createGain();
+  g.gain.value = gain;
+  src.connect(g).connect(a.m);
+  src.start(a.c.currentTime + when);
+}
+
+function playRandomSample(pool: string[], gain = 1): void {
+  playSample(pool[Math.floor(Math.random() * pool.length)], gain);
 }
 
 function noise(c: AudioContext): AudioBuffer {
@@ -143,49 +202,11 @@ export function sfxCheck(): void {
   burst(a.c, a.m, t, 0.03, { type: "highpass", freq: 1600, gain: 0.14 });
 }
 
-// Bet / call / raise / blinds — clay chips clacking onto a stack.
-//
-// Lesson from three bad takes: ANYTHING that holds a pitch here sings, and a
-// few of them at slightly different pitches *warble* — that warble is the
-// "alien" sound. High-Q filter rings do it; oscillator tones do it. So this
-// has NEITHER. Clay is a hard, damped material: it makes sharp, dry clacks
-// with a short low-mid body and no ring whatsoever. Built entirely from very
-// short filtered-noise transients — nothing in here can sustain a pitch long
-// enough to warble. The low-mid body (~300-600 Hz) is what separates a chip
-// "clack" from the card riffle's high-frequency hiss (so it can't be the deal).
+// Bet / call / raise / blinds — real clay chips set onto a stack (Kenney CC0,
+// one of six recorded variants picked at random so no two bets sound identical).
 export function sfxChips(): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const t = a.c.currentTime;
-
-  // A soft low thump as the stack meets the felt — lowpassed noise (NOT a tone),
-  // so it adds weight without a pitched "boom".
-  burst(a.c, a.m, t, 0.05, { type: "lowpass", freq: 220, q: 0.7, gain: 0.16 });
-
-  // The clacks. Each chip = a brief bright contact click over a short, dull
-  // low-mid clay body. Both are low-Q (a click, not a tone). Bunched tight and
-  // slightly irregular = a stack settling; energy eases off toward the tail.
-  const n = 6 + Math.floor(Math.random() * 4); // 6-9 chips
-  let dt = 0;
-  for (let i = 0; i < n; i++) {
-    const settle = 1 - (i / n) * 0.6; // earliest clacks loudest
-    // Contact click — brief, bright, broadband (low Q ⇒ a tick, never a pitch).
-    burst(a.c, a.m, t + dt, 0.01, {
-      type: "bandpass",
-      freq: 2200 + Math.random() * 1200,
-      q: 0.9,
-      gain: (0.16 + Math.random() * 0.08) * settle,
-    });
-    // Clay body — short, dull, low-mid "clack". This is what says CHIP not card.
-    burst(a.c, a.m, t + dt, 0.028, {
-      type: "bandpass",
-      freq: 320 + Math.random() * 260,
-      q: 2.0,
-      gain: (0.3 + Math.random() * 0.12) * settle,
-    });
-    dt += 0.016 + Math.random() * 0.022; // tight, irregular clatter
-  }
+  playRandomSample(CHIP_BET, 0.9);
 }
 
 // A single dry detent click — the bet slider snapping one big-blind notch. Tiny
@@ -198,36 +219,27 @@ export function sfxTick(): void {
   burst(a.c, a.m, t, 0.012, { type: "highpass", freq: 2600, gain: 0.07 });
 }
 
-// A card (or a whole flop) flicked onto the felt.
+// A card (or a whole flop) flicked onto the felt — a real card slide per card,
+// each a random variant, staggered so a flop reads as three distinct cards.
 export function sfxCardFlip(count = 1): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const t = a.c.currentTime;
   const cards = Math.max(1, Math.min(5, count));
   for (let i = 0; i < cards; i++) {
-    burst(a.c, a.m, t + i * 0.11, 0.07, { type: "highpass", freq: 1200, gain: 0.22, sweepTo: 5000 });
+    const url = CARD_SLIDE[Math.floor(Math.random() * CARD_SLIDE.length)];
+    playSample(url, 0.8, i * 0.12);
   }
 }
 
-// Start of a hand — a quick riffle/deal.
+// Start of a hand — a real riffle/deal (the shuffle recording, trimmed).
 export function sfxDeal(): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const t = a.c.currentTime;
-  for (let i = 0; i < 11; i++) {
-    burst(a.c, a.m, t + i * 0.027, 0.02, { type: "highpass", freq: 2000, gain: 0.11 });
-  }
+  playSample(DEAL, 0.85);
 }
 
-// Fold — cards mucked, a soft downward swish.
+// Fold — cards mucked, a real card shove across the felt (random variant).
 export function sfxFold(): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const t = a.c.currentTime;
-  burst(a.c, a.m, t, 0.16, { type: "bandpass", freq: 1600, q: 0.7, gain: 0.16, sweepTo: 480 });
+  playRandomSample(CARD_SHOVE, 0.8);
 }
 
 // Win — a bright two-note chime over a cascade of chips being pushed across.

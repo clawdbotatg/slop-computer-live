@@ -11,8 +11,10 @@
 
 export type AIPlayerConfig = {
   /** Stable id, kebab-case. The chess game stores this player as
-   *  ownerKey = `ai:${id}`. Don't change after games have been played
-   *  or history rows will orphan. */
+   *  ownerKey = `ai:${id}`. Poker sponsors append a per-seat nonce
+   *  (`ai:${id}#${nonce}`) so several seats can run the same model;
+   *  getAIPlayer strips that suffix before lookup. Don't change after
+   *  games have been played or history rows will orphan. */
   id: string;
   /** Display label shown in the lobby dropdown. */
   label: string;
@@ -255,7 +257,10 @@ export function isAIKey(ownerKey: string | null | undefined): boolean {
  *  unknown, or the env var is unset (key was rotated out). */
 export function getAIPlayer(ownerKey: string): (AIPlayerConfig & { apiKey: string }) | null {
   if (!isAIKey(ownerKey)) return null;
-  const id = ownerKey.slice(PREFIX.length);
+  // Poker seats carry a per-seat nonce ("ai:<id>#<nonce>") so multiple seats
+  // can run the same model — strip it to recover the config id. Chess keys
+  // ("ai:<id>") have no suffix, so this is a no-op for them.
+  const id = ownerKey.slice(PREFIX.length).split("#", 1)[0]!.toLowerCase();
   const cfg = AI_PLAYERS.find(p => p.id === id);
   if (!cfg) return null;
   const apiKey = process.env[cfg.envVar];

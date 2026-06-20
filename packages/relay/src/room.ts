@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import type { Peer, PeerInfo } from "./peers.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { AIMover } from "./ai-mover.js";
+import { PokerAIMover } from "./poker-mover.js";
 import { RoomApps } from "./apps.js";
 import { BrowserRegistry } from "./browsers.js";
 import { ChatHistory } from "./chat.js";
@@ -365,6 +366,7 @@ export class Room {
   readonly chess: ChessState;
   readonly aiMover: AIMover;
   readonly poker: PokerState;
+  readonly pokerAiMover: PokerAIMover;
   readonly wallet: WalletState;
   readonly escrow: EscrowState;
   readonly walletChat: WalletChatState;
@@ -432,6 +434,7 @@ export class Room {
     this.chess = new ChessState(paths.chess.path, paths.chess.legacy);
     this.aiMover = new AIMover(this.chess);
     this.poker = new PokerState(paths.poker.path);
+    this.pokerAiMover = new PokerAIMover(this.poker);
     this.music = new MusicState(paths.music.path);
     this.wallet = new WalletState(paths.wallet.path, paths.wallet.legacy);
     this.escrow = new EscrowState(paths.escrow.path);
