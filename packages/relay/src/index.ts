@@ -150,7 +150,7 @@ import {
 } from "./wallet-data.js";
 import { type WalletIntentInput, runWalletIntent } from "./wallet-intent.js";
 import { chessPayouts, winnerFromChessStatus } from "./wager.js";
-import { MAX_SEATS, RUNOUT_STEP_MS, TURN_TIMEOUT_MS } from "./poker.js";
+import { AWAY_TIMEOUT_MS, MAX_SEATS, RUNOUT_STEP_MS, TURN_TIMEOUT_MS } from "./poker.js";
 import { mergePayouts, payoutAddrOf } from "./escrow.js";
 
 // Shared cookie options for the slop_session cookie. The session cookie
@@ -509,7 +509,10 @@ setInterval(() => {
       void room.pokerAiMover.tick(() => finishPokerAiAction(room), { config: pokerTableConfig(room) });
       continue;
     }
-    if (now - g.actorSince < TURN_TIMEOUT_MS) continue;
+    // An "away" seat (timed out repeatedly) only gets the short clock, so a
+    // ghosting player stalls the table for a few seconds instead of a minute.
+    const timeout = actorSeat?.away ? AWAY_TIMEOUT_MS : TURN_TIMEOUT_MS;
+    if (now - g.actorSince < timeout) continue;
     const out = room.poker.autoAct();
     if (out && out.ok) {
       if (out.ended) {

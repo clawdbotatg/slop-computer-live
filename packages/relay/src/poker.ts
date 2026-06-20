@@ -29,6 +29,14 @@ export const MAX_SEATS = 8;
  *  stalling the table — and stranding the pot. */
 export const TURN_TIMEOUT_MS = 60_000;
 
+/** After a seat lets the clock run all the way out this many turns in a row
+ *  (the relay auto-acts for them each time), they're flagged "away": their
+ *  turn clock drops to AWAY_TIMEOUT_MS so one ghosting player only stalls the
+ *  table for a few seconds per hand. Any voluntary action wakes them back up
+ *  to the full clock. */
+export const AWAY_TIMEOUT_STREAK = 2;
+export const AWAY_TIMEOUT_MS = 3_000;
+
 /** After a contested showdown, hold the table for this long before the
  *  next hand can be dealt, so everyone can see the revealed hands + who
  *  won. Enforced server-side (startHand rejects early) and surfaced to the
@@ -73,6 +81,14 @@ export type Seat = {
    *  action's think time. Public; drives the seat's running clock. Reset only
    *  on a fresh session (sit/reset), NOT per hand. */
   thinkMsTotal: number;
+  /** Consecutive turns this seat let the clock run all the way out (relay
+   *  auto-acted for them). Reset to 0 on any voluntary action. Persists across
+   *  hands so a player who keeps ghosting accumulates timeouts. */
+  timeoutStreak: number;
+  /** Flagged AFK after AWAY_TIMEOUT_STREAK straight timeouts: their turn clock
+   *  drops to AWAY_TIMEOUT_MS and the UI marks them away. Cleared the moment
+   *  they act voluntarily. */
+  away: boolean;
 };
 
 export type Pot = { amountChips: number; eligible: number[] };
@@ -341,6 +357,8 @@ export class PokerState {
       hole: null,
       hasActed: false,
       thinkMsTotal: 0,
+      timeoutStreak: 0,
+      away: false,
     };
     this.game.seats.push(seat);
     // Keep the array ordered by physical seat so array-index rotation
@@ -488,7 +506,7 @@ export class PokerState {
 
   // --- action --------------------------------------------------------
 
-  act(callerKey: string, args: ActArgs): ActOutcome {
+  act(callerKey: string, args: ActArgs, opts?: { auto?: boolean }): ActOutcome {
     this.load();
     if (this.game.status !== "running") return { ok: false, error: "no_hand" };
     const idx = this.seatIdxByKey(callerKey);
@@ -536,6 +554,18 @@ export class PokerState {
     // Accumulate this seat's whole-tournament think time. (|| 0 covers a seat
     // persisted before this field existed.)
     seat.thinkMsTotal = (seat.thinkMsTotal || 0) + thinkMs;
+
+    // AFK tracking. An auto-act (the clock ran all the way out) extends the
+    // timeout streak; a voluntary action wakes the player up — clearing the
+    // streak and the away flag, so they get the full clock again next turn.
+    if (opts?.auto) {
+      seat.timeoutStreak = (seat.timeoutStreak || 0) + 1;
+      if (seat.timeoutStreak >= AWAY_TIMEOUT_STREAK) seat.away = true;
+    } else {
+      seat.timeoutStreak = 0;
+      seat.away = false;
+    }
+
     // Log the (now-validated) action for the public feed + think timers.
     this.game.actions.push({
       seat: idx,
@@ -562,7 +592,7 @@ export class PokerState {
     const seat = this.game.seats[this.game.actor];
     if (!seat || seat.status !== "active") return null;
     const toCall = this.game.currentBet - seat.committed;
-    return this.act(seat.key, { action: toCall > 0 ? "fold" : "check" });
+    return this.act(seat.key, { action: toCall > 0 ? "fold" : "check" }, { auto: true });
   }
 
   private commit(seat: Seat, chips: number): void {
@@ -839,7 +869,17 @@ export class PokerState {
     const seats = this.game.seats;
     this.game = this.emptyGame();
     // Keep seated players (with their stacks) for a fresh session.
-    this.game.seats = seats.map(s => ({ ...s, committed: 0, handCommitted: 0, hole: null, hasActed: false, status: "out", thinkMsTotal: 0 }));
+    this.game.seats = seats.map(s => ({
+      ...s,
+      committed: 0,
+      handCommitted: 0,
+      hole: null,
+      hasActed: false,
+      status: "out",
+      thinkMsTotal: 0,
+      timeoutStreak: 0,
+      away: false,
+    }));
     this.touch();
   }
 
@@ -996,8 +1036,12 @@ export class PokerState {
       startedAt: g.startedAt,
       actorSince: g.actorSince,
       // When the current actor will be auto-acted if idle (drives the
-      // client's turn countdown). Null when no one is on the clock.
-      actorDeadline: g.status === "running" && g.actor >= 0 ? g.actorSince + TURN_TIMEOUT_MS : null,
+      // client's turn countdown). Null when no one is on the clock. An "away"
+      // (repeatedly-timed-out) actor gets the short AWAY_TIMEOUT_MS clock.
+      actorDeadline:
+        g.status === "running" && g.actor >= 0
+          ? g.actorSince + (g.seats[g.actor]?.away ? AWAY_TIMEOUT_MS : TURN_TIMEOUT_MS)
+          : null,
       // When the next hand can be dealt (post-showdown pause). Null unless
       // we're holding on a contested showdown.
       nextHandAt: g.handEndedAt !== null ? g.handEndedAt + SHOWDOWN_PAUSE_MS : null,
@@ -1018,6 +1062,7 @@ export class PokerState {
         hasCards: s.hole !== null && (s.status === "active" || s.status === "allin"),
         hole: revealed.get(i) ?? null,
         thinkMsTotal: s.thinkMsTotal || 0,
+        away: s.away ?? false,
       })),
     };
   }
