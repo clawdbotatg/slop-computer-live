@@ -492,6 +492,39 @@ test("all-in is exempt from the small-blind increment rule", () => {
   assert.equal(t.act("alice", { action: "raise", toChips: 995 }).ok, true);
 });
 
+test("action log: records each voluntary action with think time (blinds excluded)", () => {
+  const t = table(10, 20);
+  t.sit(0, "a", "A", 1000);
+  t.sit(1, "b", "B", 1000);
+  t.startHand();
+  // Heads-up: the button/SB acts first preflop and owes the blind difference.
+  const sb = t.getGame().seats[t.getGame().actor]!;
+  assert.equal(t.act(sb.key, { action: "call" }).ok, true);
+  const bb = t.getGame().seats[t.getGame().actor]!;
+  assert.equal(t.act(bb.key, { action: "check" }).ok, true);
+
+  const log = t.getGame().actions;
+  assert.equal(log.length, 2); // forced blinds are NOT logged — only decisions
+  assert.equal(log[0]!.kind, "call");
+  assert.equal(log[0]!.amount, 10); // SB completed from 10 → 20
+  assert.equal(log[1]!.kind, "check");
+  assert.equal(log[1]!.street, "preflop");
+  assert.ok(log.every(a => typeof a.thinkMs === "number" && a.thinkMs >= 0));
+});
+
+test("action log: resets at the start of each hand", () => {
+  const t = table(10, 20);
+  t.sit(0, "a", "A", 1000);
+  t.sit(1, "b", "B", 1000);
+  t.startHand();
+  const sb = t.getGame().seats[t.getGame().actor]!;
+  t.act(sb.key, { action: "fold" }); // heads-up fold ends the hand immediately
+  assert.equal(t.getGame().actions.length, 1);
+  assert.equal(t.getGame().status, "complete");
+  t.startHand(); // next hand
+  assert.equal(t.getGame().actions.length, 0);
+});
+
 // --- helpers ----------------------------------------------------------
 
 function seat(key: string, stack: number, status: Seat["status"]): Seat {

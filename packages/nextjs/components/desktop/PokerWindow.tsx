@@ -33,6 +33,7 @@ import type {
   EscrowSession,
   PeerMeshState,
   PokerActionKind,
+  PokerActionLogEntry,
   PokerSeatPublic,
   PokerTableView,
 } from "~~/hooks/usePeerMesh";
@@ -146,6 +147,85 @@ const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgen
   const secs = Math.max(0, Math.ceil((deadline - now) / 1000));
   const label = secs >= 60 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : `${secs}s`;
   return <span style={{ fontSize: 12, color: secs <= urgentAt ? ACCENT : "var(--slop-text-muted)" }}>⏱ {label}</span>;
+};
+
+// Compact think-time readout (mirrors chess's per-side clock). Sub-minute
+// shows tenths; longer rolls over to "m s".
+const fmtThink = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.floor(s % 60)}s`;
+};
+
+// Per-seat think timer: a live clock ticking up while the seat is on the clock
+// (counts from actorSince), otherwise the time it took on its most recent
+// action this hand. All public — just elapsed time, no hidden info.
+const SeatThinkTime = ({ live, actorSince, lastMs }: { live: boolean; actorSince: number; lastMs: number | null }) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    const id = window.setInterval(() => setTick(t => t + 1), 200); // 5Hz tick
+    return () => window.clearInterval(id);
+  }, [live]);
+  if (live) return <div style={{ fontSize: 10, color: LIME }}>⏱ {fmtThink(Math.max(0, Date.now() - actorSince))}</div>;
+  if (lastMs == null) return null;
+  return <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>⏱ {fmtThink(lastMs)}</div>;
+};
+
+// Compact public action log for the current hand — the last several actions
+// with who, what, and how long they took. Public info only.
+const ActionFeed = ({ actions }: { actions: PokerActionLogEntry[] }) => {
+  if (!actions.length) return null;
+  const recent = actions.slice(-8);
+  return (
+    <div
+      style={{
+        background: "#160e2e",
+        border: "1px solid #2a1648",
+        borderRadius: 8,
+        padding: "6px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+      }}
+    >
+      <span style={{ fontSize: 10, color: "var(--slop-text-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+        Action log
+      </span>
+      {recent.map((a, i) => (
+        <div key={`${a.key}-${i}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }}>
+          <span
+            style={{ color: "var(--slop-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            <span style={{ opacity: 0.55 }}>{a.street}</span> {a.key.startsWith("ai:") && "🤖 "}
+            <b>{a.label}</b> {actionVerb(a)}
+            {a.allin && <span style={{ color: ACCENT }}> · all-in</span>}
+          </span>
+          <span style={{ color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>⏱ {fmtThink(a.thinkMs)}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// One line of the public action feed, e.g. "raised 120 · all-in".
+const actionVerb = (a: PokerActionLogEntry): string => {
+  switch (a.kind) {
+    case "fold":
+      return "folded";
+    case "check":
+      return "checked";
+    case "call":
+      return `called ${a.amount}`;
+    case "bet":
+      return `bet ${a.amount}`;
+    case "raise":
+      return `raised ${a.amount}`;
+    default:
+      return a.kind;
+  }
 };
 
 // ─── Open a table ────────────────────────────────────────────────────
@@ -916,6 +996,8 @@ const SeatBox = ({
   isMe,
   isWinner,
   myHole,
+  actorSince,
+  lastThinkMs,
 }: {
   seat: PokerSeatPublic;
   isActor: boolean;
@@ -923,6 +1005,11 @@ const SeatBox = ({
   isMe: boolean;
   isWinner: boolean;
   myHole: [string, string] | null;
+  /** When this seat went on the clock (epoch ms) — drives the live timer. */
+  actorSince: number;
+  /** How long this seat took on its most recent action this hand (ms), or
+   *  null if it hasn't acted yet. */
+  lastThinkMs: number | null;
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
@@ -1024,6 +1111,9 @@ const SeatBox = ({
         style={{ fontSize: 12, textAlign: "center", color: seat.stack === 0 ? "var(--slop-text-muted)" : undefined }}
       >
         💰 {seat.stack}
+      </div>
+      <div style={{ textAlign: "center" }}>
+        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} />
       </div>
     </div>
   );
@@ -1299,6 +1389,11 @@ const Felt = ({
   const meIdx = seats.findIndex(s => s.key === myOwnerKey);
   const rot = meIdx >= 0 ? meIdx : 0;
   const tableH = n <= 3 ? 300 : 360;
+  // Each seat's most recent action time this hand (the feed is chronological,
+  // so the last write per seat wins). Powers the per-seat "took Xs" readout.
+  const actions = poker.actions ?? [];
+  const lastThinkBySeat = new Map<number, number>();
+  for (const a of actions) lastThinkBySeat.set(a.seat, a.thinkMs);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1410,6 +1505,8 @@ const Felt = ({
                   isMe={seat.key === myOwnerKey}
                   isWinner={poker.status === "complete" && winnerSeats.has(seat.idx)}
                   myHole={seat.key === myOwnerKey ? myHole : null}
+                  actorSince={poker.actorSince}
+                  lastThinkMs={lastThinkBySeat.get(seat.idx) ?? null}
                 />
               </div>
               {seat.committed > 0 && (
@@ -1428,6 +1525,8 @@ const Felt = ({
           );
         })}
       </div>
+
+      {actions.length > 0 && <ActionFeed actions={actions} />}
 
       {poker.status === "complete" && poker.showdown.length > 0 && (
         <div

@@ -88,6 +88,24 @@ export type PokerActionKind = "fold" | "check" | "call" | "bet" | "raise";
 
 export type ActArgs = { action: PokerActionKind; toChips?: number };
 
+/** One voluntary action in the current hand — fully PUBLIC (no hole cards).
+ *  Drives the client's action feed + per-player think-time display. Reset at
+ *  the start of every hand. Forced blinds are not logged (no decision/clock). */
+export type PokerActionLog = {
+  /** Seats-array index of the actor. */
+  seat: number;
+  key: string;
+  label: string;
+  street: Street;
+  kind: PokerActionKind;
+  /** Chips this action put into the pot (call/bet/raise); 0 for fold/check. */
+  amount: number;
+  /** True if the action moved the seat all-in. */
+  allin: boolean;
+  /** Milliseconds the seat was on the clock before it acted (think time). */
+  thinkMs: number;
+};
+
 export type HandResult = {
   handId: string;
   /** Net chip delta per seat (final stack − start stack). Zero-sum. */
@@ -139,6 +157,9 @@ export type PokerGame = {
    *  1st. The relay reads this to split the prize pool by place. */
   eliminatedOrder: string[];
   lastResult: HandResult | null;
+  /** Public action feed for the current hand (drives the UI log + think
+   *  timers). Reset each hand. */
+  actions: PokerActionLog[];
 };
 
 export type ActOutcome = { ok: true; ended: boolean } | { ok: false; error: string };
@@ -230,6 +251,7 @@ export class PokerState {
       runoutStepAt: 0,
       eliminatedOrder: [],
       lastResult: null,
+      actions: [],
     };
   }
 
@@ -389,6 +411,7 @@ export class PokerState {
     this.game.pots = [];
     this.game.showdown = [];
     this.game.revealed = [];
+    this.game.actions = [];
     this.game.currentBet = 0;
     this.game.minRaise = this.game.bigBlind;
     this.game.street = "preflop";
@@ -469,6 +492,12 @@ export class PokerState {
     const seat = this.game.seats[idx]!;
     if (seat.status !== "active") return { ok: false, error: "cannot_act" };
 
+    // Think time = how long this seat sat on the clock. Capture before
+    // afterAction() advances the actor (which resets actorSince). stackBefore
+    // lets us record exactly how many chips the action committed.
+    const thinkMs = Math.max(0, Date.now() - this.game.actorSince);
+    const street = this.game.street;
+    const stackBefore = seat.stack;
     const toCall = this.game.currentBet - seat.committed;
     switch (args.action) {
       case "fold": {
@@ -498,6 +527,20 @@ export class PokerState {
       default:
         return { ok: false, error: "bad_action" };
     }
+
+    // Log the (now-validated) action for the public feed + think timers.
+    this.game.actions.push({
+      seat: idx,
+      key: seat.key,
+      label: seat.label,
+      street,
+      kind: args.action,
+      amount: stackBefore - seat.stack,
+      // An active seat always had chips; if it has none left after acting it
+      // just moved all-in. (Avoids a TS narrowing snag on seat.status here.)
+      allin: seat.stack === 0,
+      thinkMs,
+    });
 
     return this.afterAction();
   }
@@ -939,6 +982,8 @@ export class PokerState {
       // we're holding on a contested showdown.
       nextHandAt: g.handEndedAt !== null ? g.handEndedAt + SHOWDOWN_PAUSE_MS : null,
       runningOut: g.runningOut,
+      // Public per-hand action feed (think times + what each player did).
+      actions: g.actions,
       // Players with chips left, and the finishing order so far (best first).
       playersLeft: g.seats.filter(s => s.stack > 0).length,
       standings: this.standings(),

@@ -1057,7 +1057,22 @@ export type PokerTableView = {
   playersLeft: number;
   /** Tournament finishing order so far, best first (1-based place). */
   standings: { key: string; label: string; place: number; stack: number; out: boolean }[];
+  /** Public action feed for the current hand: what each player did + how long
+   *  they took (think time). Drives the action log + per-seat timers. */
+  actions: PokerActionLogEntry[];
   seats: PokerSeatPublic[];
+};
+
+/** One public action in the current hand (no hole cards). */
+export type PokerActionLogEntry = {
+  seat: number;
+  key: string;
+  label: string;
+  street: "preflop" | "flop" | "turn" | "river" | "showdown" | "idle";
+  kind: "fold" | "check" | "call" | "bet" | "raise";
+  amount: number;
+  allin: boolean;
+  thinkMs: number;
 };
 
 /** The private hole-card frame for the local player only. */

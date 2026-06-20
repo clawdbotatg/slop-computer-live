@@ -144,14 +144,10 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
   },
-  {
-    id: "bankr-deepseek-v4-pro",
-    label: "DeepSeek V4 Pro (Bankr) 🧠",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "deepseek-v4-pro",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
+  // DeepSeek V4 Pro — PULLED for poker. On real (postflop) spots it reasoned
+  // past the 2048 token cap and returned EMPTY content (40–110s, finish=length),
+  // forcing a mover retry; even throttled to low effort it was 18–42s. Too slow
+  // to be watchable. Gone for now.
   // GLM 5.2 — z.ai's frontier reasoner, a full generation past the
   // GLM 4.7 (Venice) we also run. Reasoning-capable: smoke-tested at
   // ~20s/move with ~110 reasoning tokens, returns a clean UCI move in
