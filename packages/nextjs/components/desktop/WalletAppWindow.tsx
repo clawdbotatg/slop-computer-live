@@ -53,7 +53,14 @@ export function WalletAppWindow({
   // from the passkey); a connected wallet is treated as a plain EOA.
   const isPasskeyMultisig = pw.isPasskey && !!pw.personalAddress && !!pw.passkeyIdentity && !pw.deployerUnset;
   const mode: WalletTxMode = isPasskeyMultisig ? "multisig" : "eoa";
-  const activeAddress = isPasskeyMultisig ? pw.personalAddress : isConnected && eoaAddress ? eoaAddress : null;
+  // EOA wallet address: a live wagmi connection if there is one, otherwise the
+  // authenticated SIWE session address (`myAddress`). Logging into the room
+  // with your wallet (e.g. clawdbotatg.eth) ALREADY is a connected wallet — the
+  // app must not demand a *second*, separate wagmi connection just to show your
+  // holdings + chat. A send still routes through wagmi, popping the connect
+  // modal at sign time if the live connection isn't there yet.
+  const eoaWalletAddress = (isConnected && eoaAddress ? eoaAddress : myAddress) || null;
+  const activeAddress = isPasskeyMultisig ? pw.personalAddress : eoaWalletAddress;
 
   // Synthesize a WalletRecord the reused Bank panels render against.
   const record = useMemo<WalletRecord | null>(() => {
@@ -88,13 +95,14 @@ export function WalletAppWindow({
         label: "Personal wallet",
       };
     }
-    if (isConnected && eoaAddress) {
+    if (eoaWalletAddress) {
+      const lower = eoaWalletAddress.toLowerCase();
       return {
-        id: `eoa:${eoaAddress.toLowerCase()}`,
-        address: eoaAddress.toLowerCase(),
+        id: `eoa:${lower}`,
+        address: lower,
         deployer: "",
         salt: "0x",
-        signers: [{ address: eoaAddress.toLowerCase(), label: "you", signerType: "eoa" }],
+        signers: [{ address: lower, label: "you", signerType: "eoa" }],
         threshold: 1,
         deployments: {},
         createdAt: 0,
@@ -102,15 +110,7 @@ export function WalletAppWindow({
       };
     }
     return null;
-  }, [
-    isPasskeyMultisig,
-    isConnected,
-    eoaAddress,
-    pw.personalAddress,
-    pw.passkeyAddress,
-    pw.passkeyIdentity,
-    pw.deployed,
-  ]);
+  }, [isPasskeyMultisig, eoaWalletAddress, pw.personalAddress, pw.passkeyAddress, pw.passkeyIdentity, pw.deployed]);
 
   // Signer set handed to the intent engine for the personal multisig (the relay
   // holds no record for it). EOA has just itself.
