@@ -1083,6 +1083,25 @@ const SeatBox = ({
           ALL-IN
         </div>
       )}
+      {seat.away && seat.status !== "allin" && (
+        <div
+          style={{
+            position: "absolute",
+            top: -9,
+            right: 8,
+            background: "#6b7280",
+            color: "#0a061a",
+            fontSize: 9,
+            fontWeight: 900,
+            padding: "1px 7px",
+            borderRadius: 8,
+            letterSpacing: 0.5,
+          }}
+          title="Away — timed out repeatedly; short turn clock until they act"
+        >
+          💤 AWAY
+        </div>
+      )}
       <div
         style={{
           display: "flex",

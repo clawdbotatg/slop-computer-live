@@ -1021,6 +1021,9 @@ export type PokerSeatPublic = {
   hole: [string, string] | null;
   /** Cumulative think time this seat has used all tournament (ms). */
   thinkMsTotal: number;
+  /** Flagged AFK after timing out repeatedly: their turn clock is shortened
+   *  and the seat is marked away until they act again. */
+  away: boolean;
 };
 
 export type PokerPot = { amountChips: number; eligible: number[] };
