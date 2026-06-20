@@ -33,7 +33,6 @@ import type {
   EscrowSession,
   PeerMeshState,
   PokerActionKind,
-  PokerActionLogEntry,
   PokerSeatPublic,
   PokerTableView,
 } from "~~/hooks/usePeerMesh";
@@ -150,95 +149,26 @@ const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgen
 };
 
 // Think time, always in plain seconds (no minute rollover): "0.4s", "59.7s",
-// "247.3s". Mirrors chess's clock but kept to one unit per request.
-const fmtThink = (ms: number): string => `${Math.max(0, (ms || 0) / 1000).toFixed(1)}s`;
+// Think time as whole seconds, no decimals — keeps the clock tight in the box.
+const fmtThink = (ms: number): string => `${Math.max(0, Math.round((ms || 0) / 1000))}s`;
 
-// Per-seat think timer on one line: TOTAL time this seat has used all
-// tournament (cyan), then the CURRENT turn in parens — live-ticking + lime
-// while it's on the clock, or its last action's time (muted) otherwise. All
-// public — just elapsed time.
-const SeatThinkTime = ({
-  live,
-  actorSince,
-  lastMs,
-  totalMs,
-}: {
-  live: boolean;
-  actorSince: number;
-  lastMs: number | null;
-  totalMs: number;
-}) => {
+// Per-seat clock: how long this seat spent thinking THIS turn — live-ticking
+// (lime) while it's on the clock, or its last action's time (muted) otherwise.
+// Whole seconds, one number. Public — just elapsed time.
+const SeatThinkTime = ({ live, actorSince, lastMs }: { live: boolean; actorSince: number; lastMs: number | null }) => {
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!live) return;
-    const id = window.setInterval(() => setTick(t => t + 1), 200); // 5Hz tick
+    const id = window.setInterval(() => setTick(t => t + 1), 1000); // tick once a second (whole-second display)
     return () => window.clearInterval(id);
   }, [live]);
-  const liveMs = live ? Math.max(0, Date.now() - actorSince) : 0;
-  const current = live ? liveMs : lastMs;
-  const totalLive = (totalMs || 0) + liveMs;
-  // Nothing to show until this seat has acted or is on the clock.
-  if (current == null && totalLive <= 0) return null;
+  const ms = live ? Math.max(0, Date.now() - actorSince) : lastMs;
+  if (ms == null) return null; // hasn't acted and isn't on the clock
   return (
-    <div style={{ fontSize: 10, whiteSpace: "nowrap" }}>
-      <span style={{ color: CYAN }}>⏱ {fmtThink(totalLive)}</span>{" "}
-      {current != null && <span style={{ color: live ? LIME : "var(--slop-text-muted)" }}>({fmtThink(current)})</span>}
+    <div style={{ fontSize: 10, whiteSpace: "nowrap", color: live ? LIME : "var(--slop-text-muted)" }}>
+      ⏱ {fmtThink(ms)}
     </div>
   );
-};
-
-// Compact public action log for the current hand — the last several actions
-// with who, what, and how long they took. Public info only.
-const ActionFeed = ({ actions }: { actions: PokerActionLogEntry[] }) => {
-  if (!actions.length) return null;
-  const recent = actions.slice(-8);
-  return (
-    <div
-      style={{
-        background: "#160e2e",
-        border: "1px solid #2a1648",
-        borderRadius: 8,
-        padding: "6px 10px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-      }}
-    >
-      <span style={{ fontSize: 10, color: "var(--slop-text-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>
-        Action log
-      </span>
-      {recent.map((a, i) => (
-        <div key={`${a.key}-${i}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }}>
-          <span
-            style={{ color: "var(--slop-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          >
-            <span style={{ opacity: 0.55 }}>{a.street}</span> {a.key.startsWith("ai:") && "🤖 "}
-            <b>{a.label}</b> {actionVerb(a)}
-            {a.allin && <span style={{ color: ACCENT }}> · all-in</span>}
-          </span>
-          <span style={{ color: "var(--slop-text-muted)", whiteSpace: "nowrap" }}>⏱ {fmtThink(a.thinkMs)}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-// One line of the public action feed, e.g. "raised 120 · all-in".
-const actionVerb = (a: PokerActionLogEntry): string => {
-  switch (a.kind) {
-    case "fold":
-      return "folded";
-    case "check":
-      return "checked";
-    case "call":
-      return `called ${a.amount}`;
-    case "bet":
-      return `bet ${a.amount}`;
-    case "raise":
-      return `raised ${a.amount}`;
-    default:
-      return a.kind;
-  }
 };
 
 // ─── Open a table ────────────────────────────────────────────────────
@@ -1126,7 +1056,7 @@ const SeatBox = ({
         💰 {seat.stack}
       </div>
       <div style={{ textAlign: "center" }}>
-        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} totalMs={seat.thinkMsTotal} />
+        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} />
       </div>
     </div>
   );
@@ -1560,8 +1490,6 @@ const Felt = ({
           );
         })}
       </div>
-
-      {actions.length > 0 && <ActionFeed actions={actions} />}
 
       {poker.status === "complete" && poker.showdown.length > 0 && (
         <div
