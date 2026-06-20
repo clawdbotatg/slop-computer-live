@@ -1114,6 +1114,10 @@ export type EscrowAccount = {
   label: string;
   /** Game-defined: "white"/"black" for chess, seat index for poker. */
   role: string;
+  /** Sponsor address that funds + receives this seat's payout when `key`
+   *  isn't itself spendable (a sponsored AI poker seat). Lowercased.
+   *  Undefined for ordinary seats. Mirrors the relay's EscrowAccount. */
+  backer?: string;
   requiredWei: string;
   depositedWei: string;
   balanceWei: string;
@@ -1147,6 +1151,11 @@ export type AIPlayer = {
   label: string;
   ownerKey: string; // "ai:<id>"
   model: string;
+  /** Measured average decision latency (ms) — shown in the poker sponsor
+   *  dropdown, which sorts fastest-first. */
+  avgMs?: number;
+  /** Rough estimated API cost to play one hand, USD — shown in the dropdown. */
+  costPerHandUsd?: number;
 };
 
 const CHAT_HISTORY_CAP = 200;

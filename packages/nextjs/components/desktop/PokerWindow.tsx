@@ -29,6 +29,7 @@ import {
 } from "wagmi";
 import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
 import { useEthPrice } from "~~/hooks/useEthPrice";
+import { peerLabel } from "~~/hooks/usePeerMesh";
 import type {
   EscrowSession,
   PeerMeshState,
@@ -70,6 +71,20 @@ const fmtEth = (wei: string) => {
 };
 const metaStr = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "string" ? (esc.meta[k] as string) : "");
 const metaNum = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "number" ? (esc.meta[k] as number) : 0);
+
+// Who sponsored an AI seat: resolve its `backer` address to a human label,
+// matching the identity precedence the rest of the UI uses (your own name →
+// peer's chosen name/ENS/short address). Returns "you" when you're the
+// sponsor — that's the whole point: you know whose money the bot is playing.
+const sponsorLabel = (backer: string | undefined, mesh: PeerMeshState, myOwnerKey: string | null): string | null => {
+  if (!backer) return null;
+  const key = backer.toLowerCase();
+  if (myOwnerKey && key === myOwnerKey.toLowerCase()) return "you";
+  const peer = mesh.peers.find(p => p.address?.toLowerCase() === key);
+  if (peer) return peerLabel(peer, mesh.customNames);
+  if (mesh.customNames[key]) return mesh.customNames[key];
+  return `${backer.slice(0, 6)}…${backer.slice(-4)}`;
+};
 
 function btn(color: string, disabled = false): React.CSSProperties {
   return {
@@ -475,7 +490,12 @@ const sponsorField: React.CSSProperties = {
 const SponsorPanel = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
   const ethUsd = useEthPrice();
   const { sendDeposit, buyinWei, switching, sending, personalPhase } = useEscrowDeposit(escrow);
-  const models = mesh.aiPlayers;
+  // Sort fastest-first by measured avg decision time (unbenchmarked last) so
+  // the snappiest models are at the top of the dropdown.
+  const models = useMemo(
+    () => [...mesh.aiPlayers].sort((a, b) => (a.avgMs ?? Infinity) - (b.avgMs ?? Infinity)),
+    [mesh.aiPlayers],
+  );
   const [modelId, setModelId] = useState("");
   const [name, setName] = useState("");
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
@@ -558,6 +578,8 @@ const SponsorPanel = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSes
           {models.map(m => (
             <option key={m.id} value={m.id}>
               {m.label}
+              {m.avgMs != null ? ` · ~${Math.max(1, Math.round(m.avgMs / 1000))}s/move` : ""}
+              {m.costPerHandUsd != null ? ` · ~$${(m.costPerHandUsd * 100).toFixed(2)}/100 hands` : ""}
             </option>
           ))}
         </select>
@@ -965,6 +987,7 @@ const SeatBox = ({
   myHole,
   actorSince,
   lastThinkMs,
+  sponsor,
 }: {
   seat: PokerSeatPublic;
   isActor: boolean;
@@ -977,6 +1000,9 @@ const SeatBox = ({
   /** How long this seat took on its most recent action this hand (ms), or
    *  null if it hasn't acted yet. */
   lastThinkMs: number | null;
+  /** For a sponsored AI seat: who's backing it (the human who'll collect if
+   *  the bot wins). "you" when that's the viewer. null for human seats. */
+  sponsor: string | null;
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
@@ -1070,6 +1096,23 @@ const SeatBox = ({
           {seat.label}
         </span>
       </div>
+      {isAi && sponsor && (
+        <div
+          title={`Sponsored by ${sponsor} — they collect this seat's winnings`}
+          style={{
+            fontSize: 9,
+            lineHeight: 1.2,
+            marginBottom: 4,
+            textAlign: "center",
+            color: sponsor === "you" ? CYAN : "var(--slop-text-muted)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          🎟️ by {sponsor}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 4, marginBottom: 4, justifyContent: "center" }}>
         <Card card={cards[0]} hidden={concealed} small />
         <Card card={cards[1]} hidden={concealed} small />
@@ -1382,6 +1425,11 @@ const Felt = ({
   const lastThinkBySeat = new Map<number, number>();
   for (const a of actions) lastThinkBySeat.set(a.seat, a.thinkMs);
 
+  // Each seat's sponsor (its escrow account's `backer`), keyed by seat id, so
+  // an AI plate can show who's playing its money. Human seats have no backer.
+  const backerByKey = new Map<string, string | undefined>();
+  for (const a of mesh.escrow?.accounts ?? []) backerByKey.set(a.key, a.backer);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <PokerStyles />
@@ -1496,6 +1544,7 @@ const Felt = ({
                   myHole={seat.key === myOwnerKey ? myHole : null}
                   actorSince={poker.actorSince}
                   lastThinkMs={lastThinkBySeat.get(seat.idx) ?? null}
+                  sponsor={sponsorLabel(backerByKey.get(seat.key), mesh, myOwnerKey)}
                 />
               </div>
               {seat.committed > 0 && (

@@ -43,6 +43,17 @@ export type AIPlayerConfig = {
    *  the decision. Non-reasoning models / providers ignore it. Verified on
    *  Venice (minimax-m3: 31s→12s) and Bankr (kimi-k2.6: empty→clean answer). */
   reasoningEffort?: "low" | "minimal";
+  /** Measured average decision latency in ms — surfaced in the poker sponsor
+   *  dropdown (sorted fastest-first) so the pick is informed. Benchmarked
+   *  2026-06 over 6 varied poker spots (with this entry's reasoningEffort
+   *  applied, so it reflects real play). Re-measure if a provider changes. */
+  avgMs?: number;
+  /** Rough estimated API cost to play ONE hand, in USD — surfaced in the
+   *  sponsor dropdown so the operator (who pays the LLM bill) can weigh it.
+   *  Estimate = measured avg tokens/decision × this gateway's per-token price
+   *  × ~3 decisions/hand (benchmarked 2026-06). Order-of-magnitude, not exact:
+   *  real cost swings with how many streets a hand reaches + prompt caching. */
+  costPerHandUsd?: number;
 };
 
 // IMPORTANT: when you add a real provider here, update this list AND
@@ -98,6 +109,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "claude-haiku-4.5",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 2000,
+    costPerHandUsd: 0.00037,
   },
   {
     id: "bankr-gemini-3.1-flash-lite",
@@ -106,6 +119,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "gemini-3.1-flash-lite",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 1900,
+    costPerHandUsd: 7e-05,
   },
   {
     id: "bankr-gpt-5.4-nano",
@@ -114,20 +129,16 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "gpt-5.4-nano",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 1800,
+    costPerHandUsd: 7e-05,
   },
   // ---- Bankr — 🧠 flagship reasoners ------------------------------
   // Ordered by chess-playing track record of the family (strongest first).
   // GPT-5 reasoning and Grok 4 went 1st/2nd at the Kaggle chess arena;
   // Gemini Pro is top-3; Opus is strong but only with its reasoning on;
   // DeepSeek is a capable-but-volatile wildcard (early collapses seen).
-  {
-    id: "bankr-gpt-5.5",
-    label: "GPT 5.5 (Bankr) 🧠",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "gpt-5.5",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
+  // GPT 5.5 — PULLED for poker: by far the priciest (~$1.90/100 hands) for no
+  // edge over the cheaper ~5s reasoners. Gone for now.
   {
     id: "bankr-grok-4.3",
     label: "Grok 4.3 (Bankr) 🧠",
@@ -135,6 +146,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "grok-4.3",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 5100,
+    costPerHandUsd: 0.00465,
   },
   {
     id: "bankr-gemini-3.1-pro",
@@ -143,11 +156,24 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "gemini-3.1-pro",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 5100,
+    costPerHandUsd: 0.00059,
   },
-  // DeepSeek V4 Pro — PULLED for poker. On real (postflop) spots it reasoned
-  // past the 2048 token cap and returned EMPTY content (40–110s, finish=length),
-  // forcing a mover retry; even throttled to low effort it was 18–42s. Too slow
-  // to be watchable. Gone for now.
+  // DeepSeek V4 Pro — a heavy reasoner. At baseline it blew the 2048 token cap
+  // and returned EMPTY content (auto-folds); low effort makes it answer, but
+  // it's still the slowest in the lineup (~30s). Re-added with the dropdown
+  // surfacing its speed so it's an informed pick.
+  {
+    id: "bankr-deepseek-v4-pro",
+    label: "DeepSeek V4 Pro (Bankr) 🧠",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "deepseek-v4-pro",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+    reasoningEffort: "low",
+    avgMs: 28400,
+    costPerHandUsd: 0.00165,
+  },
   // GLM 5.2 — z.ai's frontier reasoner, a full generation past the
   // GLM 4.7 (Venice) we also run. Reasoning-capable: smoke-tested at
   // ~20s/move with ~110 reasoning tokens, returns a clean UCI move in
@@ -160,6 +186,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "glm-5.2",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    avgMs: 7200,
+    costPerHandUsd: 0.00331,
   },
   // Kimi K2.6 — PULLED (again) for poker. It's secretly a heavy reasoner
   // (~1800 reasoning tokens), routinely hit the 2048 token cap and returned
@@ -169,22 +197,18 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // Claude Opus 4.8 (Bankr + Venice) and Claude Sonnet 4.6 (Venice) PULLED
   // by request to keep the poker lineup lean.
   // ---- Venice — non-Claude picks ----------------------------------
-  // GLM is Venice's `most_intelligent` non-reasoning flagship.
   // Qwen 3 235B Instruct is the non-thinking sibling of the
   // glacially-slow Qwen 3 Thinking we just rotated out.
-  {
-    id: "venice-glm-4.7",
-    label: "GLM 4.7 (Venice) 🧠",
-    baseURL: "https://api.venice.ai/api/v1",
-    model: "zai-org-glm-4.7",
-    envVar: "VENICE_API_KEY",
-  },
+  // GLM 4.7 (Venice) — PULLED for poker: slow (~17s/move) AND pricey
+  // (~$0.83/100 hands). Gone for now.
   {
     id: "venice-qwen3-instruct",
     label: "Qwen 3 235B Instruct (Venice) ⚡",
     baseURL: "https://api.venice.ai/api/v1",
     model: "qwen3-235b-a22b-instruct-2507",
     envVar: "VENICE_API_KEY",
+    avgMs: 1300,
+    costPerHandUsd: 0.00055,
   },
   // MiniMax M3 — PULLED for poker. The slowest reasoner in the lineup
   // (~31s/decision; ~12s even throttled to low effort), it stalled the table
@@ -201,6 +225,11 @@ export type PublicAIPlayer = {
   label: string;
   ownerKey: string;
   model: string;
+  /** Measured average decision latency (ms); the poker dropdown shows it and
+   *  sorts fastest-first. Undefined if not benchmarked. */
+  avgMs?: number;
+  /** Rough estimated API cost to play one hand, USD (see AIPlayerConfig). */
+  costPerHandUsd?: number;
 };
 
 export function listAvailableAIPlayers(): PublicAIPlayer[] {
@@ -209,6 +238,8 @@ export function listAvailableAIPlayers(): PublicAIPlayer[] {
     label: p.label,
     ownerKey: `${PREFIX}${p.id}`,
     model: p.model,
+    avgMs: p.avgMs,
+    costPerHandUsd: p.costPerHandUsd,
   }));
 }
 
