@@ -965,7 +965,7 @@ const SeatBox = ({
     <div
       style={{
         position: "relative",
-        width: 104,
+        width: 114,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
