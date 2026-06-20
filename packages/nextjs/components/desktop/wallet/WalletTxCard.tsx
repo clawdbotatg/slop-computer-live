@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { type Address as AddressType, type Hex } from "viem";
-import { usePublicClient, useSendTransaction } from "wagmi";
+import { useChainId, usePublicClient, useSendTransaction, useSwitchChain } from "wagmi";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState, WalletChatMessage, WalletRecord } from "~~/hooks/usePeerMesh";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
@@ -62,6 +62,8 @@ const SendButton = ({
 }) => {
   const publicClient = usePublicClient({ chainId: tx.chainId });
   const { sendTransactionAsync } = useSendTransaction();
+  const connectedChainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
   const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -77,6 +79,16 @@ const SendButton = ({
     if (mode === "eoa") {
       setState("sending");
       try {
+        // The wallet must actually be ON the tx's chain before we sign.
+        // wagmi/viem refuses to send if the connected chain differs from the
+        // tx's chainId ("current chain (id: X) does not match the target
+        // chain"); it does NOT auto-switch. The slop network selectors are
+        // app-level and don't move the wallet, so an intent that targets
+        // another chain (e.g. a bridge to Arbitrum while the wallet sits on
+        // Base) would hit that error. Switch first, then send.
+        if (connectedChainId !== tx.chainId) {
+          await switchChainAsync({ chainId: tx.chainId });
+        }
         await sendTransactionAsync({ to: target, value: valueWei, data, chainId: tx.chainId });
         setState("sent");
       } catch (err) {
@@ -146,7 +158,7 @@ const SendButton = ({
       setState("idle");
       setError(String(err).slice(0, 160));
     }
-  }, [tx, wallet, mesh, publicClient, mode, walletAddress, sendTransactionAsync]);
+  }, [tx, wallet, mesh, publicClient, mode, walletAddress, sendTransactionAsync, connectedChainId, switchChainAsync]);
 
   const sentLabel = mode === "eoa" ? "✓ Sent" : "✓ In queue";
   const sendingLabel = mode === "eoa" ? "Confirm in wallet…" : "Sending…";

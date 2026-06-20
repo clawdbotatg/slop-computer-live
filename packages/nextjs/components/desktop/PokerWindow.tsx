@@ -885,11 +885,11 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
           </button>
         </div>
       ) : payoutTx ? (
-        // Proposed — now it has to be signed + executed in the Wallet app
-        // (it's a multisig tx). Surface that clearly + a one-tap shortcut.
+        // Proposed — now it has to be signed + executed in the Bank app (the
+        // room multisig; it's a multisig tx). Surface that + a one-tap shortcut.
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 13, color: CYAN }}>
-            Payout proposed — sign &amp; execute it in the <b>Wallet</b> app to send the ETH.
+            Payout proposed — sign &amp; execute it in the <b>Bank</b> app to send the ETH.
           </div>
           <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>
             {payoutTx.status === "executing"
@@ -901,12 +901,12 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
             onClick={() => mesh.openWindow("wallet")}
             style={{ ...btn(LIME), alignSelf: "flex-start" }}
           >
-            Open Wallet app →
+            Open Bank app →
           </button>
         </div>
       ) : (
         // Anyone can submit the payout — the plan is fixed server-side, so it
-        // can only ever pay the finishers by place. Popping the Wallet app on
+        // can only ever pay the finishers by place. Popping the Bank app on
         // propose makes the multisig tx show up to sign right away.
         <PayoutProposeButton
           mesh={mesh}
