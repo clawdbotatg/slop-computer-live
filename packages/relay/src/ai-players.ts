@@ -36,6 +36,13 @@ export type AIPlayerConfig = {
   /** Hard cap on tokens per move response. We only need ~5 chars but
    *  some models pad with reasoning. 256 is plenty. */
   maxTokens?: number;
+  /** For reasoning models: how hard to think. Sent as the OpenAI-standard
+   *  `reasoning_effort` field, but ONLY by the poker mover (chess wants full
+   *  reasoning for stronger play). "low" roughly halves a reasoning model's
+   *  latency at poker — where deep deliberation buys little — without changing
+   *  the decision. Non-reasoning models / providers ignore it. Verified on
+   *  Venice (minimax-m3: 31s→12s) and Bankr (kimi-k2.6: empty→clean answer). */
+  reasoningEffort?: "low" | "minimal";
 };
 
 // IMPORTANT: when you add a real provider here, update this list AND
@@ -178,6 +185,9 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     model: "kimi-k2.6",
     envVar: "BANKR_API_KEY",
     authStyle: "x-api-key",
+    // Secretly a heavy reasoner (~1800 reasoning tokens) — hit the token cap
+    // and returned EMPTY content at poker. Low effort makes it answer cleanly.
+    reasoningEffort: "low",
   },
   // ---- Venice — Anthropic via Venice's gateway --------------------
   // Same flagship Bankr exposes, via a second provider — kept so users
@@ -225,6 +235,9 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     baseURL: "https://api.venice.ai/api/v1",
     model: "minimax-m3",
     envVar: "VENICE_API_KEY",
+    // Slowest reasoner in the lineup at poker (~31s/decision). Low effort
+    // cuts that to ~12s with no change to the action it picks.
+    reasoningEffort: "low",
   },
 ];
 

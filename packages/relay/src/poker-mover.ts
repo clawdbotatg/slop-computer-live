@@ -163,6 +163,10 @@ export class PokerAIMover {
       // answer; 2048 leaves room (we only pay for what's used).
       max_tokens: ai.maxTokens ?? 2048,
       temperature: strict ? 0 : 0.5,
+      // Throttle deliberation for reasoning models that are configured for it
+      // (poker doesn't need deep thinking; halves their latency). Standard
+      // OpenAI field — providers/models that don't support it ignore it.
+      ...(ai.reasoningEffort ? { reasoning_effort: ai.reasoningEffort } : {}),
     };
 
     let res: Response;
