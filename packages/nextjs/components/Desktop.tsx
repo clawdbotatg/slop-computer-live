@@ -33,6 +33,7 @@ import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { PokerWindow } from "~~/components/desktop/PokerWindow";
 import { PongWindow } from "~~/components/desktop/PongWindow";
+import { PrivateAppWindow } from "~~/components/desktop/PrivateAppWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
 import { SaveLayoutDialog } from "~~/components/desktop/SaveLayoutDialog";
@@ -48,7 +49,7 @@ import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
-import { WalletDialog } from "~~/components/desktop/WalletDialog";
+import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
@@ -75,6 +76,7 @@ import { useLiveTranscript } from "~~/hooks/useLiveTranscript";
 import { useLocalCursor } from "~~/hooks/useLocalCursor";
 import type { UseLocalMedia } from "~~/hooks/useLocalMedia";
 import { readDenoisePref, resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
+import { useLocalWindows } from "~~/hooks/useLocalWindows";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
@@ -889,9 +891,11 @@ function DesktopInner({ slug }: { slug: string }) {
   // never drops.
   const [audioDialog, setAudioDialog] = useState<"create" | "edit" | null>(null);
   const [videoDialog, setVideoDialog] = useState<"create" | "edit" | null>(null);
-  // Personal Wallet is single-player: a local overlay (see WalletDialog), not a
-  // shared mesh window. Its open state lives here and is never broadcast.
-  const [walletOpen, setWalletOpen] = useState(false);
+  // Single-player ("private") windows: real draggable windows whose geometry +
+  // open/close live in localStorage (per room slug), never the mesh — so only
+  // this viewer sees them. They wear a grey titlebar as the cue. The personal
+  // Wallet is the first such window (see PrivateAppWindow render below).
+  const local = useLocalWindows(slug);
 
   // === Adding a new desktop app ===
   // 1. Add an entry to DEFAULT_APPS in packages/relay/src/index.ts (or
@@ -2605,9 +2609,10 @@ function DesktopInner({ slug }: { slug: string }) {
           focusApp(app.id);
           return;
         case "mywallet":
-          // Single-player: open the local overlay, not a shared mesh window.
+          // Single-player: open the local (private) window, not a shared mesh
+          // window. Geometry + open-state persist to localStorage only.
           dismissHint();
-          setWalletOpen(true);
+          local.openWindow("mywallet");
           return;
         case "audio":
           dismissHint();
@@ -4283,14 +4288,21 @@ function DesktopInner({ slug }: { slug: string }) {
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
       ) : null}
 
-      {walletOpen ? (
-        <WalletDialog
+      <PrivateAppWindow
+        local={local}
+        id="mywallet"
+        title="WALLET"
+        defaultSlot={{ x: 140, y: 90, width: 480, height: 640 }}
+        minWidth={360}
+        minHeight={420}
+        sharedMaxZ={() => Math.max(0, ...Object.values(mesh.slots).map(s => s.z))}
+      >
+        <WalletAppWindow
           mesh={mesh}
           myAddress={selfSessionAddress}
           myHandle={session.authenticated ? (session.handle ?? null) : null}
-          onClose={() => setWalletOpen(false)}
         />
-      ) : null}
+      </PrivateAppWindow>
 
       {saveLayoutOpen ? (
         <SaveLayoutDialog

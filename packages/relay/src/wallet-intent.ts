@@ -17,6 +17,12 @@ import { namehash } from "viem/ens";
 import { config } from "./config.js";
 import { alchemyUrl, fetchPortfolio } from "./wallet-data.js";
 import { TOKEN_ADDRESSES } from "./wallet-tokens.js";
+import {
+  type WalletDebugStep,
+  type WalletDebugToolCall,
+  serializeResult,
+  writeWalletDebug,
+} from "./wallet-debug.js";
 
 const ALCHEMY_KEY = config.alchemyApiKey;
 const WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
@@ -1590,6 +1596,27 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
     return t.execute(args);
   }
 
+  // Debug trace — accumulated across the loop and flushed on every exit path
+  // through finish() below, so the JSONL log always carries the full reasoning
+  // even when the turn errors out. See wallet-debug.ts.
+  const debugSteps: WalletDebugStep[] = [];
+  const startedAt = Date.now();
+  const finish = (result: IntentResult, errorMsg?: string): IntentResult => {
+    writeWalletDebug({
+      ts: new Date().toISOString(),
+      address: input.address,
+      chainId: userChainId,
+      model: config.aiWalletLlmModel,
+      userMessage: input.message,
+      historyDepth: historyMessages.length,
+      steps: debugSteps,
+      result,
+      error: errorMsg,
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  };
+
   let finalText = "";
   try {
     for (let step = 0; step < 15; step++) {
@@ -1613,25 +1640,35 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
 
       if (!choice.message.tool_calls?.length || choice.finish_reason === "stop") {
         finalText = choice.message.content ?? "";
+        debugSteps.push({ step, text: finalText, toolCalls: [] });
         break;
       }
+      const dbgCalls: WalletDebugToolCall[] = [];
       const toolResults = await Promise.all(
         choice.message.tool_calls
           .filter((tc): tc is OpenAI.Chat.ChatCompletionMessageFunctionToolCall => tc.type === "function")
           .map(async tc => {
             const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+            const t0 = Date.now();
             const res = await executeTool(tc.function.name, args);
+            dbgCalls.push({ name: tc.function.name, args, result: serializeResult(res), ms: Date.now() - t0 });
             return { role: "tool" as const, tool_call_id: tc.id, content: JSON.stringify(res) };
           }),
       );
+      // The model's pre-tool reasoning text (if any) plus what it just called.
+      debugSteps.push({ step, text: choice.message.content ?? "", toolCalls: dbgCalls });
       loopMessages.push(...toolResults);
     }
   } catch (error) {
-    return {
-      type: "chat",
-      message: "Sorry, something went wrong talking to the wallet AI. Please try again.",
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return finish(
+      {
+        type: "chat",
+        message: "Sorry, something went wrong talking to the wallet AI. Please try again.",
+        error: errorMsg,
+      },
+      errorMsg,
+    );
   }
 
   // Parse the AI's final text as JSON (fenced or bare object).
@@ -1649,27 +1686,27 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
 
   if (parsed) {
     if (parsed.type === "chat") {
-      return { type: "chat", message: String(parsed.message ?? "") };
+      return finish({ type: "chat", message: String(parsed.message ?? "") });
     }
     if (parsed.type === "transaction" && parsed.transaction) {
-      return { type: "transaction", message: String(parsed.message ?? ""), transaction: parsed.transaction as IntentTransaction };
+      return finish({ type: "transaction", message: String(parsed.message ?? ""), transaction: parsed.transaction as IntentTransaction });
     }
     if (parsed.type === "multistep_transaction" && parsed.steps) {
-      return {
+      return finish({
         type: "multistep_transaction",
         message: String(parsed.message ?? ""),
         steps: parsed.steps as IntentStep[],
         delay: typeof parsed.delay === "number" ? parsed.delay : 3000,
         priceEth: parsed.priceEth as string | undefined,
         priceWei: parsed.priceWei as string | undefined,
-      };
+      });
     }
     if (Array.isArray(parsed.transactions) && parsed.transactions[0]) {
       const tx0 = parsed.transactions[0] as IntentTransaction;
       const sim = parsed.simulation as
         | { verified: boolean; changes: { direction: string; symbol: string; amount: string }[] }
         | undefined;
-      return {
+      return finish({
         type: "transaction",
         message: (parsed.description as string) || finalText || "Transaction ready",
         transaction: {
@@ -1677,7 +1714,7 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
           description: (parsed.description as string) || "",
           simulation: sim ? { verified: sim.verified, changes: sim.changes } : undefined,
         },
-      };
+      });
     }
   }
 
@@ -1707,17 +1744,17 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
   }
 
   if (lastMultistep) {
-    return {
+    return finish({
       type: "multistep_transaction",
       message: finalText || lastMultistep.message || "Multi-step transaction ready",
       steps: lastMultistep.steps,
       delay: lastMultistep.delay ?? 0,
       priceEth: lastMultistep.priceEth,
       priceWei: lastMultistep.priceWei,
-    };
+    });
   }
   if (lastTx) {
-    return {
+    return finish({
       type: "transaction",
       message: finalText || "Transaction ready",
       transaction: {
@@ -1725,7 +1762,7 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
         description: finalText || "",
         simulation: lastSim ? { verified: !!lastSim.success, changes: lastSim.changes } : undefined,
       },
-    };
+    });
   }
 
   let chatMessage = finalText || "I'm not sure how to help with that. Could you rephrase?";
@@ -1735,5 +1772,5 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
   } catch {
     /* not JSON */
   }
-  return { type: "chat", message: chatMessage };
+  return finish({ type: "chat", message: chatMessage });
 }

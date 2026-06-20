@@ -50,6 +50,11 @@ export type WindowProps = {
   onResize?: (size: { x: number; y: number; width: number; height: number }) => void;
   bodyClassName?: string;
   bodyStyle?: CSSProperties;
+  // Extra class on the <TitleBar> root. Used to paint a window's chrome a
+  // different color — e.g. "slop-titlebar--private" greys it out to signal a
+  // single-player window only the local viewer can see. Empty = the default
+  // purple/magenta shared chrome.
+  titleBarClassName?: string;
   children?: ReactNode;
   // Inset within the viewport that maximize should respect (e.g. 26px top
   // for the menubar in production). Defaults to 0 on all sides.
@@ -101,6 +106,7 @@ export const Window = ({
   onResize,
   bodyClassName = "",
   bodyStyle,
+  titleBarClassName = "",
   children,
   containerInset,
   dockBottomInset = 0,
@@ -337,6 +343,7 @@ export const Window = ({
       <TitleBar
         title={title}
         active={active}
+        className={titleBarClassName}
         showDots={!isDocked}
         onClose={isDocked ? undefined : onClose}
         onMinimize={isDocked ? undefined : handleMinimize}

@@ -46,6 +46,23 @@
     rgba(255, 62, 201, 0.55) 50%,
     rgba(255, 62, 201, 0.85) 100%
   );
+  /* Single-player ("private") windows wear a grayscale titlebar instead of
+     the purple/magenta one — the at-a-glance cue that only YOU can see this
+     window (it isn't shared to the mesh). Same gradient shape as the shared
+     bars, hue drained out; the red/yellow/green traffic lights stay full
+     color (separate classes) so it still reads as a real window. */
+  --slop-titlebar-private: linear-gradient(
+    180deg,
+    #9a9aa6 0%,
+    rgba(120, 120, 132, 0.55) 50%,
+    rgba(120, 120, 132, 0.85) 100%
+  );
+  --slop-titlebar-private-active: linear-gradient(
+    180deg,
+    #c9c9d2 0%,
+    rgba(168, 168, 182, 0.6) 50%,
+    rgba(168, 168, 182, 0.9) 100%
+  );
 
   --slop-font-display: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
   --slop-font-body: var(--font-silkscreen), "Courier New", ui-monospace, "Menlo", monospace;
@@ -216,6 +233,20 @@
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.28) 0px, rgba(0, 0, 0, 0.28) 1px, transparent 1px, transparent 3px),
     var(--slop-titlebar-active);
   color: #000;
+}
+
+/* Private (single-player) titlebar: grayscale fill, scanlines kept. The
+   `--private.--active` rule (two classes) outranks `.slop-titlebar--active`
+   so a focused private window still lightens without going magenta. */
+.slop-titlebar--private {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.28) 0px, rgba(0, 0, 0, 0.28) 1px, transparent 1px, transparent 3px),
+    var(--slop-titlebar-private);
+}
+.slop-titlebar--private.slop-titlebar--active {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.28) 0px, rgba(0, 0, 0, 0.28) 1px, transparent 1px, transparent 3px),
+    var(--slop-titlebar-private-active);
 }
 
 .slop-titlebar__title {
