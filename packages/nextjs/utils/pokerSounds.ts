@@ -250,31 +250,26 @@ export function sfxCardFlip(count = 1): void {
   }
 }
 
-// Start of a hand — a real riffle/deal (the shuffle recording, trimmed).
+// The cards being dealt out around the table — a quick flurry of real card
+// slides (cards pitched to each seat), staggered so you hear several land.
+// Distinct from the shuffle riffle that precedes it: that's the deck being
+// mixed, this is the deck being dealt.
 export function sfxDeal(): void {
   if (muted) return;
-  playSample(DEAL, 0.85);
+  for (let i = 0; i < 5; i++) {
+    const url = CARD_SLIDE[Math.floor(Math.random() * CARD_SLIDE.length)];
+    playSample(url, 0.8, i * 0.09);
+  }
 }
 
-// Between hands — a riffle shuffle: two halves of the deck bridged together, a
-// rapid flurry of soft card-edge clicks that bunches toward the middle (the
-// bridge springs fast then slows), capped by a dull "square-up" tap as the deck
-// is knocked level on the felt. Synthesized (not the deal sample) so the
-// between-hands reset reads as its own distinct moment, not a second deal.
+// Between hands — a real card shuffle: the full deck-riffle recording (the same
+// CC0 clip we ship as deal.mp3, which is literally a deck being riffled). Played
+// at full length and volume so the between-hands curtain has an unmistakable,
+// audible shuffle — NOT the old synthesized version, which was too quiet to
+// hear. Pair with sfxDeal() on the curtain lift.
 export function sfxShuffle(): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const t = a.c.currentTime;
-  const N = 26;
-  for (let i = 0; i < N; i++) {
-    const u = i / (N - 1); // 0..1 across the riffle
-    // ease the spacing so clicks bunch toward the centre of the riffle
-    const t0 = t + 0.5 * (u - 0.1 * Math.sin(u * Math.PI * 2));
-    burst(a.c, a.m, t0, 0.018, { type: "bandpass", freq: 2200 + Math.random() * 2600, q: 5, gain: 0.07 });
-  }
-  // The deck squared up against the felt — a soft low thud to close it off.
-  burst(a.c, a.m, t + 0.6, 0.05, { type: "lowpass", freq: 380, gain: 0.16 });
+  playSample(DEAL, 0.95);
 }
 
 // Fold — cards mucked, a real card shove across the felt (random variant).
