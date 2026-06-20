@@ -100,12 +100,14 @@ const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?
           width: w,
           height: h,
           borderRadius: 5,
-          // Hidden = a slop-computer card back: hot-magenta × violet cross-hatch
-          // over deep purple. An empty board slot stays flat dark.
+          // Hidden = a slop-computer card back: a tight hot-magenta × violet
+          // cross-hatch over deep purple. Each diagonal alternates a pink line
+          // then a purple line (a colored line every 4px) for a dense weave.
+          // An empty board slot stays flat dark.
           background: hidden
             ? [
-                "repeating-linear-gradient(45deg, rgba(255,62,201,0.65) 0 2px, transparent 2px 8px)",
-                "repeating-linear-gradient(-45deg, rgba(166,77,255,0.6) 0 2px, transparent 2px 8px)",
+                "repeating-linear-gradient(45deg, rgba(255,62,201,0.7) 0 1.5px, transparent 1.5px 4px, rgba(166,77,255,0.7) 4px 5.5px, transparent 5.5px 8px)",
+                "repeating-linear-gradient(-45deg, rgba(255,62,201,0.5) 0 1.5px, transparent 1.5px 4px, rgba(166,77,255,0.5) 4px 5.5px, transparent 5.5px 8px)",
                 "linear-gradient(155deg, #3a2160, #1d0f3c)",
               ].join(",")
             : "#160e2e",
@@ -155,25 +157,37 @@ const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgen
   return <span style={{ fontSize: 12, color: secs <= urgentAt ? ACCENT : "var(--slop-text-muted)" }}>⏱ {label}</span>;
 };
 
-// Think time, always in plain seconds (no minute rollover): "0.4s", "59.7s",
 // Think time as whole seconds, no decimals — keeps the clock tight in the box.
 const fmtThink = (ms: number): string => `${Math.max(0, Math.round((ms || 0) / 1000))}s`;
 
-// Per-seat clock: how long this seat spent thinking THIS turn — live-ticking
-// (lime) while it's on the clock, or its last action's time (muted) otherwise.
-// Whole seconds, one number. Public — just elapsed time.
-const SeatThinkTime = ({ live, actorSince, lastMs }: { live: boolean; actorSince: number; lastMs: number | null }) => {
+// Per-seat clock: TOTAL time this seat has spent thinking all game (cyan),
+// then THIS turn's seconds in parens — live-ticking + lime while on the clock,
+// or its last action's time (muted) otherwise. Whole seconds. All public.
+const SeatThinkTime = ({
+  live,
+  actorSince,
+  lastMs,
+  totalMs,
+}: {
+  live: boolean;
+  actorSince: number;
+  lastMs: number | null;
+  totalMs: number;
+}) => {
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!live) return;
     const id = window.setInterval(() => setTick(t => t + 1), 1000); // tick once a second (whole-second display)
     return () => window.clearInterval(id);
   }, [live]);
-  const ms = live ? Math.max(0, Date.now() - actorSince) : lastMs;
-  if (ms == null) return null; // hasn't acted and isn't on the clock
+  const liveMs = live ? Math.max(0, Date.now() - actorSince) : 0;
+  const turn = live ? liveMs : lastMs; // seconds spent on this/last turn
+  const total = (totalMs || 0) + liveMs; // whole-game total, incl. the live turn
+  if (turn == null && total <= 0) return null; // nothing yet
   return (
-    <div style={{ fontSize: 10, whiteSpace: "nowrap", color: live ? LIME : "var(--slop-text-muted)" }}>
-      ⏱ {fmtThink(ms)}
+    <div style={{ fontSize: 10, whiteSpace: "nowrap" }}>
+      <span style={{ color: CYAN }}>⏱ {fmtThink(total)}</span>
+      {turn != null && <span style={{ color: live ? LIME : "var(--slop-text-muted)" }}> ({fmtThink(turn)})</span>}
     </div>
   );
 };
@@ -972,7 +986,7 @@ const SeatBox = ({
     <div
       style={{
         position: "relative",
-        width: 124,
+        width: 155,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
@@ -1063,7 +1077,7 @@ const SeatBox = ({
         💰 {seat.stack}
       </div>
       <div style={{ textAlign: "center" }}>
-        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} />
+        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} totalMs={seat.thinkMsTotal} />
       </div>
     </div>
   );
@@ -1454,8 +1468,8 @@ const Felt = ({
         {/* Seats around the rim + their bet chips pushed toward the pot. */}
         {seats.map(seat => {
           const p = (seat.idx - rot + n) % n;
-          const seatXY = seatPos(p, n, 39, 38);
-          const betXY = seatPos(p, n, 22, 23);
+          const seatXY = seatPos(p, n, 38, 38);
+          const betXY = seatPos(p, n, 21, 23);
           return (
             <div key={seat.key}>
               <div
