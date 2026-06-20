@@ -91,8 +91,8 @@ const SUIT_GLYPH: Record<string, string> = { c: "♣", d: "♦", h: "♥", s: "�
 const RED = new Set(["d", "h"]);
 
 const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?: boolean }) => {
-  const w = small ? 26 : 34;
-  const h = small ? 36 : 48;
+  const w = small ? 32 : 42;
+  const h = small ? 44 : 60;
   if (hidden || !card) {
     return (
       <div
@@ -100,10 +100,17 @@ const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?
           width: w,
           height: h,
           borderRadius: 5,
+          // Hidden = a slop-computer card back: hot-magenta × violet cross-hatch
+          // over deep purple. An empty board slot stays flat dark.
           background: hidden
-            ? "repeating-linear-gradient(45deg,#3a2160,#3a2160 4px,#2a1648 4px,#2a1648 8px)"
+            ? [
+                "repeating-linear-gradient(45deg, rgba(255,62,201,0.65) 0 2px, transparent 2px 8px)",
+                "repeating-linear-gradient(-45deg, rgba(166,77,255,0.6) 0 2px, transparent 2px 8px)",
+                "linear-gradient(155deg, #3a2160, #1d0f3c)",
+              ].join(",")
             : "#160e2e",
-          border: "1px solid #2a1648",
+          border: hidden ? "1px solid #ff3ec9" : "1px solid #2a1648",
+          boxShadow: hidden ? "inset 0 0 6px rgba(255,62,201,0.35)" : undefined,
         }}
       />
     );
@@ -124,12 +131,12 @@ const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?
         justifyContent: "center",
         color: RED.has(suit) ? "#c01e3c" : "#160e2e",
         fontWeight: 800,
-        fontSize: small ? 12 : 15,
+        fontSize: small ? 15 : 19,
         lineHeight: 1,
       }}
     >
       <span>{rank}</span>
-      <span style={{ fontSize: small ? 13 : 16 }}>{SUIT_GLYPH[suit]}</span>
+      <span style={{ fontSize: small ? 16 : 20 }}>{SUIT_GLYPH[suit]}</span>
     </div>
   );
 };
@@ -965,7 +972,7 @@ const SeatBox = ({
     <div
       style={{
         position: "relative",
-        width: 114,
+        width: 124,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
@@ -1351,7 +1358,7 @@ const Felt = ({
   const rot = meIdx >= 0 ? meIdx : 0;
   // More seats need a taller oval so the top arc has vertical room and the
   // boxes (now carrying a think-time line) don't pile onto the felt.
-  const tableH = n <= 2 ? 300 : n <= 4 ? 340 : n <= 6 ? 400 : 470;
+  const tableH = n <= 2 ? 320 : n <= 4 ? 360 : n <= 6 ? 420 : 500;
   // Each seat's most recent action time this hand (the feed is chronological,
   // so the last write per seat wins). Powers the per-seat "took Xs" readout.
   const actions = poker.actions ?? [];
@@ -1447,8 +1454,8 @@ const Felt = ({
         {/* Seats around the rim + their bet chips pushed toward the pot. */}
         {seats.map(seat => {
           const p = (seat.idx - rot + n) % n;
-          const seatXY = seatPos(p, n, 39, 39);
-          const betXY = seatPos(p, n, 22, 24);
+          const seatXY = seatPos(p, n, 39, 38);
+          const betXY = seatPos(p, n, 22, 23);
           return (
             <div key={seat.key}>
               <div
