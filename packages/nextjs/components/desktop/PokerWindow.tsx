@@ -28,8 +28,8 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
+import { SlopAddress } from "~~/components/ui";
 import { useEthPrice } from "~~/hooks/useEthPrice";
-import { peerLabel } from "~~/hooks/usePeerMesh";
 import type {
   EscrowSession,
   PeerMeshState,
@@ -71,20 +71,6 @@ const fmtEth = (wei: string) => {
 };
 const metaStr = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "string" ? (esc.meta[k] as string) : "");
 const metaNum = (esc: EscrowSession, k: string) => (typeof esc.meta[k] === "number" ? (esc.meta[k] as number) : 0);
-
-// Who sponsored an AI seat: resolve its `backer` address to a human label,
-// matching the identity precedence the rest of the UI uses (your own name →
-// peer's chosen name/ENS/short address). Returns "you" when you're the
-// sponsor — that's the whole point: you know whose money the bot is playing.
-const sponsorLabel = (backer: string | undefined, mesh: PeerMeshState, myOwnerKey: string | null): string | null => {
-  if (!backer) return null;
-  const key = backer.toLowerCase();
-  if (myOwnerKey && key === myOwnerKey.toLowerCase()) return "you";
-  const peer = mesh.peers.find(p => p.address?.toLowerCase() === key);
-  if (peer) return peerLabel(peer, mesh.customNames);
-  if (mesh.customNames[key]) return mesh.customNames[key];
-  return `${backer.slice(0, 6)}…${backer.slice(-4)}`;
-};
 
 function btn(color: string, disabled = false): React.CSSProperties {
   return {
@@ -987,7 +973,8 @@ const SeatBox = ({
   myHole,
   actorSince,
   lastThinkMs,
-  sponsor,
+  backer,
+  customNames,
 }: {
   seat: PokerSeatPublic;
   isActor: boolean;
@@ -1000,9 +987,11 @@ const SeatBox = ({
   /** How long this seat took on its most recent action this hand (ms), or
    *  null if it hasn't acted yet. */
   lastThinkMs: number | null;
-  /** For a sponsored AI seat: who's backing it (the human who'll collect if
-   *  the bot wins). "you" when that's the viewer. null for human seats. */
-  sponsor: string | null;
+  /** For a sponsored AI seat: the backer's address (the human who'll collect
+   *  if the bot wins), rendered via <SlopAddress>. null for human seats. */
+  backer: string | null;
+  /** Global custom-name map so <SlopAddress> resolves display names. */
+  customNames: Record<string, string>;
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
@@ -1080,37 +1069,46 @@ const SeatBox = ({
           ALL-IN
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginBottom: 4 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          minWidth: 0,
+          marginBottom: 4,
+          justifyContent: "center",
+        }}
+      >
         {isButton && <DealerChip />}
-        {isAi && <span title="Sponsored AI player">🤖</span>}
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: isMe ? CYAN : "var(--slop-text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {seat.label}
-        </span>
+        {isAi ? (
+          // Sponsored bot: show the name the sponsor gave it (no on-chain
+          // address of its own), with a 🤖 so it reads as a bot.
+          <span
+            title="Sponsored AI player"
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: isMe ? CYAN : "var(--slop-text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            🤖 {seat.label}
+          </span>
+        ) : (
+          // Real player: the standard slop address chip (ENS / blockie / name).
+          <SlopAddress address={seat.key} customNames={customNames} blockieSize={16} />
+        )}
       </div>
-      {isAi && sponsor && (
+      {isAi && backer && (
+        // Who's backing the bot — the sponsor's address chip (they collect its
+        // winnings). Replaces the old "🎟️ by 0x…" text with the real component.
         <div
-          title={`Sponsored by ${sponsor} — they collect this seat's winnings`}
-          style={{
-            fontSize: 9,
-            lineHeight: 1.2,
-            marginBottom: 4,
-            textAlign: "center",
-            color: sponsor === "you" ? CYAN : "var(--slop-text-muted)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+          title="Sponsored by — they collect this seat's winnings"
+          style={{ display: "flex", justifyContent: "center", marginBottom: 4, fontSize: 9, opacity: 0.85 }}
         >
-          🎟️ by {sponsor}
+          <SlopAddress address={backer} customNames={customNames} blockieSize={12} />
         </div>
       )}
       <div style={{ display: "flex", gap: 4, marginBottom: 4, justifyContent: "center" }}>
@@ -1544,7 +1542,8 @@ const Felt = ({
                   myHole={seat.key === myOwnerKey ? myHole : null}
                   actorSince={poker.actorSince}
                   lastThinkMs={lastThinkBySeat.get(seat.idx) ?? null}
-                  sponsor={sponsorLabel(backerByKey.get(seat.key), mesh, myOwnerKey)}
+                  backer={backerByKey.get(seat.key) ?? null}
+                  customNames={mesh.customNames}
                 />
               </div>
               {seat.committed > 0 && (
