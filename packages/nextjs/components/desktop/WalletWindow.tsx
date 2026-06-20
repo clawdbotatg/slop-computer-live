@@ -95,21 +95,52 @@ const chainMeta = (chainId: number) =>
 
 type WalletTab = "deploy" | "chat" | "assets" | "transactions";
 
+// Per-browser memory of the last wallet tab this user viewed. The window
+// fully unmounts when closed (SharedAppWindow renders null), so reopening
+// re-derives the fallback unless we remember where they were. Local, not
+// multiplayer — the shared ui_state still wins once anyone explicitly picks.
+const WALLET_TAB_KEY = "slop:wallet:tab";
+const readSavedTab = (): WalletTab | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = window.localStorage.getItem(WALLET_TAB_KEY);
+    return v === "chat" || v === "assets" || v === "transactions" ? v : null;
+  } catch {
+    return null;
+  }
+};
+
 export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: WalletWindowProps) => {
   const wallet = mesh.wallet;
+  // Restore the tab this browser last viewed (read once on mount). Used only
+  // to seed the fallback below — never overrides an explicit shared pick.
+  const [savedTab] = useState<WalletTab | null>(readSavedTab);
   // Which tab is showing is multiplayer: pick a tab and every peer's
   // wallet follows (last-writer-wins via the relay's ui_state channel).
-  // `fallback` is what everyone sees until anyone picks — derived from
-  // synced room state so peers agree before the first click: deploy if
-  // there's no wallet yet, transactions if a tx just landed in the
-  // queue (browser dapp, AI wallet, etc.) so the signing UI is right
-  // there, else chat (the headline conversation).
+  // `fallback` is what everyone sees until anyone picks — deploy if there's
+  // no wallet yet; else the tab this browser last had open (so closing and
+  // reopening returns you to your spot — e.g. Chat); else transactions when
+  // a tx is waiting in the queue so the signing UI is right there; else chat.
   const tabFallback: WalletTab = !wallet
     ? "deploy"
-    : mesh.walletTxs.some(t => t.status === "pending")
-      ? "transactions"
-      : "chat";
+    : savedTab
+      ? savedTab
+      : mesh.walletTxs.some(t => t.status === "pending")
+        ? "transactions"
+        : "chat";
   const [tab, setTab] = useSyncedUIState<WalletTab>(mesh, "wallet:tab", tabFallback);
+
+  // Remember the tab across window close/reopen (per browser). Skip "deploy" —
+  // that's a no-wallet state, not a place the user chose to be.
+  useEffect(() => {
+    if (tab !== "deploy" && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(WALLET_TAB_KEY, tab);
+      } catch {
+        /* private mode / quota — non-fatal */
+      }
+    }
+  }, [tab]);
 
   // Auto-switch to Chat the first time a wallet shows up (initial
   // deploy) — the conversation is the headline. Don't yank the user

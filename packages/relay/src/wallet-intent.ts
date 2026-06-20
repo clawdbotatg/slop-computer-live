@@ -554,9 +554,12 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
         // input token first, or the swap/bridge reverts on-chain. LI.FI only
         // returns `approvalAddress` for ERC-20 inputs (native ETH needs none),
         // so its presence is the signal. We read the live allowance; if it's
-        // short (or unreadable), we prepend an approve step and hand back a
-        // 2-step multistep so the user can't propose a tx that reverts for
-        // lack of allowance. The approve is exact-amount (no infinite grants).
+        // short (or unreadable), we return ONLY the approval as a single tx —
+        // NOT a bundled 2-step. The route is built one step at a time: the
+        // route's calldata here was quoted against pre-approval state and the
+        // LI.FI quote goes stale fast, so bundling it would revert by the time
+        // the approval lands. The caller approves, confirms it on-chain, then
+        // re-calls buildRoute for a fresh route tx. Approve is exact-amount.
         const fromTokenAddr = (
           (data.action?.fromToken?.address as string | undefined) ??
           (data.estimate?.fromToken?.address as string | undefined) ??
@@ -571,32 +574,20 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
           fromTokenAddr !== "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
         if (spender && isErc20 && needAmount > 0n) {
           const allowance = await readAllowance(fromChainId, fromTokenAddr, fromAddress, spender);
-          // null = couldn't read it → assume not approved (prepend approve; it's
+          // null = couldn't read it → assume not approved (return approve; it's
           // cheap and idempotent for a fresh allowance, the common case here).
           if (allowance === null || allowance < needAmount) {
             const symbol = (data.action?.fromToken?.symbol as string | undefined) ?? "tokens";
             const approveData = "0x095ea7b3" + padAddress(spender) + padUint256(needAmount);
             return {
-              multistep: {
-                steps: [
-                  {
-                    to: fromTokenAddr,
-                    data: approveData,
-                    value: "0x0",
-                    chainId: fromChainId,
-                    description: `Approve the LI.FI router (${spender.slice(0, 8)}…) to spend ${symbol}`,
-                    label: "Approve",
-                  },
-                  {
-                    ...txReq,
-                    description: `Execute the ${fromChainId === toChainId ? "swap" : "bridge"} via LI.FI`,
-                    label: fromChainId === toChainId ? "Swap" : "Bridge",
-                  },
-                ],
-                delay: 3000,
-              },
+              approvalStep: true,
+              to: fromTokenAddr,
+              data: approveData,
+              value: "0x0",
+              chainId: fromChainId,
+              description: `Approve the LI.FI router (${spender.slice(0, 8)}…) to spend ${symbol}`,
               estimate,
-              note: "needs-approval: returned a 2-step approve+route multistep — return it directly without simulating (the route step can't pass simulation until the approve lands on-chain).",
+              note: "APPROVAL REQUIRED FIRST. Present ONLY this approval as a single { type:'transaction' } card (step 1 of 2) — do NOT build or include the swap/bridge yet, and do NOT simulate the approval (approvals have no asset changes). After the user submits it and you confirm on-chain that it succeeded (getTransactionDetails), call buildRoute again with the SAME args to get a FRESH route tx — only then present the swap/bridge. Building the route before the approval confirms gives a stale quote that reverts.",
             };
           }
         }
@@ -1118,10 +1109,10 @@ AVAILABLE TOOLS:
 MANDATORY WORKFLOW (for transactions only):
 1. If you need balance info → call getPortfolio first.
 2. Resolve any ENS names → call resolveENS.
-3. For swaps/bridges: use buildRoute directly with token symbols. If buildRoute's result has a 'multistep' field, the input token isn't approved for the LI.FI router yet — return that multistep DIRECTLY as { type: "multistep_transaction", message, steps, delay } (step 1 approves, step 2 swaps/bridges). Never strip the approve step and never propose the route step alone — it will revert without the allowance.
+3. For swaps/bridges: use buildRoute with token symbols. APPROVE-THEN-ROUTE IS ONE STEP AT A TIME, never bundled. If buildRoute returns approvalStep:true, the input token isn't approved yet — present ONLY that approval as a single { type:"transaction" } card and tell the user it's step 1 of 2 (an approval, then the swap/bridge once it lands). Do NOT build or present the swap/bridge in the same turn — its quote would go stale before the approval confirms and revert. After the user submits the approval and you've confirmed on-chain it succeeded, call buildRoute again with the same args; it now returns the actual swap/bridge tx to present. Otherwise (no approval needed) buildRoute returns the route tx directly.
 4. For simple transfers: use buildTransfer. For WETH wrap/unwrap: use wrapEth / unwrapWeth.
 5. For ENS registration: validateENSName → checkENSAvailability → getENSRentPrice → (user confirms) → buildENSRegistration.
-6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep, for buildRoute's approve+route multistep, AND for signer/threshold self-calls — the approve+route step can't pass simulation until the approve lands on-chain, and config self-calls correctly show no asset changes; return all of these directly).
+6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep, for a standalone ERC-20 approval (approvalStep — approvals have no asset changes), AND for signer/threshold self-calls — config self-calls correctly show no asset changes; return all of these directly).
 7. Only return the transaction if simulation confirms the expected asset changes.
 8. If buildRoute returns an error → call getTokenLiquidity to diagnose and explain why.
 
@@ -1133,11 +1124,12 @@ For chat responses, return ONLY this JSON:
 For transaction responses, return ONLY this JSON (after all tool calls complete):
 { "type": "transaction", "message": "I'll swap 0.1 ETH for USDC:", "transaction": { "to": "0x...", "data": "0x...", "value": "0x...", "chainId": 1, "description": "Swap 0.1 ETH → ~198 USDC", "simulation": { "verified": true, "changes": [{ "direction": "out", "symbol": "ETH", "amount": "0.1" }] } } }
 
-For ENS registration / approve+swap multistep — return the tool result directly:
+For ENS registration multistep — return the tool result directly:
 { "type": "multistep_transaction", "message": "...", "steps": [ ... ], "delay": 65000 }
+(Swaps/bridges are NEVER multistep — an approval, if needed, is its own single transaction returned one turn before the route.)
 
 DELAY RULES:
-- Approve + swap: delay 3000. ENS registration: delay 65000 (set by buildENSRegistration). Everything else: 0.
+- ENS registration: delay 65000 (set by buildENSRegistration). Everything else: 0.
 
 RULES:
 - Token contract addresses are injected in the portfolio context as [0x...] after each token. USE THESE FIRST.
@@ -1145,7 +1137,7 @@ RULES:
 - For native ETH in LI.FI: use symbol "ETH".
 - If the user's request is unclear, respond with a chat message asking for clarification.
 - NEVER claim on-chain verification results without actually calling a verification tool.
-- TX STATUS: if a user message reports a submitted transaction with a tx hash (e.g. "submitted tx 0x… on chain N"), NEVER ask the user for the hash — it's already given. Immediately check it yourself: for a cross-chain bridge use getRouteStatus(txHash, fromChain, toChain) (infer the chains from the route you proposed earlier in this conversation); for anything else use getTransactionDetails(txHash, chainId). Then report concisely whether it succeeded, is pending, or what went wrong. If it was the approve step of a 2-step route, confirm the approval landed and remind the user to send the swap/bridge step.`;
+- TX STATUS: if a user message reports a submitted transaction with a tx hash (e.g. "submitted tx 0x… on chain N"), NEVER ask the user for the hash — it's already given. Immediately check it yourself: for a cross-chain bridge use getRouteStatus(txHash, fromChain, toChain) (infer the chains from the route you proposed earlier in this conversation); for anything else use getTransactionDetails(txHash, chainId). Then report concisely whether it succeeded, is pending, or what went wrong. If the submitted tx was an ERC-20 approval for a swap/bridge: once you confirm it succeeded, immediately call buildRoute again with the original route args to build the now-ready swap/bridge, simulate it, and present that as the next transaction — don't make the user ask. (If buildRoute still returns approvalStep:true, the approval hasn't settled yet — tell the user to wait a moment and ping you; do NOT present a second approval.)`;
 
 // ─── OpenAI tool schemas ─────────────────────────────────────────────────────
 
@@ -1269,7 +1261,7 @@ const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
     function: {
       name: "buildRoute",
       description:
-        "Build swap, bridge, or DeFi zap calldata via LI.FI. Returns a single tx when the input token is already approved; returns a `multistep` field (approve + route) when an ERC-20 allowance is missing — pass that through as a multistep_transaction.",
+        "Build swap, bridge, or DeFi zap calldata via LI.FI. Returns the route tx when the input token is already approved; returns { approvalStep: true, ... } (a single ERC-20 approval tx) when the allowance is missing — present only that, then call buildRoute again after it confirms to get the route tx.",
       parameters: {
         type: "object",
         properties: {
