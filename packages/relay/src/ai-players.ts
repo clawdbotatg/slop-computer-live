@@ -145,14 +145,6 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     authStyle: "x-api-key",
   },
   {
-    id: "bankr-claude-opus-4.8",
-    label: "Claude Opus 4.8 (Bankr) 🧠",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "claude-opus-4.8",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-  },
-  {
     id: "bankr-deepseek-v4-pro",
     label: "DeepSeek V4 Pro (Bankr) 🧠",
     baseURL: "https://llm.bankr.bot/v1",
@@ -178,24 +170,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // EMPTY content; even throttled to low effort it was the slowest of the
   // fast-tier and stalled the table. Also the WORST performer at the Kaggle
   // chess arena (lost every game in under 8 moves). Gone for now.
-  // ---- Venice — Anthropic via Venice's gateway --------------------
-  // Same flagship Bankr exposes, via a second provider — kept so users
-  // can pit two gateways' "Claude Opus 4.8" against each other (latency /
-  // routing differ even though the underlying model is the same).
-  {
-    id: "venice-claude-opus-4.8",
-    label: "Claude Opus 4.8 (Venice) 🧠",
-    baseURL: "https://api.venice.ai/api/v1",
-    model: "claude-opus-4-8",
-    envVar: "VENICE_API_KEY",
-  },
-  {
-    id: "venice-claude-sonnet-4.6",
-    label: "Claude Sonnet 4.6 (Venice) 🧠",
-    baseURL: "https://api.venice.ai/api/v1",
-    model: "claude-sonnet-4-6",
-    envVar: "VENICE_API_KEY",
-  },
+  // Claude Opus 4.8 (Bankr + Venice) and Claude Sonnet 4.6 (Venice) PULLED
+  // by request to keep the poker lineup lean.
   // ---- Venice — non-Claude picks ----------------------------------
   // GLM is Venice's `most_intelligent` non-reasoning flagship.
   // Qwen 3 235B Instruct is the non-thinking sibling of the
