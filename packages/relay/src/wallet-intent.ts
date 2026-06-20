@@ -16,6 +16,7 @@ import OpenAI from "openai";
 import { namehash } from "viem/ens";
 import { config } from "./config.js";
 import { alchemyUrl, fetchPortfolio } from "./wallet-data.js";
+import { simulateForAi } from "./wallet-ai.js";
 import { TOKEN_ADDRESSES } from "./wallet-tokens.js";
 import {
   type WalletDebugStep,
@@ -148,36 +149,50 @@ function encodeENSParams(
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> = {
   simulateAssetChanges: {
+    // Ground truth via eth_simulateV1 (the same path the tx-summary cards
+    // trust). The old `alchemy_simulateAssetChanges` RPC is dead on our key
+    // ("JS Tracer is not enabled"), so this tool used to fail on EVERY call and
+    // the AI shipped unverified, reverting txs. Returns { success, simulated,
+    // reverted, error, changes } — the AI MUST refuse to present a tx when
+    // reverted:true (see SYSTEM_PROMPT step 7).
     execute: async ({ from, to, data, value, chainId }: any) => {
       const chain = chainId ?? 1;
+      // simulateTransfers wants DECIMAL wei; LI.FI/the model passes hex.
+      let decValue = "0";
       try {
-        const res = await fetch(alchemyUrl(chain), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: 1,
-            jsonrpc: "2.0",
-            method: "alchemy_simulateAssetChanges",
-            params: [{ from, to, data, value: value || "0x0" }],
-          }),
-        });
-        const json = (await res.json()) as any;
-        if (json.error) return { success: false, error: json.error.message || JSON.stringify(json.error), changes: [] };
-        const result = json.result;
-        if (!result) return { success: false, error: "No result from simulation", changes: [] };
-        if (result.error) return { success: false, error: result.error.message || result.error, changes: result.changes || [] };
-        const changes = (result.changes || []).map((c: any) => ({
-          direction: c.changeType === "TRANSFER" ? "out" : c.changeType,
-          symbol: c.symbol,
-          amount: c.amount,
-          rawAmount: c.rawAmount,
-          decimals: c.decimals,
-          assetType: c.assetType,
-          contractAddress: c.contractAddress,
-        }));
-        return { success: true, changes };
+        if (value) decValue = BigInt(value).toString();
+      } catch {
+        decValue = "0";
+      }
+      try {
+        const sim = await simulateForAi({ from, calls: [{ to, data, value: decValue }], chainId: chain });
+        if (!sim.simulated) {
+          return {
+            success: false,
+            simulated: false,
+            reverted: false,
+            error: sim.error || "simulation unavailable",
+            changes: [],
+          };
+        }
+        if (sim.reverted) {
+          return {
+            success: false,
+            simulated: true,
+            reverted: true,
+            error: sim.error || "transaction reverts on-chain — do NOT present it",
+            changes: [],
+          };
+        }
+        return { success: true, simulated: true, reverted: false, changes: sim.changes };
       } catch (e) {
-        return { success: false, error: `Simulation failed: ${e instanceof Error ? e.message : String(e)}`, changes: [] };
+        return {
+          success: false,
+          simulated: false,
+          reverted: false,
+          error: `Simulation failed: ${e instanceof Error ? e.message : String(e)}`,
+          changes: [],
+        };
       }
     },
   },
@@ -1118,8 +1133,11 @@ MANDATORY WORKFLOW (for transactions only):
 3. For swaps/bridges: use buildRoute with token symbols. APPROVE-THEN-ROUTE IS ONE STEP AT A TIME, never bundled. If buildRoute returns approvalStep:true, the input token isn't approved yet — present ONLY that approval as a single { type:"transaction" } card and tell the user it's step 1 of 2 (an approval, then the swap/bridge once it lands). Do NOT build or present the swap/bridge in the same turn — its quote would go stale before the approval confirms and revert. After the user submits the approval and you've confirmed on-chain it succeeded, call buildRoute again with the same args; it now returns the actual swap/bridge tx to present. Otherwise (no approval needed) buildRoute returns the route tx directly.
 4. For simple transfers: use buildTransfer. For WETH wrap/unwrap: use wrapEth / unwrapWeth.
 5. For ENS registration: validateENSName → checkENSAvailability → getENSRentPrice → (user confirms) → buildENSRegistration.
-6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep, for a standalone ERC-20 approval (approvalStep — approvals have no asset changes), AND for signer/threshold self-calls — config self-calls correctly show no asset changes; return all of these directly).
-7. Only return the transaction if simulation confirms the expected asset changes.
+6. ALWAYS call simulateAssetChanges on built calldata before returning (skip ONLY for: ENS multistep, a standalone ERC-20 approval (approvalStep — approvals have no asset changes), AND signer/threshold self-calls — config self-calls correctly show no asset changes; return those directly).
+7. ACT ON THE SIMULATION RESULT — this is the single most important rule, do not skip it:
+   - reverted:true → the transaction WILL FAIL on-chain. DO NOT present it. Return a { type:"chat" } message telling the user it reverts in simulation, and diagnose why (e.g. for a swap, the input token may not be approved yet — re-check buildRoute for an approvalStep; or call getTokenLiquidity). NEVER hand the user a tx that reverts in simulation.
+   - success:true → verified. Present the transaction; its "simulation" field is { "verified": true, "changes": [...] } from the tool's changes.
+   - simulated:false (sim could not run — provider error or unsupported chain like Gnosis) → first retry simulateAssetChanges ONCE. If it still can't run: you MAY present the tx ONLY with simulation { "verified": false, "changes": [] } AND a plain-English warning in "message" that you could NOT verify it and it may revert. NEVER claim numbers are confirmed when simulated:false. Do not present unverified on a chain where simulation normally works (Ethereum/Base/Arbitrum/Optimism/Polygon) without saying the simulator errored.
 8. If buildRoute returns an error → call getTokenLiquidity to diagnose and explain why.
 
 RESPONSE FORMAT:
@@ -1153,7 +1171,8 @@ const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
     type: "function",
     function: {
       name: "simulateAssetChanges",
-      description: "Simulate a transaction via Alchemy to see exactly what assets leave/enter the wallet.",
+      description:
+        "Simulate a transaction (eth_simulateV1) to see exactly what assets leave/enter the wallet AND whether it reverts. Returns { success, simulated, reverted, error, changes }. reverted:true means the tx WILL fail on-chain — do NOT present it. simulated:false means the sim could not run (provider error or unsupported chain). success:true with changes = verified.",
       parameters: {
         type: "object",
         properties: {

@@ -301,6 +301,48 @@ async function buildSimChips(
   return { inputs, outputs };
 }
 
+// ─── Wallet-AI simulation tool (ground truth via eth_simulateV1) ─────────────
+//
+// The wallet-AI intent loop used to call `alchemy_simulateAssetChanges`, which
+// is dead on our key ("JS Tracer is not enabled" / "bigInt is not defined") —
+// so EVERY simulation failed and the AI shipped unverified, reverting txs. This
+// reuses the SAME eth_simulateV1 path that the tx-summary cards already trust as
+// ground truth, and — critically — distinguishes three outcomes the AI must act
+// on differently:
+//   - simulated:false  → sim couldn't run (provider error, or unsupported chain
+//                        like Gnosis). The AI may present only with an explicit
+//                        "could not verify" warning.
+//   - reverted:true    → the call WILL fail on-chain. The AI must NOT present it.
+//   - ok:true          → verified; `changes` are the real asset deltas.
+export type AiSimResult = {
+  ok: boolean; // simulation ran AND the call did not revert
+  simulated: boolean; // simulation actually executed (false = couldn't run)
+  reverted: boolean;
+  error?: string;
+  changes: { direction: "in" | "out"; symbol: string; amount: string; address: string | null }[];
+};
+
+export async function simulateForAi(args: {
+  from: string;
+  calls: { to: string; data: string; value: string }[]; // value = decimal wei
+  chainId: number;
+}): Promise<AiSimResult> {
+  const sim = await simulateTransfers(args);
+  // A real RPC/chain error means we never executed the call. Don't pretend.
+  if (sim.error) {
+    return { ok: false, simulated: false, reverted: false, error: sim.error, changes: [] };
+  }
+  if (sim.reverted) {
+    return { ok: false, simulated: true, reverted: true, error: "transaction reverts on-chain", changes: [] };
+  }
+  const chips = await buildSimChips(sim.transfers, args.from, args.chainId);
+  const changes: AiSimResult["changes"] = [
+    ...(chips?.inputs ?? []).map(a => ({ direction: "out" as const, symbol: a.symbol ?? "?", amount: a.amount ?? "0", address: a.address ?? null })),
+    ...(chips?.outputs ?? []).map(a => ({ direction: "in" as const, symbol: a.symbol ?? "?", amount: a.amount ?? "0", address: a.address ?? null })),
+  ];
+  return { ok: true, simulated: true, reverted: false, changes };
+}
+
 export async function summarizeTransaction(args: SummarizeArgs): Promise<string> {
   if (!hasBankrLlm()) return fallbackSummary(args);
 
