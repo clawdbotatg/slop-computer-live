@@ -1019,6 +1019,8 @@ export type PokerSeatPublic = {
   hasCards: boolean;
   /** Only populated for hands revealed at showdown. */
   hole: [string, string] | null;
+  /** Cumulative think time this seat has used all tournament (ms). */
+  thinkMsTotal: number;
 };
 
 export type PokerPot = { amountChips: number; eligible: number[] };

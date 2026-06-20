@@ -69,6 +69,10 @@ export type Seat = {
   hole: [Card, Card] | null;
   /** Has acted since the last full raise this street (blind option aware). */
   hasActed: boolean;
+  /** Cumulative think time across the whole tournament (ms) — sum of every
+   *  action's think time. Public; drives the seat's running clock. Reset only
+   *  on a fresh session (sit/reset), NOT per hand. */
+  thinkMsTotal: number;
 };
 
 export type Pot = { amountChips: number; eligible: number[] };
@@ -336,6 +340,7 @@ export class PokerState {
       status: "out",
       hole: null,
       hasActed: false,
+      thinkMsTotal: 0,
     };
     this.game.seats.push(seat);
     // Keep the array ordered by physical seat so array-index rotation
@@ -528,6 +533,9 @@ export class PokerState {
         return { ok: false, error: "bad_action" };
     }
 
+    // Accumulate this seat's whole-tournament think time. (|| 0 covers a seat
+    // persisted before this field existed.)
+    seat.thinkMsTotal = (seat.thinkMsTotal || 0) + thinkMs;
     // Log the (now-validated) action for the public feed + think timers.
     this.game.actions.push({
       seat: idx,
@@ -831,7 +839,7 @@ export class PokerState {
     const seats = this.game.seats;
     this.game = this.emptyGame();
     // Keep seated players (with their stacks) for a fresh session.
-    this.game.seats = seats.map(s => ({ ...s, committed: 0, handCommitted: 0, hole: null, hasActed: false, status: "out" }));
+    this.game.seats = seats.map(s => ({ ...s, committed: 0, handCommitted: 0, hole: null, hasActed: false, status: "out", thinkMsTotal: 0 }));
     this.touch();
   }
 
@@ -997,6 +1005,7 @@ export class PokerState {
         status: s.status,
         hasCards: s.hole !== null && (s.status === "active" || s.status === "allin"),
         hole: revealed.get(i) ?? null,
+        thinkMsTotal: s.thinkMsTotal || 0,
       })),
     };
   }

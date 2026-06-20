@@ -539,5 +539,6 @@ function seat(key: string, stack: number, status: Seat["status"]): Seat {
     status,
     hole: null,
     hasActed: false,
+    thinkMsTotal: 0,
   };
 }

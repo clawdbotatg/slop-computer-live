@@ -149,29 +149,42 @@ const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgen
   return <span style={{ fontSize: 12, color: secs <= urgentAt ? ACCENT : "var(--slop-text-muted)" }}>⏱ {label}</span>;
 };
 
-// Compact think-time readout (mirrors chess's per-side clock). Sub-minute
-// shows tenths; longer rolls over to "m s".
-const fmtThink = (ms: number): string => {
-  if (!Number.isFinite(ms) || ms <= 0) return "0s";
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${Math.floor(s % 60)}s`;
-};
+// Think time, always in plain seconds (no minute rollover): "0.4s", "59.7s",
+// "247.3s". Mirrors chess's clock but kept to one unit per request.
+const fmtThink = (ms: number): string => `${Math.max(0, (ms || 0) / 1000).toFixed(1)}s`;
 
-// Per-seat think timer: a live clock ticking up while the seat is on the clock
-// (counts from actorSince), otherwise the time it took on its most recent
-// action this hand. All public — just elapsed time, no hidden info.
-const SeatThinkTime = ({ live, actorSince, lastMs }: { live: boolean; actorSince: number; lastMs: number | null }) => {
+// Per-seat think timer on one line: TOTAL time this seat has used all
+// tournament (cyan), then the CURRENT turn in parens — live-ticking + lime
+// while it's on the clock, or its last action's time (muted) otherwise. All
+// public — just elapsed time.
+const SeatThinkTime = ({
+  live,
+  actorSince,
+  lastMs,
+  totalMs,
+}: {
+  live: boolean;
+  actorSince: number;
+  lastMs: number | null;
+  totalMs: number;
+}) => {
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!live) return;
     const id = window.setInterval(() => setTick(t => t + 1), 200); // 5Hz tick
     return () => window.clearInterval(id);
   }, [live]);
-  if (live) return <div style={{ fontSize: 10, color: LIME }}>⏱ {fmtThink(Math.max(0, Date.now() - actorSince))}</div>;
-  if (lastMs == null) return null;
-  return <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>⏱ {fmtThink(lastMs)}</div>;
+  const liveMs = live ? Math.max(0, Date.now() - actorSince) : 0;
+  const current = live ? liveMs : lastMs;
+  const totalLive = (totalMs || 0) + liveMs;
+  // Nothing to show until this seat has acted or is on the clock.
+  if (current == null && totalLive <= 0) return null;
+  return (
+    <div style={{ fontSize: 10, whiteSpace: "nowrap" }}>
+      <span style={{ color: CYAN }}>⏱ {fmtThink(totalLive)}</span>{" "}
+      {current != null && <span style={{ color: live ? LIME : "var(--slop-text-muted)" }}>({fmtThink(current)})</span>}
+    </div>
+  );
 };
 
 // Compact public action log for the current hand — the last several actions
@@ -1022,7 +1035,7 @@ const SeatBox = ({
     <div
       style={{
         position: "relative",
-        width: 116,
+        width: 104,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
@@ -1113,7 +1126,7 @@ const SeatBox = ({
         💰 {seat.stack}
       </div>
       <div style={{ textAlign: "center" }}>
-        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} />
+        <SeatThinkTime live={isActor} actorSince={actorSince} lastMs={lastThinkMs} totalMs={seat.thinkMsTotal} />
       </div>
     </div>
   );
@@ -1327,8 +1340,26 @@ const PokerStyles = () => <style id="poker-fx-styles">{PULSE_CSS}</style>;
 // "me" when I'm seated) and p increases clockwise — i.e. action moves to my
 // left, the real direction of play. Returned as CSS percentages so the table
 // scales with the window. `hx/vy` are the ellipse radii in % of the container.
+// Lay seats around the rail. The hero (display index 0) sits bottom-centre on
+// its own; everyone else fans EVENLY across the top arc, with a wedge kept
+// clear at the bottom so no one crowds the hero, the bottom corners, or the
+// pot/board in the centre. hx/vy are the ellipse radii (% of the container).
+// (+y points down, so θ=π/2 is bottom-centre and θ=−π/2 is top-centre.)
 const seatPos = (p: number, n: number, hx: number, vy: number) => {
-  const theta = Math.PI / 2 + (p * 2 * Math.PI) / Math.max(1, n);
+  const bottom = Math.PI / 2;
+  let theta: number;
+  if (p === 0 || n <= 1) {
+    theta = bottom; // hero
+  } else {
+    const m = n - 1; // villains
+    const gap = 0.7; // ~40° wedge held clear at the bottom
+    if (m === 1) {
+      theta = -Math.PI / 2; // lone villain → top-centre
+    } else {
+      const span = 2 * Math.PI - 2 * gap;
+      theta = bottom + gap + ((p - 1) * span) / (m - 1);
+    }
+  }
   return { left: `${50 + hx * Math.cos(theta)}%`, top: `${50 + vy * Math.sin(theta)}%` };
 };
 
@@ -1388,7 +1419,9 @@ const Felt = ({
   const n = seats.length;
   const meIdx = seats.findIndex(s => s.key === myOwnerKey);
   const rot = meIdx >= 0 ? meIdx : 0;
-  const tableH = n <= 3 ? 300 : 360;
+  // More seats need a taller oval so the top arc has vertical room and the
+  // boxes (now carrying a think-time line) don't pile onto the felt.
+  const tableH = n <= 2 ? 300 : n <= 4 ? 340 : n <= 6 ? 400 : 470;
   // Each seat's most recent action time this hand (the feed is chronological,
   // so the last write per seat wins). Powers the per-seat "took Xs" readout.
   const actions = poker.actions ?? [];
@@ -1441,10 +1474,12 @@ const Felt = ({
         <div
           style={{
             position: "absolute",
-            top: "13%",
-            bottom: "13%",
-            left: "9%",
-            right: "9%",
+            // Inset a touch more than the seat ring (radii 38/41) so the rail
+            // seats sit just OUTSIDE the felt instead of overlapping it.
+            top: "16%",
+            bottom: "16%",
+            left: "13%",
+            right: "13%",
             background: `radial-gradient(ellipse at 50% 38%, #11402c, ${FELT})`,
             border: "3px solid #1c5238",
             borderRadius: "50%",
@@ -1482,8 +1517,8 @@ const Felt = ({
         {/* Seats around the rim + their bet chips pushed toward the pot. */}
         {seats.map(seat => {
           const p = (seat.idx - rot + n) % n;
-          const seatXY = seatPos(p, n, 41, 39);
-          const betXY = seatPos(p, n, 22, 21);
+          const seatXY = seatPos(p, n, 39, 39);
+          const betXY = seatPos(p, n, 22, 24);
           return (
             <div key={seat.key}>
               <div
