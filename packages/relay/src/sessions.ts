@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, renameSync } from "node:fs";
 import { config } from "./config.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 export type Role = "host" | "guest";
 
@@ -57,8 +57,13 @@ let loaded = false;
 function loadFromDisk(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const raw = readFileSync(SESSIONS_FILE, "utf8");
+    raw = readFileSync(SESSIONS_FILE, "utf8");
+  } catch {
+    return; // no file yet → fresh map, nothing to recover
+  }
+  try {
     const parsed = JSON.parse(raw) as { sessions?: unknown };
     if (Array.isArray(parsed.sessions)) {
       const now = Date.now();
@@ -74,15 +79,29 @@ function loadFromDisk(): void {
         }
       }
     }
-  } catch {
-    /* no file yet → fresh map */
+  } catch (err) {
+    // The file EXISTS but won't parse — almost always a torn/partial write
+    // from a crash mid-persist (the bug this module had before switching to
+    // writeFileAtomic). Do NOT silently fall through to an empty map: the
+    // first persist below would overwrite this file and turn a recoverable
+    // blip into a permanent wipe of every token. Move the bad file aside so
+    // an operator can hand-recover, and start empty only after preserving it.
+    try {
+      renameSync(SESSIONS_FILE, `${SESSIONS_FILE}.corrupt-${Date.now()}`);
+    } catch {
+      /* best effort — if we can't preserve it, still don't crash */
+    }
+    console.error("[sessions] sessions file unparseable; preserved a .corrupt-* copy, starting empty", err);
   }
 }
 
 function persistToDisk(): void {
   try {
-    mkdirSync(dirname(SESSIONS_FILE), { recursive: true });
-    writeFileSync(SESSIONS_FILE, JSON.stringify({ sessions: Array.from(sessions.values()) }), "utf8");
+    // Atomic write (temp + rename), matching every other persist() in the
+    // relay. A non-atomic writeFileSync truncates-then-rewrites, so a deploy
+    // restart catching it mid-write left a 0-byte/partial sessions.json —
+    // which on next boot wiped every login + agent/skill token. See fs-atomic.ts.
+    writeFileAtomic(SESSIONS_FILE, JSON.stringify({ sessions: Array.from(sessions.values()) }));
   } catch (err) {
     console.warn("[sessions] persist failed", err);
   }

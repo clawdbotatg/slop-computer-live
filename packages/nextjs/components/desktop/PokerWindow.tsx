@@ -1053,19 +1053,49 @@ const BetChip = ({ amount }: { amount: number }) => (
 );
 
 // "Deal next hand" but held during the post-showdown pause so everyone can
-// study the revealed hands. Ticks locally to re-enable when the pause ends.
+// study the revealed hands. Ticks locally to re-enable when the pause ends —
+// then a 10s countdown runs and auto-deals so a table never stalls waiting on
+// a human click (you can still click to deal immediately).
+const AUTO_DEAL_MS = 10_000;
 const DealButton = ({ onClick, readyAt }: { onClick: () => void; readyAt: number | null }) => {
   const [now, setNow] = useState(() => Date.now());
+  const [autoAt, setAutoAt] = useState<number | null>(null);
+  const fired = useRef(false);
   useEffect(() => {
-    if (!readyAt) return;
-    const id = setInterval(() => setNow(Date.now()), 400);
+    const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
-  }, [readyAt]);
+  }, []);
   const waiting = readyAt ? now < readyAt : false;
-  const secs = readyAt ? Math.max(0, Math.ceil((readyAt - now) / 1000)) : 0;
+  // Once the showdown pause is over, arm the auto-deal countdown (once).
+  useEffect(() => {
+    if (waiting || autoAt != null) return;
+    setAutoAt(Date.now() + AUTO_DEAL_MS);
+  }, [waiting, autoAt]);
+  // Auto-deal when the countdown elapses.
+  useEffect(() => {
+    if (autoAt == null || fired.current || now < autoAt) return;
+    fired.current = true;
+    onClick();
+  }, [now, autoAt, onClick]);
+  if (waiting) {
+    const secs = Math.max(0, Math.ceil((readyAt! - now) / 1000));
+    return (
+      <button type="button" disabled style={btn(LIME, true)}>
+        Showdown — {secs}s
+      </button>
+    );
+  }
+  const secs = autoAt ? Math.max(0, Math.ceil((autoAt - now) / 1000)) : AUTO_DEAL_MS / 1000;
   return (
-    <button type="button" disabled={waiting} onClick={onClick} style={btn(LIME, waiting)}>
-      {waiting ? `Showdown — ${secs}s` : "Deal next hand"}
+    <button
+      type="button"
+      onClick={() => {
+        fired.current = true;
+        onClick();
+      }}
+      style={btn(LIME)}
+    >
+      Deal next hand — {secs}s
     </button>
   );
 };
