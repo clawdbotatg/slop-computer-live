@@ -50,7 +50,7 @@ import {
   unlockPokerAudio,
   warmPokerAudio,
 } from "~~/utils/pokerSounds";
-import { usdSuffixFromWei } from "~~/utils/usd";
+import { usdSuffixFromEth, usdSuffixFromWei } from "~~/utils/usd";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const CYAN = "var(--slop-cyan, #2ee6d6)";
@@ -215,6 +215,7 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
   const [windowMin, setWindowMin] = useState(10);
   const [networkSel, setNetworkSel] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const ethUsd = useEthPrice();
   const noWallet = !mesh.wallet;
 
   // Only chains the room multisig is actually deployed on can hold the
@@ -282,7 +283,7 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
           </select>
         </label>
         <label style={lbl}>
-          Buy-in ({CHAIN_LABELS[network] ?? "chain"} ETH)
+          Buy-in ({CHAIN_LABELS[network] ?? "chain"} ETH){usdSuffixFromEth(buyinEth, ethUsd)}
           <input style={inp} value={buyinEth} onChange={e => setBuyinEth(e.target.value)} />
         </label>
         <label style={lbl}>
