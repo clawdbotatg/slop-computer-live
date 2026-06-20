@@ -70,7 +70,13 @@ export const config = {
   // streaming machine that captures the live show.
   godPassword: env("GOD_MODE_PASSWORD", ""),
   sessionSecret,
-  sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "86400")),
+  // 7 days — matches AGENT_TOKEN_TTL_MS in sessions.ts so a host's login
+  // session always outlives the skill/agent tokens it mints. A 1-day default
+  // here was the "skill token expired mid-session" footgun: the host's cookie
+  // died a day into a multi-day live session (and silently reverted to 1 day
+  // on any box missing the SESSION_TTL_SECONDS override), so they could no
+  // longer re-mint and had to hand the agent a fresh link. Keep these in lockstep.
+  sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "604800")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),
   mediamtxRtmpIngress: env("MEDIAMTX_RTMP_INGRESS_URL", "rtmp://localhost:1935"),
   mediamtxPublishUser: env("MEDIAMTX_PUBLISH_USER", "live"),

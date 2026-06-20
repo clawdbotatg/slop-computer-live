@@ -1252,6 +1252,8 @@ export type PeerMeshState = {
   pokerJoin: (txHash: string) => void;
   /** Latest join-deposit verification result (per reported tx). */
   pokerJoinResult: { ok: boolean; txHash: string; reason?: string } | null;
+  pokerSponsorAiResult: { ok: boolean; txHash: string; reason?: string; aiKey?: string } | null;
+  pokerSponsorAi: (args: { txHash: string; modelId: string; name: string }) => void;
   /** Seat any newly-funded players and deal a hand (≥2 players needed). */
   pokerStart: () => void;
   /** Take an action on your turn. `toChips` is the raise-to total (bet/raise). */
@@ -1770,6 +1772,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [pokerState, setPokerState] = useState<PokerTableView | null>(null);
   const [pokerPrivate, setPokerPrivate] = useState<PokerPrivate | null>(null);
   const [pokerJoinResult, setPokerJoinResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(null);
+  const [pokerSponsorAiResult, setPokerSponsorAiResult] = useState<{
+    ok: boolean;
+    txHash: string;
+    reason?: string;
+    aiKey?: string;
+  } | null>(null);
   const [escrow, setEscrow] = useState<EscrowSession | null>(null);
   const [escrowFundResult, setEscrowFundResult] = useState<{ ok: boolean; txHash: string; reason?: string } | null>(
     null,
@@ -2239,6 +2247,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const pokerJoin = useCallback(
     (txHash: string) => {
       send({ type: "poker_join", txHash });
+    },
+    [send],
+  );
+  // Sponsor an LLM into the tournament: pay the buy-in from your wallet, then
+  // report the deposit + which model to seat and what to name it. The bot's
+  // prize settles back to you (the sponsor).
+  const pokerSponsorAi = useCallback(
+    (args: { txHash: string; modelId: string; name: string }) => {
+      setPokerSponsorAiResult(null);
+      send({ type: "poker_sponsor_ai", ...args });
     },
     [send],
   );
@@ -3734,6 +3752,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "poker_sponsor_ai_result") {
+          setPokerSponsorAiResult({
+            ok: !!msg.ok,
+            txHash: typeof msg.txHash === "string" ? msg.txHash : "",
+            reason: typeof msg.reason === "string" ? msg.reason : undefined,
+            aiKey: typeof msg.aiKey === "string" ? msg.aiKey : undefined,
+          });
+          return;
+        }
+
         if (msg.type === "escrow_state") {
           setEscrow((msg.escrow ?? null) as EscrowSession | null);
           return;
@@ -4245,6 +4273,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     pokerState,
     pokerPrivate,
     pokerJoinResult,
+    pokerSponsorAiResult,
+    pokerSponsorAi,
     pokerOpenTable,
     pokerJoin,
     pokerStart,

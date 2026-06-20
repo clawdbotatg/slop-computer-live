@@ -275,12 +275,67 @@ const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
 
 // ─── Join (buy in during the window) ─────────────────────────────────
 
-const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
-  const ethUsd = useEthPrice();
+// The ETH deposit that funds a seat: pay the buy-in to the room multisig from
+// either a passkey personal wallet (Base-only, via the relay facilitator) or a
+// connected EOA. Returns the tx hash; the caller waits for the receipt and
+// reports it (buy in for yourself, or sponsor an AI). Factored out so both
+// flows share the identical passkey/EOA branch.
+function useEscrowDeposit(escrow: EscrowSession) {
   const currentChainId = useChainId();
   const { switchChainAsync, isPending: switching } = useSwitchChain();
   const { sendTransactionAsync, isPending: sending } = useSendTransaction();
   const { send: personalSend, phase: personalPhase, isPasskey } = usePersonalWalletSend();
+  const buyinWei = metaStr(escrow, "buyinWei") || "0";
+  const sendDeposit = useCallback(async (): Promise<`0x${string}`> => {
+    if (isPasskey) {
+      // Passkey wallet: no EOA to send from. Spend from the personal multisig
+      // via the relay facilitator (Base-only). See usePersonalWalletSend.
+      if (escrow.chainId !== base.id) throw new Error("Passkey wallets can buy in on Base only.");
+      return personalSend({ to: escrow.multisig as `0x${string}`, valueWei: BigInt(buyinWei) });
+    }
+    if (currentChainId !== escrow.chainId) await switchChainAsync({ chainId: escrow.chainId });
+    return sendTransactionAsync({
+      to: escrow.multisig as `0x${string}`,
+      value: BigInt(buyinWei),
+      chainId: escrow.chainId,
+    });
+  }, [
+    isPasskey,
+    personalSend,
+    currentChainId,
+    escrow.chainId,
+    escrow.multisig,
+    buyinWei,
+    switchChainAsync,
+    sendTransactionAsync,
+  ]);
+  return { sendDeposit, buyinWei, switching, sending, personalPhase };
+}
+
+// Shared "deposit in progress" caption for the buy-in / sponsor flows.
+function depositStatus(p: {
+  personalPhase: string | null | undefined;
+  switching: boolean;
+  sending: boolean;
+  waiting: boolean;
+  verifying: boolean;
+}): string | null {
+  if (p.personalPhase)
+    return p.personalPhase === "deploying"
+      ? "Deploying your wallet…"
+      : p.personalPhase === "signing"
+        ? "Approve with your passkey…"
+        : "Submitting…";
+  if (p.switching) return "Switching chain…";
+  if (p.sending) return "Confirm in your wallet…";
+  if (p.waiting) return "Waiting for confirmation…";
+  if (p.verifying) return "Verifying deposit…";
+  return null;
+}
+
+const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const ethUsd = useEthPrice();
+  const { sendDeposit, buyinWei, switching, sending, personalPhase } = useEscrowDeposit(escrow);
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   const [reported, setReported] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -288,7 +343,6 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
     hash: txHash ?? undefined,
     chainId: escrow.chainId,
   });
-  const buyinWei = metaStr(escrow, "buyinWei") || "0";
 
   useEffect(() => {
     if (receipt && txHash && !reported) {
@@ -303,55 +357,21 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
   const onJoin = useCallback(async () => {
     setErr(null);
     try {
-      let hash: `0x${string}`;
-      if (isPasskey) {
-        // Passkey wallet: no EOA to send from. Spend from the personal multisig
-        // via the relay facilitator (Base-only). See usePersonalWalletSend.
-        if (escrow.chainId !== base.id) {
-          setErr("Passkey wallets can buy in on Base only.");
-          return;
-        }
-        hash = await personalSend({ to: escrow.multisig as `0x${string}`, valueWei: BigInt(buyinWei) });
-      } else {
-        if (currentChainId !== escrow.chainId) await switchChainAsync({ chainId: escrow.chainId });
-        hash = await sendTransactionAsync({
-          to: escrow.multisig as `0x${string}`,
-          value: BigInt(buyinWei),
-          chainId: escrow.chainId,
-        });
-      }
       setReported(false);
-      setTxHash(hash);
+      setTxHash(await sendDeposit());
     } catch (e) {
       setErr(String(e).slice(0, 160));
     }
-  }, [
-    isPasskey,
-    personalSend,
-    currentChainId,
-    escrow.chainId,
-    escrow.multisig,
-    buyinWei,
-    switchChainAsync,
-    sendTransactionAsync,
-  ]);
+  }, [sendDeposit]);
 
   const busy = switching || sending || !!personalPhase || (!!txHash && (waiting || (reported && !rejected)));
-  const statusText = personalPhase
-    ? personalPhase === "deploying"
-      ? "Deploying your wallet…"
-      : personalPhase === "signing"
-        ? "Approve with your passkey…"
-        : "Submitting buy-in…"
-    : switching
-      ? "Switching chain…"
-      : sending
-        ? "Confirm in your wallet…"
-        : waiting
-          ? "Waiting for confirmation…"
-          : reported && !rejected
-            ? "Verifying buy-in…"
-            : null;
+  const statusText = depositStatus({
+    personalPhase,
+    switching,
+    sending,
+    waiting,
+    verifying: !!(reported && !rejected),
+  });
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -370,6 +390,137 @@ const JoinButton = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSessi
               onClick={() => {
                 setReported(false);
                 mesh.pokerJoin(txHash);
+              }}
+              style={{ ...btn(CYAN), padding: "4px 10px", marginLeft: 8, fontSize: 11 }}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+      {err && <div style={{ fontSize: 12, color: ACCENT }}>{err}</div>}
+    </div>
+  );
+};
+
+// ─── Sponsor an LLM (buy in a bot you pick + name) ───────────────────
+//
+// You pay the same buy-in from your wallet, choose a model and a name, and the
+// relay seats an autonomous AI player. It plays itself; its prize settles back
+// to you. Hidden when the relay ships no AI models (none have an API key set).
+const sponsorField: React.CSSProperties = {
+  background: "#160e2e",
+  border: "1px solid #2a1648",
+  borderRadius: 6,
+  color: "var(--slop-text)",
+  padding: "6px 8px",
+  fontSize: 13,
+};
+
+const SponsorPanel = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSession }) => {
+  const ethUsd = useEthPrice();
+  const { sendDeposit, buyinWei, switching, sending, personalPhase } = useEscrowDeposit(escrow);
+  const models = mesh.aiPlayers;
+  const [modelId, setModelId] = useState("");
+  const [name, setName] = useState("");
+  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
+  const [reported, setReported] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const { isLoading: waiting, data: receipt } = useWaitForTransactionReceipt({
+    hash: txHash ?? undefined,
+    chainId: escrow.chainId,
+  });
+
+  // Default to the first model once the list arrives.
+  useEffect(() => {
+    if (!modelId && models.length) setModelId(models[0]!.id);
+  }, [models, modelId]);
+  const chosen = models.find(m => m.id === modelId) ?? null;
+  const botName = name.trim() || chosen?.label || "a bot";
+
+  useEffect(() => {
+    if (receipt && txHash && !reported && chosen) {
+      setReported(true);
+      mesh.pokerSponsorAi({ txHash, modelId: chosen.id, name: name.trim() || chosen.label });
+    }
+  }, [receipt, txHash, reported, chosen, name, mesh]);
+
+  const result = mesh.pokerSponsorAiResult;
+  const rejected = reported && result && !result.ok && result.txHash === txHash ? result.reason : null;
+  const sponsored = !!(reported && result && result.ok && result.txHash === txHash);
+
+  const onSponsor = useCallback(async () => {
+    setErr(null);
+    if (!chosen) {
+      setErr("Pick a model first.");
+      return;
+    }
+    try {
+      setReported(false);
+      setTxHash(await sendDeposit());
+    } catch (e) {
+      setErr(String(e).slice(0, 160));
+    }
+  }, [chosen, sendDeposit]);
+
+  if (!models.length) return null;
+
+  const busy =
+    switching || sending || !!personalPhase || (!!txHash && (waiting || (reported && !rejected && !sponsored)));
+  const statusText = depositStatus({
+    personalPhase,
+    switching,
+    sending,
+    waiting,
+    verifying: !!(reported && !rejected && !sponsored),
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid #2a1648", paddingTop: 8 }}>
+      <span style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: 0.4 }}>
+        Sponsor an LLM 🤖
+      </span>
+      <span style={{ fontSize: 11, color: "var(--slop-text-muted)" }}>
+        Pick a model, name it, and pay its buy-in — it plays autonomously and its winnings come back to you.
+      </span>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <select
+          value={modelId}
+          onChange={e => setModelId(e.target.value)}
+          disabled={busy}
+          style={{ ...sponsorField, flex: "1 1 150px" }}
+        >
+          {models.map(m => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          maxLength={24}
+          placeholder={chosen?.label ?? "Bot name"}
+          disabled={busy}
+          style={{ ...sponsorField, flex: "1 1 120px" }}
+        />
+      </div>
+      <button type="button" onClick={onSponsor} disabled={busy} style={btn(CYAN, busy)}>
+        {busy ? "Sponsoring…" : `Sponsor ${botName} — ${fmtEth(buyinWei)} ETH${usdSuffixFromWei(buyinWei, ethUsd)}`}
+      </button>
+      {statusText && <div style={{ fontSize: 12, color: "var(--slop-text-muted)" }}>{statusText}</div>}
+      {sponsored && <div style={{ fontSize: 12, color: LIME }}>✓ {botName} is in.</div>}
+      {rejected && (
+        <div style={{ fontSize: 12, color: ACCENT }}>
+          {rejected === "not_mined"
+            ? "Not confirmed yet — give it a moment, then retry."
+            : `Sponsor rejected: ${rejected}`}
+          {rejected === "not_mined" && txHash && chosen && (
+            <button
+              type="button"
+              onClick={() => {
+                setReported(false);
+                mesh.pokerSponsorAi({ txHash, modelId: chosen.id, name: name.trim() || chosen.label });
               }}
               style={{ ...btn(CYAN), padding: "4px 10px", marginLeft: 8, fontSize: 11 }}
             >
@@ -523,6 +674,9 @@ const BuyInBanner = ({
       {open && !iAmIn && !full && <JoinButton mesh={mesh} escrow={escrow} />}
       {iAmIn && <div style={{ fontSize: 12, color: LIME }}>✓ You&apos;re in.</div>}
       {open && full && !iAmIn && <div style={{ fontSize: 12, color: ACCENT }}>Tournament full (8 players).</div>}
+      {/* Sponsor a bot whether or not you've bought yourself in — as long as
+          the window's open and there's an empty seat. */}
+      {open && !full && <SponsorPanel mesh={mesh} escrow={escrow} />}
     </div>
   );
 };
@@ -536,8 +690,10 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
   const ethUsd = useEthPrice();
   const total = (escrow.payouts ?? []).reduce((s, p) => s + BigInt(p.amountWei), 0n).toString();
   const settled = escrow.status === "settled";
-  const standings = (escrow.meta.standings as { key: string; label: string; place: number }[] | undefined) ?? [];
-  const payByKey = new Map((escrow.payouts ?? []).map(p => [p.to, p.amountWei] as const));
+  const standings =
+    (escrow.meta.standings as
+      | { key: string; label: string; place: number; recipient?: string; wonWei?: string }[]
+      | undefined) ?? [];
   // Once proposed, the payout tx lives in the room wallet; the user must
   // sign + execute it there (it's a multisig tx, not a plain send).
   const payoutTx = escrow.payoutTxId ? (mesh.walletTxs.find(t => t.id === escrow.payoutTxId) ?? null) : null;
@@ -619,7 +775,10 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {standings.map(s => {
-          const won = payByKey.get(s.key);
+          // Each finisher's own prize (server-computed per place). May be
+          // redirected to a sponsor for an AI seat — shown next to the bot's
+          // row regardless, since the row carries its own amount.
+          const won = s.wonWei && BigInt(s.wonWei) > 0n ? s.wonWei : undefined;
           return (
             <div
               key={s.key}
@@ -633,6 +792,7 @@ const CashOutView = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: EscrowSess
             >
               <span>
                 {s.place <= 3 ? MEDAL[s.place - 1] : ` ${ordinal(s.place)}`} {s.label}
+                {s.key.startsWith("ai:") && " 🤖"}
               </span>
               {won && (
                 <span style={{ color: GOLD }}>
@@ -748,6 +908,7 @@ const SeatBox = ({
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
+  const isAi = seat.key.startsWith("ai:"); // a sponsored LLM player
   const folded = seat.status === "folded" || seat.status === "out";
   const concealed = seat.hasCards && !(isMe && myHole) && !revealed;
   const borderColor = isActor ? LIME : isWinner ? GOLD : isMe ? CYAN : "#2a1648";
@@ -823,6 +984,7 @@ const SeatBox = ({
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginBottom: 4 }}>
         {isButton && <DealerChip />}
+        {isAi && <span title="Sponsored AI player">🤖</span>}
         <span
           style={{
             fontSize: 12,

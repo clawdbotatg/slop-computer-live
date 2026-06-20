@@ -697,31 +697,41 @@ function maybeEndTournament(room: Room): boolean {
   const recipientByKey = new Map(esc.accounts.map(a => [a.key, payoutAddrOf(a)]));
   const recipientOf = (k: string): string => recipientByKey.get(k) ?? k;
   const bps = payoutStructureBps(standings.length);
-  const payouts: { to: string; amountWei: string }[] = [];
+  // Each paid finisher's own prize, keyed by seat key — used both to build the
+  // payout legs and to show the right amount next to that finisher's standings
+  // row (independent of the per-address merge below).
+  const wonByKey = new Map<string, bigint>();
   let paid = 0n;
   bps.forEach((b, i) => {
     const finisher = standings[i];
     if (!finisher) return;
     const amt = (pool * BigInt(b)) / 10000n;
-    if (amt > 0n) payouts.push({ to: recipientOf(finisher.key), amountWei: amt.toString() });
+    if (amt > 0n) wonByKey.set(finisher.key, amt);
     paid += amt;
   });
-  // Rounding dust goes to 1st place so Σ payouts == pool exactly (added to the
-  // raw 1st-place leg before the merge below).
+  // Rounding dust goes to 1st place so Σ prizes == pool exactly.
   const dust = pool - paid;
-  if (dust > 0n && payouts[0]) payouts[0].amountWei = (BigInt(payouts[0].amountWei) + dust).toString();
-  if (payouts.length === 0) return false;
+  const firstKey = standings[0]?.key;
+  if (dust > 0n && firstKey) wonByKey.set(firstKey, (wonByKey.get(firstKey) ?? 0n) + dust);
+  if (wonByKey.size === 0) return false;
 
-  // Merge legs that resolve to the same address (e.g. a sponsor who both
-  // placed AND had a backed bot place) into one leg — the on-chain payout
-  // proposal is built 1:1 from this plan and matched leg-by-leg.
-  const merged = mergePayouts(payouts);
+  // Resolve each prize to its payout address (the sponsor's, for AI seats) and
+  // merge legs that land on the same address (e.g. a sponsor who both placed
+  // AND had a backed bot place) — the on-chain payout proposal is built 1:1
+  // from this plan and matched leg-by-leg.
+  const merged = mergePayouts([...wonByKey].map(([k, amt]) => ({ to: recipientOf(k), amountWei: amt.toString() })));
 
   const res = room.escrow.settle(merged, {
     settleKind: "tournament",
-    // `recipient` lets the client show each prize next to the right standings
-    // row even when the payout was redirected to a sponsor's address.
-    standings: standings.map(s => ({ key: s.key, label: s.label, place: s.place, recipient: recipientOf(s.key) })),
+    // `recipient` + `wonWei` let the client show each prize next to the right
+    // standings row even when the payout was redirected/merged to a sponsor.
+    standings: standings.map(s => ({
+      key: s.key,
+      label: s.label,
+      place: s.place,
+      recipient: recipientOf(s.key),
+      wonWei: (wonByKey.get(s.key) ?? 0n).toString(),
+    })),
   });
   if (!res.ok) {
     console.error("[poker] tournament settle failed:", res.error);
@@ -733,7 +743,7 @@ function maybeEndTournament(room: Room): boolean {
     address: null,
     handle: null,
     text: `🏆 ${winner?.label ?? "winner"} won the poker tournament — ${formatEth(pool.toString())} ETH pool paying out`,
-    meta: { escrowId: esc.id, places: payouts.length },
+    meta: { escrowId: esc.id, places: merged.length },
   });
   broadcastEscrowState(room);
   return true;
