@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TimelineBar } from "~~/components/desktop/TimelineBar";
 import { DesktopBackground } from "~~/components/ui/DesktopBackground";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type { ClockCountdownState, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { audioBus } from "~~/utils/audioBus";
 
@@ -55,8 +56,9 @@ function fmtHMS(total: number): string {
  */
 function BottomVisualizer({ active }: { active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pageVisible = usePageVisible();
   useEffect(() => {
-    if (!active) return;
+    if (!active || !pageVisible) return;
     let raf = 0;
     const BARS = 44;
     const loop = () => {
@@ -129,7 +131,7 @@ function BottomVisualizer({ active }: { active: boolean }) {
     };
     raf = window.requestAnimationFrame(loop);
     return () => window.cancelAnimationFrame(raf);
-  }, [active]);
+  }, [active, pageVisible]);
 
   return (
     <canvas

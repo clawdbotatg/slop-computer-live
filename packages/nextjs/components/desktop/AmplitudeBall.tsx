@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 
 // A small magenta ball that pulses with the live RMS amplitude of a mic
 // stream. Bound to whichever stream the parent passes; cleanly tears the
@@ -9,9 +10,10 @@ import { useEffect, useRef } from "react";
 // the user instant feedback ("tap the mic, watch the ball").
 export const AmplitudeBall = ({ stream }: { stream: MediaStream | null }) => {
   const ballRef = useRef<HTMLDivElement>(null);
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
-    if (!stream) return;
+    if (!stream || !pageVisible) return;
     type Ctor = new () => AudioContext;
     const C = window.AudioContext ?? (window as unknown as { webkitAudioContext?: Ctor }).webkitAudioContext;
     if (!C) return;
@@ -58,7 +60,7 @@ export const AmplitudeBall = ({ stream }: { stream: MediaStream | null }) => {
       }
       void ctx.close();
     };
-  }, [stream]);
+  }, [stream, pageVisible]);
 
   return (
     <div

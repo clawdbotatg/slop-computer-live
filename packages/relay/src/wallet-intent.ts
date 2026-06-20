@@ -1134,6 +1134,7 @@ DELAY RULES:
 RULES:
 - Token contract addresses are injected in the portfolio context as [0x...] after each token. USE THESE FIRST.
 - Never return a transaction that failed simulation. Work in wei internally, display human units.
+- The "simulation" field, IF present, MUST be exactly { "verified": bool, "changes": [...] } with a changes array (use [] when there are none). NEVER emit a simulation object with a "note" or any other shape, and if you didn't/couldn't simulate, OMIT the simulation field entirely rather than sending a partial one.
 - For native ETH in LI.FI: use symbol "ETH".
 - If the user's request is unclear, respond with a chat message asking for clarification.
 - NEVER claim on-chain verification results without actually calling a verification tool.

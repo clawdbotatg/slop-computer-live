@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
 import { useAudioBusElement } from "~~/hooks/useAudioBus";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type { MusicState, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
@@ -83,6 +84,7 @@ export const MusicPlayerWindow = ({
   audioBusEnabled?: boolean;
 }) => {
   const slug = useRoomSlug();
+  const pageVisible = usePageVisible();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playlistRef = useRef<HTMLDivElement>(null);
   // Multiplayer scroll sync for the playlist — peers follow whoever
@@ -733,6 +735,7 @@ export const MusicPlayerWindow = ({
 
   // ---- RAF spectrum loop. Renders to canvas in-place; no React re-renders.
   useEffect(() => {
+    if (!pageVisible) return;
     let raf = 0;
     const loop = () => {
       // God-mode self-heal: the AudioBus registers the "music" source
@@ -786,7 +789,7 @@ export const MusicPlayerWindow = ({
     };
     raf = window.requestAnimationFrame(loop);
     return () => window.cancelAnimationFrame(raf);
-  }, []);
+  }, [pageVisible]);
 
   // Cleanup on unmount: close the AudioContext AND pause the <audio>
   // element. A detached media element keeps playing in Chrome until it's

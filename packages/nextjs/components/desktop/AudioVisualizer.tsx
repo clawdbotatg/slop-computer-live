@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAudioBusStream } from "~~/hooks/useAudioBus";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import { ACTIVATED_EVENT } from "~~/hooks/useUserGesture";
 import { useRoomSlug } from "~~/lib/room-slug";
 import type { Bands } from "~~/utils/blockieBands";
@@ -81,6 +82,7 @@ export const AudioVisualizer = ({
   controls = true,
 }: AudioVisualizerProps) => {
   const slug = useRoomSlug();
+  const pageVisible = usePageVisible();
   const storageKey = audioMutedKey(slug);
   const ensAvatar = useEnsAvatarFromAddress(address);
   const effectiveAvatar = hidden ? null : avatarUrl || ensAvatar;
@@ -157,6 +159,9 @@ export const AudioVisualizer = ({
   useAudioBusStream(stream, audioBusId ?? "", audioBusLabel, busActive);
 
   useEffect(() => {
+    // Tab hidden → don't build the audio graph or paint loop at all.
+    // Recreated when the tab returns (pageVisible is a dep below).
+    if (!pageVisible) return;
     type AudioContextCtor = new () => AudioContext;
     const Ctor =
       window.AudioContext ?? (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext;
@@ -256,7 +261,7 @@ export const AudioVisualizer = ({
       void ctx.close();
       if (audioCtxRef.current === ctx) audioCtxRef.current = null;
     };
-  }, [stream, bands.band1, bands.band2, bands.band3]);
+  }, [stream, bands.band1, bands.band2, bands.band3, pageVisible]);
 
   // Reload-without-gesture lands here with a suspended AudioContext
   // (analyser sees silence → flat visualizer) and possibly a paused

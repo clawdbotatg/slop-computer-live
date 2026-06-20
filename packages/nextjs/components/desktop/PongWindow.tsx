@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type { PeerMeshState, PongSide, PongState } from "~~/hooks/usePeerMesh";
 
 // Multiplayer Pong. Server is authoritative for ball + score; clients
@@ -24,6 +25,7 @@ export const PongWindow = ({ mesh }: Props) => {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageVisible = usePageVisible();
 
   // Local optimistic paddle Y. We keep our own paddle here so input
   // response feels instant; the server's broadcast reconciles when it
@@ -97,6 +99,7 @@ export const PongWindow = ({ mesh }: Props) => {
 
   // Animation loop: integrate paddle input + repaint canvas every frame.
   useEffect(() => {
+    if (!pageVisible) return;
     let raf = 0;
     let prevT = performance.now();
     const tick = (t: number) => {
@@ -132,7 +135,7 @@ export const PongWindow = ({ mesh }: Props) => {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [pageVisible]);
 
   // Resize the canvas to fit the container while preserving aspect.
   const [canvasSize, setCanvasSize] = useState({ w: field.w, h: field.h });

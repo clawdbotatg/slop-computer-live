@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type { PeerMeshState, WormColor, WormDir, WormState } from "~~/hooks/usePeerMesh";
 
 // Multiplayer Worm (snake). The relay owns the entire grid simulation —
@@ -40,6 +41,7 @@ export const WormWindow = ({ mesh }: Props) => {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageVisible = usePageVisible();
 
   // Interpolation between the previous and current server snapshots. We
   // only advance `from → to` when the move-tick counter changes; off-tick
@@ -110,6 +112,7 @@ export const WormWindow = ({ mesh }: Props) => {
 
   // Render loop.
   useEffect(() => {
+    if (!pageVisible) return;
     let raf = 0;
     const tick = () => {
       paint(canvasRef.current, fromRef.current, toRef.current, tStartRef.current, mySlotRef.current);
@@ -117,7 +120,7 @@ export const WormWindow = ({ mesh }: Props) => {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [pageVisible]);
 
   // Fit the canvas to the container while preserving the board aspect.
   const [canvasSize, setCanvasSize] = useState({ w: pxW, h: pxH });

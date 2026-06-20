@@ -194,8 +194,12 @@ const SendButton = ({
   );
 };
 
-const SimChanges = ({ changes }: { changes: { direction: string; symbol: string; amount: string }[] }) => {
-  if (changes.length === 0) return null;
+const SimChanges = ({ changes }: { changes?: { direction: string; symbol: string; amount: string }[] }) => {
+  // `changes` can be missing entirely — the AI sometimes emits a simulation
+  // object with only a `verified`/`note` field and no `changes` array (e.g.
+  // when asset-change sim is unavailable). Treat that as "no changes" instead
+  // of crashing on `.length`.
+  if (!Array.isArray(changes) || changes.length === 0) return null;
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
       {changes.map((c, i) => {

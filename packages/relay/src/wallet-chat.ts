@@ -70,8 +70,17 @@ export class WalletChatState {
     try {
       const raw = readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<WalletChatSnapshot>;
+      const messages = Array.isArray(parsed.messages) ? parsed.messages.slice(-MAX_MESSAGES) : [];
+      // Heal any persisted message whose tx simulation lacks a changes array
+      // (older builds let the model store { verified, note } with no changes),
+      // which crashed the card on render.
+      for (const m of messages) {
+        if (m.transaction?.simulation && !Array.isArray(m.transaction.simulation.changes)) {
+          m.transaction.simulation.changes = [];
+        }
+      }
       this.snapshot = {
-        messages: Array.isArray(parsed.messages) ? parsed.messages.slice(-MAX_MESSAGES) : [],
+        messages,
         // A persisted `processing: true` is always stale — the call it
         // belonged to died with the previous relay process.
         processing: false,
@@ -127,13 +136,21 @@ export class WalletChatState {
   /** Append the AI's answer from an intent result and clear processing. */
   appendAssistant(result: IntentResult): WalletChatMessage {
     this.load();
+    // Normalize the tx: the model can emit a `simulation` object without a
+    // `changes` array (e.g. just `{ verified, note }` when sim is
+    // unavailable). The UI maps over `changes`, so coerce it to [] — a
+    // missing array would otherwise crash the card on render.
+    const transaction = result.type === "transaction" ? result.transaction : null;
+    if (transaction?.simulation && !Array.isArray(transaction.simulation.changes)) {
+      transaction.simulation.changes = [];
+    }
     const msg: WalletChatMessage = {
       id: newId(),
       role: "assistant",
       content: result.message,
       ts: Date.now(),
       sender: null,
-      transaction: result.type === "transaction" ? result.transaction : null,
+      transaction,
       multistep:
         result.type === "multistep_transaction"
           ? { steps: result.steps, delay: result.delay, priceEth: result.priceEth, priceWei: result.priceWei }

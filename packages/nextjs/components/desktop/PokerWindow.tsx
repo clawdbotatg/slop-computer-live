@@ -30,6 +30,7 @@ import {
 import { PayoutProposeButton } from "~~/components/desktop/chess/WagerPanel";
 import { SlopAddress } from "~~/components/ui";
 import { useEthPrice } from "~~/hooks/useEthPrice";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type {
   EscrowSession,
   PeerMeshState,
@@ -148,11 +149,12 @@ const Card = ({ card, hidden, small }: { card?: string; hidden?: boolean; small?
 // Live countdown to a deadline — ticks each second. Formats m:ss past 60s.
 const Countdown = ({ deadline, urgentAt = 10 }: { deadline: number | null; urgentAt?: number }) => {
   const [now, setNow] = useState(() => Date.now());
+  const pageVisible = usePageVisible();
   useEffect(() => {
-    if (!deadline) return;
+    if (!deadline || !pageVisible) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [deadline]);
+  }, [deadline, pageVisible]);
   if (!deadline) return null;
   const secs = Math.max(0, Math.ceil((deadline - now) / 1000));
   const label = secs >= 60 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : `${secs}s`;
@@ -180,11 +182,12 @@ const SeatThinkTime = ({
   totalMs: number;
 }) => {
   const [, setTick] = useState(0);
+  const pageVisible = usePageVisible();
   useEffect(() => {
-    if (!live) return;
+    if (!live || !pageVisible) return;
     const id = window.setInterval(() => setTick(t => t + 1), 1000); // ticks the teal this-turn value
     return () => window.clearInterval(id);
-  }, [live]);
+  }, [live, pageVisible]);
   const turn = live ? Math.max(0, Date.now() - actorSince) : lastMs; // teal, increments while live
   const total = totalMs || 0; // gray, static (server-accumulated, no live add)
   if (turn == null && total <= 0) return null; // nothing yet
@@ -1188,10 +1191,12 @@ const DealButton = ({ onClick, readyAt }: { onClick: () => void; readyAt: number
   const [now, setNow] = useState(() => Date.now());
   const [autoAt, setAutoAt] = useState<number | null>(null);
   const fired = useRef(false);
+  const pageVisible = usePageVisible();
   useEffect(() => {
+    if (!pageVisible) return;
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
-  }, []);
+  }, [pageVisible]);
   const waiting = readyAt ? now < readyAt : false;
   // Once the showdown pause is over, arm the auto-deal countdown (once).
   useEffect(() => {
@@ -1782,10 +1787,12 @@ const VictoryPause = ({
 }) => {
   const ethUsd = useEthPrice();
   const [now, setNow] = useState(() => Date.now());
+  const pageVisible = usePageVisible();
   useEffect(() => {
+    if (!pageVisible) return;
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
-  }, []);
+  }, [pageVisible]);
   // Fire the handoff to the payout screen once the clock runs out (in an effect,
   // never during render).
   useEffect(() => {

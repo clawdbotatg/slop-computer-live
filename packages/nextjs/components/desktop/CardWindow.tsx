@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LoadingBar } from "~~/components/ui";
+import { usePageVisible } from "~~/hooks/usePageVisible";
 import type { CardTitle, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
@@ -44,6 +45,7 @@ type Props = {
 
 export const CardWindow = ({ mesh }: Props) => {
   const slug = useRoomSlug();
+  const pageVisible = usePageVisible();
   const { cardState, cardJob, cardTitle, setCardTitle, resetCard } = mesh;
   const resultUrl = useMemo(() => {
     if (!cardState) return null;
@@ -112,6 +114,7 @@ export const CardWindow = ({ mesh }: Props) => {
       setProgress(0);
       return;
     }
+    if (!pageVisible) return;
     const FAKE_DURATION_MS = 60_000;
     const CAP = 95;
     // Anchor the progress bar on the server-reported job start when
@@ -129,7 +132,7 @@ export const CardWindow = ({ mesh }: Props) => {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [loading, cardJob?.startedAt]);
+  }, [loading, cardJob?.startedAt, pageVisible]);
 
   // Compute where inside the wrapper the image is actually drawn
   // (object-fit: contain leaves letterbox bars). Returns null until
