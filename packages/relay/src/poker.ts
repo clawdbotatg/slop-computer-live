@@ -966,6 +966,18 @@ export class PokerState {
       bigBlind: g.bigBlind,
       blindLevel: g.blindLevel,
       blindIntervalMs: g.blindIntervalMs,
+      // The un-escalated base blinds + the level you're about to hit, so a bot
+      // can project the structure ahead (M-ratio, push/fold) instead of only
+      // seeing the current level. nextBlind is null when blinds are fixed.
+      baseSmallBlind: g.baseSmallBlind,
+      baseBigBlind: g.baseBigBlind,
+      nextBlind:
+        g.blindIntervalMs > 0
+          ? {
+              smallBlind: g.baseSmallBlind * 2 ** (g.blindLevel + 1),
+              bigBlind: g.baseBigBlind * 2 ** (g.blindLevel + 1),
+            }
+          : null,
       // When the blinds next double (drives the client's level countdown).
       // Null when blinds are fixed or the clock hasn't started.
       nextBlindAt:

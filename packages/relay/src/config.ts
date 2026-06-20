@@ -123,7 +123,7 @@ export const config = {
   // "not configured" message rather than crashing.
   aiWalletLlmKey: env("SLOP_COMPUTER_AI_WALLET", ""),
   aiWalletLlmBaseUrl: env("AI_WALLET_LLM_BASE_URL", "https://llm.bankr.bot/v1"),
-  aiWalletLlmModel: env("AI_WALLET_LLM_MODEL", "claude-opus-4.7"),
+  aiWalletLlmModel: env("AI_WALLET_LLM_MODEL", "claude-opus-4.8"),
   zerionApiKey: env("ZERION_API_KEY", ""),
   lifiApiKey: env("LIFI_API_KEY", ""),
   // --- Personal-wallet deployer / facilitator (docs/PASSKEY-WALLET.md) -----

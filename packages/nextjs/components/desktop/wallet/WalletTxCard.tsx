@@ -89,8 +89,12 @@ const SendButton = ({
         if (connectedChainId !== tx.chainId) {
           await switchChainAsync({ chainId: tx.chainId });
         }
-        await sendTransactionAsync({ to: target, value: valueWei, data, chainId: tx.chainId });
+        const hash = await sendTransactionAsync({ to: target, value: valueWei, data, chainId: tx.chainId });
         setState("sent");
+        // Hand the hash back to the wallet AI so it tracks the result (bridge
+        // status / receipt) and reports — no more "paste me the hash".
+        const chatAddress = (walletAddress ?? wallet.address).toLowerCase();
+        mesh.walletChatTxSent(chatAddress, tx.chainId, hash, tx.description);
       } catch (err) {
         setState("idle");
         setError(String((err as { shortMessage?: string }).shortMessage ?? err).slice(0, 160));
@@ -274,7 +278,13 @@ export const WalletTxCard = ({
             </div>
           ) : null}
           <SendButton
-            tx={{ to: tx.to, data: tx.data, value: hexValueToDecimal(tx.value), chainId: tx.chainId }}
+            tx={{
+              to: tx.to,
+              data: tx.data,
+              value: hexValueToDecimal(tx.value),
+              chainId: tx.chainId,
+              description: tx.description,
+            }}
             wallet={wallet}
             mesh={mesh}
             label={sendLabel}
@@ -310,7 +320,13 @@ export const WalletTxCard = ({
               </div>
               <div style={{ fontSize: 11, color: "var(--slop-text-muted)", lineHeight: 1.4 }}>{step.description}</div>
               <SendButton
-                tx={{ to: step.to, data: step.data, value: hexValueToDecimal(step.value), chainId: step.chainId }}
+                tx={{
+                  to: step.to,
+                  data: step.data,
+                  value: hexValueToDecimal(step.value),
+                  chainId: step.chainId,
+                  description: `${step.label}: ${step.description}`,
+                }}
                 wallet={wallet}
                 mesh={mesh}
                 label={mode === "eoa" ? `Send step ${i + 1}` : `Send step ${i + 1} to wallet`}

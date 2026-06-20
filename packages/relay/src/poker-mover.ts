@@ -27,6 +27,19 @@ const INFLIGHT_MAX_MS = 220_000;
 
 type AIConfig = NonNullable<ReturnType<typeof getAIPlayer>>;
 
+/** Static, per-tournament context that the live table state doesn't carry but
+ *  a competent player needs: the prize-pool split (for ICM / bubble play), the
+ *  starting stack (the M-ratio denominator), and a stable id. Built in index.ts
+ *  from the escrow (it owns the money); the mover and the /v1/poker REST view
+ *  both consume it. Null when no poker escrow is open. */
+export type PokerTableConfig = {
+  tournamentId: string;
+  startingStack: number;
+  buyinWei: string;
+  blindIntervalMs: number;
+  payout: { entrants: number; bps: number[] };
+};
+
 /** The legal actions available to the seat to act, with exact chip amounts —
  *  computed from engine state (the engine has no public "legal moves" call,
  *  but act() is the authority that ultimately validates whatever we submit). */
@@ -61,7 +74,10 @@ export class PokerAIMover {
    *  No-op unless a hand is running, it's an AI seat's turn, and we're not
    *  already thinking. `notifyAfterAction` re-broadcasts + runs the end-of-hand
    *  hooks (mirrors ai-mover's notifyAfterMove). */
-  async tick(notifyAfterAction: () => void, opts?: { force?: boolean }): Promise<void> {
+  async tick(
+    notifyAfterAction: () => void,
+    opts?: { force?: boolean; config?: PokerTableConfig | null },
+  ): Promise<void> {
     if (this.inFlight) {
       if (Date.now() - this.inFlightSince < INFLIGHT_MAX_MS) return;
       console.warn(`[poker-mover] previous decision wedged >${Math.round(INFLIGHT_MAX_MS / 1000)}s — forcing a fresh attempt`);
@@ -90,7 +106,7 @@ export class PokerAIMover {
     this.inFlight = true;
     this.inFlightSince = Date.now();
     try {
-      await this.playOneTurn(ai, seat.key, notifyAfterAction);
+      await this.playOneTurn(ai, seat.key, notifyAfterAction, opts?.config ?? null);
     } catch (err) {
       console.error("[poker-mover] unexpected failure:", err);
       // Never leave the seat hanging on an unforeseen error.
@@ -110,18 +126,23 @@ export class PokerAIMover {
     return toCall > 0 ? "fold" : "check";
   }
 
-  private async playOneTurn(ai: AIConfig, seatKey: string, notifyAfterAction: () => void): Promise<void> {
+  private async playOneTurn(
+    ai: AIConfig,
+    seatKey: string,
+    notifyAfterAction: () => void,
+    config: PokerTableConfig | null,
+  ): Promise<void> {
     const g = this.poker.getGame();
     if (g.status !== "running" || g.actor < 0 || g.seats[g.actor]?.key !== seatKey) return;
     const opts = computeOptions(g);
 
     // First attempt: open prompt.
-    let raw = await this.askForAction(ai, g, opts, false);
+    let raw = await this.askForAction(ai, g, opts, false, config);
     if (raw && this.tryApply(seatKey, raw, opts, notifyAfterAction)) return;
 
     // Second attempt: strict prompt listing the exact legal amounts.
     console.warn(`[poker-mover] ${ai.id}: retrying with strict prompt`);
-    raw = await this.askForAction(ai, g, opts, true);
+    raw = await this.askForAction(ai, g, opts, true, config);
     if (raw && this.tryApply(seatKey, raw, opts, notifyAfterAction)) return;
 
     // Two strikes — take the safe default so the human isn't stuck.
@@ -150,14 +171,20 @@ export class PokerAIMover {
     return true;
   }
 
-  private async askForAction(ai: AIConfig, g: PokerGame, opts: Options, strict: boolean): Promise<string | null> {
+  private async askForAction(
+    ai: AIConfig,
+    g: PokerGame,
+    opts: Options,
+    strict: boolean,
+    config: PokerTableConfig | null,
+  ): Promise<string | null> {
     const url = `${ai.baseURL.replace(/\/$/, "")}/chat/completions`;
     const seat = g.seats[g.actor]!;
     const body = {
       model: ai.model,
       messages: [
         { role: "system" as const, content: buildSystemPrompt(ai, seat.label) },
-        { role: "user" as const, content: buildUserPrompt(g, opts, strict) },
+        { role: "user" as const, content: buildUserPrompt(g, opts, strict, config) },
       ],
       // Reasoning models pad with hundreds of internal tokens before the
       // answer; 2048 leaves room (we only pay for what's used).
@@ -264,7 +291,7 @@ function positionLabel(g: PokerGame, idx: number): string {
   return `seat ${g.seats[idx]!.seatIdx}`;
 }
 
-function buildUserPrompt(g: PokerGame, opts: Options, strict: boolean): string {
+function buildUserPrompt(g: PokerGame, opts: Options, strict: boolean, config: PokerTableConfig | null): string {
   const me = g.seats[g.actor]!;
   const board = g.board.length ? g.board.join(" ") : "(none yet)";
   const hole = me.hole ? me.hole.join(" ") : "(unknown)";
@@ -273,6 +300,25 @@ function buildUserPrompt(g: PokerGame, opts: Options, strict: boolean): string {
     .filter((_, i) => i !== g.actor)
     .map(s => `  ${s.label} [${positionLabel(g, g.seats.indexOf(s))}]: stack ${s.stack}, in-pot ${s.committed}, ${s.status}`)
     .join("\n");
+
+  // Blind schedule — projects the structure ahead so the bot isn't blindsided
+  // by a turbo. Blinds = base × 2^level; level advances every blindIntervalMs.
+  const playersLeft = g.seats.filter(s => s.stack > 0).length;
+  const scheduleLine =
+    g.blindIntervalMs > 0
+      ? `Blind schedule: level ${g.blindLevel}, blinds double every ${Math.round(g.blindIntervalMs / 6000) / 10}m — ` +
+        `next level ${g.baseSmallBlind * 2 ** (g.blindLevel + 1)}/${g.baseBigBlind * 2 ** (g.blindLevel + 1)}.`
+      : `Blind schedule: fixed (no escalation).`;
+  // Tournament context — starting stack (M-ratio) + the payout split (ICM): a
+  // top-3-paid table near the bubble is played very differently from
+  // winner-take-all. Falls back to just the survivor count if config is absent.
+  const tourneyLines = config
+    ? [
+        `Tournament: started ${config.startingStack} chips each; ${playersLeft} of ${config.payout.entrants} players left.`,
+        `Payout: top ${config.payout.bps.length} of ${config.payout.entrants} paid ` +
+          `(${config.payout.bps.map(b => `${b / 100}%`).join("/")}) — survival has value, weigh it near the bubble.`,
+      ]
+    : [`${playersLeft} players left.`];
 
   const menu: string[] = [];
   if (opts.toCall > 0) menu.push("FOLD");
@@ -285,6 +331,8 @@ function buildUserPrompt(g: PokerGame, opts: Options, strict: boolean): string {
 
   const lines = [
     `Street: ${g.street}    Blinds: ${g.smallBlind}/${g.bigBlind}`,
+    scheduleLine,
+    ...tourneyLines,
     `Board: ${board}`,
     `Your hole cards: ${hole}`,
     `You are: ${me.label} [${positionLabel(g, g.actor)}], stack ${me.stack}, already in-pot this street ${me.committed}.`,

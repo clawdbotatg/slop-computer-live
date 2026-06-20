@@ -1585,6 +1585,8 @@ export type PeerMeshState = {
    *  reset its thread; omit for the Bank's room-wide conversation. Refused
    *  server-side while a turn is processing. */
   walletChatReset: (address?: string) => void;
+  /** Report an executed tx hash back into the wallet chat so the AI tracks it. */
+  walletChatTxSent: (address: string, chainId: number, hash: string, description?: string) => void;
   /** The AI conversation for a PERSONAL wallet address (empty until its
    *  first turn). The Bank uses `walletChat` above. */
   walletChatFor: (address: string) => WalletChat;
@@ -2851,6 +2853,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           ...(signers && signers.length > 0 ? { signers, threshold } : {}),
         }),
       }).catch(err => console.warn("walletChatSend failed", err));
+    },
+    [slug],
+  );
+  // Fold an executed tx hash back into the wallet chat so the AI can track it
+  // and report (bridge status / receipt) instead of asking the user to paste
+  // the hash. Fire-and-forget; the AI's reply arrives via the wallet_chat echo.
+  const walletChatTxSent = useCallback(
+    (address: string, chainId: number, hash: string, description?: string) => {
+      fetch(withSlug(`${RELAY_HTTP_URL}/v1/wallet-chat/tx-sent`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address, chainId, hash, ...(description ? { description } : {}) }),
+      }).catch(err => console.warn("walletChatTxSent failed", err));
     },
     [slug],
   );
@@ -4413,6 +4429,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletChat,
     walletChatSend,
     walletChatReset,
+    walletChatTxSent,
     walletChatFor,
     tips,
     tipParse,

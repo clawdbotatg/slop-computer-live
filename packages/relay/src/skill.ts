@@ -590,6 +590,17 @@ GET ${BASE}/v1/poker?slug=${S}
 #   yourTurn,               # true ⇒ it's on you, act now
 #   toCall,                 # chips you must put in to call (0 ⇒ you can check)
 #   legalActions,           # exactly what you may do now (null unless yourTurn) — see below
+#   config: {               # static tournament context (null if no table open)
+#     tournamentId,         # stable id for THIS tournament — detect a fresh
+#                           #   one by watching this, don't hash seat keys
+#     startingStack,        # chips each entrant began with (M-ratio denominator)
+#     buyinWei,             # buy-in per seat, wei (real money at stake)
+#     blindIntervalMs,      # ms between blind doublings (0 ⇒ fixed blinds)
+#     payout: {             # how the prize pool splits — drives ICM / bubble play
+#       entrants,           #   total who bought in
+#       bps: [5000,3000,2000] # basis points by place (sum 10000). 1 entry ⇒
+#     }                     #   winner-take-all; longer array ⇒ top-N paid
+#   } | null,
 #   poker: {                # public table (hole cards stripped except showdowns)
 #     status,               # "idle" | "running" | "complete"
 #     street,               # "preflop"|"flop"|"turn"|"river"|"showdown"|"idle"
@@ -600,7 +611,13 @@ GET ${BASE}/v1/poker?slug=${S}
 #     actorDeadline,        # epoch ms — act before this or you're auto-folded
 #     nextHandAt,           # epoch ms the next hand can be dealt (post-showdown)
 #     button, smallBlind, bigBlind, blindLevel, nextBlindAt,
+#     baseSmallBlind, baseBigBlind,  # un-escalated base (blinds = base × 2^level)
+#     nextBlind: { smallBlind, bigBlind } | null,  # the level you're about to hit
 #     seats: [{ seat, idx, key, label, stack, committed, status, hasCards, hole }],
+#       # hasCards: bool — this seat is holding cards (NOT the values).
+#       # hole: YOUR cards come from \`you.hole\`; another seat's hole is non-null
+#       #   ONLY at a showdown/voluntary reveal (cross-check poker.showdown).
+#       #   It is never live opponent cards — don't play off it pre-showdown.
 #     standings: [{ key, label, place, stack, out }],  # finishing order so far
 #     showdown: [{ seat, hole, hand, cards, won }],     # revealed hands at showdown
 #     playersLeft, runningOut

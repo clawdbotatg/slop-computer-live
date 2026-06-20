@@ -58,6 +58,41 @@ function safeBigInt(amount: string | number, decimals = 18): bigint {
   }
   return BigInt(s);
 }
+/** Parse an already-raw (wei/base-unit) integer amount string to BigInt.
+ *  Unlike safeBigInt this does NOT scale by decimals — LI.FI's fromAmount is
+ *  already in base units. Returns 0n on anything unparseable. */
+function safeRawBigInt(amount: unknown): bigint {
+  try {
+    const s = String(amount ?? "").trim();
+    if (!s) return 0n;
+    return s.startsWith("0x") ? BigInt(s) : BigInt(s.split(".")[0]!);
+  } catch {
+    return 0n;
+  }
+}
+/** Read an ERC-20 allowance(owner, spender) on a given chain. Returns the
+ *  granted amount, or null if the call failed (caller treats null as "assume
+ *  not approved" so a route is never proposed that would revert). */
+async function readAllowance(
+  chainId: number,
+  token: string,
+  owner: string,
+  spender: string,
+): Promise<bigint | null> {
+  try {
+    const data = "0xdd62ed3e" + padAddress(owner) + padAddress(spender);
+    const res = await fetch(alchemyUrl(chainId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "eth_call", params: [{ to: token, data }, "latest"], id: 1 }),
+    });
+    const json = (await res.json()) as any;
+    if (json.error || typeof json.result !== "string") return null;
+    return BigInt(json.result || "0x0");
+  } catch {
+    return null;
+  }
+}
 function encodeString(s: string): string {
   const bytes = Buffer.from(s, "utf8");
   const len = padUint256(BigInt(bytes.length));
@@ -496,24 +531,76 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
         const res = await fetch(url, { headers: { "x-lifi-api-key": config.lifiApiKey } });
         if (!res.ok) return { error: `LI.FI API error (${res.status}): ${await res.text()}` };
         const data = (await res.json()) as any;
-        if (data.transactionRequest) {
-          return {
-            to: data.transactionRequest.to as string,
-            data: data.transactionRequest.data as string,
-            value: (data.transactionRequest.value as string) || "0x0",
-            chainId: fromChainId,
-            estimate: data.estimate
-              ? {
-                  fromAmount: data.estimate.fromAmount,
-                  toAmount: data.estimate.toAmount,
-                  toAmountMin: data.estimate.toAmountMin,
-                  approvalAddress: data.estimate.approvalAddress,
-                  gasCosts: data.estimate.gasCosts,
-                }
-              : undefined,
-          };
+        if (!data.transactionRequest) {
+          return { error: "No transactionRequest in LI.FI response", rawResponse: JSON.stringify(data).slice(0, 500) };
         }
-        return { error: "No transactionRequest in LI.FI response", rawResponse: JSON.stringify(data).slice(0, 500) };
+        const txReq = {
+          to: data.transactionRequest.to as string,
+          data: data.transactionRequest.data as string,
+          value: (data.transactionRequest.value as string) || "0x0",
+          chainId: fromChainId,
+        };
+        const estimate = data.estimate
+          ? {
+              fromAmount: data.estimate.fromAmount,
+              toAmount: data.estimate.toAmount,
+              toAmountMin: data.estimate.toAmountMin,
+              approvalAddress: data.estimate.approvalAddress,
+              gasCosts: data.estimate.gasCosts,
+            }
+          : undefined;
+
+        // ERC-20 routes need the spender (LI.FI router) approved to pull the
+        // input token first, or the swap/bridge reverts on-chain. LI.FI only
+        // returns `approvalAddress` for ERC-20 inputs (native ETH needs none),
+        // so its presence is the signal. We read the live allowance; if it's
+        // short (or unreadable), we prepend an approve step and hand back a
+        // 2-step multistep so the user can't propose a tx that reverts for
+        // lack of allowance. The approve is exact-amount (no infinite grants).
+        const fromTokenAddr = (
+          (data.action?.fromToken?.address as string | undefined) ??
+          (data.estimate?.fromToken?.address as string | undefined) ??
+          (typeof fromToken === "string" ? fromToken : undefined)
+        )?.toLowerCase();
+        const spender = (estimate?.approvalAddress as string | undefined)?.toLowerCase();
+        const needAmount = safeRawBigInt(data.estimate?.fromAmount);
+        const isErc20 =
+          !!fromTokenAddr &&
+          /^0x[a-f0-9]{40}$/.test(fromTokenAddr) &&
+          fromTokenAddr !== "0x0000000000000000000000000000000000000000" &&
+          fromTokenAddr !== "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        if (spender && isErc20 && needAmount > 0n) {
+          const allowance = await readAllowance(fromChainId, fromTokenAddr, fromAddress, spender);
+          // null = couldn't read it → assume not approved (prepend approve; it's
+          // cheap and idempotent for a fresh allowance, the common case here).
+          if (allowance === null || allowance < needAmount) {
+            const symbol = (data.action?.fromToken?.symbol as string | undefined) ?? "tokens";
+            const approveData = "0x095ea7b3" + padAddress(spender) + padUint256(needAmount);
+            return {
+              multistep: {
+                steps: [
+                  {
+                    to: fromTokenAddr,
+                    data: approveData,
+                    value: "0x0",
+                    chainId: fromChainId,
+                    description: `Approve the LI.FI router (${spender.slice(0, 8)}…) to spend ${symbol}`,
+                    label: "Approve",
+                  },
+                  {
+                    ...txReq,
+                    description: `Execute the ${fromChainId === toChainId ? "swap" : "bridge"} via LI.FI`,
+                    label: fromChainId === toChainId ? "Swap" : "Bridge",
+                  },
+                ],
+                delay: 3000,
+              },
+              estimate,
+              note: "needs-approval: returned a 2-step approve+route multistep — return it directly without simulating (the route step can't pass simulation until the approve lands on-chain).",
+            };
+          }
+        }
+        return { ...txReq, estimate };
       } catch (e) {
         return { error: `Failed to fetch LI.FI quote: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -1031,10 +1118,10 @@ AVAILABLE TOOLS:
 MANDATORY WORKFLOW (for transactions only):
 1. If you need balance info → call getPortfolio first.
 2. Resolve any ENS names → call resolveENS.
-3. For swaps/bridges: use buildRoute directly with token symbols.
+3. For swaps/bridges: use buildRoute directly with token symbols. If buildRoute's result has a 'multistep' field, the input token isn't approved for the LI.FI router yet — return that multistep DIRECTLY as { type: "multistep_transaction", message, steps, delay } (step 1 approves, step 2 swaps/bridges). Never strip the approve step and never propose the route step alone — it will revert without the allowance.
 4. For simple transfers: use buildTransfer. For WETH wrap/unwrap: use wrapEth / unwrapWeth.
 5. For ENS registration: validateENSName → checkENSAvailability → getENSRentPrice → (user confirms) → buildENSRegistration.
-6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep AND for signer/threshold self-calls — those change wallet config, not assets, so they correctly show no asset changes; return them directly).
+6. ALWAYS call simulateAssetChanges on built calldata before returning (skip for ENS multistep, for buildRoute's approve+route multistep, AND for signer/threshold self-calls — the approve+route step can't pass simulation until the approve lands on-chain, and config self-calls correctly show no asset changes; return all of these directly).
 7. Only return the transaction if simulation confirms the expected asset changes.
 8. If buildRoute returns an error → call getTokenLiquidity to diagnose and explain why.
 
@@ -1057,7 +1144,8 @@ RULES:
 - Never return a transaction that failed simulation. Work in wei internally, display human units.
 - For native ETH in LI.FI: use symbol "ETH".
 - If the user's request is unclear, respond with a chat message asking for clarification.
-- NEVER claim on-chain verification results without actually calling a verification tool.`;
+- NEVER claim on-chain verification results without actually calling a verification tool.
+- TX STATUS: if a user message reports a submitted transaction with a tx hash (e.g. "submitted tx 0x… on chain N"), NEVER ask the user for the hash — it's already given. Immediately check it yourself: for a cross-chain bridge use getRouteStatus(txHash, fromChain, toChain) (infer the chains from the route you proposed earlier in this conversation); for anything else use getTransactionDetails(txHash, chainId). Then report concisely whether it succeeded, is pending, or what went wrong. If it was the approve step of a 2-step route, confirm the approval landed and remind the user to send the swap/bridge step.`;
 
 // ─── OpenAI tool schemas ─────────────────────────────────────────────────────
 
@@ -1180,7 +1268,8 @@ const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
     type: "function",
     function: {
       name: "buildRoute",
-      description: "Build swap, bridge, or DeFi zap calldata via LI.FI.",
+      description:
+        "Build swap, bridge, or DeFi zap calldata via LI.FI. Returns a single tx when the input token is already approved; returns a `multistep` field (approve + route) when an ERC-20 allowance is missing — pass that through as a multistep_transaction.",
       parameters: {
         type: "object",
         properties: {

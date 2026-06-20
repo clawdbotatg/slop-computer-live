@@ -82,6 +82,7 @@ import { bytesToBase64Url, bytesToHex, hexToBytes, verifyPasskey } from "./passk
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import type { ChessGame } from "./chess.js";
 import { listAvailableAIPlayers, isAIKey } from "./ai-players.js";
+import type { PokerTableConfig } from "./poker-mover.js";
 import {
   create as glossaryCreate,
   list as glossaryList,
@@ -505,7 +506,7 @@ setInterval(() => {
     // mover's own timeout + fallback is the backstop.
     const actorSeat = g.seats[g.actor];
     if (actorSeat && isAIKey(actorSeat.key)) {
-      void room.pokerAiMover.tick(() => finishPokerAiAction(room));
+      void room.pokerAiMover.tick(() => finishPokerAiAction(room), { config: pokerTableConfig(room) });
       continue;
     }
     if (now - g.actorSince < TURN_TIMEOUT_MS) continue;
@@ -608,6 +609,28 @@ function payoutStructureBps(entrants: number): number[] {
   if (entrants <= 3) return [10000];
   if (entrants <= 5) return [6500, 3500];
   return [5000, 3000, 2000];
+}
+
+// Static, per-tournament context for an AI/bot that the live table view doesn't
+// carry: the prize-pool split (ICM), the starting stack (M-ratio denominator),
+// the buy-in (real money at stake), and a stable tournamentId so a bot can
+// detect a fresh tournament without hashing seat keys. The escrow owns the
+// money, so it's the source of truth. Null when no poker escrow is open. Shared
+// by the /v1/poker REST view and the server-side AI mover so both bots — BYO
+// and sponsored — see the same context.
+function pokerTableConfig(room: Room): PokerTableConfig | null {
+  const esc = room.escrow.get();
+  if (!esc || esc.game !== "poker") return null;
+  const entrants = esc.accounts.filter(a => BigInt(a.depositedWei) > 0n).length;
+  const buyinWei = typeof esc.meta.buyinWei === "string" ? esc.meta.buyinWei : "0";
+  const blindIntervalMs = typeof esc.meta.blindIntervalMs === "number" ? esc.meta.blindIntervalMs : 0;
+  return {
+    tournamentId: esc.id,
+    startingStack: pokerStartingStack(esc.meta),
+    buyinWei,
+    blindIntervalMs,
+    payout: { entrants, bps: payoutStructureBps(entrants) },
+  };
 }
 
 // Narrate a resolved hand into the transcript — chips stay in the engine
@@ -3621,6 +3644,7 @@ function buildPokerPayload(room: Room, callerKey: string | null) {
   return {
     version: room.poker.getVersion(),
     poker,
+    config: pokerTableConfig(room),
     you: mySeat
       ? {
           idx: mySeat.idx,
@@ -4730,6 +4754,87 @@ function parseClientSigners(raw: unknown): { address: string; kind: "account" | 
   return out.length > 0 ? out : null;
 }
 
+/** Run one AI-wallet intent turn: fetch fresh wallet context, invoke the
+ *  intent engine, append the assistant reply. Delivery is via the wallet_chat
+ *  broadcast (appendAssistant), not a return value. Shared by the user-message
+ *  route and the tx-sent feedback route. Fire-and-forget — don't await. */
+async function runWalletChatTurn(
+  room: Room,
+  chat: ReturnType<Room["walletChatFor"]>,
+  opts: {
+    message: string;
+    address: string;
+    chainId: number;
+    userMsgId: string;
+    clientSigners?: { address: string; kind: "account" | "passkey"; label: string }[] | null;
+    clientThreshold?: number;
+  },
+): Promise<void> {
+  const { message, address, chainId, userMsgId, clientSigners, clientThreshold } = opts;
+  try {
+    const [portfolio, activity] = await Promise.all([
+      fetchPortfolio(address).catch(() => null),
+      fetchActivity(address).catch(() => null),
+    ]);
+    // Hand the AI the wallet's signer set + threshold so it can reason about
+    // add/remove/threshold. A personal wallet sends these in the request body;
+    // otherwise, if the chat is about THIS room's current Bank multisig,
+    // derive them from the record.
+    const curWallet = room.wallet.getCurrent();
+    const bankSigners =
+      curWallet && curWallet.address.toLowerCase() === address
+        ? curWallet.signers.map(s => ({
+            address: s.address,
+            kind: (s.signerType === "passkey" ? "passkey" : "account") as "account" | "passkey",
+            label: s.label,
+          }))
+        : undefined;
+    const walletSigners = clientSigners ?? bankSigners;
+    const walletThreshold = clientSigners ? (clientThreshold ?? 1) : bankSigners ? curWallet?.threshold : undefined;
+    const intentInput: WalletIntentInput = {
+      message,
+      address,
+      chainId,
+      signers: walletSigners,
+      threshold: walletThreshold,
+      portfolio: (portfolio?.assets ?? []).map(x => ({
+        tokenSymbol: x.tokenSymbol,
+        balance: x.balance,
+        balanceUsd: x.balanceUsd,
+        blockchain: x.blockchain,
+        contractAddress: x.contractAddress,
+      })),
+      defiPositions: (portfolio?.defiPositions ?? []).map(x => ({
+        tokenName: x.tokenName,
+        tokenSymbol: x.tokenSymbol,
+        positionType: x.positionType,
+        protocol: x.protocol,
+        balance: x.balance,
+        balanceUsd: x.balanceUsd,
+        blockchain: x.blockchain,
+        contractAddress: x.contractAddress,
+      })),
+      recentActivity: (activity?.items ?? []).slice(0, 20).map(x => ({
+        type: x.type,
+        chain: x.chain,
+        minedAt: x.minedAt,
+        out: x.out ? { symbol: x.out.symbol, amount: x.out.amount } : null,
+        in: x.in ? { symbol: x.in.symbol, amount: x.in.amount } : null,
+        valueUsd: x.valueUsd,
+      })),
+      recentMessages: chat.recentForIntent(userMsgId),
+    };
+    const result = await runWalletIntent(intentInput);
+    chat.appendAssistant(result);
+  } catch (err) {
+    chat.appendAssistant({
+      type: "chat",
+      message: "Sorry — the wallet AI hit an unexpected error. Try again.",
+      error: String(err).slice(0, 300),
+    });
+  }
+}
+
 app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
@@ -4754,81 +4859,57 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
   const sender = (a.session.handle || a.session.address || null) || null;
   const userMsg = chat.appendUser(message, sender);
 
-  // Fire-and-forget: fetch fresh wallet context, run the intent engine,
-  // append the AI's answer. Result delivery is via the `wallet_chat`
-  // broadcast, not this HTTP response.
-  void (async () => {
-    try {
-      const [portfolio, activity] = await Promise.all([
-        fetchPortfolio(address).catch(() => null),
-        fetchActivity(address).catch(() => null),
-      ]);
-      // Hand the AI the wallet's signer set + threshold so it can reason
-      // about add/remove/threshold. A personal wallet sends these in the
-      // request body (it knows its own signers); otherwise, if the chat is
-      // about THIS room's current Bank multisig, derive them from the record.
-      const curWallet = room.wallet.getCurrent();
-      const bankSigners =
-        curWallet && curWallet.address.toLowerCase() === address
-          ? curWallet.signers.map(s => ({
-              address: s.address,
-              kind: (s.signerType === "passkey" ? "passkey" : "account") as "account" | "passkey",
-              label: s.label,
-            }))
-          : undefined;
-      const walletSigners = clientSigners ?? bankSigners;
-      const walletThreshold = clientSigners
-        ? (clientThreshold ?? 1)
-        : bankSigners
-          ? curWallet?.threshold
-          : undefined;
-      const intentInput: WalletIntentInput = {
-        message,
-        address,
-        chainId,
-        signers: walletSigners,
-        threshold: walletThreshold,
-        portfolio: (portfolio?.assets ?? []).map(x => ({
-          tokenSymbol: x.tokenSymbol,
-          balance: x.balance,
-          balanceUsd: x.balanceUsd,
-          blockchain: x.blockchain,
-          contractAddress: x.contractAddress,
-        })),
-        defiPositions: (portfolio?.defiPositions ?? []).map(x => ({
-          tokenName: x.tokenName,
-          tokenSymbol: x.tokenSymbol,
-          positionType: x.positionType,
-          protocol: x.protocol,
-          balance: x.balance,
-          balanceUsd: x.balanceUsd,
-          blockchain: x.blockchain,
-          contractAddress: x.contractAddress,
-        })),
-        recentActivity: (activity?.items ?? []).slice(0, 20).map(x => ({
-          type: x.type,
-          chain: x.chain,
-          minedAt: x.minedAt,
-          out: x.out ? { symbol: x.out.symbol, amount: x.out.amount } : null,
-          in: x.in ? { symbol: x.in.symbol, amount: x.in.amount } : null,
-          valueUsd: x.valueUsd,
-        })),
-        recentMessages: chat.recentForIntent(userMsg.id),
-      };
-      const result = await runWalletIntent(intentInput);
-      chat.appendAssistant(result);
-    } catch (err) {
-      chat.appendAssistant({
-        type: "chat",
-        message: "Sorry — the wallet AI hit an unexpected error. Try again.",
-        error: String(err).slice(0, 300),
-      });
-    }
-  })();
+  // Fire-and-forget: run the intent engine and append the AI's answer.
+  // Result delivery is via the `wallet_chat` broadcast, not this HTTP response.
+  void runWalletChatTurn(room, chat, {
+    message,
+    address,
+    chainId,
+    userMsgId: userMsg.id,
+    clientSigners,
+    clientThreshold,
+  });
 
   reply.header("cache-control", "no-store");
   return reply.code(202).send({ ok: true, state: chat.current().state, userMessageId: userMsg.id });
 });
+
+// A peer just submitted a transaction the AI proposed. Fold the tx hash back
+// into the conversation and kick one AI turn so it tracks the result (bridge
+// status / receipt) and reports — instead of asking the user to paste the
+// hash. Without this the intent engine is blind to what actually executed.
+app.post<{ Body: { address?: unknown; chainId?: unknown; hash?: unknown; description?: unknown } }>(
+  "/v1/wallet-chat/tx-sent",
+  async (req, reply) => {
+    const a = v1AuthFromReq(req);
+    if (!a) return reply.code(401).send({ error: "unauthenticated" });
+    const address = typeof req.body?.address === "string" ? req.body.address.trim().toLowerCase() : "";
+    if (!/^0x[a-f0-9]{40}$/.test(address)) return reply.code(400).send({ error: "bad-address" });
+    const hash = typeof req.body?.hash === "string" ? req.body.hash.trim() : "";
+    if (!/^0x[a-fA-F0-9]{64}$/.test(hash)) return reply.code(400).send({ error: "bad-hash" });
+    const chainId = typeof req.body?.chainId === "number" ? req.body.chainId : 1;
+    const description = typeof req.body?.description === "string" ? req.body.description.trim().slice(0, 200) : "";
+
+    const room = roomFromReq(req);
+    const chat = room.walletChatFor(address);
+    const note =
+      `✅ I just submitted a transaction on-chain.\n` +
+      `Tx hash: ${hash}\nChain: ${chainId}` +
+      (description ? `\nWhat it was: ${description}` : "") +
+      `\n\nTrack it and tell me whether it succeeded, is still pending, or what went wrong — don't ask me for the hash, it's right here.`;
+    // If a turn is already running, just record the hash as context for the
+    // next turn rather than starting a second overlapping intent call.
+    if (chat.isProcessing()) {
+      chat.appendContext(note);
+      reply.header("cache-control", "no-store");
+      return reply.code(202).send({ ok: true, deferred: true, state: chat.current().state });
+    }
+    const userMsg = chat.appendUser(note, "✓ tx submitted");
+    void runWalletChatTurn(room, chat, { message: note, address, chainId, userMsgId: userMsg.id });
+    reply.header("cache-control", "no-store");
+    return reply.code(202).send({ ok: true, state: chat.current().state, userMessageId: userMsg.id });
+  },
+);
 
 // Reset the conversation. Any peer — same permissive model as the
 // research "Start over". Refused while a turn is processing so a reset

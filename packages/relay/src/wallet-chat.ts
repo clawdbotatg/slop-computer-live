@@ -149,6 +149,22 @@ export class WalletChatState {
     return msg;
   }
 
+  /** Append a user-role context note WITHOUT flipping `processing` or starting
+   *  a turn — used when a tx hash arrives while a turn is already running, so
+   *  the hash lands in history for the next turn instead of racing the current
+   *  one. Sender is fixed so the UI can render it as a system-ish note. */
+  appendContext(content: string): WalletChatMessage {
+    this.load();
+    const msg: WalletChatMessage = { id: newId(), role: "user", content, ts: Date.now(), sender: "✓ tx submitted" };
+    this.snapshot = {
+      ...this.snapshot,
+      messages: [...this.snapshot.messages, msg].slice(-MAX_MESSAGES),
+    };
+    this.persist();
+    this.notify();
+    return msg;
+  }
+
   /** Clear processing without adding a message — used if a send is
    *  rejected after it already flipped the flag. */
   clearProcessing(): void {
