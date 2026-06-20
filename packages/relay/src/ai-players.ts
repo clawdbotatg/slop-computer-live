@@ -122,16 +122,8 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     avgMs: 1900,
     costPerHandUsd: 7e-05,
   },
-  {
-    id: "bankr-gpt-5.4-nano",
-    label: "GPT 5.4-nano (Bankr) ⚡",
-    baseURL: "https://llm.bankr.bot/v1",
-    model: "gpt-5.4-nano",
-    envVar: "BANKR_API_KEY",
-    authStyle: "x-api-key",
-    avgMs: 1800,
-    costPerHandUsd: 7e-05,
-  },
+  // GPT 5.4-nano — PULLED for poker: fast + cheap but plays terribly (shoves
+  // all-in on the first decision). Too small/non-reasoning to grasp pot odds.
   // ---- Bankr — 🧠 flagship reasoners ------------------------------
   // Ordered by chess-playing track record of the family (strongest first).
   // GPT-5 reasoning and Grok 4 went 1st/2nd at the Kaggle chess arena;

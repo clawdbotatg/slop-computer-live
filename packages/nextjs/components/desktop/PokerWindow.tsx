@@ -975,6 +975,7 @@ const SeatBox = ({
   lastThinkMs,
   backer,
   customNames,
+  boxWidth,
 }: {
   seat: PokerSeatPublic;
   isActor: boolean;
@@ -992,6 +993,9 @@ const SeatBox = ({
   backer: string | null;
   /** Global custom-name map so <SlopAddress> resolves display names. */
   customNames: Record<string, string>;
+  /** Plate width (px). Scaled by seat count so a small table gets big plates
+   *  while a full 8-handed table stays tight enough to fit the felt. */
+  boxWidth: number;
 }) => {
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
@@ -1004,12 +1008,12 @@ const SeatBox = ({
     <div
       style={{
         position: "relative",
-        width: 155,
+        width: boxWidth,
         background: isActor ? "#1f2a14" : "#140d2a",
         border: `2px solid ${borderColor}`,
         boxShadow: glow,
         borderRadius: 10,
-        padding: 6,
+        padding: 9,
         opacity: folded ? 0.45 : 1,
         transition: "box-shadow 0.2s, border-color 0.2s, background 0.2s",
         // A one-shot bump (replayed on remount each turn — see the key on
@@ -1097,8 +1101,11 @@ const SeatBox = ({
             🤖 {seat.label}
           </span>
         ) : (
-          // Real player: the standard slop address chip (ENS / blockie / name).
-          <SlopAddress address={seat.key} customNames={customNames} blockieSize={16} />
+          // Real player: the standard slop address chip (ENS / blockie / name),
+          // scaled down a touch so it sits neatly in the seat plate.
+          <span style={{ display: "inline-flex", transform: "scale(0.82)", transformOrigin: "center" }}>
+            <SlopAddress address={seat.key} customNames={customNames} blockieSize={14} />
+          </span>
         )}
       </div>
       {isAi && backer && (
@@ -1108,7 +1115,9 @@ const SeatBox = ({
           title="Sponsored by — they collect this seat's winnings"
           style={{ display: "flex", justifyContent: "center", marginBottom: 4, fontSize: 9, opacity: 0.85 }}
         >
-          <SlopAddress address={backer} customNames={customNames} blockieSize={12} />
+          <span style={{ display: "inline-flex", transform: "scale(0.8)", transformOrigin: "center" }}>
+            <SlopAddress address={backer} customNames={customNames} blockieSize={11} />
+          </span>
         </div>
       )}
       <div style={{ display: "flex", gap: 4, marginBottom: 4, justifyContent: "center" }}>
@@ -1417,6 +1426,9 @@ const Felt = ({
   // More seats need a taller oval so the top arc has vertical room and the
   // boxes (now carrying a think-time line) don't pile onto the felt.
   const tableH = n <= 2 ? 320 : n <= 4 ? 360 : n <= 6 ? 420 : 500;
+  // Plate width scales down as the table fills: roomy big plates at a small
+  // table, tighter ones at 7–8 seats so the top arc still fits the felt.
+  const seatW = n <= 4 ? 172 : n <= 6 ? 164 : 150;
   // Each seat's most recent action time this hand (the feed is chronological,
   // so the last write per seat wins). Powers the per-seat "took Xs" readout.
   const actions = poker.actions ?? [];
@@ -1544,6 +1556,7 @@ const Felt = ({
                   lastThinkMs={lastThinkBySeat.get(seat.idx) ?? null}
                   backer={backerByKey.get(seat.key) ?? null}
                   customNames={mesh.customNames}
+                  boxWidth={seatW}
                 />
               </div>
               {seat.committed > 0 && (
