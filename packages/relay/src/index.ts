@@ -22,7 +22,7 @@ import {
   stopFanout,
 } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
-import { finalizeRecording, findLatestRecording, isFinalizeInFlight, regenerateEpisodeMeta } from "./recordings.js";
+import { finalizeRecording, findRecordingSession, isFinalizeInFlight, regenerateEpisodeMeta } from "./recordings.js";
 import {
   closeAllPeers,
   findPeersBySessionToken,
@@ -6297,8 +6297,22 @@ app.post("/admin/broadcast/restart", async (req, reply) => {
 app.get("/admin/recording", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
-  const latest = await findLatestRecording(config.recordingsDir, "live");
-  return { latest, pinning: isFinalizeInFlight() };
+  // Resolve the contiguous segment run that finalize would stitch (usually one
+  // file, more after a mid-stream split). `latest` stays the newest segment for
+  // backwards compatibility; `session` lets the UI warn that N files will be
+  // stitched and show the true (first-segment) start before the host commits.
+  const session = await findRecordingSession(config.recordingsDir, "live");
+  const last = session[session.length - 1];
+  const latest = last ? { file: last.file, name: last.name, sizeBytes: last.sizeBytes, mtime: last.mtime } : null;
+  const sessionInfo = session.length
+    ? {
+        count: session.length,
+        totalBytes: session.reduce((n, s) => n + s.sizeBytes, 0),
+        startMs: Math.round(session[0]!.startMs),
+        names: session.map(s => s.name),
+      }
+    : null;
+  return { latest, session: sessionInfo, pinning: isFinalizeInFlight() };
 });
 
 // Pin the latest MediaMTX recording to the local kubo daemon and stream

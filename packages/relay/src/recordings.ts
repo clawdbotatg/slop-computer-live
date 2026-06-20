@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readdir, stat, unlink } from "node:fs/promises";
+import { readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 // `openAsBlob` lands in Node 19.8+ (we're on 22) but @types/node@18 in
@@ -49,8 +49,9 @@ export type FinalizeResult = {
 
 /** Streaming progress events emitted by finalizeRecording. */
 export type FinalizeEvent =
-  | { phase: "starting"; file: string; name: string; totalBytes: number }
+  | { phase: "starting"; file: string; name: string; totalBytes: number; segmentCount: number }
   | { phase: "remuxing" }
+  | { phase: "stitching"; segmentCount: number }
   | { phase: "uploading"; bytes: number; totalBytes: number }
   | { phase: "pinning-chat"; messageCount: number }
   | { phase: "pinning-transcript"; segmentCount: number }
@@ -100,6 +101,114 @@ export async function findLatestRecording(
     }
   }
   return best;
+}
+
+/** A recording file plus the timing we recover by probing it. */
+export type RecordingSegment = RecordingFile & {
+  /** Container duration in seconds (ffprobe). */
+  durationSec: number;
+  /** Real content start = mtime − duration. We derive it this way rather than
+   *  from the filename because MediaMTX gives ROTATION files a wrong filename
+   *  timestamp (observed: a file named `15-51-20` whose content began at
+   *  `15-26-18`), whereas mtime (write-finished = content-end) and the probed
+   *  duration are always accurate. */
+  startMs: number;
+};
+
+/** Two contiguous segments meet within this slack. MediaMTX takes ~2s to
+ *  restart its recorder after a reordered-frames burst, so the real-content
+ *  gap is a second or two; distinct episodes are minutes-to-days apart, so a
+ *  small window can't accidentally merge two separate shows. */
+const SEGMENT_GAP_TOLERANCE_MS = 12_000;
+
+/** ffprobe a file's container duration in seconds. Returns null if ffprobe is
+ *  missing, the file is unreadable, or the duration can't be parsed (e.g. a
+ *  zero-byte file still being written). */
+async function probeDurationSec(file: string): Promise<number | null> {
+  return new Promise(resolve => {
+    const child = spawn(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let out = "";
+    child.stdout.on("data", (c: Buffer) => {
+      out += c.toString("utf8");
+    });
+    child.on("error", () => resolve(null));
+    child.on("close", () => {
+      const v = Number.parseFloat(out.trim());
+      resolve(Number.isFinite(v) && v > 0 ? v : null);
+    });
+  });
+}
+
+/**
+ * Reassemble the contiguous run of recording segments that ENDS at the newest
+ * file — the durable fix for the mid-session split. MediaMTX rotates to a fresh
+ * file when the encoder sends a burst of out-of-order frames (`too many
+ * reordered frames`), so one continuous show can land in 2+ files; finalize
+ * used to pin only the single newest by mtime, dropping everything before the
+ * last split ("VOD starts N minutes in").
+ *
+ * We detect contiguity by real content time, not filenames (which the rotation
+ * files mislabel): each file's end is its mtime, its start is mtime − duration.
+ * Starting from the newest, we walk backwards through mtime-adjacent files while
+ * each predecessor's end meets the next segment's start within
+ * {@link SEGMENT_GAP_TOLERANCE_MS}. Segments are written sequentially, so the
+ * run is always mtime-adjacent — we only probe the session's own files plus the
+ * first non-matching predecessor, not the whole directory.
+ *
+ * Returns the segments oldest→newest (concat order), or an empty array if the
+ * dir is missing/empty. A single-file session returns one segment — finalize
+ * then takes its original (un-stitched) remux path.
+ */
+export async function findRecordingSession(recordingsDir: string, pathName: string): Promise<RecordingSegment[]> {
+  const dir = join(recordingsDir, pathName);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const files: RecordingFile[] = [];
+  for (const name of entries) {
+    const full = join(dir, name);
+    let s;
+    try {
+      s = await stat(full);
+    } catch {
+      continue;
+    }
+    if (!s.isFile()) continue;
+    files.push({ file: full, name, sizeBytes: s.size, mtime: s.mtimeMs });
+  }
+  if (files.length === 0) return [];
+  files.sort((a, b) => a.mtime - b.mtime);
+
+  const toSegment = async (f: RecordingFile): Promise<RecordingSegment | null> => {
+    const durationSec = await probeDurationSec(f.file);
+    if (durationSec == null) return null;
+    return { ...f, durationSec, startMs: f.mtime - durationSec * 1000 };
+  };
+
+  const newest = await toSegment(files[files.length - 1]!);
+  if (!newest) {
+    // Can't probe the newest file (corrupt, or still being written). Fall back
+    // to a lone segment so finalize still produces something rather than failing.
+    const f = files[files.length - 1]!;
+    return [{ ...f, durationSec: 0, startMs: f.mtime }];
+  }
+  const session: RecordingSegment[] = [newest];
+  for (let i = files.length - 2; i >= 0; i--) {
+    const prev = await toSegment(files[i]!);
+    if (!prev) break; // unprobeable predecessor → treat the chain as broken
+    const head = session[0]!;
+    // prev's recording end (its mtime) should meet head's real start.
+    if (Math.abs(head.startMs - prev.mtime) > SEGMENT_GAP_TOLERANCE_MS) break;
+    session.unshift(prev);
+  }
+  return session;
 }
 
 /**
@@ -278,6 +387,47 @@ async function remuxToStandardMp4(input: string): Promise<{ output: string; clea
   };
 }
 
+/**
+ * Stitch a multi-segment recording session (see {@link findRecordingSession})
+ * into one standard, faststart MP4 with the concat demuxer and `-c copy` (no
+ * re-encode — the segments share codecs since they're the same MediaMTX
+ * session). The result is already a non-fragmented +faststart MP4, so it needs
+ * no separate remux pass.
+ *
+ * Same $TMPDIR + caller-owned `cleanup` contract as {@link remuxToStandardMp4}.
+ * The list file is written with ABSOLUTE paths — the concat demuxer resolves
+ * relative entries against the list file's own dir, not the cwd.
+ */
+async function concatToStandardMp4(inputs: string[]): Promise<{ output: string; cleanup: () => Promise<void> }> {
+  const stamp = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+  const listPath = join(tmpdir(), `slop-concat-${stamp}.txt`);
+  const output = join(tmpdir(), `slop-stitch-${stamp}.mp4`);
+  // ffmpeg concat list escaping: a single quote becomes '\'' .
+  const listBody = inputs.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n";
+  await writeFile(listPath, listBody, "utf8");
+  await new Promise<void>((resolve, reject) => {
+    // prettier-ignore
+    const args = ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", "-loglevel", "error", output];
+    const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", code => {
+      if (code !== 0) reject(new Error(`ffmpeg concat exited ${code}: ${stderr.trim().slice(0, 300)}`));
+      else resolve();
+    });
+  });
+  return {
+    output,
+    cleanup: async () => {
+      await unlink(output).catch(() => {});
+      await unlink(listPath).catch(() => {});
+    },
+  };
+}
+
 // Guards against firing two finalizes for the same recording at once —
 // re-uploading the same bytes is wasted bandwidth and confuses the host.
 let inFlight: Promise<FinalizeResult> | null = null;
@@ -336,26 +486,40 @@ export async function finalizeRecording(opts: {
   const emit = opts.onEvent ?? (() => {});
 
   const task = (async () => {
-    const latest = await findLatestRecording(opts.recordingsDir, opts.pathName);
-    if (!latest) {
+    // A "session" is the contiguous run of segments MediaMTX wrote for one
+    // continuous show — usually one file, but more when it rotated mid-stream
+    // on a reordered-frames burst. Stitching the whole run is the durable fix
+    // for the "VOD starts N minutes in" split (see findRecordingSession).
+    const session = await findRecordingSession(opts.recordingsDir, opts.pathName);
+    if (session.length === 0) {
       const msg = `No recording found in ${opts.recordingsDir}/${opts.pathName}`;
       emit({ phase: "error", message: msg });
       throw new Error(msg);
     }
-    emit({ phase: "starting", file: latest.file, name: latest.name, totalBytes: latest.sizeBytes });
+    const first = session[0]!; // true show start (correct even when later names lie)
+    const latest = session[session.length - 1]!; // newest segment = session end / identity
+    const totalBytes = session.reduce((n, s) => n + s.sizeBytes, 0);
+    emit({ phase: "starting", file: latest.file, name: latest.name, totalBytes, segmentCount: session.length });
 
     try {
-      // Remux fmp4 → standard mp4 so audio plays in all browsers / players,
-      // not just fmp4-aware ones (Safari OK, others sometimes silently drop
-      // the audio track). `-c copy` keeps quality identical and runs at
-      // ~300x realtime.
-      emit({ phase: "remuxing" });
-      const { output: remuxed, cleanup } = await remuxToStandardMp4(latest.file);
+      // Prepare a single standard, faststart MP4 to pin. One segment → remux
+      // fmp4 → standard mp4 (some non-Safari players silently drop the audio
+      // track on fragmented input). Multiple segments → concat them, which
+      // already yields a standard faststart mp4. Both run at `-c copy` speed.
+      let prepared: { output: string; cleanup: () => Promise<void> };
+      if (session.length > 1) {
+        emit({ phase: "stitching", segmentCount: session.length });
+        prepared = await concatToStandardMp4(session.map(s => s.file));
+      } else {
+        emit({ phase: "remuxing" });
+        prepared = await remuxToStandardMp4(first.file);
+      }
+      const { output: remuxed, cleanup } = prepared;
       try {
         const { cid, size } = await pinToLocalIpfs({
           apiUrl: opts.ipfsApiUrl,
           file: remuxed,
-          onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes: latest.sizeBytes }),
+          onProgress: bytes => emit({ phase: "uploading", bytes, totalBytes }),
         });
 
         // Snapshot the chat archive and pin it before the manifest so its CID
@@ -398,10 +562,15 @@ export async function finalizeRecording(opts: {
           };
         }
 
-        // Anchor for time alignment: parsed from the MediaMTX recording
-        // filename (UTC). Shared by the geometry header below and the AI-meta
-        // chapter times further down. Null for manual/older filenames.
-        const videoStartMs = parseRecordingStartMs(latest.name);
+        // Anchor for time alignment: the FIRST segment's start, so chat/geometry
+        // and AI-meta chapters line up with t0 of the stitched video — not the
+        // last split's (wrong) filename, which is what broke alignment whenever a
+        // session rotated. Prefer the filename time (microsecond-exact, correct
+        // for the cleanly-started first file); fall back to the probed
+        // mtime−duration start if the name doesn't parse. Null only when neither
+        // is available, in which case meta anchors on the first transcript seg.
+        const videoStartMs =
+          parseRecordingStartMs(first.name) ?? (first.durationSec > 0 ? Math.round(first.startMs) : null);
 
         // Snapshot the window-geometry timeline the same way as chat/transcript.
         // We prepend a `header` line carrying `videoStartMs` so the consumer can
@@ -494,7 +663,7 @@ export async function finalizeRecording(opts: {
           version: 1,
           video: {
             cid,
-            sizeBytes: size || latest.sizeBytes,
+            sizeBytes: size || totalBytes,
             format: "video/mp4",
           },
         };
@@ -531,7 +700,7 @@ export async function finalizeRecording(opts: {
           manifestCid,
           file: latest.file,
           name: latest.name,
-          sizeBytes: size || latest.sizeBytes,
+          sizeBytes: size || totalBytes,
           mtime: latest.mtime,
         };
         emit({ phase: "done", ...result });
