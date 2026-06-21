@@ -100,7 +100,11 @@ const CHIP_BET = [1, 2, 3, 4, 5, 6].map(n => `${SOUNDS_BASE}/chips-stack-${n}.mp
 const CARD_SLIDE = [1, 2, 3, 4, 5, 6].map(n => `${SOUNDS_BASE}/card-slide-${n}.mp3`);
 const CARD_SHOVE = [1, 2, 3, 4].map(n => `${SOUNDS_BASE}/card-shove-${n}.mp3`);
 const DEAL = `${SOUNDS_BASE}/deal.mp3`;
-const ALL_SAMPLES = [...CHIP_BET, ...CARD_SLIDE, ...CARD_SHOVE, DEAL];
+// A real ~2s card riffle shuffle (Kenney's card-shuffle.ogg, trimmed to mono
+// MP3). deal.mp3 turned out to be discrete deal-flicks, NOT a riffle, so the
+// between-hands shuffle gets its own genuine shuffle recording.
+const SHUFFLE = `${SOUNDS_BASE}/shuffle.mp3`;
+const ALL_SAMPLES = [...CHIP_BET, ...CARD_SLIDE, ...CARD_SHOVE, DEAL, SHUFFLE];
 
 const buffers = new Map<string, AudioBuffer>();
 const loadingSamples = new Set<string>();
@@ -262,14 +266,12 @@ export function sfxDeal(): void {
   }
 }
 
-// Between hands — a real card shuffle: the full deck-riffle recording (the same
-// CC0 clip we ship as deal.mp3, which is literally a deck being riffled). Played
-// at full length and volume so the between-hands curtain has an unmistakable,
-// audible shuffle — NOT the old synthesized version, which was too quiet to
-// hear. Pair with sfxDeal() on the curtain lift.
+// Between hands — a real ~2s card riffle shuffle (Kenney CC0 card-shuffle clip).
+// Several riffle passes so it unmistakably reads as a deck being shuffled, not a
+// deal. Pair with sfxDeal() on the curtain lift.
 export function sfxShuffle(): void {
   if (muted) return;
-  playSample(DEAL, 0.95);
+  playSample(SHUFFLE, 0.95);
 }
 
 // Fold — cards mucked, a real card shove across the felt (random variant).

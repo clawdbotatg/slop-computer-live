@@ -1402,9 +1402,9 @@ const PokerStyles = () => <style id="poker-fx-styles">{PULSE_CSS}</style>;
 
 // How long the between-hands shuffle curtain stays up (must match the
 // pokerShuffleVeil keyframe so the unmount lands on opacity 0). Long enough for
-// the full ~1.35s shuffle riffle (sfxShuffle / deal.mp3) to ring out before the
+// the full ~2s riffle shuffle (sfxShuffle / shuffle.mp3) to play out before the
 // curtain lifts and the cards are dealt (sfxDeal).
-const SHUFFLE_MS = 1600;
+const SHUFFLE_MS = 2100;
 
 // Seat coordinates around the table oval. p=0 is the bottom-centre (anchored to
 // "me" when I'm seated) and p increases clockwise — i.e. action moves to my
