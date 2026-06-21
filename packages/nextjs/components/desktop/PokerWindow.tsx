@@ -1618,8 +1618,8 @@ const Felt = ({
         {/* Seats around the rim + their bet chips pushed toward the pot. */}
         {seats.map(seat => {
           const p = (seat.idx - rot + n) % n;
-          const seatXY = seatPos(p, n, 38, 38);
-          const betXY = seatPos(p, n, 21, 23);
+          const seatXY = seatPos(p, n, 42, 42);
+          const betXY = seatPos(p, n, 18, 20);
           return (
             <div key={seat.key}>
               <div
