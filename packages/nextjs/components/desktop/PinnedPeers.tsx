@@ -25,6 +25,12 @@ export type PinnedPeersProps = {
   myId: string | null;
   customNames: Record<string, string>;
   onSetCustomName: (name: string | null) => void;
+  /** Stable ids (address or anonId, lowercased) whose owner has hidden
+   *  their USD balance from the room. Absence = visible. */
+  hiddenBalances: Record<string, boolean>;
+  /** Toggle the local user's own balance visibility. Server-authoritative
+   *  — broadcasts to every peer so the 👛 swap happens in lockstep. */
+  onSetBalanceHidden: (hidden: boolean) => void;
   /** Relay-RTT (ms) per peer, from `usePeerMesh().peerPings`. Drives
    *  the small bar meter next to each name. Missing keys render as a
    *  gray "no signal" stack. */
@@ -128,7 +134,16 @@ const playChime = (up: boolean) => {
   osc.stop(now + 0.16);
 };
 
-export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPings, slug }: PinnedPeersProps) => {
+export const PinnedPeers = ({
+  peers,
+  myId,
+  customNames,
+  onSetCustomName,
+  hiddenBalances,
+  onSetBalanceHidden,
+  peerPings,
+  slug,
+}: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -258,6 +273,11 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
             const showEditor = isMe && editing;
             const balAddr = peerBalanceAddr.get(p.id);
             const usd = balAddr ? portfolios[balAddr.toLowerCase()] : undefined;
+            // Balance-visibility is keyed by the guest's stable id (their
+            // own address/anonId), NOT the resolved balance address — same
+            // key the relay flips when this guest toggles their own flag.
+            const stableKey = (p.address ?? p.anonId)?.toLowerCase() ?? null;
+            const balanceHidden = stableKey ? !!hiddenBalances[stableKey] : false;
             return (
               <li
                 key={p.id}
@@ -342,20 +362,72 @@ export const PinnedPeers = ({ peers, myId, customNames, onSetCustomName, peerPin
                 </span>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                   {balAddr ? (
-                    <span
-                      title={usd != null ? `${formatUsd(usd)} total account value (Zerion)` : "loading balance…"}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "baseline",
-                        color: usd && usd > 0 ? "#7be88a" : "var(--slop-text-muted)",
-                        fontSize: 10,
-                        fontFamily: "var(--slop-font-display)",
-                        fontVariantNumeric: "tabular-nums",
-                        letterSpacing: "0.04em",
-                      }}
-                    >
-                      {usd != null ? formatUsd(usd) : "…"}
-                    </span>
+                    balanceHidden ? (
+                      // Hidden by its owner — everyone sees a 👛 instead of
+                      // the dollar amount. Only the owner can click to reveal.
+                      <span
+                        role={isMe ? "button" : undefined}
+                        tabIndex={isMe ? 0 : undefined}
+                        onClick={isMe ? () => onSetBalanceHidden(false) : undefined}
+                        onKeyDown={
+                          isMe
+                            ? e => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  onSetBalanceHidden(false);
+                                }
+                              }
+                            : undefined
+                        }
+                        title={isMe ? "your balance is hidden — click to show it" : "balance hidden"}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          fontSize: 11,
+                          lineHeight: 1,
+                          cursor: isMe ? "pointer" : "default",
+                          userSelect: "none",
+                        }}
+                      >
+                        👛
+                      </span>
+                    ) : (
+                      <span
+                        role={isMe ? "button" : undefined}
+                        tabIndex={isMe ? 0 : undefined}
+                        onClick={isMe ? () => onSetBalanceHidden(true) : undefined}
+                        onKeyDown={
+                          isMe
+                            ? e => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  onSetBalanceHidden(true);
+                                }
+                              }
+                            : undefined
+                        }
+                        title={
+                          isMe
+                            ? "click to hide your balance from the room"
+                            : usd != null
+                              ? `${formatUsd(usd)} total account value (Zerion)`
+                              : "loading balance…"
+                        }
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "baseline",
+                          color: usd && usd > 0 ? "#7be88a" : "var(--slop-text-muted)",
+                          fontSize: 10,
+                          fontFamily: "var(--slop-font-display)",
+                          fontVariantNumeric: "tabular-nums",
+                          letterSpacing: "0.04em",
+                          cursor: isMe ? "pointer" : "default",
+                          userSelect: isMe ? "none" : undefined,
+                        }}
+                      >
+                        {usd != null ? formatUsd(usd) : "…"}
+                      </span>
+                    )
                   ) : null}
                   <PingMeter rtt={peerPings[p.id]} />
                   <span

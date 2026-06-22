@@ -4095,6 +4095,8 @@ function DesktopInner({ slug }: { slug: string }) {
             myId={mesh.myId}
             customNames={mesh.customNames}
             onSetCustomName={mesh.setCustomName}
+            hiddenBalances={mesh.hiddenBalances}
+            onSetBalanceHidden={mesh.setBalanceHidden}
             peerPings={mesh.peerPings}
             slug={slug}
           />

@@ -122,6 +122,7 @@ import { start as startPolymarket } from "./polymarket.js";
 import { resolveEns, reverseLookup as reverseLookupEns } from "./ens.js";
 import { type EpisodeState } from "./episode.js";
 import { peerNames } from "./peer-names.js";
+import { balanceVisibility } from "./balance-visibility.js";
 import { FILES_MAX_BYTES } from "./files.js";
 import {
   GENRE_IDS,
@@ -1987,6 +1988,14 @@ startNewsDigest();
 // list labels update everywhere they're visible.
 peerNames.subscribe((address, name) => {
   broadcastToAllRooms({ type: "peer_name", address, name });
+});
+
+// "Hide my USD balance from the room" flag — also global across rooms,
+// keyed by the same stable id as custom names. When a guest toggles it,
+// fan out a single `balance_hidden` event everywhere so the guest list
+// swaps their dollar amount for a 👛 on every other client in lockstep.
+balanceVisibility.subscribe((id, hidden) => {
+  broadcastToAllRooms({ type: "balance_hidden", id, hidden });
 });
 
 // Desktop file system — per-room. Each room's FileIndex broadcasts
@@ -7348,6 +7357,7 @@ app.register(async function signalRoutes(fastify) {
       walletDraft: room.wallet.getDraft(),
       walletTxs: room.wallet.listTxs(),
       customNames: peerNames.all(),
+      hiddenBalances: balanceVisibility.all(),
       cardState: readCardSnapshot(room.id),
       cardJob: readCardJob(room.id),
       cardTitle: readCardTitle(room.id),
@@ -7628,6 +7638,21 @@ app.register(async function signalRoutes(fastify) {
           }
           const next = peerNames.set(stableId, typeof msg.name === "string" ? msg.name : null);
           send(socket, { type: "custom_name_ack", name: next });
+          return;
+        }
+        case "set_balance_hidden": {
+          // Guest toggles whether their USD balance is shown in the room's
+          // guest list. Keyed by the SENDER's own stable id, so a peer can
+          // only ever flip their own flag — there's no targetable id in the
+          // message. The balanceVisibility subscriber fans `balance_hidden`
+          // out to every room, swapping the dollar amount for a 👛 on all
+          // clients in lockstep (same model as set_custom_name).
+          const stableId = info.address ?? info.anonId ?? null;
+          if (!stableId) {
+            return send(socket, { type: "error", error: "no_stable_id" });
+          }
+          const next = balanceVisibility.set(stableId, msg.hidden === true);
+          send(socket, { type: "balance_hidden_ack", hidden: next });
           return;
         }
         case "todo_add": {

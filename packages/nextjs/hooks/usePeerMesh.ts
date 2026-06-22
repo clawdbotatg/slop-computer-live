@@ -1716,6 +1716,13 @@ export type PeerMeshState = {
   /** Set or clear the current user's display name. Pass `null` (or an
    *  empty string) to clear. */
   setCustomName: (name: string | null) => void;
+  /** Guests who've hidden their USD balance from the room, keyed by the
+   *  same lowercased stable id as `customNames` (address, or anonId for
+   *  anon). Absence = visible. */
+  hiddenBalances: Record<string, boolean>;
+  /** Hide or show the current user's own USD balance in the guest list.
+   *  Server-authoritative — broadcasts to every peer. */
+  setBalanceHidden: (hidden: boolean) => void;
 };
 
 /** Resolve a peer's display label using the agreed precedence:
@@ -1834,6 +1841,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // `peerLabel` below). Server-authoritative — `set_custom_name` round-
   // trips through the relay so other peers see the change.
   const [customNames, setCustomNames] = useState<Record<string, string>>({});
+  // Guests who've hidden their USD balance from the room, keyed by the
+  // same lowercased stable id as `customNames` (address, or anonId for
+  // anon). Server-authoritative — `set_balance_hidden` round-trips
+  // through the relay so every peer swaps the dollar amount for a 👛 in
+  // lockstep. Only ids that are hidden appear here; absence = visible.
+  const [hiddenBalances, setHiddenBalances] = useState<Record<string, boolean>>({});
   // Relay round-trip time per peer (ms), keyed by peerId. Drives the
   // guest-list ping meter. Populated by the `peer_ping` broadcast and
   // by our own pong measurements (for the local user's row).
@@ -3136,6 +3149,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const setBalanceHidden = useCallback(
+    (hidden: boolean) => {
+      // Hide/show your own USD balance in the room's guest list. Server is
+      // the source of truth — we don't optimistically update; the relay
+      // broadcasts `balance_hidden` back and the listener above applies it.
+      send({ type: "set_balance_hidden", hidden });
+    },
+    [send],
+  );
+
   const setCameraOff = useCallback(
     (streamId: string, off: boolean) => {
       // Server is source of truth — the relay rebroadcasts the updated
@@ -3380,6 +3403,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             }
             setCustomNames(next);
           }
+          if (Array.isArray(msg.hiddenBalances)) {
+            const next: Record<string, boolean> = {};
+            for (const id of msg.hiddenBalances as unknown[]) {
+              if (typeof id === "string") next[id.toLowerCase()] = true;
+            }
+            setHiddenBalances(next);
+          }
           if (msg.cardState === null || (msg.cardState && typeof msg.cardState === "object")) {
             setCardState((msg.cardState ?? null) as CardState | null);
           }
@@ -3537,6 +3567,26 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             }
             if (prev[address] === name) return prev;
             return { ...prev, [address]: name };
+          });
+          return;
+        }
+
+        if (msg.type === "balance_hidden") {
+          // Global balance-visibility update — fired in every room, like
+          // `peer_name`. The setter gets one too, which is what tells the
+          // UI their toggle landed.
+          const id = typeof msg.id === "string" ? msg.id.toLowerCase() : null;
+          if (!id) return;
+          const hidden = msg.hidden === true;
+          setHiddenBalances(prev => {
+            if (hidden) {
+              if (prev[id]) return prev;
+              return { ...prev, [id]: true };
+            }
+            if (!(id in prev)) return prev;
+            const rest = { ...prev };
+            delete rest[id];
+            return rest;
           });
           return;
         }
@@ -4460,6 +4510,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletResummarize,
     customNames,
     setCustomName,
+    hiddenBalances,
+    setBalanceHidden,
     setCameraOff,
     peerPings,
   };
