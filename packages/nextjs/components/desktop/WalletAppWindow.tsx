@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityTxQueue } from "./WalletWindow";
 import { WalletAssetsPanel } from "./wallet/WalletAssetsPanel";
 import { type ChatSigner, WalletChatPanel } from "./wallet/WalletChatPanel";
@@ -219,6 +219,22 @@ export function WalletAppWindow({
     if (!tabs.includes(tab)) setTab("holdings");
   }, [tabs, tab]);
 
+  // Auto-jump to the Transactions tab whenever a new pending tx appears —
+  // mirrors the Bank (WalletWindow). A freshly-proposed tx is the one place
+  // the user *acts* (sign/Execute), so don't strand them on Chat where the
+  // proposal feels like it vanished. We track the count via a ref and only
+  // fire on the rising edge, so the user can navigate away without being
+  // trapped back on the tab. Passkey multisig only — the transactions tab
+  // doesn't exist otherwise.
+  const pendingCount = isPasskeyMultisig && personalTxs ? personalTxs.filter(t => t.status === "pending").length : 0;
+  const lastPendingCountRef = useRef(pendingCount);
+  useEffect(() => {
+    if (isPasskeyMultisig && pendingCount > lastPendingCountRef.current) {
+      setTab("transactions");
+    }
+    lastPendingCountRef.current = pendingCount;
+  }, [pendingCount, isPasskeyMultisig]);
+
   const [showReceive, setShowReceive] = useState(false);
   const [showExecute, setShowExecute] = useState(false);
 
@@ -238,8 +254,6 @@ export function WalletAppWindow({
       </div>
     );
   }
-
-  const pendingCount = personalTxs ? personalTxs.filter(t => t.status === "pending").length : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
