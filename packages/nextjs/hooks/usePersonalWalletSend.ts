@@ -6,6 +6,8 @@ import type { Address, Hex } from "viem";
 import { base } from "viem/chains";
 import { usePublicClient } from "wagmi";
 import { MultisigAbi } from "~~/contracts/multisig";
+import { useRoomSlug } from "~~/lib/room-slug";
+import { withSlug } from "~~/lib/slug";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
 
@@ -18,20 +20,31 @@ import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/
 //      execTransaction from its hot wallet and pays the gas.
 // Returns the on-chain tx hash; the caller waits for the receipt as usual.
 // Base-only — personal wallets live on Base and the facilitator sponsors Base.
+//
+// The relay only fronts gas for a caller correctly authed in the room: every
+// call carries ?slug=<room> so the relay's room-auth gate engages (it checks
+// the room password cookie). `useRoomSlug()` supplies the slug, so all callers
+// (poker/chess buy-in, the Wallet app's Execute) get the gate for free.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
 export type PersonalSendPhase = "deploying" | "signing" | "broadcasting" | null;
 
+/** A generic personal-wallet call: an arbitrary `target`/`value`/`data` exec. */
+export type PersonalExec = { target: Address; value: bigint; data?: Hex };
+
 export function usePersonalWalletSend() {
   const pw = usePersonalWallet();
   const publicClient = usePublicClient({ chainId: base.id });
+  const slug = useRoomSlug();
   const [phase, setPhase] = useState<PersonalSendPhase>(null);
 
-  /** Send `valueWei` ETH from the personal wallet to `to` on Base. Resolves to
-   *  the broadcast tx hash; throws (with a user-readable message) on failure. */
-  const send = useCallback(
-    async ({ to, valueWei }: { to: Address; valueWei: bigint }): Promise<`0x${string}`> => {
+  /** Execute an arbitrary contract call from the personal wallet on Base:
+   *  deploy-if-needed → compute the exec hash → passkey signs → relay
+   *  facilitator broadcasts execTransaction and pays the gas. Resolves to the
+   *  broadcast tx hash; throws (with a user-readable message) on failure. */
+  const execute = useCallback(
+    async ({ target, value, data = "0x" }: PersonalExec): Promise<`0x${string}`> => {
       if (!pw.isPasskey || !pw.personalAddress || !pw.passkeyAddress || !pw.passkeyIdentity) {
         throw new Error("no passkey wallet");
       }
@@ -43,9 +56,9 @@ export function usePersonalWalletSend() {
         // 1. execTransaction needs code at the wallet. Deploy on first spend.
         if (!pw.deployed) {
           setPhase("deploying");
-          const slug =
-            typeof window !== "undefined" ? (window.location.pathname.split("/").filter(Boolean)[0] ?? "") : "";
-          const dRes = await fetch(`${RELAY_HTTP}/personal-wallet/deploy`, {
+          // ?slug engages the relay's room-auth gate (same as exec); slug also
+          // rides in the body, where the relay reads it to pick the co-signer.
+          const dRes = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/deploy`, slug), {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
@@ -73,9 +86,9 @@ export function usePersonalWalletSend() {
           multisig: pw.personalAddress,
           nonce,
           deadline,
-          target: to,
-          value: valueWei,
-          data: "0x",
+          target,
+          value,
+          data,
         });
         setPhase("signing");
         const sigData = await signMultisigExecWithPasskey({
@@ -85,17 +98,18 @@ export function usePersonalWalletSend() {
           qy: pw.passkeyIdentity.qy as Hex,
         });
 
-        // 3. Facilitator broadcasts execTransaction + pays gas.
+        // 3. Facilitator broadcasts execTransaction + pays gas. The ?slug lets
+        //    the relay's room-auth gate verify we belong to this room.
         setPhase("broadcasting");
-        const res = await fetch(`${RELAY_HTTP}/personal-wallet/exec`, {
+        const res = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/exec`, slug), {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             multisig: pw.personalAddress,
-            target: to,
-            value: valueWei.toString(),
-            data: "0x",
+            target,
+            value: value.toString(),
+            data,
             deadline: deadline.toString(),
             signatures: [{ sigType: 1, signer: pw.passkeyAddress, data: sigData }],
           }),
@@ -103,8 +117,10 @@ export function usePersonalWalletSend() {
         const j = (await res.json().catch(() => ({}))) as { txHash?: string; error?: string };
         if (!res.ok || !j.txHash) {
           if (j.error === "wallet-not-deployed") throw new Error("Wallet not deployed yet — try again in a moment.");
-          if (j.error === "value-exceeds-cap") throw new Error("Buy-in exceeds the per-tx limit for passkey wallets.");
+          if (j.error === "value-exceeds-cap") throw new Error("Amount exceeds the per-tx limit for passkey wallets.");
           if (j.error === "rate-limited") throw new Error("Too many transactions — wait a moment and retry.");
+          if (j.error === "room-required") throw new Error("Join the room first — sponsored gas needs room access.");
+          if (j.error === "wallet-mismatch") throw new Error("This wallet isn't yours to spend from.");
           throw new Error(j.error ?? `exec failed: ${res.status}`);
         }
         return j.txHash as `0x${string}`;
@@ -112,8 +128,16 @@ export function usePersonalWalletSend() {
         setPhase(null);
       }
     },
-    [pw, publicClient],
+    [pw, publicClient, slug],
   );
 
-  return { send, phase, isPasskey: pw.isPasskey };
+  /** Send `valueWei` ETH from the personal wallet to `to` on Base. Thin wrapper
+   *  over `execute` (a plain value transfer is an exec with empty calldata). */
+  const send = useCallback(
+    ({ to, valueWei }: { to: Address; valueWei: bigint }): Promise<`0x${string}`> =>
+      execute({ target: to, value: valueWei, data: "0x" }),
+    [execute],
+  );
+
+  return { send, execute, phase, isPasskey: pw.isPasskey };
 }

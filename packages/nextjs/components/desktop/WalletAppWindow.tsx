@@ -7,12 +7,13 @@ import { type ChatSigner, WalletChatPanel } from "./wallet/WalletChatPanel";
 import { type WalletTxMode } from "./wallet/WalletTxCard";
 import { type Portfolio } from "./wallet/types";
 import { Address } from "@scaffold-ui/components";
-import { type Address as AddressType } from "viem";
+import { type Address as AddressType, type Hex, isAddress, isHex, parseEther } from "viem";
 import { base } from "viem/chains";
 import { useAccount, useChainId } from "wagmi";
 import { PersonalWalletCard } from "~~/components/PersonalWalletCard";
 import type { PeerMeshState, WalletRecord } from "~~/hooks/usePeerMesh";
 import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
+import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { PERSONAL_WALLET_DEPLOYER, personalWalletSalt } from "~~/utils/personalWallet";
@@ -184,6 +185,7 @@ export function WalletAppWindow({
   }, [tabs, tab]);
 
   const [showReceive, setShowReceive] = useState(false);
+  const [showExecute, setShowExecute] = useState(false);
 
   // --- Render --------------------------------------------------------------
 
@@ -230,14 +232,24 @@ export function WalletAppWindow({
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           {isPasskeyMultisig ? (
-            <button
-              type="button"
-              onClick={() => setShowReceive(s => !s)}
-              style={pillStyle(showReceive)}
-              title="Show your receive address / deploy"
-            >
-              {showReceive ? "Hide" : "Receive"}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setShowReceive(s => !s)}
+                style={pillStyle(showReceive)}
+                title="Show your receive address / deploy"
+              >
+                {showReceive ? "Hide" : "Receive"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowExecute(s => !s)}
+                style={pillStyle(showExecute)}
+                title="Send an arbitrary contract call, gas sponsored by the room facilitator"
+              >
+                Execute
+              </button>
+            </>
           ) : null}
           <button type="button" onClick={() => void refreshPortfolio()} style={pillStyle(false)} title="Refresh">
             ↻
@@ -268,6 +280,13 @@ export function WalletAppWindow({
       {isPasskeyMultisig && showReceive ? (
         <div style={{ padding: "0 12px 8px", display: "grid", placeItems: "center", flexShrink: 0 }}>
           <PersonalWalletCard />
+        </div>
+      ) : null}
+
+      {/* Generic Execute panel (passkey only, collapsible) */}
+      {isPasskeyMultisig && showExecute ? (
+        <div style={{ padding: "0 12px 8px", flexShrink: 0 }}>
+          <PersonalExecutePanel onDone={() => void refreshPortfolio()} />
         </div>
       ) : null}
 
@@ -361,6 +380,149 @@ export function WalletAppWindow({
     </div>
   );
 }
+
+// Arbitrary-call composer for the passkey personal wallet. The user enters a
+// target contract, an optional ETH value, and raw calldata; the passkey signs
+// the exec hash and the relay facilitator broadcasts execTransaction + pays the
+// gas (gated on room auth + the per-tx value cap, server-side). This is the
+// generic [Execute] flow — the same plumbing the poker/chess buy-ins ride on,
+// surfaced directly so a passkey user can drive any contract call themselves.
+function PersonalExecutePanel({ onDone }: { onDone?: () => void }) {
+  const { execute, phase } = usePersonalWalletSend();
+  const [target, setTarget] = useState("");
+  const [valueEth, setValueEth] = useState("");
+  const [data, setData] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
+
+  const busy = phase !== null;
+  const phaseLabel =
+    phase === "deploying"
+      ? "Deploying wallet…"
+      : phase === "signing"
+        ? "Sign with your passkey…"
+        : phase === "broadcasting"
+          ? "Broadcasting…"
+          : null;
+
+  const onSubmit = useCallback(async () => {
+    setError(null);
+    setTxHash(null);
+    const tgt = target.trim();
+    if (!isAddress(tgt)) {
+      setError("Target must be a 0x… contract address.");
+      return;
+    }
+    const callData = data.trim() === "" ? "0x" : (data.trim() as Hex);
+    if (!isHex(callData)) {
+      setError("Calldata must be 0x-prefixed hex (or blank).");
+      return;
+    }
+    let value: bigint;
+    try {
+      value = valueEth.trim() === "" ? 0n : parseEther(valueEth.trim());
+    } catch {
+      setError("ETH value must be a number.");
+      return;
+    }
+    try {
+      const hash = await execute({ target: tgt as AddressType, value, data: callData });
+      setTxHash(hash);
+      onDone?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [target, valueEth, data, execute, onDone]);
+
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(255,62,201,0.3)",
+        borderRadius: 6,
+        padding: 12,
+        background: "rgba(0,0,0,0.25)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          color: "var(--slop-text-muted, #999)",
+          textTransform: "uppercase",
+          letterSpacing: "0.1em",
+        }}
+      >
+        Execute contract call
+      </div>
+      <input
+        type="text"
+        value={target}
+        onChange={e => setTarget(e.target.value)}
+        placeholder="Target address (0x…)"
+        disabled={busy}
+        style={execInputStyle}
+      />
+      <input
+        type="text"
+        inputMode="decimal"
+        value={valueEth}
+        onChange={e => setValueEth(e.target.value)}
+        placeholder="ETH value (optional, e.g. 0.01)"
+        disabled={busy}
+        style={execInputStyle}
+      />
+      <textarea
+        value={data}
+        onChange={e => setData(e.target.value)}
+        placeholder="Calldata 0x… (optional, blank = plain transfer)"
+        disabled={busy}
+        rows={3}
+        style={{ ...execInputStyle, resize: "vertical", fontFamily: "monospace" }}
+      />
+      <button
+        type="button"
+        onClick={() => void onSubmit()}
+        disabled={busy}
+        style={{
+          ...pillStyle(true),
+          padding: "8px 12px",
+          opacity: busy ? 0.6 : 1,
+          cursor: busy ? "default" : "pointer",
+        }}
+      >
+        {phaseLabel ?? "Execute (gas sponsored)"}
+      </button>
+      {error ? <div style={{ fontSize: 11, color: "#ff6b6b", wordBreak: "break-word" }}>{error}</div> : null}
+      {txHash ? (
+        <div style={{ fontSize: 11, color: "var(--slop-accent, #7cf)", wordBreak: "break-all" }}>
+          Sent:{" "}
+          <a
+            href={`https://basescan.org/tx/${txHash}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "var(--slop-accent, #7cf)" }}
+          >
+            {txHash.slice(0, 10)}…{txHash.slice(-8)}
+          </a>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const execInputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "8px 10px",
+  fontSize: 12,
+  background: "rgba(0,0,0,0.35)",
+  color: "var(--slop-text, #eee)",
+  border: "1px solid rgba(255,62,201,0.25)",
+  borderRadius: 4,
+  outline: "none",
+};
 
 function pillStyle(active: boolean): React.CSSProperties {
   return {
