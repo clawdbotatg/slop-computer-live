@@ -33,11 +33,90 @@ export type PersonalSendPhase = "deploying" | "signing" | "broadcasting" | null;
 /** A generic personal-wallet call: an arbitrary `target`/`value`/`data` exec. */
 export type PersonalExec = { target: Address; value: bigint; data?: Hex };
 
+/** A pre-signed personal-wallet exec: target/value/data plus the `deadline` and
+ *  `signatures` the hash was already signed over (e.g. a queued tx the user
+ *  signed in the Transactions tab). No passkey re-prompt — the collected sigs
+ *  go straight to the facilitator. */
+export type PersonalExecSigned = {
+  target: Address;
+  value: bigint;
+  data?: Hex;
+  deadline: bigint;
+  signatures: { sigType: number; signer: Address; data: Hex }[];
+};
+
+/** Decode a relay exec error code into a user-readable message. Shared by the
+ *  fresh-sign (`execute`) and pre-signed (`executeSigned`) broadcast paths. */
+function execErrorMessage(error: string | undefined, status: number): string {
+  if (error === "wallet-not-deployed") return "Wallet not deployed yet — try again in a moment.";
+  if (error === "value-exceeds-cap") return "Amount exceeds the per-tx limit for passkey wallets.";
+  if (error === "rate-limited") return "Too many transactions — wait a moment and retry.";
+  if (error === "room-required") return "Join the room first — sponsored gas needs room access.";
+  if (error === "wallet-mismatch") return "This wallet isn't yours to spend from.";
+  return error ?? `exec failed: ${status}`;
+}
+
 export function usePersonalWalletSend() {
   const pw = usePersonalWallet();
   const publicClient = usePublicClient({ chainId: base.id });
   const slug = useRoomSlug();
   const [phase, setPhase] = useState<PersonalSendPhase>(null);
+
+  /** execTransaction needs code at the wallet — deploy on first spend. ?slug
+   *  engages the relay's room-auth gate; slug also rides in the body, where the
+   *  relay reads it to pick the co-signer. No-op once deployed. */
+  const ensureDeployed = useCallback(async () => {
+    if (pw.deployed) return;
+    if (!pw.passkeyIdentity) throw new Error("no passkey wallet");
+    setPhase("deploying");
+    const dRes = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/deploy`, slug), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        qx: pw.passkeyIdentity.qx,
+        qy: pw.passkeyIdentity.qy,
+        credentialIdHash: pw.passkeyIdentity.credentialIdHash,
+        slug,
+      }),
+    });
+    const dj = (await dRes.json().catch(() => ({}))) as { error?: string };
+    if (!dRes.ok) throw new Error(`deploy failed: ${dj.error ?? dRes.status}`);
+    pw.refetchDeployed();
+  }, [pw, slug]);
+
+  /** Hand a signed exec to the relay facilitator, which broadcasts
+   *  execTransaction from its hot wallet and pays gas. The ?slug lets the
+   *  relay's room-auth gate verify we belong to this room. Returns the tx hash. */
+  const postExec = useCallback(
+    async (body: {
+      target: Address;
+      value: bigint;
+      data: Hex;
+      deadline: bigint;
+      signatures: { sigType: number; signer: Address; data: Hex }[];
+    }): Promise<`0x${string}`> => {
+      if (!pw.personalAddress) throw new Error("no passkey wallet");
+      setPhase("broadcasting");
+      const res = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/exec`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          multisig: pw.personalAddress,
+          target: body.target,
+          value: body.value.toString(),
+          data: body.data,
+          deadline: body.deadline.toString(),
+          signatures: body.signatures.map(s => ({ sigType: s.sigType, signer: s.signer, data: s.data })),
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { txHash?: string; error?: string };
+      if (!res.ok || !j.txHash) throw new Error(execErrorMessage(j.error, res.status));
+      return j.txHash as `0x${string}`;
+    },
+    [pw.personalAddress, slug],
+  );
 
   /** Execute an arbitrary contract call from the personal wallet on Base:
    *  deploy-if-needed → compute the exec hash → passkey signs → relay
@@ -53,26 +132,8 @@ export function usePersonalWalletSend() {
       if (!identity?.credentialIdBase64Url) throw new Error("missing passkey credential — sign in again");
 
       try {
-        // 1. execTransaction needs code at the wallet. Deploy on first spend.
-        if (!pw.deployed) {
-          setPhase("deploying");
-          // ?slug engages the relay's room-auth gate (same as exec); slug also
-          // rides in the body, where the relay reads it to pick the co-signer.
-          const dRes = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/deploy`, slug), {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              qx: pw.passkeyIdentity.qx,
-              qy: pw.passkeyIdentity.qy,
-              credentialIdHash: pw.passkeyIdentity.credentialIdHash,
-              slug,
-            }),
-          });
-          const dj = (await dRes.json().catch(() => ({}))) as { error?: string };
-          if (!dRes.ok) throw new Error(`deploy failed: ${dj.error ?? dRes.status}`);
-          pw.refetchDeployed();
-        }
+        // 1. Deploy on first spend (execTransaction needs code at the wallet).
+        await ensureDeployed();
 
         // 2. Read nonce, compute the exec hash, prompt the passkey to sign it.
         const nonce = (await publicClient.readContract({
@@ -98,37 +159,37 @@ export function usePersonalWalletSend() {
           qy: pw.passkeyIdentity.qy as Hex,
         });
 
-        // 3. Facilitator broadcasts execTransaction + pays gas. The ?slug lets
-        //    the relay's room-auth gate verify we belong to this room.
-        setPhase("broadcasting");
-        const res = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/exec`, slug), {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            multisig: pw.personalAddress,
-            target,
-            value: value.toString(),
-            data,
-            deadline: deadline.toString(),
-            signatures: [{ sigType: 1, signer: pw.passkeyAddress, data: sigData }],
-          }),
+        // 3. Facilitator broadcasts execTransaction + pays gas.
+        return await postExec({
+          target,
+          value,
+          data,
+          deadline,
+          signatures: [{ sigType: 1, signer: pw.passkeyAddress, data: sigData as Hex }],
         });
-        const j = (await res.json().catch(() => ({}))) as { txHash?: string; error?: string };
-        if (!res.ok || !j.txHash) {
-          if (j.error === "wallet-not-deployed") throw new Error("Wallet not deployed yet — try again in a moment.");
-          if (j.error === "value-exceeds-cap") throw new Error("Amount exceeds the per-tx limit for passkey wallets.");
-          if (j.error === "rate-limited") throw new Error("Too many transactions — wait a moment and retry.");
-          if (j.error === "room-required") throw new Error("Join the room first — sponsored gas needs room access.");
-          if (j.error === "wallet-mismatch") throw new Error("This wallet isn't yours to spend from.");
-          throw new Error(j.error ?? `exec failed: ${res.status}`);
-        }
-        return j.txHash as `0x${string}`;
       } finally {
         setPhase(null);
       }
     },
-    [pw, publicClient, slug],
+    [pw, publicClient, ensureDeployed, postExec],
+  );
+
+  /** Broadcast an exec the user has ALREADY signed — e.g. a queued tx signed in
+   *  the Transactions tab (threshold 1 + the passkey sig collected at sign time).
+   *  deploy-if-needed → hand the collected target/value/data/deadline/signatures
+   *  straight to the facilitator. No passkey re-prompt. Resolves to the tx hash. */
+  const executeSigned = useCallback(
+    async ({ target, value, data = "0x", deadline, signatures }: PersonalExecSigned): Promise<`0x${string}`> => {
+      if (!pw.isPasskey || !pw.personalAddress || !pw.passkeyIdentity) throw new Error("no passkey wallet");
+      if (signatures.length === 0) throw new Error("no signatures collected — sign the transaction first");
+      try {
+        await ensureDeployed();
+        return await postExec({ target, value, data, deadline, signatures });
+      } finally {
+        setPhase(null);
+      }
+    },
+    [pw, ensureDeployed, postExec],
   );
 
   /** Send `valueWei` ETH from the personal wallet to `to` on Base. Thin wrapper
@@ -139,5 +200,5 @@ export function usePersonalWalletSend() {
     [execute],
   );
 
-  return { send, execute, phase, isPasskey: pw.isPasskey };
+  return { send, execute, executeSigned, phase, isPasskey: pw.isPasskey };
 }

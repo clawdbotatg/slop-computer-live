@@ -1551,9 +1551,15 @@ type ActivityProps = {
    *  and mutates the per-address tx store for that multisig instead of the
    *  Bank's room singleton. Undefined → the Bank (behavior unchanged). */
   walletAddress?: string;
+  /** PASSKEY personal wallet only: route a queued tx's Execute through the
+   *  gas-sponsored relay facilitator instead of an EOA broadcast. A passkey
+   *  user has no connected EOA, so the EOA path dead-ends — this hands the
+   *  tx's already-collected signatures to the facilitator, which pays gas.
+   *  Undefined → the Bank's EOA execute (behavior unchanged). */
+  sponsoredExecute?: (tx: WalletTx) => Promise<`0x${string}`>;
 };
 
-export const ActivityTxQueue = ({ mesh, wallet, myAddress, walletAddress }: ActivityProps) => {
+export const ActivityTxQueue = ({ mesh, wallet, myAddress, walletAddress, sponsoredExecute }: ActivityProps) => {
   // Default to the most recently deployed chain.
   const deployedChainIds = useMemo(
     () =>
@@ -1667,6 +1673,7 @@ export const ActivityTxQueue = ({ mesh, wallet, myAddress, walletAddress }: Acti
               mesh={mesh}
               myAddress={myAddress}
               walletAddress={walletAddress}
+              sponsoredExecute={sponsoredExecute}
             />
           ))
         )}
@@ -1682,6 +1689,7 @@ export const ActivityTxQueue = ({ mesh, wallet, myAddress, walletAddress }: Acti
               mesh={mesh}
               myAddress={myAddress}
               walletAddress={walletAddress}
+              sponsoredExecute={sponsoredExecute}
               compact
             />
           ))}
@@ -2310,9 +2318,13 @@ type TxCardProps = {
   /** PERSONAL wallet: routes this card's queue mutations to the per-address
    *  store. Undefined → the Bank's room singleton (behavior unchanged). */
   walletAddress?: string;
+  /** PASSKEY personal wallet only: when set, Execute routes through the
+   *  gas-sponsored facilitator (no connected EOA required) instead of the EOA
+   *  writeContract broadcast. Undefined → the Bank's EOA path (unchanged). */
+  sponsoredExecute?: (tx: WalletTx) => Promise<`0x${string}`>;
 };
 
-const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardProps) => {
+const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsoredExecute }: TxCardProps) => {
   const { address: connectedAddress } = useAccount();
   // Per-address-aware queue mutations: a personal wallet threads its
   // `walletAddress` so signatures/status/removal land in its own store; the
@@ -2407,6 +2419,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardP
   // ourselves so the Sign button stays disabled during the OS sheet
   // and doesn't double-prompt on a stray click.
   const [passkeySigning, setPasskeySigning] = useState(false);
+  // True while a gas-sponsored facilitator broadcast is in flight (the passkey
+  // personal-wallet path). The EOA path tracks this via wagmi's `writing`;
+  // sponsored exec has no writeContract, so we track it ourselves.
+  const [sponsoring, setSponsoring] = useState(false);
 
   // Identify the local user against the wallet's registered signers.
   // For EOA signers we need the wagmi-connected address; for passkey
@@ -2625,6 +2641,33 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardP
       hasPublicClient: !!txPublicClient,
     });
     setErr(null);
+    // Gas-sponsored path (passkey personal wallet): no connected EOA. The relay
+    // facilitator broadcasts execTransaction + pays gas using the tx's
+    // already-collected signatures (threshold 1, the passkey sig was gathered
+    // when this tx was signed in the queue). The receipt watcher below picks up
+    // the resulting hash exactly as it does for the EOA path.
+    if (sponsoredExecute) {
+      if (isBatchTx) {
+        console.warn("[wallet] onExecute: batch tx not sponsored", { txId: tx.id, calls: tx.calls?.length });
+        setErr("Batch transactions aren't gas-sponsored yet — coming soon.");
+        return;
+      }
+      setSponsoring(true);
+      try {
+        txStatus(tx.id, "executing");
+        const hash = await sponsoredExecute(tx);
+        console.log("[wallet] onExecute sponsored: facilitator broadcast", { txId: tx.id, hash });
+        setExecHash(hash);
+        txStatus(tx.id, "executing", hash);
+      } catch (e) {
+        console.error("[wallet] onExecute sponsored FAILED", { txId: tx.id, err: e });
+        txStatus(tx.id, "pending");
+        setErr((e instanceof Error ? e.message : String(e)).slice(0, 200));
+      } finally {
+        setSponsoring(false);
+      }
+      return;
+    }
     if (!connectedAddress) {
       console.warn("[wallet] onExecute abort: no connected wallet");
       setErr("connect your wallet to execute");
@@ -2775,6 +2818,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardP
     mesh,
     txPublicClient,
     isBatchTx,
+    sponsoredExecute,
   ]);
 
   const onResummarize = useCallback(() => {
@@ -3038,9 +3082,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress }: TxCardP
               <Button
                 variant={enoughSigs ? "primary" : undefined}
                 onClick={onExecute}
-                disabled={writing || execWaiting || !enoughSigs || expired}
+                disabled={writing || sponsoring || execWaiting || !enoughSigs || expired}
               >
-                {execWaiting ? "Waiting…" : writing ? "Submitting…" : "Execute"}
+                {execWaiting ? "Waiting…" : writing || sponsoring ? "Submitting…" : "Execute"}
               </Button>
               {unsignedContractSigners.map(cs => (
                 <Button

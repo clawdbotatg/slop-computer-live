@@ -11,7 +11,7 @@ import { type Address as AddressType, type Hex, isAddress, isHex, parseEther } f
 import { base } from "viem/chains";
 import { useAccount, useChainId } from "wagmi";
 import { PersonalWalletCard } from "~~/components/PersonalWalletCard";
-import type { PeerMeshState, WalletRecord } from "~~/hooks/usePeerMesh";
+import type { PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
 import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -62,6 +62,41 @@ export function WalletAppWindow({
   // modal at sign time if the live connection isn't there yet.
   const eoaWalletAddress = (isConnected && eoaAddress ? eoaAddress : myAddress) || null;
   const activeAddress = isPasskeyMultisig ? pw.personalAddress : eoaWalletAddress;
+
+  // Gas-sponsored execute for the passkey personal wallet's queued txs. A
+  // passkey user has no connected EOA, so the queue's default (EOA broadcast)
+  // path dead-ends at "connect your wallet to execute". Instead we hand the
+  // queued tx's ALREADY-collected signatures (threshold 1 + the passkey sig
+  // gathered at sign time) straight to the relay facilitator, which broadcasts
+  // execTransaction and pays the gas. Single-call only — the facilitator does
+  // execTransaction, not execBatchTransaction, so a batched proposal is
+  // cleanly rejected with a message rather than a confusing on-chain failure.
+  const { executeSigned } = usePersonalWalletSend();
+  const sponsoredExecute = useCallback(
+    async (tx: WalletTx): Promise<`0x${string}`> => {
+      if (tx.calls && tx.calls.length > 0) {
+        throw new Error("Batch transactions aren't gas-sponsored yet — coming soon.");
+      }
+      // Multisig.execTransaction rejects out-of-order signer arrays
+      // (`SignersUnsorted`); sort ascending by signer address before handing
+      // them off (threshold 1 makes this a single-element no-op in practice).
+      const signatures = [...tx.signatures]
+        .sort((a, b) => (a.signer.toLowerCase() < b.signer.toLowerCase() ? -1 : 1))
+        .map(s => ({
+          sigType: s.sigType,
+          signer: s.signer as AddressType,
+          data: s.data as Hex,
+        }));
+      return executeSigned({
+        target: tx.target as AddressType,
+        value: BigInt(tx.value),
+        data: (tx.data || "0x") as Hex,
+        deadline: BigInt(tx.deadline),
+        signatures,
+      });
+    },
+    [executeSigned],
+  );
 
   // Synthesize a WalletRecord the reused Bank panels render against.
   const record = useMemo<WalletRecord | null>(() => {
@@ -373,6 +408,7 @@ export function WalletAppWindow({
               wallet={record}
               myAddress={pw.passkeyAddress ?? myAddress}
               walletAddress={activeAddress}
+              sponsoredExecute={sponsoredExecute}
             />
           </div>
         ) : null}
