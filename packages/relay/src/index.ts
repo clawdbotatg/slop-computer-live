@@ -2229,7 +2229,15 @@ app.get("/v1/wallet", async (req, reply) => {
 // executable. Idempotent. See docs/PASSKEY-WALLET.md.
 const personalWalletDeployBucket = new TokenBucket(5, 5 / 3600); // 5 burst, ~5/hour refill
 app.post("/personal-wallet/deploy", async (req, reply) => {
-  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  // Room-auth gate (same as /personal-wallet/exec): the facilitator only fronts
+  // the deploy gas for a caller who is a legitimate participant of the room. We
+  // require a valid ?slug and drop skipRoomGate so v1AuthFromReq enforces the
+  // room's password cookie. Requiring the slug is what makes that gate engage —
+  // without it the room check is a no-op. debug (passwordless sandbox) passes.
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const querySlug = typeof q.slug === "string" ? q.slug : "";
+  if (!isValidSlug(querySlug)) return reply.code(400).send({ error: "room-required" });
+  const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!isPersonalWalletDeployConfigured()) return reply.code(503).send({ error: "deployer-not-configured" });
 
@@ -2285,7 +2293,17 @@ app.post("/personal-wallet/deploy", async (req, reply) => {
 // session's passkey). Base-only in v1, matching deploy.
 const personalWalletExecBucket = new TokenBucket(8, 8 / 600); // 8 burst, ~8 / 10 min per IP
 app.post("/personal-wallet/exec", async (req, reply) => {
-  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  // Room-auth gate: the facilitator only fronts gas for a caller who is a
+  // legitimate participant of the room. We require a valid ?slug and drop
+  // skipRoomGate so v1AuthFromReq enforces the room's password cookie (the
+  // same gate as the WS /signal mesh and every other room-scoped route).
+  // Requiring the slug is what makes that gate actually engage — without a
+  // slug v1AuthFromReq's room check is a no-op, so an attacker could sponsor
+  // gas by simply omitting it. debug (passwordless sandbox) still passes.
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const rawSlug = typeof q.slug === "string" ? q.slug : "";
+  if (!isValidSlug(rawSlug)) return reply.code(400).send({ error: "room-required" });
+  const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   if (!isPersonalWalletExecConfigured()) return reply.code(503).send({ error: "facilitator-not-configured" });
 
