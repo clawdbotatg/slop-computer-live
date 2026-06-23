@@ -31,6 +31,7 @@ import { NoteList } from "./notes.js";
 import { Participants } from "./participants.js";
 import { Pong } from "./pong.js";
 import { Worm } from "./worm.js";
+import { Putt } from "./putt.js";
 import { PreviewMedia } from "./preview-media.js";
 import { ScrollSync } from "./scroll-sync.js";
 import { UIState } from "./ui-state.js";
@@ -355,6 +356,7 @@ export class Room {
   readonly music: MusicState;
   readonly pong = new Pong();
   readonly worm = new Worm();
+  readonly putt = new Putt();
   readonly research: ResearchState;
   readonly researchCorpus: ResearchCorpus;
   readonly leftclaw: LeftclawState;
@@ -548,6 +550,28 @@ export class Room {
         lastWormWinner = null;
       }
     });
+    // Narrate a putt-putt course win once, on the null→winner edge — same
+    // edge dance as pong/worm (the "holed" pause re-broadcasts the same
+    // winner until someone resets to the lobby).
+    let lastPuttWinner: number | null = null;
+    this.putt.subscribe(state => {
+      this.broadcast({ type: "putt_state", state });
+      if (state.winner !== null && state.winner !== lastPuttWinner) {
+        lastPuttWinner = state.winner;
+        const p = state.players[state.winner];
+        if (p) {
+          const total = p.strokes.reduce((a, b) => a + b, 0);
+          this.transcript.appendAction({
+            kind: "putt",
+            ...ownerKeyActor(p.ownerKey, p.handle),
+            text: `⛳ ${p.handle} won putt-putt — ${total} strokes`,
+            meta: { winner: p.handle, total, color: p.color },
+          });
+        }
+      } else if (state.winner === null) {
+        lastPuttWinner = null;
+      }
+    });
     this.previewMedia.subscribe(event =>
       this.broadcast({ type: "preview_media", fileId: event.fileId, state: event.state }),
     );
@@ -694,6 +718,7 @@ export class Room {
       const peerOwnerKey = (peer.address ?? peer.handle ?? peer.id).toLowerCase();
       this.pong.release(peerOwnerKey);
       this.worm.release(peerOwnerKey);
+      this.putt.release(peerOwnerKey);
     }
     this.peers.delete(id);
     // No spectators left → drop the god-mode viewport hint and tell
@@ -996,6 +1021,7 @@ export function hibernateRoom(slug: string): boolean {
   // belt-and-suspenders against a future regression in that invariant.
   room.pong.dispose();
   room.worm.dispose();
+  room.putt.dispose();
   rooms.delete(slug);
   return true;
 }

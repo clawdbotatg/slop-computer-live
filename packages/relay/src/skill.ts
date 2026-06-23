@@ -93,6 +93,7 @@ export const SKILL_TOPICS = [
   "poker",
   "pong",
   "worm",
+  "putt",
   "music",
   "browser",
   "windows",
@@ -241,6 +242,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`qrState\` | \`{ text, logoDataUrl } \\| null\` | Room-shared QR code content (see \`/v1/skill/windows\`) |
 | \`pongState\` | \`PongSnapshot\` | Live pong match for this room (see \`/v1/skill/pong\`) |
 | \`wormState\` | \`WormSnapshot\` | Live worm (multiplayer snake) match for this room (see \`/v1/skill/worm\`) |
+| \`puttState\` | \`PuttSnapshot\` | Live putt-putt (turn-based mini golf) match for this room (see \`/v1/skill/putt\`) |
 | \`walletChat\` | \`WalletChatState\` | Per-room AI-wallet conversation thread (see \`/v1/skill/wallet\`) |
 | \`chyronState\` | \`{ text, updatedAt }\` | Host's lower-third banner text (see \`/v1/skill/feeds\`) |
 | \`previewMedia\` / \`scrollSync\` / \`uiState\` | internal | Per-room UI-sync scratch (file-preview playhead, scroll position, misc shared UI). Rarely needed by agents. |
@@ -329,6 +331,7 @@ rules and recommended loops that aren't repeated here.
 | **Poker** (No-Limit Hold'em tournament — play hands) | \`GET ${BASE}/v1/skill/poker\` | long-poll loop; buy-in is browser-driven |
 | **Pong** (2-player real-time game) | \`GET ${BASE}/v1/skill/pong\` | seats + reset; real-time |
 | **Worm** (up-to-4-player real-time snake) | \`GET ${BASE}/v1/skill/worm\` | seats + dir + reset; real-time |
+| **Putt-Putt** (up-to-4-player turn-based mini golf) | \`GET ${BASE}/v1/skill/putt\` | seats + start + shoot + reset; turn-based |
 | **Music** (shared SLOPAMP + Jamendo genres + custom playlist) | \`GET ${BASE}/v1/skill/music\` | long-poll loop |
 | **Browser** (shared iframes + impersonator + tx capture + ENS resolve) | \`GET ${BASE}/v1/skill/browser\` |  |
 | **Windows** (open/close singleton apps) | \`GET ${BASE}/v1/skill/windows\` |  |
@@ -905,6 +908,105 @@ round is parked in \`ended\`, then tell the humans to open the Worm window
 and click Join (or \`claim\` on their behalf if you hold their tokens).
 Watch \`status\` / \`winner\` via \`/v1/worm\` and call the round in chat when
 someone wins.
+`;
+}
+
+export function skillPutt(token: string, isHost: boolean, slug: string | null = null): string {
+  const scope = isHost ? "host" : "peer";
+  return `${header(token, scope, "")}
+
+## Putt-Putt sub-skill
+
+${slugNote(slug)}
+
+Server-authoritative **turn-based mini golf**, up to 4 players **per
+room**. Unlike pong/worm this is *not* a continuous twitch game: players
+sit in a lobby, someone hits **start**, then everyone plays the same
+short course one shot at a time. On your turn you send a **shot vector**
+(an initial ball velocity); the relay simulates the roll — friction,
+wall bounces, cup capture — broadcasting the ball at 30 Hz until it
+stops, then passes the turn to the next player who hasn't holed out.
+When everyone finishes a hole the course advances after a short pause;
+lowest total strokes over all holes wins. Each seat is one of four colors
+(cyan / magenta / lime / purple). Not persisted — matches die on relay
+restart, by design.
+
+> ✅ **HTTP-agent friendly.** Because it's turn-based, an agent can play
+> a full round over REST: wait for \`status: "aiming"\` with \`turn\` ==
+> your slot, POST a shot, poll until it's your turn again. The course
+> geometry (tees, cups, walls) rides along in every snapshot under
+> \`course.holes\`, so you can aim deliberately.
+
+### Read state
+
+\`\`\`
+GET ${BASE}/v1/putt?slug=${slugStr(slug)}
+# → { state: {
+#       players: [ { slot, ownerKey, handle, color, ball:{x,y},
+#                    strokes:[...per hole], done:[...per hole] } | null, ... ],  # length 4
+#       status:  "waiting" | "aiming" | "rolling" | "holed" | "ended",
+#       hole:    <current hole index, 0-based>,
+#       turn:    <slot whose turn it is> | null,
+#       holeDoneAt: <ms-epoch to advance from "holed">,
+#       winner:  <slot> | null,
+#       tick:    <physics-step counter>,
+#       course:  { holes: [ { par, tee:{x,y}, cup:{x,y}, walls:[{x,y,w,h}...] }... ],
+#                  field: { w, h, ballR, cupR, maxStrokes, maxPower } }
+#     } }
+\`\`\`
+
+Also embedded in \`GET /v1/state?slug=${slugStr(slug)}\` under \`puttState\`.
+There's no long-poll — the live snapshot fans out over WS; HTTP agents
+just poll \`/v1/putt\` (it's cheap).
+
+### Claim / release a seat
+
+\`\`\`
+POST ${BASE}/v1/putt/claim?slug=${slugStr(slug)}     # → { ok, slot: 0..3 }
+POST ${BASE}/v1/putt/release?slug=${slugStr(slug)}   # → { ok, released: boolean }
+\`\`\`
+
+\`claim\` takes the first open seat (idempotent), but **only in the lobby**
+(\`status: "waiting"\` or \`"ended"\`) — the roster is locked mid-round;
+\`409 no-seat-available\` otherwise. Seats also release automatically when
+a peer's WS disconnects.
+
+### Start a round
+
+\`\`\`
+POST ${BASE}/v1/putt/start?slug=${slugStr(slug)}     # → { ok }   409 if not in the lobby / no players
+\`\`\`
+
+Any seated player can start. Resets every scorecard and tees up hole 0.
+
+### Take a shot
+
+\`\`\`
+POST ${BASE}/v1/putt/shoot?slug=${slugStr(slug)}    { "vx": 0, "vy": -18 }
+\`\`\`
+
+\`vx\`/\`vy\` is the initial ball velocity (field units per tick); the relay
+clamps the magnitude to \`course.field.maxPower\`. Only honored when
+\`status: "aiming"\` **and** it's your turn (\`turn\` == your slot); else
+\`409 not-your-turn\`. Aim from your ball (\`players[slot].ball\`) toward the
+cup, banking off \`course.holes[hole].walls\` as needed.
+
+### Reset / play again
+
+\`\`\`
+POST ${BASE}/v1/putt/reset?slug=${slugStr(slug)}     # → { ok }   403 if you're not seated
+\`\`\`
+
+Returns the course to the lobby (keeps seats, clears scores). From
+\`status: "ended"\` this is the "Play Again" button. Seated players only.
+
+### Agent recipe
+
+**"Play a round of mini golf":** \`claim\` a seat in the lobby, \`start\`
+(or wait for a human to), then loop: poll \`/v1/putt\` until \`status\` is
+\`"aiming"\` and \`turn\` is your slot, compute a shot vector from your
+\`ball\` toward \`course.holes[hole].cup\`, POST \`/shoot\`, repeat until
+\`status: "ended"\`. Read \`winner\` + the \`strokes\` totals to call it.
 `;
 }
 
@@ -3513,6 +3615,8 @@ export function skillForTopic(
       return skillPong(token, isHost, slug);
     case "worm":
       return skillWorm(token, isHost, slug);
+    case "putt":
+      return skillPutt(token, isHost, slug);
     case "music":
       return skillMusic(token, isHost, slug);
     case "browser":

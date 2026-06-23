@@ -34,6 +34,7 @@ export type TranscriptKind =
   | "chess"
   | "pong"
   | "worm"
+  | "putt"
   | "chyron"
   | "app"
   | "browser"

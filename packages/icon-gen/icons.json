@@ -265,6 +265,10 @@
     {
       "name": "bank",
       "prompt": "A chunky isometric Mac OS 9 style bank building with marble columns and a triangular pediment, a glowing coin slot and a shield emblem on the front, vault-like and solid."
+    },
+    {
+      "name": "putt",
+      "prompt": "A top-down mini-golf putt-putt scene: a bright green felt fairway with a white golf ball, a black hole cup with a little red flag, and a putter club."
     }
   ],
   "sheet": {

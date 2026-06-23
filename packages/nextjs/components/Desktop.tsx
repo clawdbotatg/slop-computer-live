@@ -34,6 +34,7 @@ import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { PokerWindow } from "~~/components/desktop/PokerWindow";
 import { PongWindow } from "~~/components/desktop/PongWindow";
 import { PrivateAppWindow } from "~~/components/desktop/PrivateAppWindow";
+import { PuttWindow } from "~~/components/desktop/PuttWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
 import { ResearchWindow } from "~~/components/desktop/ResearchWindow";
 import { SaveLayoutDialog } from "~~/components/desktop/SaveLayoutDialog";
@@ -117,6 +118,7 @@ const WINDOW_MAX: Record<string, { w: number; h: number }> = {
   poker: { w: 760, h: 640 },
   pong: { w: 680, h: 520 },
   worm: { w: 520, h: 520 },
+  putt: { w: 480, h: 720 },
   gas: { w: 420, h: 520 },
   ens: { w: 460, h: 440 },
   glossary: { w: 520, h: 620 },
@@ -181,6 +183,7 @@ type AppEntry = {
     | "poker"
     | "pong"
     | "worm"
+    | "putt"
     | "qr"
     | "todo"
     | "notes"
@@ -233,7 +236,7 @@ const AUTO_ARRANGE_COLUMNS: ReadonlyArray<ReadonlyArray<string>> = [
   ["nifty-ink", "abi-ninja", "gas", "news"],
   ["browser", "wallet", "ens", "music"],
   ["pong", "chess", "worm", "leftclaw"],
-  ["poker"],
+  ["poker", "putt"],
 ];
 
 // Is this app placed explicitly in the curated grid above?
@@ -2593,6 +2596,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "poker":
         case "pong":
         case "worm":
+        case "putt":
         case "qr":
         case "todo":
         case "notes":
@@ -3904,6 +3908,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={380}
             >
               <WormWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="putt"
+              title="PUTT-PUTT"
+              defaultSlot={{ x: 220, y: 80, width: 480, height: 720 }}
+              minWidth={360}
+              minHeight={520}
+            >
+              <PuttWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

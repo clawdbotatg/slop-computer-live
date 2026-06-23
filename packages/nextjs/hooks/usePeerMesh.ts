@@ -889,6 +889,54 @@ const DEFAULT_WORM_STATE: WormState = {
   field: { cols: 40, rows: 30, cell: 16, moveMs: 125, winLen: 16, startLen: 3 },
 };
 
+// --- Putt-Putt ---------------------------------------------------------
+// Up-to-4-player turn-based mini golf. Mirrors `packages/relay/src/putt.ts`
+// — the relay owns the ball physics (friction, wall bounce, cup capture)
+// and the whole turn/scorecard flow; clients only send a shot vector on
+// their own turn. The course geometry + physics constants ride along in
+// every snapshot so the client never keeps them in sync.
+export type PuttColor = "cyan" | "magenta" | "lime" | "purple";
+export type PuttVec = { x: number; y: number };
+export type PuttWall = { x: number; y: number; w: number; h: number };
+export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[] };
+export type PuttStatus = "waiting" | "aiming" | "rolling" | "holed" | "ended";
+export type PuttPlayer = {
+  slot: number;
+  ownerKey: string;
+  handle: string;
+  color: PuttColor;
+  ball: PuttVec;
+  strokes: number[];
+  done: boolean[];
+};
+export type PuttState = {
+  players: (PuttPlayer | null)[];
+  status: PuttStatus;
+  hole: number;
+  turn: number | null;
+  holeDoneAt: number;
+  winner: number | null;
+  tick: number;
+  course: {
+    holes: PuttHole[];
+    field: { w: number; h: number; ballR: number; cupR: number; maxStrokes: number; maxPower: number };
+  };
+};
+
+const DEFAULT_PUTT_STATE: PuttState = {
+  players: [null, null, null, null],
+  status: "waiting",
+  hole: 0,
+  turn: null,
+  holeDoneAt: 0,
+  winner: null,
+  tick: 0,
+  course: {
+    holes: [],
+    field: { w: 420, h: 620, ballR: 8, cupR: 15, maxStrokes: 8, maxPower: 24 },
+  },
+};
+
 // --- File-preview shared state ---------------------------------------------
 // Per-file preview UI state shared across the room, indexed by fileId.
 // Carries two independent kinds (a file is only ever one):
@@ -1531,6 +1579,26 @@ export type PeerMeshState = {
   /** Reset the round (respawn everyone). Seated players only — the
    *  "Play Again" button after a round ends hits this. */
   wormReset: () => void;
+  /** Server-authoritative putt-putt (turn-based mini golf) snapshot. The
+   *  relay simulates the active ball and owns the whole turn/scorecard
+   *  flow; clients render it and only send a shot vector on their turn. */
+  puttState: PuttState;
+  /** Seat slot (0..3) this peer occupies, or null when not seated.
+   *  Reconciled from `putt_slot` replies + the players map in puttState. */
+  myPuttSlot: number | null;
+  /** Take a lobby seat (or no-op if full / already seated / mid-round).
+   *  The server replies with `putt_slot`. */
+  puttClaim: () => void;
+  /** Vacate my seat. */
+  puttRelease: () => void;
+  /** Begin a round from the lobby (any seated player). */
+  puttStart: () => void;
+  /** Take my shot — a resolved initial velocity vector. Only honored on my
+   *  turn while aiming; the relay clamps the magnitude. */
+  puttShoot: (vx: number, vy: number) => void;
+  /** Reset the course to the lobby. Seated players only — the "Play Again"
+   *  button after a course ends hits this. */
+  puttReset: () => void;
   /** Shared QR-window state (text + center logo). Every peer's QR
    *  renders this. Last-writer-wins. */
   qrState: QrState;
@@ -1799,6 +1867,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [myPongSeat, setMyPongSeat] = useState<PongSide | null>(null);
   const [wormState, setWormStateLocal] = useState<WormState>(DEFAULT_WORM_STATE);
   const [myWormSlot, setMyWormSlot] = useState<number | null>(null);
+  const [puttState, setPuttStateLocal] = useState<PuttState>(DEFAULT_PUTT_STATE);
+  const [myPuttSlot, setMyPuttSlot] = useState<number | null>(null);
   const [previewMedia, setPreviewMediaLocal] = useState<Record<string, PreviewMediaSnapshot>>({});
   const [scrollSync, setScrollSyncLocal] = useState<Record<string, ScrollSnapshot>>({});
   const [uiState, setUIStateLocal] = useState<Record<string, unknown>>({});
@@ -2402,6 +2472,45 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
   const wormReset = useCallback(() => {
     send({ type: "worm_reset" });
+  }, [send]);
+
+  // Reconcile myPuttSlot against the authoritative players map — mirrors
+  // the pong/worm seat reconcile (reconnects, refresh-with-seat-gone, etc.).
+  useEffect(() => {
+    const myKey = (self?.address ?? self?.handle ?? "").toLowerCase();
+    if (!myKey) {
+      if (myPuttSlot !== null) setMyPuttSlot(null);
+      return;
+    }
+    let detected: number | null = null;
+    for (const p of puttState.players) {
+      if (p && p.ownerKey === myKey) {
+        detected = p.slot;
+        break;
+      }
+    }
+    if (detected !== myPuttSlot) setMyPuttSlot(detected);
+  }, [puttState.players, self?.address, self?.handle, myPuttSlot]);
+
+  const puttClaim = useCallback(() => {
+    send({ type: "putt_claim" });
+  }, [send]);
+  const puttRelease = useCallback(() => {
+    // Optimistic: clear local slot immediately; `putt_slot` confirms.
+    setMyPuttSlot(null);
+    send({ type: "putt_release" });
+  }, [send]);
+  const puttStart = useCallback(() => {
+    send({ type: "putt_start" });
+  }, [send]);
+  const puttShoot = useCallback(
+    (vx: number, vy: number) => {
+      send({ type: "putt_shoot", vx, vy });
+    },
+    [send],
+  );
+  const puttReset = useCallback(() => {
+    send({ type: "putt_reset" });
   }, [send]);
 
   const sendClick = useCallback(
@@ -3440,6 +3549,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (msg.wormState && typeof msg.wormState === "object") {
             setWormStateLocal(msg.wormState as WormState);
           }
+          if (msg.puttState && typeof msg.puttState === "object") {
+            setPuttStateLocal(msg.puttState as PuttState);
+          }
           if (msg.walletChat && typeof msg.walletChat === "object") {
             setWalletChatLocal(msg.walletChat as WalletChat);
           }
@@ -3778,6 +3890,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
         if (msg.type === "worm_slot") {
           setMyWormSlot(typeof msg.slot === "number" ? msg.slot : null);
+          return;
+        }
+
+        if (msg.type === "putt_state" && msg.state && typeof msg.state === "object") {
+          setPuttStateLocal(msg.state as PuttState);
+          return;
+        }
+        if (msg.type === "putt_slot") {
+          setMyPuttSlot(typeof msg.slot === "number" ? msg.slot : null);
           return;
         }
 
@@ -4473,6 +4594,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     wormRelease,
     wormSetDir,
     wormReset,
+    puttState,
+    myPuttSlot,
+    puttClaim,
+    puttRelease,
+    puttStart,
+    puttShoot,
+    puttReset,
     previewMedia,
     setPreviewMedia,
     scrollSync,

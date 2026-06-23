@@ -1045,6 +1045,7 @@ type AppEntry = {
     | "poker"
     | "pong"
     | "worm"
+    | "putt"
     | "qr"
     | "todo"
     | "notes"
@@ -1129,6 +1130,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Worm",
     icon: "/icons/worm.png",
     kind: "worm",
+  },
+  {
+    id: "putt",
+    label: "Putt-Putt",
+    icon: "/icons/putt.png",
+    kind: "putt",
   },
   {
     id: "browser",
@@ -1481,6 +1488,7 @@ app.get("/v1/state", async (req, reply) => {
     qrState: roomFromReq(req).qr.current().state,
     pongState: roomFromReq(req).pong.current().state,
     wormState: roomFromReq(req).worm.current().state,
+    puttState: roomFromReq(req).putt.current().state,
     previewMedia: roomFromReq(req).previewMedia.all(),
     scrollSync: roomFromReq(req).scrollSync.all(),
     uiState: roomFromReq(req).uiState.all(),
@@ -3935,6 +3943,76 @@ app.post("/v1/worm/reset", async (req, reply) => {
   const callerKey = callerOwnerKeyFromReq(a);
   if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
   const ok = roomFromReq(req).worm.reset(callerKey);
+  if (!ok) return reply.code(403).send({ error: "not-seated" });
+  return { ok: true };
+});
+
+// =============================================================================
+// /v1/putt — up-to-4-player turn-based mini golf (per room)
+// -----------------------------------------------------------------------------
+// Server-authoritative ball physics; clients send only a shot vector on
+// their turn. REST mirrors the WS messages for agent control: claim/release
+// a seat, start a round, take a shot, reset to the lobby. Seats are stable-
+// keyed by ownerKey and free on WS disconnect, same as pong/worm.
+// =============================================================================
+
+app.get("/v1/putt", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  reply.header("cache-control", "no-store");
+  return roomFromReq(req).putt.current();
+});
+
+app.post("/v1/putt/claim", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const slot = roomFromReq(req).putt.claim(callerKey, callerHandleFromReq(a));
+  if (slot === null) return reply.code(409).send({ error: "no-seat-available" });
+  return { ok: true, slot };
+});
+
+app.post("/v1/putt/release", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const released = roomFromReq(req).putt.release(callerKey);
+  return { ok: true, released };
+});
+
+app.post("/v1/putt/start", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const ok = roomFromReq(req).putt.start(callerKey);
+  if (!ok) return reply.code(409).send({ error: "cannot-start" });
+  return { ok: true };
+});
+
+type PuttShootBody = { vx?: unknown; vy?: unknown };
+app.post<{ Body: PuttShootBody }>("/v1/putt/shoot", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const b = (req.body ?? {}) as PuttShootBody;
+  if (typeof b.vx !== "number" || typeof b.vy !== "number" || !Number.isFinite(b.vx) || !Number.isFinite(b.vy)) {
+    return reply.code(400).send({ error: "bad-shot" });
+  }
+  const ok = roomFromReq(req).putt.shoot(callerKey, b.vx, b.vy);
+  if (!ok) return reply.code(409).send({ error: "not-your-turn" });
+  return { ok: true };
+});
+
+app.post("/v1/putt/reset", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const callerKey = callerOwnerKeyFromReq(a);
+  if (!callerKey) return reply.code(400).send({ error: "no-identity-on-session" });
+  const ok = roomFromReq(req).putt.reset(callerKey);
   if (!ok) return reply.code(403).send({ error: "not-seated" });
   return { ok: true };
 });
@@ -7386,6 +7464,7 @@ app.register(async function signalRoutes(fastify) {
       qrState: room.qr.current().state,
       pongState: room.pong.current().state,
       wormState: room.worm.current().state,
+      puttState: room.putt.current().state,
       previewMedia: room.previewMedia.all(),
       scrollSync: room.scrollSync.all(),
       uiState: room.uiState.all(),
@@ -8524,6 +8603,46 @@ app.register(async function signalRoutes(fastify) {
           // Seated players only — "play again" after a round ends.
           const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
           const ok = room.worm.reset(callerKey);
+          if (!ok) return send(socket, { type: "error", error: "not-seated" });
+          return;
+        }
+        case "putt_claim": {
+          // Take a seat in the lobby (0..3). Idempotent; returns null over
+          // `putt_slot` when no seat is available (full, or mid-round).
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const handle = info.handle ?? (info.address ? info.address.slice(0, 8) : "guest");
+          const slot = room.putt.claim(callerKey, handle);
+          send(socket, { type: "putt_slot", slot });
+          return;
+        }
+        case "putt_release": {
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          room.putt.release(callerKey);
+          send(socket, { type: "putt_slot", slot: null });
+          return;
+        }
+        case "putt_start": {
+          // Begin a round from the lobby. Any seated player can start it.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.putt.start(callerKey);
+          if (!ok) return send(socket, { type: "error", error: "cannot_start" });
+          return;
+        }
+        case "putt_shoot": {
+          // The active player's shot — a resolved initial velocity vector.
+          // Server clamps magnitude + ignores non-turn callers.
+          if (typeof msg.vx !== "number" || typeof msg.vy !== "number") {
+            return send(socket, { type: "error", error: "bad_putt_shot" });
+          }
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.putt.shoot(callerKey, msg.vx as number, msg.vy as number);
+          if (!ok) return send(socket, { type: "error", error: "not_your_turn" });
+          return;
+        }
+        case "putt_reset": {
+          // Seated players only — "Play Again" returns the course to the lobby.
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.putt.reset(callerKey);
           if (!ok) return send(socket, { type: "error", error: "not-seated" });
           return;
         }
