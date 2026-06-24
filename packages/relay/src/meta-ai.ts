@@ -52,6 +52,14 @@ export type EpisodeMeta = {
   description: string;
   topics: string[];
   chapters: EpisodeChapter[];
+  /**
+   * Seconds into the VOD where playback auto-starts on first load, so viewers
+   * skip the pre-episode countdown. Literal seek position (e.g. 155 = 00:02:35).
+   * Human-authored via /admin/set-start — NOT produced by the AI pass; it's
+   * carried through regenerate/finalize via the manifest spread. Omitted/0 →
+   * play from the start.
+   */
+  startSeconds?: number;
   generatedBy: string;
   generatedAt: number;
 };

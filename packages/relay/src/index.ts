@@ -22,7 +22,13 @@ import {
   stopFanout,
 } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
-import { finalizeRecording, findRecordingSession, isFinalizeInFlight, regenerateEpisodeMeta } from "./recordings.js";
+import {
+  finalizeRecording,
+  findRecordingSession,
+  isFinalizeInFlight,
+  regenerateEpisodeMeta,
+  setEpisodeStartPoint,
+} from "./recordings.js";
 import {
   closeAllPeers,
   findPeersBySessionToken,
@@ -6596,6 +6602,34 @@ app.post("/admin/regenerate-meta", async (req, reply) => {
   })();
 
   return reply.send(stream);
+});
+
+// Set (or clear) the VOD start point for an already-finalized episode: patches
+// meta.startSeconds into the manifest and re-pins. No AI, no video work — a cheap
+// one-field edit — so this replies with a single JSON object (not NDJSON like
+// finalize/regenerate). `?start=` is seconds; <= 0 clears the start point. The
+// caller (admin UI) writes the returned CID on-chain via setManifest.
+app.post("/admin/set-start", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+
+  const q = (req.query ?? {}) as { manifest?: unknown; start?: unknown };
+  const manifestCid = typeof q.manifest === "string" ? q.manifest : "";
+  if (!manifestCid) return reply.code(400).send({ error: "missing ?manifest=<cid> of the episode to edit" });
+  const startRaw = typeof q.start === "string" ? Number(q.start) : NaN;
+  if (!Number.isFinite(startRaw)) return reply.code(400).send({ error: "missing/invalid ?start=<seconds>" });
+
+  try {
+    const out = await setEpisodeStartPoint({
+      ipfsApiUrl: config.ipfsApiUrl,
+      manifestCid,
+      startSeconds: startRaw,
+    });
+    return reply.send({ manifestCid: out.manifestCid, startSeconds: out.startSeconds });
+  } catch (err) {
+    app.log.error({ err }, "set-start failed");
+    return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // One clip job per slug at a time (the clipper is heavy: download → cut → pin).

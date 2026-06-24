@@ -871,8 +871,13 @@ export async function regenerateEpisodeMeta(opts: {
 
     emit({ phase: "pinning-manifest" });
     // Spread the existing manifest so any field we don't model survives; only
-    // `meta` is replaced.
-    const next: EpisodeManifestV1 = { ...manifest, meta };
+    // `meta` is replaced. The AI pass never emits `startSeconds` (it's a
+    // human-authored countdown-skip set via /admin/set-start), so carry the
+    // previous value forward — otherwise a metadata regenerate would silently
+    // wipe the host's start point.
+    const prevStart = manifest.meta?.startSeconds;
+    const mergedMeta: EpisodeMeta = prevStart && prevStart > 0 ? { ...meta, startSeconds: prevStart } : meta;
+    const next: EpisodeManifestV1 = { ...manifest, meta: mergedMeta };
     const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
 
     emit({ phase: "done", manifestCid: newCid, meta });
@@ -882,4 +887,51 @@ export async function regenerateEpisodeMeta(opts: {
     emit({ phase: "error", message });
     throw err;
   }
+}
+
+/**
+ * Patch the VOD start point (`meta.startSeconds`) into an already-finalized
+ * episode's manifest and re-pin it — video/transcript/chat/AI-meta all
+ * untouched. `startSeconds <= 0` clears the field (play from the start). Unlike
+ * {@link regenerateEpisodeMeta} this runs NO AI: it's a cheap one-field edit.
+ * Returns the new manifest CID; the caller writes it on-chain via setManifest.
+ *
+ * If the manifest somehow has no `meta` yet (pre-AI finalize), we still attach a
+ * minimal meta carrying just the start point so the player can act on it.
+ */
+export async function setEpisodeStartPoint(opts: {
+  ipfsApiUrl: string;
+  /** Existing manifest CID (bare or `ipfs://`-prefixed) read off-chain by the caller. */
+  manifestCid: string;
+  /** Literal seek position in seconds. <= 0 clears the start point. */
+  startSeconds: number;
+}): Promise<{ manifestCid: string; startSeconds: number }> {
+  const bareCid = opts.manifestCid.replace(/^ipfs:\/\//, "").trim();
+  if (!bareCid) throw new Error("no manifest CID provided");
+
+  const manifestText = await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: bareCid });
+  let manifest: EpisodeManifestV1;
+  try {
+    manifest = JSON.parse(manifestText) as EpisodeManifestV1;
+  } catch {
+    throw new Error("existing manifest is not valid JSON");
+  }
+
+  const start = Math.max(0, Math.floor(opts.startSeconds));
+  const baseMeta: EpisodeMeta = manifest.meta ?? {
+    title: "",
+    oneLiner: "",
+    description: "",
+    topics: [],
+    chapters: [],
+    generatedBy: "manual",
+    generatedAt: 0,
+  };
+  const meta: EpisodeMeta = { ...baseMeta };
+  if (start > 0) meta.startSeconds = start;
+  else delete meta.startSeconds;
+
+  const next: EpisodeManifestV1 = { ...manifest, meta };
+  const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
+  return { manifestCid: newCid, startSeconds: start };
 }
