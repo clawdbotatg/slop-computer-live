@@ -1005,7 +1005,14 @@ const SeatBox = ({
   const revealed = seat.hole; // populated at showdown
   const cards: (string | undefined)[] = isMe && myHole ? myHole : revealed ? revealed : [undefined, undefined];
   const isAi = seat.key.startsWith("ai:"); // a sponsored LLM player
-  const folded = seat.status === "folded" || seat.status === "out";
+  // Busted out of the tournament — no chips and marked "out" of play — so
+  // ghost the whole plate to ~5% and let the players still alive read clearly.
+  // The stack===0 guard matters: a freshly-seated player waiting for the next
+  // hand is also status "out" but still has chips, and must NOT be ghosted.
+  // "folded" is only folded *this hand*; keep it lightly dimmed and it returns
+  // to full opacity next hand.
+  const busted = seat.status === "out" && seat.stack === 0;
+  const folded = seat.status === "folded";
   const concealed = seat.hasCards && !(isMe && myHole) && !revealed;
   const borderColor = isActor ? LIME : isWinner ? GOLD : isMe ? CYAN : "#2a1648";
   const glow = isActor ? `0 0 18px ${LIME}` : isWinner ? `0 0 16px ${GOLD}` : "none";
@@ -1024,8 +1031,11 @@ const SeatBox = ({
         borderRadius: 10,
         padding: 9,
         paddingBottom: 13, // clearance for the band strip pinned to the bottom edge
-        opacity: folded ? 0.45 : 1,
-        transition: "box-shadow 0.2s, border-color 0.2s, background 0.2s",
+        opacity: busted ? 0.05 : folded ? 0.45 : 1,
+        // Busted plates also stop intercepting pointer events so the ghost
+        // never sits on top of a live seat's interactions.
+        pointerEvents: busted ? "none" : undefined,
+        transition: "opacity 0.6s ease, box-shadow 0.2s, border-color 0.2s, background 0.2s",
         // A one-shot bump (replayed on remount each turn — see the key on
         // SeatBox) that hands off into the steady infinite pulse.
         animation: isActor ? "pokerActorBump 0.6s ease-out, pokerActorPulse 1.1s ease-in-out 0.6s infinite" : undefined,
