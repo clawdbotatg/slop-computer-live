@@ -29,6 +29,7 @@ import {
   regenerateEpisodeMeta,
   setEpisodeStartPoint,
 } from "./recordings.js";
+import { detectStartPoint } from "./detect-start.js";
 import {
   closeAllPeers,
   findPeersBySessionToken,
@@ -6634,6 +6635,34 @@ app.post("/admin/set-start", async (req, reply) => {
     return reply.send({ manifestCid: out.manifestCid, startSeconds: out.startSeconds });
   } catch (err) {
     app.log.error({ err }, "set-start failed");
+    return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Auto-detect a VOD start point by reading the intro countdown timer off the
+// recording with Claude vision (see detect-start.ts). Scans the latest on-disk
+// recording — the same one finalize pins — so it works BEFORE finalize, letting
+// the admin prefill the start-point field for a new episode. Plain JSON reply.
+app.post("/admin/detect-start", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
+  if (!apiKey) return reply.code(503).send({ error: "ANTHROPIC_API_KEY not configured on the relay" });
+  const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+
+  try {
+    // The countdown lives at the very start of the show, so scan the FIRST
+    // segment of the contiguous recording session (oldest→newest).
+    const session = await findRecordingSession(config.recordingsDir, "live");
+    if (session.length === 0) return reply.code(404).send({ error: "no recording found on disk to scan" });
+    const videoPath = session[0]!.file;
+
+    const result = await detectStartPoint({ videoPath, apiKey, model });
+    if (!result) return reply.code(422).send({ error: "could not read a countdown timer in the recording" });
+    return reply.send(result);
+  } catch (err) {
+    app.log.error({ err }, "detect-start failed");
     return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
   }
 });
