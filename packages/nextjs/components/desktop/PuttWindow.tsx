@@ -430,10 +430,11 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     // Don't draw a holed-out ball (it's gone into the cup).
     if (p.done[state.hole]) continue;
     const isTurn = state.turn === p.slot;
-    ctx.beginPath();
-    ctx.fillStyle = "#ffffff";
-    ctx.arc(p.ball.x, p.ball.y, f.ballR, 0, Math.PI * 2);
-    ctx.fill();
+    // A dimpled, rolling golf ball. The server exposes only position (no
+    // velocity), so we derive roll direction + speed from the per-frame
+    // position delta and draw scrolling dimples (see drawGolfBall).
+    const roll = rollFor(p.slot, p.ball.x, p.ball.y);
+    drawGolfBall(ctx, p.ball.x, p.ball.y, f.ballR, roll);
     // Colored ring so you can tell whose ball is whose.
     ctx.lineWidth = 3;
     ctx.strokeStyle = COLOR_HEX[p.color];
@@ -488,6 +489,88 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
       }
     }
   }
+}
+
+// --- Rolling golf ball -----------------------------------------------------
+
+// Per-slot roll tracking. The relay snapshot carries only ball {x,y}, so we
+// remember each ball's last position to recover its travel direction and the
+// distance it has rolled. `phase` accumulates rolled distance (in field units),
+// which scrolls the dimple lattice so the surface looks like it's turning.
+type Roll = { x: number; y: number; phase: number; ux: number; uy: number; seen: boolean };
+const rollState = new Map<number, Roll>();
+
+function rollFor(slot: number, x: number, y: number): Roll {
+  const prev = rollState.get(slot);
+  const next: Roll = prev ?? { x, y, phase: 0, ux: 1, uy: 0, seen: false };
+  if (prev?.seen) {
+    const dx = x - prev.x;
+    const dy = y - prev.y;
+    const sp = Math.hypot(dx, dy);
+    // Ignore sub-pixel jitter and teleports (tee resets between holes/turns).
+    if (sp > 0.05 && sp < 40) {
+      next.ux = dx / sp;
+      next.uy = dy / sp;
+      // Surface arc-length ≈ distance travelled for a rolling ball.
+      next.phase += sp;
+    }
+  }
+  next.x = x;
+  next.y = y;
+  next.seen = true;
+  rollState.set(slot, next);
+  return next;
+}
+
+// A white sphere with shading and dimples that scroll in the travel direction
+// (forward, over the leading edge) so the ball reads as rolling, not sliding.
+// Dimples shrink + fade toward the rim for a spherical, foreshortened look.
+function drawGolfBall(ctx: CanvasRenderingContext2D, bx: number, by: number, R: number, roll: Roll) {
+  // Shaded white sphere (light from upper-left).
+  const grad = ctx.createRadialGradient(bx - R * 0.35, by - R * 0.35, R * 0.1, bx, by, R);
+  grad.addColorStop(0, "#ffffff");
+  grad.addColorStop(0.7, "#f2f2f2");
+  grad.addColorStop(1, "#d4d4d4");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(bx, by, R, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Dimples, clipped to the ball.
+  const ux = roll.ux;
+  const uy = roll.uy;
+  const px = -uy; // perpendicular axis
+  const py = ux;
+  const spacing = R * 0.6;
+  const base = R * 0.16;
+  const off = ((roll.phase % spacing) + spacing) % spacing;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(bx, by, R - 0.4, 0, Math.PI * 2);
+  ctx.clip();
+  for (let ia = -4; ia <= 4; ia++) {
+    // Scrolling along the travel axis (+off → dimples move forward).
+    const la = ia * spacing + off;
+    const an = la / R;
+    if (Math.abs(an) > 1.1) continue;
+    for (let ib = -4; ib <= 4; ib++) {
+      // Stagger alternate rows for a hex-ish pack.
+      const lp = ib * spacing + (Math.abs(ia) % 2) * (spacing / 2);
+      const pn = lp / R;
+      if (Math.abs(pn) > 1.1) continue;
+      // Spherical foreshortening: dimples compress + fade toward the rim.
+      const fore = Math.sqrt(Math.max(0, 1 - an * an) * Math.max(0, 1 - pn * pn));
+      if (fore <= 0.02) continue;
+      const sx = bx + la * ux + lp * px;
+      const sy = by + la * uy + lp * py;
+      const r = base * (0.4 + 0.6 * fore);
+      ctx.fillStyle = `rgba(140,140,140,${(0.12 + 0.3 * fore).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
