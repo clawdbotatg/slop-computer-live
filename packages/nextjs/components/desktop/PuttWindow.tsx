@@ -624,60 +624,103 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 }
 
 // --- Cup (recessed 3D hole) ------------------------------------------------
-// Draw the hole as a cup sunk into the felt rather than a flat disc. Light is
-// upper-left (matching the balls), so a concavity inverts a bump's shading:
-// the near rim (upper-left) shadows the inside, the far wall (lower-right) is
-// lit, and the opposite lip carries a thin highlight. Center/radius match the
-// flat hole exactly — the hit radius is unchanged.
+// Draw the hole the way a real golf cup looks from above with the camera tipped
+// slightly back (matching the leaning flag): a ragged grass lip, an earthen
+// side wall whose far rim catches the light, a cream cup-liner ring, and a deep
+// dark shaft. Light is upper-left (same as the balls), so the void is offset
+// up-and-left and the lit dirt/liner crescent sits on the lower-right far wall.
+// Drawn with a slight vertical squash for the tipped-back perspective. The
+// collision center/radius are untouched — this is purely cosmetic.
 function drawCup(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number) {
   ctx.save();
 
-  // Soft ground shadow just outside the lip so the cup sits in the felt.
+  const SQUASH = 0.86; // tip the opening back into the green a touch
+  const ry = R * SQUASH;
+  // The void sits up-and-left of the opening so the lower-right wall is the one
+  // that faces the light and reads as lit.
+  const offX = R * 0.16;
+  const offY = R * 0.2;
+
+  // Soft grassy recess — the green dips and darkens into the hole, a wider/
+  // softer ring than a hard shadow so the lip blends into the felt.
+  const ring = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R + 4);
+  ring.addColorStop(0, "rgba(20,46,18,0.55)");
+  ring.addColorStop(1, "rgba(20,46,18,0)");
   ctx.beginPath();
-  ctx.arc(cx, cy, R + 2, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.ellipse(cx, cy, R + 4, ry + 4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = ring;
   ctx.fill();
 
-  // The opening: a radial gradient offset toward lower-right so the deep pit
-  // sits down-and-right and the upper-left near wall stays dark — reads as a
-  // shaft going into the ground rather than a flat circle.
-  const grad = ctx.createRadialGradient(cx + R * 0.28, cy + R * 0.28, R * 0.08, cx, cy, R);
-  grad.addColorStop(0, "#000000");
-  grad.addColorStop(0.5, "#070707");
-  grad.addColorStop(0.82, "#191919");
-  grad.addColorStop(1, "#2b2b2b");
+  // Earthen side wall: the whole opening filled with a dirt gradient, lit tan on
+  // the lower-right far rim, falling to dark soil toward the shaded near rim.
+  const wall = ctx.createRadialGradient(cx + R * 0.34, cy + ry * 0.4, R * 0.15, cx, cy, R);
+  wall.addColorStop(0, "#7a5128");
+  wall.addColorStop(0.45, "#5e3c1d");
+  wall.addColorStop(0.8, "#3c2713");
+  wall.addColorStop(1, "#26180c");
   ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
+  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = wall;
   ctx.fill();
 
-  // Faint elliptical inner wall — the lit far side of the cylinder catching
-  // the upper-left light, drawn clipped to the opening so depth reads.
+  // Cream cup-liner ring just inside the lip — a real cup's plastic sleeve,
+  // brightest where it faces the light (lower-right), fading into shadow.
   ctx.save();
   ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
   ctx.clip();
+  ctx.lineWidth = R * 0.16;
+  ctx.strokeStyle = "rgba(226,214,180,0.9)";
   ctx.beginPath();
-  ctx.ellipse(cx + R * 0.2, cy + R * 0.22, R * 0.74, R * 0.66, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = "rgba(120,130,110,0.18)";
-  ctx.lineWidth = 2;
+  ctx.ellipse(cx, cy, R * 0.92, ry * 0.92, 0, Math.PI * -0.1, Math.PI * 0.78);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(150,134,98,0.45)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, R * 0.92, ry * 0.92, 0, Math.PI * 0.78, Math.PI * 1.9);
   ctx.stroke();
   ctx.restore();
 
-  // Inner shadow on the near (upper-left) rim — the lip closest to the light
-  // casts the deepest interior shadow.
-  ctx.lineWidth = 2.5;
-  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  // The shaft: a dark void offset up-and-left, deep black at the bottom so the
+  // hole reads as going down into the ground rather than a flat disc.
+  const shaftR = R * 0.66;
+  const shaftRy = ry * 0.66;
+  const sx = cx - offX;
+  const sy = cy - offY;
+  const shaft = ctx.createRadialGradient(sx + shaftR * 0.3, sy + shaftRy * 0.3, shaftR * 0.1, sx, sy, shaftR);
+  shaft.addColorStop(0, "#1a1206");
+  shaft.addColorStop(0.6, "#0a0703");
+  shaft.addColorStop(1, "#000000");
   ctx.beginPath();
-  ctx.arc(cx, cy, R - 1.3, Math.PI * 0.78, Math.PI * 1.72);
-  ctx.stroke();
+  ctx.ellipse(sx, sy, shaftR, shaftRy, 0, 0, Math.PI * 2);
+  ctx.fillStyle = shaft;
+  ctx.fill();
 
-  // Highlighted lip on the far (lower-right) rim — a thin lit edge.
-  ctx.lineWidth = 1.6;
-  ctx.strokeStyle = "rgba(190,205,175,0.5)";
-  ctx.beginPath();
-  ctx.arc(cx, cy, R - 0.8, Math.PI * -0.18, Math.PI * 0.62);
-  ctx.stroke();
+  // Ragged grass lip overlapping the opening — short blades of felt-green poking
+  // in over the edge break the perfect circle so it reads as cut grass, not a
+  // drawn ring. Deterministic (brickRand) so it's stable frame-to-frame.
+  const blades = 38;
+  for (let i = 0; i < blades; i++) {
+    const a = (i / blades) * Math.PI * 2;
+    const j = brickRand(i, 7);
+    const j2 = brickRand(i, 13);
+    // Blades on the lit (upper-left) side are brighter; shaded far side dimmer.
+    const lit = Math.cos(a) < 0 || Math.sin(a) < 0 ? 1 : 0.7;
+    const baseR = R + 1.5;
+    const tipR = R - (1.5 + j * 4.5);
+    const wob = (j2 - 0.5) * 0.12;
+    const bx = cx + Math.cos(a + wob) * baseR;
+    const by = cy + Math.sin(a + wob) * ry + Math.sin(a + wob);
+    const tx = cx + Math.cos(a) * tipR;
+    const ty = cy + Math.sin(a) * (tipR * SQUASH);
+    const g1 = Math.round(120 + j * 50 * lit);
+    ctx.strokeStyle = `rgba(${Math.round(40 + j * 30)},${g1},${Math.round(30 + j * 25)},${0.85 * lit})`;
+    ctx.lineWidth = 1 + j2 * 1.2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+  }
 
   ctx.restore();
 }
@@ -768,21 +811,35 @@ function puttHeightAt(t: PuttTerrain, x: number, y: number, fw: number, fh: numb
   return h;
 }
 
-// The band hexes parsed to RGB. Each height maps to the nearest band — the
-// discrete steps give the contour-map look; rendering per-pixel keeps the
-// band boundaries crisp (no blocky cells).
+// The band hexes parsed to RGB — used as anchor stops for a color ramp.
 const BAND_RGB: Array<[number, number, number]> = HEIGHT_BANDS.map(hex => [
   parseInt(hex.slice(1, 3), 16),
   parseInt(hex.slice(3, 5), 16),
   parseInt(hex.slice(5, 7), 16),
 ]);
-const CONTOUR_DARKEN = 0.6; // how much to dim a pixel sitting on a band edge
+const TERRAIN_CELL = 12; // px per color block — the chunky, pixelated grid
+const TERRAIN_STEPS = 16; // discrete elevation steps across the gradient
 
-// Per-hole terrain is static, so render the contour map once to an offscreen
-// canvas (per-pixel) and blit it each frame instead of re-sampling the height
-// field 60×/s. Each pixel takes its band's color; pixels where the band
-// changes from the neighbor to the left or above are darkened into a thin
-// contour line.
+// Color along the band palette for t∈[0,1] — lerp between the two nearest
+// anchors. We quantize t into TERRAIN_STEPS before calling this, so the result
+// is a stepped (pixelated) gradient rather than a smooth one.
+function rampColor(t: number): [number, number, number] {
+  const last = BAND_RGB.length - 1;
+  const f = Math.max(0, Math.min(1, t)) * last;
+  const i = Math.min(Math.floor(f), last - 1);
+  const frac = f - i;
+  const a = BAND_RGB[i] ?? BAND_RGB[0]!;
+  const b = BAND_RGB[i + 1] ?? a;
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * frac),
+    Math.round(a[1] + (b[1] - a[1]) * frac),
+    Math.round(a[2] + (b[2] - a[2]) * frac),
+  ];
+}
+
+// Per-hole terrain is static, so render it once to an offscreen canvas and blit
+// it each frame. Chunky cells quantized into many elevation steps give a
+// pixelated, stepped gradient (more steps than the first cut, same blocky feel).
 const terrainCache = new Map<string, HTMLCanvasElement>();
 function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
   const key = `${holeIndex}:${fw}x${fh}`;
@@ -793,7 +850,7 @@ function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: num
   cv.height = fh;
   const cx = cv.getContext("2d");
   if (cx) {
-    // Coarse first pass for the height range (to normalize the bands).
+    // Coarse first pass for the height range (to normalize the gradient).
     let min = Infinity;
     let max = -Infinity;
     for (let y = 0; y < fh; y += 8) {
@@ -804,30 +861,17 @@ function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: num
       }
     }
     const span = max - min || 1;
-    const last = BAND_RGB.length - 1;
-    const img = cx.createImageData(fw, fh);
-    const data = img.data;
-    // Track the band of the pixel directly above so we can draw horizontal
-    // contour lines as well as vertical ones.
-    const aboveBand = new Int16Array(fw).fill(-1);
-    for (let y = 0; y < fh; y++) {
-      let leftBand = -1;
-      for (let x = 0; x < fw; x++) {
-        const h = puttHeightAt(hole.terrain, x, y, fw, fh);
-        const band = Math.max(0, Math.min(last, Math.round(((h - min) / span) * last)));
-        const rgb = BAND_RGB[band] ?? BAND_RGB[0]!;
-        const onContour = (leftBand !== -1 && band !== leftBand) || (aboveBand[x] !== -1 && band !== aboveBand[x]);
-        const k = onContour ? CONTOUR_DARKEN : 1;
-        const idx = (y * fw + x) * 4;
-        data[idx] = rgb[0] * k;
-        data[idx + 1] = rgb[1] * k;
-        data[idx + 2] = rgb[2] * k;
-        data[idx + 3] = 255;
-        leftBand = band;
-        aboveBand[x] = band;
+    const steps = TERRAIN_STEPS - 1;
+    for (let y = 0; y < fh; y += TERRAIN_CELL) {
+      for (let x = 0; x < fw; x += TERRAIN_CELL) {
+        const h = puttHeightAt(hole.terrain, x + TERRAIN_CELL / 2, y + TERRAIN_CELL / 2, fw, fh);
+        const t = Math.max(0, Math.min(1, (h - min) / span));
+        const q = Math.round(t * steps) / steps; // snap to a discrete elevation step
+        const [r, g, b] = rampColor(q);
+        cx.fillStyle = `rgb(${r},${g},${b})`;
+        cx.fillRect(x, y, TERRAIN_CELL, TERRAIN_CELL);
       }
     }
-    cx.putImageData(img, 0, 0);
   }
   terrainCache.set(key, cv);
   return cv;
