@@ -749,50 +749,71 @@ function getWallsCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: numbe
   cv.height = fh;
   const cx = cv.getContext("2d");
   if (cx) {
-    const cellW = 26;
-    const cellH = 13;
-    const mortar = 2;
-    const brickW = cellW - mortar;
-    const brickH = cellH - mortar;
     for (const w of hole.walls) {
-      cx.save();
-      roundRect(cx, w.x, w.y, w.w, w.h, 4);
-      cx.clip();
-      // Dark mortar bed showing through the brick gaps.
-      cx.fillStyle = "#6f6f6f";
-      cx.fillRect(w.x, w.y, w.w, w.h);
-      let row = 0;
-      // Start a cell early on both axes so the running-bond offset still fully
-      // covers the clipped wall edges.
-      for (let by = w.y - cellH; by < w.y + w.h; by += cellH, row++) {
-        const xoff = row % 2 ? -(cellW / 2) : 0;
-        let col = 0;
-        for (let bx = w.x + xoff - cellW; bx < w.x + w.w; bx += cellW, col++) {
-          const n = brickRand(row, col);
-          const n2 = brickRand(col + 7, row + 3);
-          // Grayish bricks leaning slightly warm/reddish, with per-brick jitter.
-          const base = 138 + Math.round(n * 30); // 138..168
-          const r = Math.min(192, base + Math.round(n2 * 28));
-          const g = base - 4;
-          const b = base - 13;
-          const x0 = bx + mortar;
-          const y0 = by + mortar;
-          cx.fillStyle = `rgb(${r},${g},${b})`;
-          cx.fillRect(x0, y0, brickW, brickH);
-          // Upper-left bevel highlight, lower-right shadow — light from UL.
-          cx.fillStyle = "rgba(255,255,255,0.12)";
-          cx.fillRect(x0, y0, brickW, 1);
-          cx.fillRect(x0, y0, 1, brickH);
-          cx.fillStyle = "rgba(0,0,0,0.2)";
-          cx.fillRect(x0, y0 + brickH - 1, brickW, 1);
-          cx.fillRect(x0 + brickW - 1, y0, 1, brickH);
-        }
+      if (w.h > w.w) {
+        // Vertical wall (taller than wide): rotate the context 90° about the
+        // wall's center and draw the running-bond courses into a swapped-dim
+        // rect, so the courses run along the wall's long (vertical) axis.
+        const cxC = w.x + w.w / 2;
+        const cyC = w.y + w.h / 2;
+        cx.save();
+        cx.translate(cxC, cyC);
+        cx.rotate(Math.PI / 2);
+        drawWallBricks(cx, -w.h / 2, -w.w / 2, w.h, w.w);
+        cx.restore();
+      } else {
+        // Horizontal wall: courses already run along the long axis.
+        drawWallBricks(cx, w.x, w.y, w.w, w.h);
       }
-      cx.restore();
     }
   }
   wallsCache.set(key, cv);
   return cv;
+}
+
+// Draw a single wall's running-bond brickwork into the rect (rx,ry,rw,rh) of
+// the current (possibly rotated) context. Clipped to the wall's rounded rect;
+// jitter is deterministic so the baked texture never flickers.
+function drawWallBricks(cx: CanvasRenderingContext2D, rx: number, ry: number, rw: number, rh: number) {
+  const cellW = 26;
+  const cellH = 13;
+  const mortar = 2;
+  const brickW = cellW - mortar;
+  const brickH = cellH - mortar;
+  cx.save();
+  roundRect(cx, rx, ry, rw, rh, 4);
+  cx.clip();
+  // Dark mortar bed showing through the brick gaps.
+  cx.fillStyle = "#6f6f6f";
+  cx.fillRect(rx, ry, rw, rh);
+  let row = 0;
+  // Start a cell early on both axes so the running-bond offset still fully
+  // covers the clipped wall edges.
+  for (let by = ry - cellH; by < ry + rh; by += cellH, row++) {
+    const xoff = row % 2 ? -(cellW / 2) : 0;
+    let col = 0;
+    for (let bx = rx + xoff - cellW; bx < rx + rw; bx += cellW, col++) {
+      const n = brickRand(row, col);
+      const n2 = brickRand(col + 7, row + 3);
+      // Grayish bricks leaning slightly warm/reddish, with per-brick jitter.
+      const base = 138 + Math.round(n * 30); // 138..168
+      const r = Math.min(192, base + Math.round(n2 * 28));
+      const g = base - 4;
+      const b = base - 13;
+      const x0 = bx + mortar;
+      const y0 = by + mortar;
+      cx.fillStyle = `rgb(${r},${g},${b})`;
+      cx.fillRect(x0, y0, brickW, brickH);
+      // Upper-left bevel highlight, lower-right shadow — light from UL.
+      cx.fillStyle = "rgba(255,255,255,0.12)";
+      cx.fillRect(x0, y0, brickW, 1);
+      cx.fillRect(x0, y0, 1, brickH);
+      cx.fillStyle = "rgba(0,0,0,0.2)";
+      cx.fillRect(x0, y0 + brickH - 1, brickW, 1);
+      cx.fillRect(x0 + brickW - 1, y0, 1, brickH);
+    }
+  }
+  cx.restore();
 }
 
 // --- Topography ------------------------------------------------------------
