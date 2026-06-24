@@ -25,8 +25,22 @@ export const MAX_PLAYERS = 4;
 // Six substeps keeps the per-substep move under the wall thickness even at
 // the downhill-boosted max roll speed.
 const SUBSTEPS = 6;
-const FRICTION = 0.955; // velocity retained per tick (rolling resistance)
-const MIN_SPEED = 0.45; // below this the ball is considered at rest
+// Friction is modelled in two parts, like a real ball on grass:
+//  • FRICTION — a viscous bleed (force ∝ speed) for a smooth high-speed slowdown.
+//  • KINETIC_FRICTION — a constant per-tick deceleration (Coulomb rolling
+//    resistance) that does NOT shrink with speed, so the ball always reaches a
+//    full stop in finite time instead of creeping.
+//  • STATIC_FRICTION — the most a stationary ball will resist: if the downhill
+//    pull (SLOPE_ACCEL × slope) is below this, a slow ball sticks; only a steep
+//    enough slope can break it loose and keep it rolling. This is what stops
+//    the "endless ooze down a gentle grade".
+const FRICTION = 0.955; // velocity retained per tick (viscous component)
+const KINETIC_FRICTION = 0.08; // constant decel while rolling (px/tick²) — small;
+//                                just enough to out-bleed the gentle-tilt pull
+//                                and guarantee a finite stop without shortening
+//                                a normal putt.
+const STATIC_FRICTION = 0.06; // max downhill pull a resting ball holds (px/tick²)
+const MIN_SPEED = 0.5; // below this a ball is slow enough to test for sticking
 const MAX_POWER = 24; // cap on a shot's initial speed (px/tick)
 const MAX_ROLL_SPEED = 30; // clamp so a long downhill can't fling the ball through a wall
 const WALL_REST = 0.72; // restitution off walls + borders
@@ -508,19 +522,32 @@ export class Putt {
       return;
     }
 
+    // Viscous bleed (smooth, speed-proportional).
     this.vel.x *= FRICTION;
     this.vel.y *= FRICTION;
+    // Constant rolling resistance (Coulomb): subtract a fixed decel opposing
+    // motion, capped so it can't reverse the ball. Guarantees a real stop.
+    let speed = Math.hypot(this.vel.x, this.vel.y);
+    if (speed > 0) {
+      const dec = Math.min(speed, KINETIC_FRICTION);
+      this.vel.x -= (this.vel.x / speed) * dec;
+      this.vel.y -= (this.vel.y / speed) * dec;
+      speed -= dec;
+    }
     // Clamp so a long downhill run can't build enough speed to tunnel a wall.
-    const speed = Math.hypot(this.vel.x, this.vel.y);
     if (speed > MAX_ROLL_SPEED) {
       const k = MAX_ROLL_SPEED / speed;
       this.vel.x *= k;
       this.vel.y *= k;
+      speed = MAX_ROLL_SPEED;
     }
-    // Rest when slow enough, or force-stop a runaway (a sustained downhill can
-    // out-pace friction and never dip below MIN_SPEED on its own).
+    // Rest: a slow ball sticks UNLESS the local slope is too steep for static
+    // friction to hold it (then it keeps rolling and accelerates downhill).
+    // The runaway tick budget is a final safety net.
+    const grad = puttSlopeAt(hole.terrain, p.ball.x, p.ball.y);
+    const slopePull = SLOPE_ACCEL * Math.hypot(grad.x, grad.y);
     this.rollTicks += 1;
-    if (speed < MIN_SPEED || this.rollTicks >= MAX_ROLL_TICKS) {
+    if ((speed < MIN_SPEED && slopePull <= STATIC_FRICTION) || this.rollTicks >= MAX_ROLL_TICKS) {
       // Ball at rest. Stroke cap: if the player can't sink it, auto-finish
       // the hole so play never stalls.
       this.vel = { x: 0, y: 0 };
