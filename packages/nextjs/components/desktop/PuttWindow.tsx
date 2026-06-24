@@ -434,13 +434,9 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     // velocity), so we derive roll direction + speed from the per-frame
     // position delta and draw scrolling dimples (see drawGolfBall).
     const roll = rollFor(p.slot, p.ball.x, p.ball.y);
-    drawGolfBall(ctx, p.ball.x, p.ball.y, f.ballR, roll);
-    // Colored ring so you can tell whose ball is whose.
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = COLOR_HEX[p.color];
-    ctx.beginPath();
-    ctx.arc(p.ball.x, p.ball.y, f.ballR + 2, 0, Math.PI * 2);
-    ctx.stroke();
+    // The ball body itself carries the player's color (no separate ring);
+    // drawGolfBall adds a thin dark outline so it stays readable on the felt.
+    drawGolfBall(ctx, p.ball.x, p.ball.y, f.ballR, roll, COLOR_HEX[p.color]);
     // Turn marker — a small bobbing notch above the active ball.
     if (isTurn && state.status !== "rolling") {
       ctx.fillStyle = COLOR_HEX[p.color];
@@ -522,15 +518,33 @@ function rollFor(slot: number, x: number, y: number): Roll {
   return next;
 }
 
-// A white sphere with shading and dimples that scroll in the travel direction
-// (forward, over the leading edge) so the ball reads as rolling, not sliding.
-// Dimples shrink + fade toward the rim for a spherical, foreshortened look.
-function drawGolfBall(ctx: CanvasRenderingContext2D, bx: number, by: number, R: number, roll: Roll) {
-  // Shaded white sphere (light from upper-left).
+// Parse a "#rrggbb" hex into [r,g,b].
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+// Mix an [r,g,b] toward white (t>0) or black (t<0) by fraction |t|, → "rgb(...)".
+function shade([r, g, b]: [number, number, number], t: number): string {
+  const target = t >= 0 ? 255 : 0;
+  const k = Math.abs(t);
+  const mix = (c: number) => Math.round(c + (target - c) * k);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+// A colored sphere (the player's owner color) with shading and dimples that
+// scroll in the travel direction (forward, over the leading edge) so the ball
+// reads as rolling, not sliding. Dimples shrink + fade toward the rim for a
+// spherical, foreshortened look.
+function drawGolfBall(ctx: CanvasRenderingContext2D, bx: number, by: number, R: number, roll: Roll, color: string) {
+  const rgb = hexToRgb(color);
+  // Shaded colored sphere: a near-white highlight of the color toward the
+  // upper-left light source, the base color through the mid, and a darker
+  // shade at the rim — so it still reads as a lit 3D ball.
   const grad = ctx.createRadialGradient(bx - R * 0.35, by - R * 0.35, R * 0.1, bx, by, R);
-  grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(0.7, "#f2f2f2");
-  grad.addColorStop(1, "#d4d4d4");
+  grad.addColorStop(0, shade(rgb, 0.7));
+  grad.addColorStop(0.45, shade(rgb, 0.2));
+  grad.addColorStop(0.8, color);
+  grad.addColorStop(1, shade(rgb, -0.35));
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(bx, by, R, 0, Math.PI * 2);
@@ -564,13 +578,22 @@ function drawGolfBall(ctx: CanvasRenderingContext2D, bx: number, by: number, R: 
       const sx = bx + la * ux + lp * px;
       const sy = by + la * uy + lp * py;
       const r = base * (0.4 + 0.6 * fore);
-      ctx.fillStyle = `rgba(140,140,140,${(0.12 + 0.3 * fore).toFixed(3)})`;
+      // Dimples are darker pits in the colored surface (a translucent dark
+      // overlay that deepens toward the lit center, fades toward the rim).
+      ctx.fillStyle = `rgba(0,0,0,${(0.1 + 0.22 * fore).toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
     }
   }
   ctx.restore();
+
+  // Thin dark outline so the colored ball stays crisp against the green felt.
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(0,0,0,0.45)";
+  ctx.beginPath();
+  ctx.arc(bx, by, R, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
