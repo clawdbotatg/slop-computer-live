@@ -437,31 +437,28 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     ctx.fill();
   }
 
-  // Balls. The active player's ball is drawn last (on top) and, when it's
-  // my aiming turn, with the slingshot aim line.
+  // Balls. Draw a single dimpled, rolling golf ball for a player. The server
+  // exposes only position (no velocity), so we derive roll direction + speed
+  // from the per-frame position delta and draw scrolling dimples (see
+  // drawGolfBall). The ball body itself carries the player's color (no
+  // separate ring); drawGolfBall adds a thin dark outline so it stays readable
+  // on the felt. A holed-out ball isn't drawn (it's gone into the cup).
   const players = state.players.filter((p): p is NonNullable<typeof p> => !!p);
-  for (const p of players) {
-    // Don't draw a holed-out ball (it's gone into the cup).
-    if (p.done[state.hole]) continue;
-    const isTurn = state.turn === p.slot;
-    // A dimpled, rolling golf ball. The server exposes only position (no
-    // velocity), so we derive roll direction + speed from the per-frame
-    // position delta and draw scrolling dimples (see drawGolfBall).
+  const drawBall = (p: NonNullable<(typeof players)[number]>) => {
+    if (p.done[state.hole]) return;
     const roll = rollFor(p.slot, p.ball.x, p.ball.y);
-    // The ball body itself carries the player's color (no separate ring);
-    // drawGolfBall adds a thin dark outline so it stays readable on the felt.
     drawGolfBall(ctx, p.ball.x, p.ball.y, f.ballR, roll, COLOR_HEX[p.color]);
-    // Turn marker — a small bobbing notch above the active ball.
-    if (isTurn && state.status !== "rolling") {
-      ctx.fillStyle = COLOR_HEX[p.color];
-      ctx.beginPath();
-      ctx.moveTo(p.ball.x, p.ball.y - f.ballR - 6);
-      ctx.lineTo(p.ball.x - 5, p.ball.y - f.ballR - 14);
-      ctx.lineTo(p.ball.x + 5, p.ball.y - f.ballR - 14);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
+  };
+  // Tee-off: at the start of a hole nobody has struck yet (strokes[hole] is 0
+  // until a player shoots — see relay putt.ts). While teed off, only show the
+  // local viewer's own ball; once play is underway every ball renders.
+  const teedOff = !players.some(p => (p.strokes[state.hole] ?? 0) > 0);
+  const visible = teedOff ? players.filter(p => p.slot === mySlot) : players;
+  // Layering = canvas draw order (no z-index on a canvas). Draw every
+  // non-active ball first, then the current-turn player's ball LAST so it
+  // always stacks on top when balls overlap.
+  for (const p of visible) if (p.slot !== state.turn) drawBall(p);
+  for (const p of visible) if (p.slot === state.turn) drawBall(p);
 
   // Aim preview (only while I'm dragging).
   if (drag && mySlot !== null) {
