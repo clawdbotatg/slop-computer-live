@@ -108,8 +108,13 @@ export type PuttHole = {
 
 // Blade base angle (radians) at a given wall-clock time. Shared verbatim with
 // the client renderer so the drawn sails line up with the server's collision.
+// We REDUCE to [0, 2π): at raw scale the angle is billions of radians, which
+// the client's canvas transform can't hold — it loses all precision, so every
+// blade collapses onto one frozen direction. cos/sin of the reduced angle equal
+// cos/sin of the full angle, so the server's collision is unchanged.
 export function windmillAngle(wm: PuttWindmill, nowMs: number): number {
-  return (nowMs / 60000) * wm.rpm * Math.PI * 2;
+  const revs = (nowMs / 60000) * wm.rpm;
+  return (revs - Math.floor(revs)) * Math.PI * 2;
 }
 
 // waiting = lobby (join/leave/start). aiming = the `turn` player sets a
@@ -204,11 +209,11 @@ function buildCourse(): PuttHole[] {
       tee: { x: 210, y: 560 },
       cup: { x: 210, y: 92 },
       walls: [
-        { x: 0, y: 288, w: 150, h: 20 },
-        { x: 270, y: 288, w: 150, h: 20 },
+        { x: 0, y: 288, w: 140, h: 20 },
+        { x: 280, y: 288, w: 140, h: 20 },
       ],
       terrain: { tiltX: 0, tiltY: 0, mounds: [] },
-      windmill: { x: 210, y: 298, hubR: 9, bladeLen: 38, bladeW: 6, blades: 4, rpm: 12 },
+      windmill: { x: 210, y: 298, hubR: 7, bladeLen: 52, bladeW: 5, blades: 4, rpm: 9 },
     },
   ];
 }

@@ -645,9 +645,12 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 // Mirror of the relay's windmillAngle (packages/relay/src/putt.ts) — the blade
 // angle is a pure function of wall-clock time, so the drawn sails line up with
 // the server's collision off the same Date.now(). Kept in sync by hand, like
-// the seat-color hexes and puttHeightAt.
+// the seat-color hexes and puttHeightAt. MUST stay reduced to [0, 2π): the raw
+// angle is billions of radians and a canvas transform can't hold that — it
+// rounds every blade onto one frozen direction (the "single static sail" bug).
 function windmillAngle(wm: PuttWindmill, nowMs: number): number {
-  return (nowMs / 60000) * wm.rpm * Math.PI * 2;
+  const revs = (nowMs / 60000) * wm.rpm;
+  return (revs - Math.floor(revs)) * Math.PI * 2;
 }
 
 // A hot magenta + cream Dutch-sail windmill in the slop palette. We draw: a
@@ -682,7 +685,8 @@ function drawWindmill(ctx: CanvasRenderingContext2D, wm: PuttWindmill, now: numb
   ctx.restore();
 
   // Motor housing: a small red boss behind the axle so the fan looks mounted.
-  const hr = wm.hubR + 6;
+  // Kept tight so the long sails read as sails, not a blob with stubs.
+  const hr = wm.hubR + 4;
   const houseGrad = ctx.createRadialGradient(wm.x - hr * 0.4, wm.y - hr * 0.4, hr * 0.2, wm.x, wm.y, hr);
   houseGrad.addColorStop(0, "#e85d4e");
   houseGrad.addColorStop(1, WINDMILL_RED);
