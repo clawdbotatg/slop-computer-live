@@ -173,6 +173,11 @@ export const PuttWindow = ({ mesh }: Props) => {
   const canStart = amSeated && puttState.status === "waiting" && seated.length >= 1;
   const hole = holes[puttState.hole];
   const overlay = buildOverlay(puttState);
+  // The turn banner sits at the top of the course; if the active player's ball
+  // is up there too, the banner covers it — so drop the banner to the bottom
+  // whenever the current ball is in the top quarter of the field.
+  const activeBall = puttState.turn !== null ? puttState.players[puttState.turn]?.ball : undefined;
+  const overlayAtBottom = !!activeBall && activeBall.y < field.h * 0.25;
 
   return (
     <div className="flex h-full w-full flex-col gap-2 bg-[#5a5a3a] p-3 text-white">
@@ -247,7 +252,11 @@ export const PuttWindow = ({ mesh }: Props) => {
           onPointerCancel={onPointerUp}
         />
         {overlay && (
-          <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
+          <div
+            className={`pointer-events-none absolute inset-x-0 flex justify-center ${
+              overlayAtBottom ? "bottom-3" : "top-3"
+            }`}
+          >
             <div className="rounded bg-black/70 px-4 py-2 text-center font-mono text-sm uppercase tracking-widest text-white">
               {overlay}
             </div>
