@@ -37,7 +37,8 @@ const HOLE_PAUSE_MS = 2600; // intermission between holes (shows the result)
 // (local slope) per tick. Slope is the height gradient (rise per px), so a
 // 5% grade adds ~0.05·SLOPE_ACCEL px/tick² — it speeds the ball up rolling
 // downhill and bleeds it off going uphill. Only applied while rolling.
-const SLOPE_ACCEL = 5.5;
+// Deliberately gentle: a subtle break/drift, not a luge run.
+const SLOPE_ACCEL = 0.55;
 // A single shot is force-stopped after this many ticks — a safety valve so a
 // sustained downhill between two walls can't roll forever.
 const MAX_ROLL_TICKS = 480;

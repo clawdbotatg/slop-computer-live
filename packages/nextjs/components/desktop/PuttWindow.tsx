@@ -634,8 +634,30 @@ function puttHeightAt(t: PuttTerrain, x: number, y: number, fw: number, fh: numb
   return h;
 }
 
-// Per-hole terrain is static, so render the color bands once to an offscreen
-// canvas and blit it each frame instead of re-sampling the height field 60×/s.
+// The band hexes parsed to RGB, used as evenly-spaced stops for a continuous
+// gradient (low → high). Interpolating between them gives a smooth ramp
+// instead of hard color steps.
+const BAND_RGB: Array<[number, number, number]> = HEIGHT_BANDS.map(hex => [
+  parseInt(hex.slice(1, 3), 16),
+  parseInt(hex.slice(3, 5), 16),
+  parseInt(hex.slice(5, 7), 16),
+]);
+
+// Continuous color for a normalized height t∈[0,1]: lerp between the two
+// nearest gradient stops.
+function rampColor(t: number): [number, number, number] {
+  const last = BAND_RGB.length - 1;
+  const f = Math.max(0, Math.min(1, t)) * last;
+  const i = Math.min(Math.floor(f), last - 1);
+  const frac = f - i;
+  const a = BAND_RGB[i] ?? BAND_RGB[0]!;
+  const b = BAND_RGB[i + 1] ?? a;
+  return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2] + (b[2] - a[2]) * frac];
+}
+
+// Per-hole terrain is static, so render the smooth height gradient once to an
+// offscreen canvas (per-pixel) and blit it each frame instead of re-sampling
+// the height field 60×/s.
 const terrainCache = new Map<string, HTMLCanvasElement>();
 function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
   const key = `${holeIndex}:${fw}x${fh}`;
@@ -646,27 +668,32 @@ function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: num
   cv.height = fh;
   const cx = cv.getContext("2d");
   if (cx) {
-    const CELL = 12;
-    const last = HEIGHT_BANDS.length - 1;
-    // First pass: height range across the green, to normalize the bands.
+    // Coarse first pass for the height range (to normalize the gradient).
     let min = Infinity;
     let max = -Infinity;
-    for (let y = 0; y < fh; y += CELL) {
-      for (let x = 0; x < fw; x += CELL) {
+    for (let y = 0; y < fh; y += 8) {
+      for (let x = 0; x < fw; x += 8) {
         const h = puttHeightAt(hole.terrain, x, y, fw, fh);
         if (h < min) min = h;
         if (h > max) max = h;
       }
     }
     const span = max - min || 1;
-    for (let y = 0; y < fh; y += CELL) {
-      for (let x = 0; x < fw; x += CELL) {
-        const h = puttHeightAt(hole.terrain, x + CELL / 2, y + CELL / 2, fw, fh);
-        const band = Math.max(0, Math.min(last, Math.round(((h - min) / span) * last)));
-        cx.fillStyle = HEIGHT_BANDS[band] ?? FELT_GREEN;
-        cx.fillRect(x, y, CELL, CELL);
+    // Per-pixel fill — smooth, computed once and cached.
+    const img = cx.createImageData(fw, fh);
+    const data = img.data;
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        const h = puttHeightAt(hole.terrain, x, y, fw, fh);
+        const [r, g, b] = rampColor((h - min) / span);
+        const idx = (y * fw + x) * 4;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = 255;
       }
     }
+    cx.putImageData(img, 0, 0);
   }
   terrainCache.set(key, cv);
   return cv;
