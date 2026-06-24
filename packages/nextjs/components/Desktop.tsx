@@ -3060,7 +3060,7 @@ function DesktopInner({ slug }: { slug: string }) {
   >([]);
 
   const uploadFiles = useCallback(
-    async (files: FileList, dropX: number, dropY: number) => {
+    async (files: FileList | File[], dropX: number, dropY: number) => {
       const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
       let cascade = 0;
       for (const file of Array.from(files)) {
@@ -3126,6 +3126,50 @@ function DesktopInner({ slug }: { slug: string }) {
     },
     [mesh.slots, meshUpdateSlotForFiles, slug],
   );
+
+  // Keep the latest cursor position in a ref so the paste handler can land
+  // the image where the mouse is without re-subscribing on every mousemove.
+  const cursorPosRef = useRef<{ x: number; y: number } | null>(null);
+  cursorPosRef.current = localCursor.pos;
+
+  // Clipboard paste of an image → drop it on the desktop exactly like a
+  // drag-and-drop upload. Sources the file(s) from the clipboard and lands
+  // them at the last known cursor position (screen center fallback when the
+  // pointer has left the window). We skip when the paste targets a real text
+  // field / editable region so Cmd-V into an input still pastes text there.
+  useEffect(() => {
+    if (!session.authenticated) return;
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest?.("input, textarea, [contenteditable=true]"))
+      ) {
+        return;
+      }
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const images: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) images.push(file);
+        }
+      }
+      if (images.length === 0) return;
+      e.preventDefault();
+      const pos = cursorPosRef.current;
+      const cx = pos?.x ?? window.innerWidth / 2;
+      const cy = pos?.y ?? window.innerHeight / 2;
+      // Same -44/-55 centering offset as the onDrop handler.
+      void uploadFiles(images, cx - 44, cy - 55);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [session.authenticated, uploadFiles]);
 
   return (
     <PasskeyWalletProvider passkeyAddresses={passkeyAddressesForResolve}>
