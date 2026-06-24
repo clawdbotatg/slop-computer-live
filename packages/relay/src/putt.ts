@@ -22,14 +22,25 @@ export const TICK_MS = Math.round(1000 / TICK_HZ);
 export const MAX_PLAYERS = 4;
 // Per-tick simulation is sub-stepped so a fast ball can't tunnel through a
 // thin wall (max move per substep stays well under the 16px wall thickness).
-const SUBSTEPS = 4;
+// Six substeps keeps the per-substep move under the wall thickness even at
+// the downhill-boosted max roll speed.
+const SUBSTEPS = 6;
 const FRICTION = 0.955; // velocity retained per tick (rolling resistance)
 const MIN_SPEED = 0.45; // below this the ball is considered at rest
 const MAX_POWER = 24; // cap on a shot's initial speed (px/tick)
+const MAX_ROLL_SPEED = 30; // clamp so a long downhill can't fling the ball through a wall
 const WALL_REST = 0.72; // restitution off walls + borders
 const CAPTURE_SPEED = 7.2; // a ball over the cup faster than this lips out
 const MAX_STROKES = 8; // stroke cap per hole — auto-hole-out so play never stalls
 const HOLE_PAUSE_MS = 2600; // intermission between holes (shows the result)
+// Gravity along the surface: the ball accelerates downhill by SLOPE_ACCEL ×
+// (local slope) per tick. Slope is the height gradient (rise per px), so a
+// 5% grade adds ~0.05·SLOPE_ACCEL px/tick² — it speeds the ball up rolling
+// downhill and bleeds it off going uphill. Only applied while rolling.
+const SLOPE_ACCEL = 5.5;
+// A single shot is force-stopped after this many ticks — a safety valve so a
+// sustained downhill between two walls can't roll forever.
+const MAX_ROLL_TICKS = 480;
 
 // Color per seat slot — the classic slop accents, mapped client-side to
 // the matching --slop-* CSS var.
@@ -40,7 +51,15 @@ export type PuttVec = { x: number; y: number };
 // Axis-aligned rectangle obstacle. Field borders are implicit (the ball
 // bounces off the field edges); these are the internal walls.
 export type PuttWall = { x: number; y: number; w: number; h: number };
-export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[] };
+// A rounded bump (h > 0 = hill) or dip (h < 0 = valley) of radius r centered
+// at (x, y). Contributes a smooth squared-falloff hump to the height field.
+export type PuttMound = { x: number; y: number; r: number; h: number };
+// Per-hole topography: a linear tilt across the green (tiltX/tiltY are slope
+// fractions — height rises by tiltX per px in +x, tiltY per px in +y) plus a
+// set of mounds/dips. Height units are arbitrary; only the gradient matters
+// for physics and only the relative range matters for the color bands.
+export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
+export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[]; terrain: PuttTerrain };
 
 // waiting = lobby (join/leave/start). aiming = the `turn` player sets a
 // shot. rolling = the active ball is in motion (no input). holed = every
@@ -92,14 +111,19 @@ type Listener = (snapshot: PuttSnapshot) => void;
 function buildCourse(): PuttHole[] {
   return [
     {
-      // Hole 1 — gentle right-side detour around a left-anchored wall.
+      // Hole 1 — gentle right-side detour around a left-anchored wall, with a
+      // mild downhill toward the cup (the green falls away to the top) plus a
+      // hill on the right that nudges a banked ball back toward center.
       par: 2,
       tee: { x: 210, y: 545 },
       cup: { x: 230, y: 95 },
       walls: [{ x: 40, y: 300, w: 220, h: 16 }],
+      terrain: { tiltX: 0, tiltY: 0.05, mounds: [{ x: 340, y: 380, r: 130, h: 26 }] },
     },
     {
-      // Hole 2 — a dogleg: bank off the walls to reach the top-right cup.
+      // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. The
+      // green tilts gently to the right so a straight shot drifts toward the
+      // wall; a dip sits in the elbow to gather a well-placed ball.
       par: 3,
       tee: { x: 90, y: 545 },
       cup: { x: 330, y: 100 },
@@ -107,15 +131,43 @@ function buildCourse(): PuttHole[] {
         { x: 150, y: 360, w: 16, h: 200 },
         { x: 150, y: 200, w: 220, h: 16 },
       ],
+      terrain: { tiltX: 0.04, tiltY: 0, mounds: [{ x: 90, y: 150, r: 110, h: -22 }] },
     },
     {
-      // Hole 3 — split the gap or go around a central box.
+      // Hole 3 — split the gap or go around a central box. The whole green
+      // runs uphill to the cup (you need extra pace), and a hill behind the
+      // box punishes anyone who skirts it too tight.
       par: 2,
       tee: { x: 210, y: 550 },
       cup: { x: 210, y: 95 },
       walls: [{ x: 160, y: 270, w: 100, h: 70 }],
+      terrain: { tiltX: 0, tiltY: -0.055, mounds: [{ x: 210, y: 180, r: 120, h: 24 }] },
     },
   ];
+}
+
+// Height of the terrain at a point: linear tilt across the green plus each
+// mound's squared-falloff hump. Pure — shared shape with the client renderer.
+function puttHeightAt(t: PuttTerrain, x: number, y: number): number {
+  let h = t.tiltX * (x - FIELD_W / 2) + t.tiltY * (y - FIELD_H / 2);
+  for (const m of t.mounds) {
+    const d = Math.hypot(x - m.x, y - m.y);
+    if (d < m.r) {
+      const k = 1 - d / m.r;
+      h += m.h * k * k;
+    }
+  }
+  return h;
+}
+
+// Local slope (height gradient) via central finite differences. The ball
+// accelerates along the negative of this (downhill).
+function puttSlopeAt(t: PuttTerrain, x: number, y: number): PuttVec {
+  const e = 2;
+  return {
+    x: (puttHeightAt(t, x + e, y) - puttHeightAt(t, x - e, y)) / (2 * e),
+    y: (puttHeightAt(t, x, y + e) - puttHeightAt(t, x, y - e)) / (2 * e),
+  };
 }
 
 function dist2(a: PuttVec, b: PuttVec): number {
@@ -148,6 +200,8 @@ export class Putt {
   // Active ball velocity — internal, never serialized; clients read ball
   // positions off the snapshot and render directly.
   private vel: PuttVec = { x: 0, y: 0 };
+  // Ticks the current shot has been rolling — drives the runaway safety valve.
+  private rollTicks = 0;
   private listeners: Listener[] = [];
   private tickTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -246,6 +300,7 @@ export class Putt {
       speed = MAX_POWER;
     }
     this.vel = { x: vx, y: vy };
+    this.rollTicks = 0;
     p.strokes[this.snapshot.hole] = (p.strokes[this.snapshot.hole] ?? 0) + 1;
     this.snapshot.status = "rolling";
     this.ensureTicker();
@@ -430,6 +485,10 @@ export class Putt {
 
     let holed = false;
     for (let s = 0; s < SUBSTEPS && !holed; s++) {
+      // Gravity along the slope: accelerate downhill (negative gradient).
+      const slope = puttSlopeAt(hole.terrain, p.ball.x, p.ball.y);
+      this.vel.x -= (SLOPE_ACCEL / SUBSTEPS) * slope.x;
+      this.vel.y -= (SLOPE_ACCEL / SUBSTEPS) * slope.y;
       p.ball.x += this.vel.x / SUBSTEPS;
       p.ball.y += this.vel.y / SUBSTEPS;
       this.resolveBorders(p.ball);
@@ -450,7 +509,17 @@ export class Putt {
 
     this.vel.x *= FRICTION;
     this.vel.y *= FRICTION;
-    if (Math.hypot(this.vel.x, this.vel.y) < MIN_SPEED) {
+    // Clamp so a long downhill run can't build enough speed to tunnel a wall.
+    const speed = Math.hypot(this.vel.x, this.vel.y);
+    if (speed > MAX_ROLL_SPEED) {
+      const k = MAX_ROLL_SPEED / speed;
+      this.vel.x *= k;
+      this.vel.y *= k;
+    }
+    // Rest when slow enough, or force-stop a runaway (a sustained downhill can
+    // out-pace friction and never dip below MIN_SPEED on its own).
+    this.rollTicks += 1;
+    if (speed < MIN_SPEED || this.rollTicks >= MAX_ROLL_TICKS) {
       // Ball at rest. Stroke cap: if the player can't sink it, auto-finish
       // the hole so play never stalls.
       this.vel = { x: 0, y: 0 };

@@ -898,7 +898,9 @@ const DEFAULT_WORM_STATE: WormState = {
 export type PuttColor = "cyan" | "magenta" | "lime" | "purple";
 export type PuttVec = { x: number; y: number };
 export type PuttWall = { x: number; y: number; w: number; h: number };
-export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[] };
+export type PuttMound = { x: number; y: number; r: number; h: number };
+export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
+export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[]; terrain: PuttTerrain };
 export type PuttStatus = "waiting" | "aiming" | "rolling" | "holed" | "ended";
 export type PuttPlayer = {
   slot: number;

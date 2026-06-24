@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePageVisible } from "~~/hooks/usePageVisible";
-import type { PeerMeshState, PuttColor, PuttState } from "~~/hooks/usePeerMesh";
+import type { PeerMeshState, PuttColor, PuttHole, PuttState, PuttTerrain } from "~~/hooks/usePeerMesh";
 
 // Turn-based multiplayer mini golf. The relay is authoritative for the ball
 // physics and the whole turn/scorecard flow; a client only sends a shot
@@ -19,11 +19,13 @@ const COLOR_HEX: Record<PuttColor, string> = {
   lime: "#bcff5b",
   purple: "#7c4dff",
 };
-const FELT_GREEN = "#3a9d3a";
-const FELT_DARK = "#2f8a30";
+const FELT_GREEN = "#3a9d3a"; // flat fallback (empty/lobby with no hole yet)
 const FRAME_BROWN = "#9c6b35";
 const WALL_GRAY = "#b9b9b9";
 const AIM_YELLOW = "#ffe14d";
+// Topographic height bands (low → high). Distinct green steps so different
+// elevations read as different colors, like a contour map.
+const HEIGHT_BANDS = ["#14692f", "#1c7a37", "#2c8e40", "#43a44a", "#5fbb55", "#80d263", "#a3e678"];
 
 // How far (in field units) you pull to reach full power, and the on-felt
 // length of the forward aim line at full power.
@@ -382,19 +384,31 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.fillStyle = FRAME_BROWN;
   roundRect(ctx, pad - 4, pad - 4, f.w - 2 * (pad - 4), f.h - 2 * (pad - 4), 10);
   ctx.fill();
-  ctx.fillStyle = FELT_GREEN;
+  if (!hole) {
+    // No hole yet (lobby / default snapshot) — plain felt, nothing to map.
+    ctx.fillStyle = FELT_GREEN;
+    roundRect(ctx, pad, pad, f.w - 2 * pad, f.h - 2 * pad, 8);
+    ctx.fill();
+    return;
+  }
+
+  // Topographic felt — height-banded greens (cached per hole), clipped to the
+  // rounded play area. Lighter bands are higher ground; the ball speeds up
+  // rolling toward darker (downhill) and bleeds off climbing to lighter.
+  ctx.save();
   roundRect(ctx, pad, pad, f.w - 2 * pad, f.h - 2 * pad, 8);
-  ctx.fill();
+  ctx.clip();
+  ctx.drawImage(getTerrainCanvas(state.hole, hole, f.w, f.h), 0, 0);
+  ctx.restore();
 
-  if (!hole) return;
+  // Tee marker (subtle ring).
+  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(hole.tee.x, hole.tee.y, 13, 0, Math.PI * 2);
+  ctx.stroke();
 
-  // Tee patch (darker felt square).
-  ctx.fillStyle = FELT_DARK;
-  ctx.fillRect(hole.tee.x - 34, hole.tee.y - 30, 68, 56);
-
-  // Cup: dark felt patch + black hole + flag pin.
-  ctx.fillStyle = FELT_DARK;
-  ctx.fillRect(hole.cup.x - 34, hole.cup.y - 30, 68, 56);
+  // Cup: black hole + flag pin.
   ctx.beginPath();
   ctx.fillStyle = "#0b0b0b";
   ctx.arc(hole.cup.x, hole.cup.y, f.cupR, 0, Math.PI * 2);
@@ -605,4 +619,58 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
+}
+
+// --- Topography ------------------------------------------------------------
+// Mirror of the relay's puttHeightAt (packages/relay/src/putt.ts) — kept in
+// sync by hand, like the seat-color hexes. Linear tilt across the green plus
+// each mound's squared-falloff hump.
+function puttHeightAt(t: PuttTerrain, x: number, y: number, fw: number, fh: number): number {
+  let h = t.tiltX * (x - fw / 2) + t.tiltY * (y - fh / 2);
+  for (const m of t.mounds) {
+    const d = Math.hypot(x - m.x, y - m.y);
+    if (d < m.r) {
+      const k = 1 - d / m.r;
+      h += m.h * k * k;
+    }
+  }
+  return h;
+}
+
+// Per-hole terrain is static, so render the color bands once to an offscreen
+// canvas and blit it each frame instead of re-sampling the height field 60×/s.
+const terrainCache = new Map<string, HTMLCanvasElement>();
+function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
+  const key = `${holeIndex}:${fw}x${fh}`;
+  const cached = terrainCache.get(key);
+  if (cached) return cached;
+  const cv = document.createElement("canvas");
+  cv.width = fw;
+  cv.height = fh;
+  const cx = cv.getContext("2d");
+  if (cx) {
+    const CELL = 12;
+    const last = HEIGHT_BANDS.length - 1;
+    // First pass: height range across the green, to normalize the bands.
+    let min = Infinity;
+    let max = -Infinity;
+    for (let y = 0; y < fh; y += CELL) {
+      for (let x = 0; x < fw; x += CELL) {
+        const h = puttHeightAt(hole.terrain, x, y, fw, fh);
+        if (h < min) min = h;
+        if (h > max) max = h;
+      }
+    }
+    const span = max - min || 1;
+    for (let y = 0; y < fh; y += CELL) {
+      for (let x = 0; x < fw; x += CELL) {
+        const h = puttHeightAt(hole.terrain, x + CELL / 2, y + CELL / 2, fw, fh);
+        const band = Math.max(0, Math.min(last, Math.round(((h - min) / span) * last)));
+        cx.fillStyle = HEIGHT_BANDS[band] ?? FELT_GREEN;
+        cx.fillRect(x, y, CELL, CELL);
+      }
+    }
+  }
+  terrainCache.set(key, cv);
+  return cv;
 }
