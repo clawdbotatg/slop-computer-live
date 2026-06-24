@@ -81,7 +81,36 @@ export type PuttMound = { x: number; y: number; r: number; h: number };
 // set of mounds/dips. Height units are arbitrary; only the gradient matters
 // for physics and only the relative range matters for the color bands.
 export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
-export type PuttHole = { par: number; tee: PuttVec; cup: PuttVec; walls: PuttWall[]; terrain: PuttTerrain };
+// A spinning windmill obstacle: `blades` arms of length `bladeLen` (each a
+// capsule of half-thickness `bladeW`) radiating from a solid hub (radius
+// `hubR`) at (x,y), turning at `rpm` revolutions/min (signed → direction). The
+// blade angle is a pure function of wall-clock time (see windmillAngle), so the
+// relay's collision and every client's render stay in phase off Date.now()
+// without shipping the angle each tick — same clock-sync trick as holeDoneAt.
+// Clip a moving blade and you get swatted back; you have to time the gap.
+export type PuttWindmill = {
+  x: number;
+  y: number;
+  hubR: number;
+  bladeLen: number;
+  bladeW: number;
+  blades: number;
+  rpm: number;
+};
+export type PuttHole = {
+  par: number;
+  tee: PuttVec;
+  cup: PuttVec;
+  walls: PuttWall[];
+  terrain: PuttTerrain;
+  windmill?: PuttWindmill;
+};
+
+// Blade base angle (radians) at a given wall-clock time. Shared verbatim with
+// the client renderer so the drawn sails line up with the server's collision.
+export function windmillAngle(wm: PuttWindmill, nowMs: number): number {
+  return (nowMs / 60000) * wm.rpm * Math.PI * 2;
+}
 
 // waiting = lobby (join/leave/start). aiming = the `turn` player sets a
 // shot. rolling = the active ball is in motion (no input). holed = every
@@ -164,6 +193,22 @@ function buildCourse(): PuttHole[] {
       cup: { x: 210, y: 95 },
       walls: [{ x: 160, y: 270, w: 100, h: 70 }],
       terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 210, y: 175, r: 115, h: 30 }] },
+    },
+    {
+      // Hole 4 — THE WINDMILL. A brick base spans the green with a central
+      // doorway, and four sails spin over it. The hub + sail-cross fully guard
+      // the dead-center line, so you aim just inside a wall and thread the gap
+      // as the sails sweep clear — clip one and it swats you back down the
+      // fairway. Flat green (like the others); you supply the pace.
+      par: 3,
+      tee: { x: 210, y: 560 },
+      cup: { x: 210, y: 92 },
+      walls: [
+        { x: 0, y: 288, w: 150, h: 20 },
+        { x: 270, y: 288, w: 150, h: 20 },
+      ],
+      terrain: { tiltX: 0, tiltY: 0, mounds: [] },
+      windmill: { x: 210, y: 298, hubR: 9, bladeLen: 38, bladeW: 6, blades: 4, rpm: 12 },
     },
   ];
 }
@@ -509,6 +554,10 @@ export class Putt {
     const p = this.snapshot.players[slot];
     if (!p) return;
 
+    // One clock read per tick: the sails' angle (and their swept speed) is a
+    // pure function of this, matching what every client draws off Date.now().
+    const now = Date.now();
+
     let holed = false;
     for (let s = 0; s < SUBSTEPS && !holed; s++) {
       // Gravity along the slope: accelerate downhill (negative gradient).
@@ -519,6 +568,7 @@ export class Putt {
       p.ball.y += this.vel.y / SUBSTEPS;
       this.resolveBorders(p.ball);
       for (const w of hole.walls) this.resolveWall(p.ball, w);
+      if (hole.windmill) this.resolveWindmill(p.ball, hole.windmill, now);
       // Cup capture — a slow enough ball over the hole drops in.
       if (dist2(p.ball, hole.cup) <= CUP_R * CUP_R && Math.hypot(this.vel.x, this.vel.y) <= CAPTURE_SPEED) {
         p.ball = { ...hole.cup };
@@ -628,6 +678,104 @@ export class Putt {
         b.y = w.y + w.h + BALL_R;
         this.vel.y = Math.abs(this.vel.y) * WALL_REST;
       }
+    }
+  }
+
+  /** Spinning windmill: a solid hub plus N blades, each a moving capsule. The
+   *  blade angle comes from the shared wall-clock function so this matches the
+   *  client's render. A blade carries its own surface velocity into the bounce
+   *  (relative-velocity reflection), so a sweeping sail genuinely *swats* the
+   *  ball — clip one and you get knocked back, not nudged. */
+  private resolveWindmill(b: PuttVec, wm: PuttWindmill, now: number): void {
+    // Solid hub at the center (a dead-center shot can't slip through the axle).
+    this.resolveCircleObstacle(b, wm.x, wm.y, wm.hubR);
+    const base = windmillAngle(wm, now);
+    // Angular speed as radians per tick, so the contact-point surface velocity
+    // comes out in px/tick (the same units as this.vel).
+    const omegaPerTick = ((wm.rpm * Math.PI * 2) / 60000) * TICK_MS;
+    for (let i = 0; i < wm.blades; i++) {
+      const a = base + (i * Math.PI * 2) / wm.blades;
+      this.resolveBlade(b, wm.x, wm.y, a, wm.bladeLen, wm.bladeW, omegaPerTick);
+    }
+  }
+
+  /** Ball vs a solid circle (the windmill hub): push out + reflect off the
+   *  radial normal with the usual wall restitution. */
+  private resolveCircleObstacle(b: PuttVec, cx: number, cy: number, r: number): void {
+    let nx = b.x - cx;
+    let ny = b.y - cy;
+    const rad = r + BALL_R;
+    const d2 = nx * nx + ny * ny;
+    if (d2 > rad * rad) return;
+    const d = Math.sqrt(d2);
+    if (d > 1e-6) {
+      nx /= d;
+      ny /= d;
+    } else {
+      nx = 0;
+      ny = -1;
+    }
+    b.x = cx + nx * rad;
+    b.y = cy + ny * rad;
+    const vn = this.vel.x * nx + this.vel.y * ny;
+    if (vn < 0) {
+      this.vel.x -= (1 + WALL_REST) * vn * nx;
+      this.vel.y -= (1 + WALL_REST) * vn * ny;
+    }
+  }
+
+  /** Ball vs one rotating blade, modelled as a capsule from the hub to the tip.
+   *  We reflect the ball's velocity *relative to the blade's surface velocity at
+   *  the contact point*, so the moving sail imparts its swing — a stationary
+   *  ball parked in the gap gets knocked clear, and a ball threading the gap
+   *  bounces back the way it came. */
+  private resolveBlade(
+    b: PuttVec,
+    hx: number,
+    hy: number,
+    a: number,
+    len: number,
+    halfW: number,
+    omegaPerTick: number,
+  ): void {
+    const ex = Math.cos(a) * len;
+    const ey = Math.sin(a) * len;
+    const seg2 = ex * ex + ey * ey;
+    // Closest point on the hub→tip segment to the ball center.
+    let t = seg2 > 0 ? ((b.x - hx) * ex + (b.y - hy) * ey) / seg2 : 0;
+    t = clamp(t, 0, 1);
+    const cx = hx + ex * t;
+    const cy = hy + ey * t;
+    let nx = b.x - cx;
+    let ny = b.y - cy;
+    const rad = halfW + BALL_R;
+    const d2 = nx * nx + ny * ny;
+    if (d2 > rad * rad) return; // no contact
+    let d = Math.sqrt(d2);
+    if (d > 1e-6) {
+      nx /= d;
+      ny /= d;
+    } else {
+      // Ball center exactly on the blade — push out along the blade's normal.
+      nx = -Math.sin(a);
+      ny = Math.cos(a);
+      d = 1;
+    }
+    b.x = cx + nx * rad;
+    b.y = cy + ny * rad;
+    // Surface velocity at the contact point: tangent (perpendicular to the
+    // blade) scaled by radius × angular speed.
+    const rr = t * len;
+    const svx = -Math.sin(a) * omegaPerTick * rr;
+    const svy = Math.cos(a) * omegaPerTick * rr;
+    // Reflect the ball's velocity relative to the moving blade, then restore the
+    // blade frame — the sail's swing is carried into the bounce.
+    const rvx = this.vel.x - svx;
+    const rvy = this.vel.y - svy;
+    const vn = rvx * nx + rvy * ny;
+    if (vn < 0) {
+      this.vel.x -= (1 + WALL_REST) * vn * nx;
+      this.vel.y -= (1 + WALL_REST) * vn * ny;
     }
   }
 

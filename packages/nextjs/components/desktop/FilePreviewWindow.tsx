@@ -418,6 +418,35 @@ export const FilePreviewWindow = ({ file, mesh, audioBusEnabled = false }: FileP
   const slug = useRoomSlug();
   const downloadUrl = withSlug(`${RELAY_HTTP}/files/${file.id}`, slug);
   const kind = previewKindFor(file);
+  const [downloading, setDownloading] = useState(false);
+
+  // The <a download> attribute is ignored for cross-origin URLs, so a plain
+  // link to the relay just navigates the tab there — yanking the user out of
+  // the room. Fetch the bytes and save them from a same-origin blob: URL so
+  // the download attribute is honored and the desktop stays put.
+  const handleDownload = useCallback(async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const res = await fetch(downloadUrl);
+      if (!res.ok) throw new Error(`download failed: ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      console.error("[FilePreviewWindow] download failed", err);
+      // Last-ditch fallback: open in a new tab so the room tab is untouched.
+      window.open(downloadUrl, "_blank", "noopener,noreferrer");
+    } finally {
+      setDownloading(false);
+    }
+  }, [downloadUrl, file.name, downloading]);
 
   return (
     <div
@@ -461,9 +490,10 @@ export const FilePreviewWindow = ({ file, mesh, audioBusEnabled = false }: FileP
             {formatBytes(file.size)} · {file.mime || "unknown"} · uploaded by {file.uploaderLabel}
           </div>
         </div>
-        <a
-          href={downloadUrl}
-          download={file.name}
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={downloading}
           style={{
             flexShrink: 0,
             padding: "6px 12px",
@@ -475,13 +505,14 @@ export const FilePreviewWindow = ({ file, mesh, audioBusEnabled = false }: FileP
             color: "#06030d",
             border: "none",
             borderRadius: 4,
-            cursor: "pointer",
+            cursor: downloading ? "wait" : "pointer",
             textDecoration: "none",
             fontWeight: 700,
+            opacity: downloading ? 0.6 : 1,
           }}
         >
-          Download
-        </a>
+          {downloading ? "Downloading…" : "Download"}
+        </button>
       </div>
 
       {/* Body — preview content. */}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePageVisible } from "~~/hooks/usePageVisible";
-import type { PeerMeshState, PuttColor, PuttHole, PuttState, PuttTerrain } from "~~/hooks/usePeerMesh";
+import type { PeerMeshState, PuttColor, PuttHole, PuttState, PuttTerrain, PuttWindmill } from "~~/hooks/usePeerMesh";
 
 // Turn-based multiplayer mini golf. The relay is authoritative for the ball
 // physics and the whole turn/scorecard flow; a client only sends a shot
@@ -31,6 +31,10 @@ const HEIGHT_BANDS = ["#14692f", "#1c7a37", "#2c8e40", "#43a44a", "#5fbb55", "#8
 const MAX_DRAG_FIELD = 240;
 const AIM_LINE_MAX = 150;
 const MIN_SHOT_POWER_FRAC = 0.04; // a tiny pull is treated as a cancel
+// You must grab your own ball to start a shot (not just anywhere on the
+// field). Generous radius — a few ball-widths, floored — so it stays an easy
+// target on touch while still requiring you to actually pick up the ball.
+const grabRadius = (ballR: number) => Math.max(ballR * 4, 36);
 
 type Props = { mesh: PeerMeshState };
 // A live aim drag, in field coords. The pull is measured as (cur - start)
@@ -117,10 +121,14 @@ export const PuttWindow = ({ mesh }: Props) => {
       if (!me) return;
       const p = toField(e.clientX, e.clientY);
       if (!p) return;
+      // Only start a shot if you grabbed your own ball — clicking empty felt
+      // does nothing.
+      const r = grabRadius(field.ballR);
+      if (Math.hypot(p.x - me.ball.x, p.y - me.ball.y) > r) return;
       e.currentTarget.setPointerCapture(e.pointerId);
       dragRef.current = { startX: p.x, startY: p.y, curX: p.x, curY: p.y };
     },
-    [isMyTurn, myPuttSlot, toField],
+    [isMyTurn, myPuttSlot, toField, field.ballR],
   );
 
   const onPointerMove = useCallback(
@@ -407,10 +415,7 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.arc(hole.tee.x, hole.tee.y, 13, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Cup: a shallow isometric hole. Drawn as two stacked ellipses — the opening
-  // cut in the grass, and a floor pushed a short way up the screen; the crescent
-  // of opening left showing below the floor reads as the near wall. Center +
-  // radius are unchanged, so the hit radius is identical — only the look differs.
+  // Cup: a plain black circle.
   drawCup(ctx, hole.cup.x, hole.cup.y, f.cupR);
 
   // Pin
@@ -437,6 +442,13 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     ctx.fillRect(w.x + 2, w.y + 3, w.w, w.h);
   }
   ctx.drawImage(getWallsCanvas(state.hole, hole, f.w, f.h), 0, 0);
+
+  // Windmill (hole 4): the spinning sails mounted over the gap in the brick
+  // base. Drawn from Date.now() so the rendered angle tracks the relay's
+  // collision (which reads the same clock) — see windmillAngle. Drawn here,
+  // over the walls but under the balls, so your ball always stays visible on
+  // top as it threads (or clips) the gap.
+  if (hole.windmill) drawWindmill(ctx, hole.windmill, Date.now());
 
   // Balls. Draw a single dimpled, rolling golf ball for a player. The server
   // exposes only position (no velocity), so we derive roll direction + speed
@@ -620,66 +632,120 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
-// --- Cup (shallow isometric hole) ------------------------------------------
-// Draw the hole as a shallow cup seen at an isometric tilt. It's two stacked
-// ellipses: the opening cut into the grass, and a floor pushed a short way up
-// the screen. Filling the opening first (the inner wall) then the floor on top
-// leaves a crescent of wall showing along the bottom — that crescent reads as
-// the near wall, so the hole looks like a shallow pit you could roll into
-// rather than a flat black disc. Light is from above, so the back lip is lit
-// and the front lip shadowed. Center/radius match the flat hole exactly — the
-// hit radius is unchanged; this is purely cosmetic.
-function drawCup(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number) {
+// --- Windmill (hole 4) -----------------------------------------------------
+// Mirror of the relay's windmillAngle (packages/relay/src/putt.ts) — the blade
+// angle is a pure function of wall-clock time, so the drawn sails line up with
+// the server's collision off the same Date.now(). Kept in sync by hand, like
+// the seat-color hexes and puttHeightAt.
+function windmillAngle(wm: PuttWindmill, nowMs: number): number {
+  return (nowMs / 60000) * wm.rpm * Math.PI * 2;
+}
+
+// A hot magenta + cream Dutch-sail windmill in the slop palette. We draw: a
+// soft ground shadow of the whole fan, the four lattice sails, then the red
+// motor housing + dark axle hub on top. The visible sail half-width tracks the
+// collision capsule (bladeW + a hair) so a bounce reads where it actually
+// happens; the swept shadow sells "this thing is spinning above the green".
+const SAIL_CREAM = "#f4ead2";
+const SAIL_FRAME = "#ff3ec9";
+const WINDMILL_RED = "#c0392b";
+function drawWindmill(ctx: CanvasRenderingContext2D, wm: PuttWindmill, now: number) {
+  const ang = windmillAngle(wm, now);
+  const half = wm.bladeW + 2; // visible half-width ≈ collision capsule
+
+  // Ground shadow of the sails (offset down-right, soft + translucent), drawn
+  // first so the real sails sit above their own shadow.
   ctx.save();
-
-  const SQUASH = 0.5; // isometric tilt — opening is twice as wide as tall
-  const ry = R * SQUASH;
-  const depth = ry * 1.05; // how far up the screen the floor sits — shallow
-
-  // Soft contact shadow in the grass so the cup sits in the felt.
-  ctx.beginPath();
-  ctx.ellipse(cx, cy + 1.5, R + 2, ry + 2, 0, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(0,0,0,0.16)";
-  ctx.fill();
-
-  // Inner wall: the whole opening, lit warm-dark at the top lip fading darker
-  // toward the floor.
-  const wall = ctx.createLinearGradient(0, cy - ry, 0, cy + ry);
-  wall.addColorStop(0, "#36402a");
-  wall.addColorStop(1, "#1a2110");
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
-  ctx.fillStyle = wall;
-  ctx.fill();
-
-  // Floor: a same-radius ellipse pushed up by `depth`. It covers everything but
-  // the bottom crescent of the opening, which becomes the visible near wall.
-  const fy = cy - depth;
-  ctx.beginPath();
-  ctx.ellipse(cx, fy, R, ry, 0, 0, Math.PI * 2);
-  ctx.fillStyle = "#0a0e06";
-  ctx.fill();
-
-  // Thin lit edge along the front of the floor, defining where the near wall
-  // meets the bottom.
-  ctx.lineWidth = Math.max(1, R * 0.05);
-  ctx.strokeStyle = "rgba(120,140,80,0.4)";
-  ctx.beginPath();
-  ctx.ellipse(cx, fy, R, ry, 0, 0, Math.PI);
-  ctx.stroke();
-
-  // Rim: lit back lip (top half), shadowed front lip (bottom half).
-  ctx.lineWidth = Math.max(1, R * 0.07);
-  ctx.strokeStyle = "rgba(195,220,145,0.6)";
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, R, ry, 0, Math.PI, Math.PI * 2);
-  ctx.stroke();
-  ctx.strokeStyle = "rgba(0,0,0,0.28)";
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI);
-  ctx.stroke();
-
+  ctx.translate(wm.x + 4, wm.y + 5);
+  for (let i = 0; i < wm.blades; i++) {
+    const a = ang + (i * Math.PI * 2) / wm.blades;
+    drawSail(ctx, a, wm.hubR, wm.bladeLen, half, true);
+  }
   ctx.restore();
+
+  // The sails themselves, radiating from the hub.
+  ctx.save();
+  ctx.translate(wm.x, wm.y);
+  for (let i = 0; i < wm.blades; i++) {
+    const a = ang + (i * Math.PI * 2) / wm.blades;
+    drawSail(ctx, a, wm.hubR, wm.bladeLen, half, false);
+  }
+  ctx.restore();
+
+  // Motor housing: a small red boss behind the axle so the fan looks mounted.
+  const hr = wm.hubR + 6;
+  const houseGrad = ctx.createRadialGradient(wm.x - hr * 0.4, wm.y - hr * 0.4, hr * 0.2, wm.x, wm.y, hr);
+  houseGrad.addColorStop(0, "#e85d4e");
+  houseGrad.addColorStop(1, WINDMILL_RED);
+  ctx.fillStyle = houseGrad;
+  ctx.beginPath();
+  ctx.arc(wm.x, wm.y, hr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Dark axle hub with a tiny highlight (the bolt the sails turn on).
+  ctx.fillStyle = "#1c1410";
+  ctx.beginPath();
+  ctx.arc(wm.x, wm.y, wm.hubR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.beginPath();
+  ctx.arc(wm.x - wm.hubR * 0.3, wm.y - wm.hubR * 0.3, wm.hubR * 0.32, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// One sail: a tapered lattice blade from the hub out to the tip, in local
+// (rotated) coordinates. `shadow` renders a flat translucent silhouette instead
+// of the lit/latticed version. The caller has already translated to the hub.
+function drawSail(ctx: CanvasRenderingContext2D, a: number, hubR: number, len: number, half: number, shadow: boolean) {
+  ctx.save();
+  ctx.rotate(a);
+  const inner = hubR * 0.4;
+  if (shadow) {
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    roundRect(ctx, inner, -half, len - inner, half * 2, half);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+  // Cream sail body with a magenta frame.
+  ctx.fillStyle = SAIL_CREAM;
+  roundRect(ctx, inner, -half, len - inner, half * 2, half * 0.6);
+  ctx.fill();
+  // Lattice: a few cross spars down the length, clipped to the sail.
+  ctx.save();
+  roundRect(ctx, inner, -half, len - inner, half * 2, half * 0.6);
+  ctx.clip();
+  ctx.strokeStyle = "rgba(192,57,43,0.55)";
+  ctx.lineWidth = 1;
+  for (let x = inner + 8; x < len; x += 9) {
+    ctx.beginPath();
+    ctx.moveTo(x, -half);
+    ctx.lineTo(x, half);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(inner, 0);
+  ctx.lineTo(len, 0);
+  ctx.stroke();
+  ctx.restore();
+  // Bright leading-edge frame so the spin reads crisply against the felt.
+  ctx.strokeStyle = SAIL_FRAME;
+  ctx.lineWidth = 2;
+  roundRect(ctx, inner, -half, len - inner, half * 2, half * 0.6);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// --- Cup --------------------------------------------------------------------
+// Just a flat black circle. Center/radius match the hit radius exactly.
+function drawCup(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fillStyle = "#000000";
+  ctx.fill();
 }
 
 // --- Brick walls -----------------------------------------------------------
