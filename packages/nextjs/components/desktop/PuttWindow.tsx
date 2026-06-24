@@ -21,7 +21,6 @@ const COLOR_HEX: Record<PuttColor, string> = {
 };
 const FELT_GREEN = "#3a9d3a"; // flat fallback (empty/lobby with no hole yet)
 const FRAME_BROWN = "#9c6b35";
-const WALL_GRAY = "#b9b9b9";
 const AIM_YELLOW = "#ffe14d";
 // Topographic height bands (low → high). Distinct green steps so different
 // elevations read as different colors, like a contour map.
@@ -408,11 +407,15 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.arc(hole.tee.x, hole.tee.y, 13, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Cup: black hole + flag pin.
-  ctx.beginPath();
-  ctx.fillStyle = "#0b0b0b";
-  ctx.arc(hole.cup.x, hole.cup.y, f.cupR, 0, Math.PI * 2);
-  ctx.fill();
+  // Cup: a recessed 3D hole you look down into. The scene light is upper-left
+  // (same as the balls), so a depression reads inverted from a bump — the
+  // near (upper-left) rim casts an inner shadow, while the far (lower-right)
+  // wall catches light and the opposite lip gets a thin highlight. A radial
+  // gradient (dark pit → faintly lit rim) plus a faint inner ellipse make it
+  // read as a cylinder sunk into the felt. Center + radius are unchanged, so
+  // the hit radius is identical — only the look differs.
+  drawCup(ctx, hole.cup.x, hole.cup.y, f.cupR);
+
   // Pin
   ctx.strokeStyle = "#222";
   ctx.lineWidth = 2;
@@ -428,14 +431,15 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.closePath();
   ctx.fill();
 
-  // Walls (gray bars with a subtle shadow).
+  // Walls (brick texture). Drop shadows first (so one wall's shadow never
+  // falls on another wall's bricks), then blit the baked running-bond brick
+  // pattern — clipped to each wall's rounded rect so it can't bleed past the
+  // wall boundary. Positions/sizes are untouched (collision is server-side).
   for (const w of hole.walls) {
     ctx.fillStyle = "rgba(0,0,0,0.25)";
     ctx.fillRect(w.x + 2, w.y + 3, w.w, w.h);
-    ctx.fillStyle = WALL_GRAY;
-    roundRect(ctx, w.x, w.y, w.w, w.h, 4);
-    ctx.fill();
   }
+  ctx.drawImage(getWallsCanvas(state.hole, hole, f.w, f.h), 0, 0);
 
   // Balls. Draw a single dimpled, rolling golf ball for a player. The server
   // exposes only position (no velocity), so we derive roll direction + speed
@@ -617,6 +621,135 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
+}
+
+// --- Cup (recessed 3D hole) ------------------------------------------------
+// Draw the hole as a cup sunk into the felt rather than a flat disc. Light is
+// upper-left (matching the balls), so a concavity inverts a bump's shading:
+// the near rim (upper-left) shadows the inside, the far wall (lower-right) is
+// lit, and the opposite lip carries a thin highlight. Center/radius match the
+// flat hole exactly — the hit radius is unchanged.
+function drawCup(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number) {
+  ctx.save();
+
+  // Soft ground shadow just outside the lip so the cup sits in the felt.
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 2, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.fill();
+
+  // The opening: a radial gradient offset toward lower-right so the deep pit
+  // sits down-and-right and the upper-left near wall stays dark — reads as a
+  // shaft going into the ground rather than a flat circle.
+  const grad = ctx.createRadialGradient(cx + R * 0.28, cy + R * 0.28, R * 0.08, cx, cy, R);
+  grad.addColorStop(0, "#000000");
+  grad.addColorStop(0.5, "#070707");
+  grad.addColorStop(0.82, "#191919");
+  grad.addColorStop(1, "#2b2b2b");
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Faint elliptical inner wall — the lit far side of the cylinder catching
+  // the upper-left light, drawn clipped to the opening so depth reads.
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.beginPath();
+  ctx.ellipse(cx + R * 0.2, cy + R * 0.22, R * 0.74, R * 0.66, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(120,130,110,0.18)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  // Inner shadow on the near (upper-left) rim — the lip closest to the light
+  // casts the deepest interior shadow.
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, R - 1.3, Math.PI * 0.78, Math.PI * 1.72);
+  ctx.stroke();
+
+  // Highlighted lip on the far (lower-right) rim — a thin lit edge.
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = "rgba(190,205,175,0.5)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, R - 0.8, Math.PI * -0.18, Math.PI * 0.62);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// --- Brick walls -----------------------------------------------------------
+// Stable per-brick pseudo-random in [0,1) (no Math.random, so the texture is
+// identical every frame — bake-once via the cache below).
+function brickRand(r: number, c: number): number {
+  let h = (r * 374761393 + c * 668265263) >>> 0;
+  h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
+
+// Per-hole walls are static, so render the brickwork once to an offscreen
+// canvas (running-bond courses, mortar gaps, per-brick gray/reddish variation,
+// upper-left bevel) and blit it each frame — same pattern as the terrain map.
+// Each wall's bricks are clipped to its rounded rect so they never bleed past
+// the wall; positions/sizes come straight from hole.walls (server collision).
+const wallsCache = new Map<string, HTMLCanvasElement>();
+function getWallsCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
+  const key = `${holeIndex}:${fw}x${fh}`;
+  const cached = wallsCache.get(key);
+  if (cached) return cached;
+  const cv = document.createElement("canvas");
+  cv.width = fw;
+  cv.height = fh;
+  const cx = cv.getContext("2d");
+  if (cx) {
+    const cellW = 26;
+    const cellH = 13;
+    const mortar = 2;
+    const brickW = cellW - mortar;
+    const brickH = cellH - mortar;
+    for (const w of hole.walls) {
+      cx.save();
+      roundRect(cx, w.x, w.y, w.w, w.h, 4);
+      cx.clip();
+      // Dark mortar bed showing through the brick gaps.
+      cx.fillStyle = "#6f6f6f";
+      cx.fillRect(w.x, w.y, w.w, w.h);
+      let row = 0;
+      // Start a cell early on both axes so the running-bond offset still fully
+      // covers the clipped wall edges.
+      for (let by = w.y - cellH; by < w.y + w.h; by += cellH, row++) {
+        const xoff = row % 2 ? -(cellW / 2) : 0;
+        let col = 0;
+        for (let bx = w.x + xoff - cellW; bx < w.x + w.w; bx += cellW, col++) {
+          const n = brickRand(row, col);
+          const n2 = brickRand(col + 7, row + 3);
+          // Grayish bricks leaning slightly warm/reddish, with per-brick jitter.
+          const base = 138 + Math.round(n * 30); // 138..168
+          const r = Math.min(192, base + Math.round(n2 * 28));
+          const g = base - 4;
+          const b = base - 13;
+          const x0 = bx + mortar;
+          const y0 = by + mortar;
+          cx.fillStyle = `rgb(${r},${g},${b})`;
+          cx.fillRect(x0, y0, brickW, brickH);
+          // Upper-left bevel highlight, lower-right shadow — light from UL.
+          cx.fillStyle = "rgba(255,255,255,0.12)";
+          cx.fillRect(x0, y0, brickW, 1);
+          cx.fillRect(x0, y0, 1, brickH);
+          cx.fillStyle = "rgba(0,0,0,0.2)";
+          cx.fillRect(x0, y0 + brickH - 1, brickW, 1);
+          cx.fillRect(x0 + brickW - 1, y0, 1, brickH);
+        }
+      }
+      cx.restore();
+    }
+  }
+  wallsCache.set(key, cv);
+  return cv;
 }
 
 // --- Topography ------------------------------------------------------------
