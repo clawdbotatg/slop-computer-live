@@ -407,13 +407,10 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.arc(hole.tee.x, hole.tee.y, 13, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Cup: a recessed 3D hole you look down into. The scene light is upper-left
-  // (same as the balls), so a depression reads inverted from a bump — the
-  // near (upper-left) rim casts an inner shadow, while the far (lower-right)
-  // wall catches light and the opposite lip gets a thin highlight. A radial
-  // gradient (dark pit → faintly lit rim) plus a faint inner ellipse make it
-  // read as a cylinder sunk into the felt. Center + radius are unchanged, so
-  // the hit radius is identical — only the look differs.
+  // Cup: a shallow isometric hole. Drawn as two stacked ellipses — the opening
+  // cut in the grass, and a floor pushed a short way up the screen; the crescent
+  // of opening left showing below the floor reads as the near wall. Center +
+  // radius are unchanged, so the hit radius is identical — only the look differs.
   drawCup(ctx, hole.cup.x, hole.cup.y, f.cupR);
 
   // Pin
@@ -623,104 +620,64 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
-// --- Cup (recessed 3D hole) ------------------------------------------------
-// Draw the hole the way a real golf cup looks from above with the camera tipped
-// slightly back (matching the leaning flag): a ragged grass lip, an earthen
-// side wall whose far rim catches the light, a cream cup-liner ring, and a deep
-// dark shaft. Light is upper-left (same as the balls), so the void is offset
-// up-and-left and the lit dirt/liner crescent sits on the lower-right far wall.
-// Drawn with a slight vertical squash for the tipped-back perspective. The
-// collision center/radius are untouched — this is purely cosmetic.
+// --- Cup (shallow isometric hole) ------------------------------------------
+// Draw the hole as a shallow cup seen at an isometric tilt. It's two stacked
+// ellipses: the opening cut into the grass, and a floor pushed a short way up
+// the screen. Filling the opening first (the inner wall) then the floor on top
+// leaves a crescent of wall showing along the bottom — that crescent reads as
+// the near wall, so the hole looks like a shallow pit you could roll into
+// rather than a flat black disc. Light is from above, so the back lip is lit
+// and the front lip shadowed. Center/radius match the flat hole exactly — the
+// hit radius is unchanged; this is purely cosmetic.
 function drawCup(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number) {
   ctx.save();
 
-  const SQUASH = 0.86; // tip the opening back into the green a touch
+  const SQUASH = 0.5; // isometric tilt — opening is twice as wide as tall
   const ry = R * SQUASH;
-  // The void sits up-and-left of the opening so the lower-right wall is the one
-  // that faces the light and reads as lit.
-  const offX = R * 0.16;
-  const offY = R * 0.2;
+  const depth = ry * 1.05; // how far up the screen the floor sits — shallow
 
-  // Soft grassy recess — the green dips and darkens into the hole, a wider/
-  // softer ring than a hard shadow so the lip blends into the felt.
-  const ring = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R + 4);
-  ring.addColorStop(0, "rgba(20,46,18,0.55)");
-  ring.addColorStop(1, "rgba(20,46,18,0)");
+  // Soft contact shadow in the grass so the cup sits in the felt.
   ctx.beginPath();
-  ctx.ellipse(cx, cy, R + 4, ry + 4, 0, 0, Math.PI * 2);
-  ctx.fillStyle = ring;
+  ctx.ellipse(cx, cy + 1.5, R + 2, ry + 2, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.16)";
   ctx.fill();
 
-  // Earthen side wall: the whole opening filled with a dirt gradient, lit tan on
-  // the lower-right far rim, falling to dark soil toward the shaded near rim.
-  const wall = ctx.createRadialGradient(cx + R * 0.34, cy + ry * 0.4, R * 0.15, cx, cy, R);
-  wall.addColorStop(0, "#7a5128");
-  wall.addColorStop(0.45, "#5e3c1d");
-  wall.addColorStop(0.8, "#3c2713");
-  wall.addColorStop(1, "#26180c");
+  // Inner wall: the whole opening, lit warm-dark at the top lip fading darker
+  // toward the floor.
+  const wall = ctx.createLinearGradient(0, cy - ry, 0, cy + ry);
+  wall.addColorStop(0, "#36402a");
+  wall.addColorStop(1, "#1a2110");
   ctx.beginPath();
   ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
   ctx.fillStyle = wall;
   ctx.fill();
 
-  // Cream cup-liner ring just inside the lip — a real cup's plastic sleeve,
-  // brightest where it faces the light (lower-right), fading into shadow.
-  ctx.save();
+  // Floor: a same-radius ellipse pushed up by `depth`. It covers everything but
+  // the bottom crescent of the opening, which becomes the visible near wall.
+  const fy = cy - depth;
   ctx.beginPath();
-  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
-  ctx.clip();
-  ctx.lineWidth = R * 0.16;
-  ctx.strokeStyle = "rgba(226,214,180,0.9)";
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, R * 0.92, ry * 0.92, 0, Math.PI * -0.1, Math.PI * 0.78);
-  ctx.stroke();
-  ctx.strokeStyle = "rgba(150,134,98,0.45)";
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, R * 0.92, ry * 0.92, 0, Math.PI * 0.78, Math.PI * 1.9);
-  ctx.stroke();
-  ctx.restore();
-
-  // The shaft: a dark void offset up-and-left, deep black at the bottom so the
-  // hole reads as going down into the ground rather than a flat disc.
-  const shaftR = R * 0.66;
-  const shaftRy = ry * 0.66;
-  const sx = cx - offX;
-  const sy = cy - offY;
-  const shaft = ctx.createRadialGradient(sx + shaftR * 0.3, sy + shaftRy * 0.3, shaftR * 0.1, sx, sy, shaftR);
-  shaft.addColorStop(0, "#1a1206");
-  shaft.addColorStop(0.6, "#0a0703");
-  shaft.addColorStop(1, "#000000");
-  ctx.beginPath();
-  ctx.ellipse(sx, sy, shaftR, shaftRy, 0, 0, Math.PI * 2);
-  ctx.fillStyle = shaft;
+  ctx.ellipse(cx, fy, R, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "#0a0e06";
   ctx.fill();
 
-  // Ragged grass lip overlapping the opening — short blades of felt-green poking
-  // in over the edge break the perfect circle so it reads as cut grass, not a
-  // drawn ring. Deterministic (brickRand) so it's stable frame-to-frame.
-  const blades = 38;
-  for (let i = 0; i < blades; i++) {
-    const a = (i / blades) * Math.PI * 2;
-    const j = brickRand(i, 7);
-    const j2 = brickRand(i, 13);
-    // Blades on the lit (upper-left) side are brighter; shaded far side dimmer.
-    const lit = Math.cos(a) < 0 || Math.sin(a) < 0 ? 1 : 0.7;
-    const baseR = R + 1.5;
-    const tipR = R - (1.5 + j * 4.5);
-    const wob = (j2 - 0.5) * 0.12;
-    const bx = cx + Math.cos(a + wob) * baseR;
-    const by = cy + Math.sin(a + wob) * ry + Math.sin(a + wob);
-    const tx = cx + Math.cos(a) * tipR;
-    const ty = cy + Math.sin(a) * (tipR * SQUASH);
-    const g1 = Math.round(120 + j * 50 * lit);
-    ctx.strokeStyle = `rgba(${Math.round(40 + j * 30)},${g1},${Math.round(30 + j * 25)},${0.85 * lit})`;
-    ctx.lineWidth = 1 + j2 * 1.2;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(bx, by);
-    ctx.lineTo(tx, ty);
-    ctx.stroke();
-  }
+  // Thin lit edge along the front of the floor, defining where the near wall
+  // meets the bottom.
+  ctx.lineWidth = Math.max(1, R * 0.05);
+  ctx.strokeStyle = "rgba(120,140,80,0.4)";
+  ctx.beginPath();
+  ctx.ellipse(cx, fy, R, ry, 0, 0, Math.PI);
+  ctx.stroke();
+
+  // Rim: lit back lip (top half), shadowed front lip (bottom half).
+  ctx.lineWidth = Math.max(1, R * 0.07);
+  ctx.strokeStyle = "rgba(195,220,145,0.6)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, R, ry, 0, Math.PI, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI);
+  ctx.stroke();
 
   ctx.restore();
 }

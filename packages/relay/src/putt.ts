@@ -39,8 +39,15 @@ const KINETIC_FRICTION = 0.08; // constant decel while rolling (px/tick²) — s
 //                                just enough to out-bleed the gentle-tilt pull
 //                                and guarantee a finite stop without shortening
 //                                a normal putt.
-const STATIC_FRICTION = 0.06; // max downhill pull a resting ball holds (px/tick²)
-const MIN_SPEED = 0.5; // below this a ball is slow enough to test for sticking
+const STATIC_FRICTION = 0.12; // max downhill pull a resting ball holds (px/tick²)
+const MIN_SPEED = 0.6; // below this a ball is slow enough to test for sticking
+// Settle backstop: if the ball crawls below SETTLE_SPEED for SETTLE_TICKS in a
+// row it's force-stopped. Kills any residual imperceptible creep (a ball that
+// reaches a tiny terminal velocity on a slope and never quite sticks) without
+// affecting a real putt, which either stops via MIN_SPEED or is still moving
+// fast. A genuine roll-off a steep mound flank is well above SETTLE_SPEED.
+const SETTLE_SPEED = 1.1;
+const SETTLE_TICKS = 30;
 const MAX_POWER = 24; // cap on a shot's initial speed (px/tick)
 const MAX_ROLL_SPEED = 30; // clamp so a long downhill can't fling the ball through a wall
 const WALL_REST = 0.72; // restitution off walls + borders
@@ -133,7 +140,7 @@ function buildCourse(): PuttHole[] {
       tee: { x: 210, y: 545 },
       cup: { x: 230, y: 95 },
       walls: [{ x: 40, y: 300, w: 220, h: 16 }],
-      terrain: { tiltX: 0, tiltY: 0.05, mounds: [{ x: 340, y: 380, r: 130, h: 26 }] },
+      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 325, y: 385, r: 120, h: 30 }] },
     },
     {
       // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. The
@@ -146,7 +153,7 @@ function buildCourse(): PuttHole[] {
         { x: 150, y: 360, w: 16, h: 200 },
         { x: 150, y: 200, w: 220, h: 16 },
       ],
-      terrain: { tiltX: 0.04, tiltY: 0, mounds: [{ x: 90, y: 150, r: 110, h: -22 }] },
+      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 255, y: 300, r: 110, h: 28 }, { x: 110, y: 440, r: 85, h: -20 }] },
     },
     {
       // Hole 3 — split the gap or go around a central box. The whole green
@@ -156,7 +163,7 @@ function buildCourse(): PuttHole[] {
       tee: { x: 210, y: 550 },
       cup: { x: 210, y: 95 },
       walls: [{ x: 160, y: 270, w: 100, h: 70 }],
-      terrain: { tiltX: 0, tiltY: -0.055, mounds: [{ x: 210, y: 180, r: 120, h: 24 }] },
+      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 210, y: 175, r: 115, h: 30 }] },
     },
   ];
 }
@@ -217,6 +224,9 @@ export class Putt {
   private vel: PuttVec = { x: 0, y: 0 };
   // Ticks the current shot has been rolling — drives the runaway safety valve.
   private rollTicks = 0;
+  // Consecutive ticks the ball has been crawling below SETTLE_SPEED — drives
+  // the settle backstop that kills imperceptible creep.
+  private slowTicks = 0;
   private listeners: Listener[] = [];
   private tickTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -316,6 +326,7 @@ export class Putt {
     }
     this.vel = { x: vx, y: vy };
     this.rollTicks = 0;
+    this.slowTicks = 0;
     p.strokes[this.snapshot.hole] = (p.strokes[this.snapshot.hole] ?? 0) + 1;
     this.snapshot.status = "rolling";
     this.ensureTicker();
@@ -543,11 +554,14 @@ export class Putt {
     }
     // Rest: a slow ball sticks UNLESS the local slope is too steep for static
     // friction to hold it (then it keeps rolling and accelerates downhill).
-    // The runaway tick budget is a final safety net.
+    // The settle backstop catches any residual crawl; the tick budget is the
+    // final safety net.
     const grad = puttSlopeAt(hole.terrain, p.ball.x, p.ball.y);
     const slopePull = SLOPE_ACCEL * Math.hypot(grad.x, grad.y);
     this.rollTicks += 1;
-    if ((speed < MIN_SPEED && slopePull <= STATIC_FRICTION) || this.rollTicks >= MAX_ROLL_TICKS) {
+    this.slowTicks = speed < SETTLE_SPEED ? this.slowTicks + 1 : 0;
+    const stuck = speed < MIN_SPEED && slopePull <= STATIC_FRICTION;
+    if (stuck || this.slowTicks >= SETTLE_TICKS || this.rollTicks >= MAX_ROLL_TICKS) {
       // Ball at rest. Stroke cap: if the player can't sink it, auto-finish
       // the hole so play never stalls.
       this.vel = { x: 0, y: 0 };
