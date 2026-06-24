@@ -450,10 +450,11 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     drawGolfBall(ctx, p.ball.x, p.ball.y, f.ballR, roll, COLOR_HEX[p.color]);
   };
   // Tee-off: at the start of a hole nobody has struck yet (strokes[hole] is 0
-  // until a player shoots — see relay putt.ts). While teed off, only show the
-  // local viewer's own ball; once play is underway every ball renders.
+  // until a player shoots — see relay putt.ts). While teed off, show only the
+  // current-turn (whoever's-up) player's ball — identical for every client,
+  // not the local viewer's own; once play is underway every ball renders.
   const teedOff = !players.some(p => (p.strokes[state.hole] ?? 0) > 0);
-  const visible = teedOff ? players.filter(p => p.slot === mySlot) : players;
+  const visible = teedOff ? players.filter(p => p.slot === state.turn) : players;
   // Layering = canvas draw order (no z-index on a canvas). Draw every
   // non-active ball first, then the current-turn player's ball LAST so it
   // always stacks on top when balls overlap.
