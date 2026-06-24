@@ -480,6 +480,11 @@ export async function finalizeRecording(opts: {
   roomSlug?: string;
   roomName?: string;
   researchContext?: string;
+  /** VOD start point baked into the manifest at finalize so a new episode skips
+   *  its pre-show countdown without a second re-pin + setManifest tx. Literal
+   *  seek position in seconds (the player jumps straight here); <= 0 / omitted
+   *  leaves it off. The AI pass never sets this — it's host-authored. */
+  startSeconds?: number;
   onEvent?: (ev: FinalizeEvent) => void;
 }): Promise<FinalizeResult> {
   if (inFlight) return inFlight;
@@ -684,6 +689,26 @@ export async function finalizeRecording(opts: {
           }));
         }
         if (aiMeta) manifestJson.meta = aiMeta;
+        // Bake the host's start point into the first manifest so a new episode
+        // skips its countdown in the same single setManifest tx — no second
+        // re-pin. Attach a minimal meta if the AI pass produced nothing.
+        const startPoint = Math.max(0, Math.floor(opts.startSeconds ?? 0));
+        if (startPoint > 0) {
+          if (manifestJson.meta) {
+            manifestJson.meta.startSeconds = startPoint;
+          } else {
+            manifestJson.meta = {
+              title: "",
+              oneLiner: "",
+              description: "",
+              topics: [],
+              chapters: [],
+              startSeconds: startPoint,
+              generatedBy: "manual",
+              generatedAt: 0,
+            };
+          }
+        }
         const manifestCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: manifestJson });
 
         // We KEEP the transcript JSONL on disk after pinning. Previously this

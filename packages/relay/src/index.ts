@@ -6471,6 +6471,11 @@ app.post("/admin/finalize", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
 
+  // Optional VOD start point to bake into the first manifest (skip the
+  // pre-show countdown without a second re-pin). <= 0 / absent → off.
+  const fq = (req.query ?? {}) as { start?: unknown };
+  const startSeconds = typeof fq.start === "string" && Number.isFinite(Number(fq.start)) ? Number(fq.start) : 0;
+
   const stream = new Readable({ read() {} });
 
   // Disable Caddy/reverse-proxy buffering so each progress line lands
@@ -6533,6 +6538,7 @@ app.post("/admin/finalize", async (req, reply) => {
         roomSlug: room.id,
         roomName: room.meta.getName(),
         researchContext,
+        startSeconds,
         onEvent: writeEvent,
       });
     } catch (err) {
