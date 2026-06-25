@@ -75,7 +75,10 @@ export type PuttVec = { x: number; y: number };
 export type PuttWall = { x: number; y: number; w: number; h: number };
 // A rounded bump (h > 0 = hill) or dip (h < 0 = valley) of radius r centered
 // at (x, y). Contributes a smooth squared-falloff hump to the height field.
-export type PuttMound = { x: number; y: number; r: number; h: number };
+// Optional r0 (< r) gives a flat top/bottom of that radius — a raised plateau
+// (or flat-bottomed pit) — with the squared-falloff ramp running from r0 out
+// to the rim r. r0 omitted/0 → a plain squared-falloff hump (original shape).
+export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
 // Per-hole topography: a linear tilt across the green (tiltX/tiltY are slope
 // fractions — height rises by tiltX per px in +x, tiltY per px in +y) plus a
 // set of mounds/dips. Height units are arbitrary; only the gradient matters
@@ -167,44 +170,75 @@ type Listener = (snapshot: PuttSnapshot) => void;
 function buildCourse(): PuttHole[] {
   return [
     {
-      // Hole 1 — gentle right-side detour around a left-anchored wall, with a
-      // mild downhill toward the cup (the green falls away to the top) plus a
-      // hill on the right that nudges a banked ball back toward center.
-      par: 2,
+      // Hole 1 — a right-side detour around a left-anchored wall. A raised
+      // plateau guards the gap (you climb over its flank or skirt it), a small
+      // hill sits in the bottom-left fairway, and a shallow bowl rings the cup
+      // to gather a ball that arrives with the right pace.
+      par: 3,
       tee: { x: 210, y: 545 },
       cup: { x: 230, y: 95 },
       walls: [{ x: 40, y: 300, w: 220, h: 16 }],
-      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 325, y: 385, r: 120, h: 30 }] },
+      terrain: {
+        tiltX: 0,
+        tiltY: 0,
+        mounds: [
+          { x: 340, y: 370, r: 120, h: 30, r0: 38 }, // flat-topped plateau in the gap
+          { x: 90, y: 470, r: 80, h: 20 }, // bottom-left rise
+          { x: 230, y: 120, r: 78, h: -14 }, // gathering bowl around the cup
+        ],
+      },
     },
     {
-      // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. The
-      // green tilts gently to the right so a straight shot drifts toward the
-      // wall; a dip sits in the elbow to gather a well-placed ball.
+      // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. A
+      // dip sits in the elbow to gather a well-placed ball, a big central hill
+      // breaks the cross-corridor, a plateau guards the cup approach, and a
+      // short post pinches the lower channel so the line off the tee matters.
       par: 3,
       tee: { x: 90, y: 545 },
       cup: { x: 330, y: 100 },
       walls: [
         { x: 150, y: 360, w: 16, h: 200 },
         { x: 150, y: 200, w: 220, h: 16 },
+        { x: 60, y: 470, w: 16, h: 70 },
       ],
-      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 255, y: 300, r: 110, h: 28 }, { x: 110, y: 440, r: 85, h: -20 }] },
+      terrain: {
+        tiltX: 0,
+        tiltY: 0,
+        mounds: [
+          { x: 255, y: 295, r: 118, h: 32 }, // central hill in the cross-corridor
+          { x: 108, y: 445, r: 92, h: -18 }, // elbow dip that gathers a good ball
+          { x: 288, y: 175, r: 85, h: 24, r0: 28 }, // plateau guarding the cup approach (clear of the pin)
+          { x: 78, y: 135, r: 66, h: -12 }, // decorative bunker, top-left corner
+        ],
+      },
     },
     {
-      // Hole 3 — split the gap or go around a central box. The whole green
-      // runs uphill to the cup (you need extra pace), and a hill behind the
-      // box punishes anyone who skirts it too tight.
-      par: 2,
+      // Hole 3 — go left (the long, flat, safe route) or right over a raised
+      // plateau (shorter, but it breaks your line). The whole green runs uphill
+      // to the cup, so you need pace; a hill behind the central box punishes a
+      // ball that skirts it too tight, and a shallow bowl funnels the cup.
+      par: 3,
       tee: { x: 210, y: 550 },
       cup: { x: 210, y: 95 },
       walls: [{ x: 160, y: 270, w: 100, h: 70 }],
-      terrain: { tiltX: 0, tiltY: 0, mounds: [{ x: 210, y: 175, r: 115, h: 30 }] },
+      terrain: {
+        tiltX: 0,
+        tiltY: -0.045, // uphill toward the cup (gentle — below the static-friction creep threshold)
+        mounds: [
+          { x: 340, y: 300, r: 120, h: 30, r0: 40 }, // right-lane plateau
+          { x: 175, y: 180, r: 110, h: 28 }, // hill behind the box
+          { x: 210, y: 140, r: 64, h: -12 }, // bowl below the cup
+        ],
+      },
     },
     {
       // Hole 4 — THE WINDMILL. A brick base spans the green with a central
       // doorway, and four sails spin over it. The hub + sail-cross fully guard
       // the dead-center line, so you aim just inside a wall and thread the gap
       // as the sails sweep clear — clip one and it swats you back down the
-      // fairway. Flat green (like the others); you supply the pace.
+      // fairway. The central threading line stays flat (you supply the pace),
+      // but two gentle rises flank the lower fairway to add a little break on
+      // the run-up.
       par: 3,
       tee: { x: 210, y: 560 },
       cup: { x: 210, y: 92 },
@@ -212,7 +246,14 @@ function buildCourse(): PuttHole[] {
         { x: 0, y: 288, w: 140, h: 20 },
         { x: 280, y: 288, w: 140, h: 20 },
       ],
-      terrain: { tiltX: 0, tiltY: 0, mounds: [] },
+      terrain: {
+        tiltX: 0,
+        tiltY: 0,
+        mounds: [
+          { x: 105, y: 470, r: 88, h: 18 }, // lower-left rise (off the center line)
+          { x: 315, y: 470, r: 88, h: 18 }, // lower-right rise (off the center line)
+        ],
+      },
       windmill: { x: 210, y: 298, hubR: 7, bladeLen: 52, bladeW: 5, blades: 4, rpm: 9 },
     },
   ];
@@ -224,8 +265,14 @@ function puttHeightAt(t: PuttTerrain, x: number, y: number): number {
   let h = t.tiltX * (x - FIELD_W / 2) + t.tiltY * (y - FIELD_H / 2);
   for (const m of t.mounds) {
     const d = Math.hypot(x - m.x, y - m.y);
-    if (d < m.r) {
-      const k = 1 - d / m.r;
+    if (d >= m.r) continue;
+    const r0 = m.r0 ?? 0;
+    if (d <= r0) {
+      h += m.h; // flat plateau top / pit floor
+    } else {
+      // Squared-falloff ramp from the plateau edge (k=1) to the rim (k=0).
+      // r0=0 collapses to the original (1 - d/r)² hump.
+      const k = (m.r - d) / (m.r - r0);
       h += m.h * k * k;
     }
   }

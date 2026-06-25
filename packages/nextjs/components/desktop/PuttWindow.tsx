@@ -860,8 +860,14 @@ function puttHeightAt(t: PuttTerrain, x: number, y: number, fw: number, fh: numb
   let h = t.tiltX * (x - fw / 2) + t.tiltY * (y - fh / 2);
   for (const m of t.mounds) {
     const d = Math.hypot(x - m.x, y - m.y);
-    if (d < m.r) {
-      const k = 1 - d / m.r;
+    if (d >= m.r) continue;
+    const r0 = m.r0 ?? 0;
+    if (d <= r0) {
+      h += m.h; // flat plateau top / pit floor
+    } else {
+      // Squared-falloff ramp from the plateau edge (k=1) to the rim (k=0);
+      // r0=0 collapses to the original (1 - d/r)² hump.
+      const k = (m.r - d) / (m.r - r0);
       h += m.h * k * k;
     }
   }

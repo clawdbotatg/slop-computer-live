@@ -898,7 +898,11 @@ const DEFAULT_WORM_STATE: WormState = {
 export type PuttColor = "cyan" | "magenta" | "lime" | "purple";
 export type PuttVec = { x: number; y: number };
 export type PuttWall = { x: number; y: number; w: number; h: number };
-export type PuttMound = { x: number; y: number; r: number; h: number };
+// A rounded bump (h > 0 = hill) or dip (h < 0 = valley) of radius r centered
+// at (x, y). Optional r0 (< r) gives a flat top/bottom of that radius — a
+// raised plateau (or flat-bottomed pit) — with a squared-falloff ramp from r0
+// out to r. r0 omitted/0 → a plain squared-falloff hump (the original shape).
+export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
 export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
 export type PuttWindmill = {
   x: number;
