@@ -83,7 +83,9 @@ export function unlockPuttAudio(): void {
 
 function noise(c: AudioContext): AudioBuffer {
   if (!noiseBuf) {
-    noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.5), c.sampleRate);
+    // 1s of noise — long enough that the extended bursts (the big water
+    // splooosh's ~0.6s tail) play out fully without the source running dry.
+    noiseBuf = c.createBuffer(1, c.sampleRate, c.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
@@ -183,18 +185,33 @@ export function sfxCupDrop(): void {
   tone(a.c, a.m, t + 0.26, 1320, 0.22, 0.08, "triangle");
 }
 
-// Ball into the water — a falling "sploosh": a noise burst swept from bright
-// down to a dark, watery low, with a couple of rising bubble blips in the tail.
+// Ball into the water — a big "SPLOOOSH". Layered so it reads as real water
+// being displaced, not a thin tick: a deep sub-thump as the ball punches the
+// surface, a long full-bodied wash of filtered noise sweeping from open down to
+// a dark watery low (the displaced water + spray), a brighter foam/droplet
+// layer over the plunge, a high wash of settling ripples, and a gurgle of
+// bubbles rising at random pitches through the tail.
 export function sfxWaterSplash(): void {
   if (muted) return;
   const a = audio();
   if (!a) return;
-  const t = a.c.currentTime;
-  burst(a.c, a.m, t, 0.34, { type: "lowpass", freq: 3200, q: 0.7, gain: 0.34, sweepTo: 360, attack: 0.01 });
-  burst(a.c, a.m, t + 0.02, 0.22, { type: "bandpass", freq: 900, q: 1.2, gain: 0.16, sweepTo: 300 });
-  // Bubbles rising in the wake.
-  tone(a.c, a.m, t + 0.14, 320, 0.1, 0.07, "sine", 520);
-  tone(a.c, a.m, t + 0.22, 260, 0.12, 0.06, "sine", 440);
+  const { c, m } = a;
+  const t = c.currentTime;
+  // Heavy plunge: a deep sub thump for the heft of the ball hitting the water.
+  tone(c, m, t, 155, 0.2, 0.28, "sine", 52);
+  // The main body of the splooosh — a big, long sweep from open down to a
+  // watery low. This is the bulk of the sound; the long tail sells the size.
+  burst(c, m, t, 0.62, { type: "lowpass", freq: 2600, q: 0.8, gain: 0.46, sweepTo: 260, attack: 0.008 });
+  // Foam / droplets sprayed up on impact — a brighter bandpass layer on top.
+  burst(c, m, t + 0.01, 0.46, { type: "bandpass", freq: 1500, q: 0.9, gain: 0.24, sweepTo: 480, attack: 0.006 });
+  // The spray settling back — a soft high wash sweeping up and fading out.
+  burst(c, m, t + 0.18, 0.42, { type: "highpass", freq: 1700, gain: 0.1, sweepTo: 900 });
+  // Gurgle: a handful of bubbles rising (pitch sweeps upward) through the wake.
+  for (let i = 0; i < 5; i++) {
+    const dt = 0.12 + i * 0.07 + Math.random() * 0.04;
+    const f0 = 220 + Math.random() * 220;
+    tone(c, m, t + dt, f0, 0.1, 0.07, "sine", f0 + 180 + Math.random() * 160);
+  }
 }
 
 // Ball burying in a bunker — a dull, soft "fff/thud", no pitch: sand absorbs
