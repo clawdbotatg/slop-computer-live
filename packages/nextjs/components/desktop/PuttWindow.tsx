@@ -11,6 +11,16 @@ import type {
   PuttTerrain,
   PuttWindmill,
 } from "~~/hooks/usePeerMesh";
+import {
+  isPuttMuted,
+  setPuttMuted,
+  sfxBrickClunk,
+  sfxCupDrop,
+  sfxPutterHit,
+  sfxSandThud,
+  sfxWaterSplash,
+  unlockPuttAudio,
+} from "~~/utils/puttSounds";
 
 // Turn-based multiplayer mini golf. The relay is authoritative for the ball
 // physics and the whole turn/scorecard flow; a client only sends a shot
@@ -81,6 +91,100 @@ export const PuttWindow = ({ mesh }: Props) => {
 
   const isMyTurn = puttState.status === "aiming" && myPuttSlot !== null && myPuttSlot === puttState.turn;
 
+  const [muted, setMuted] = useState(false);
+  useEffect(() => setMuted(isPuttMuted()), []);
+
+  // Sound effects, derived by diffing consecutive public snapshots so the whole
+  // course is audible to every client (not just the player taking the shot).
+  // The relay ships only ball positions + status + strokes — no velocity, no
+  // collision events — so each cue is inferred from a snapshot transition:
+  //   • putter hit  → status aiming→rolling (the shot fired)
+  //   • cup drop    → a player's done[hole] flips with their ball on the cup
+  //                   (vs. a stroke-cap, where the ball rests elsewhere)
+  //   • water       → the turn player's stroke count rises while rolling (the
+  //                   WATER_PENALTY; a normal settle adds no stroke)
+  //   • sand        → the active ball's center crosses into a sand region
+  //   • brick clunk → the active ball's travel direction reverses at speed
+  //                   (covers brick walls, field borders and the windmill)
+  const prevSndRef = useRef<PuttState | null>(null);
+  // Per-slot motion + sand state for the active ball, kept across snapshots so
+  // a direction reversal (bounce) or a dry→wet/grass→sand crossing can be seen
+  // in the position stream. Cleared whenever no ball is rolling.
+  const motionRef = useRef<Map<number, { x: number; y: number; vx: number; vy: number }>>(new Map());
+  const inSandRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const prev = prevSndRef.current;
+    prevSndRef.current = puttState;
+    if (!prev) return; // first snapshot — nothing to compare, stay silent
+    const cur = puttState;
+    const h = prev.hole;
+    const hole = cur.course.holes[h];
+
+    // Putter hit — the shot just fired (and a fresh shot is now rolling).
+    if (prev.status === "aiming" && cur.status === "rolling") sfxPutterHit();
+
+    // Cup drop vs. stroke-cap — a player's hole just finished. A holed ball
+    // sits exactly on the cup; a capped (or watered-out) ball rests elsewhere.
+    const cup = hole?.cup;
+    for (let i = 0; i < cur.players.length; i++) {
+      const pp = prev.players[i];
+      const cp = cur.players[i];
+      if (!pp || !cp || pp.done[h] || !cp.done[h]) continue;
+      if (cup && Math.hypot(cp.ball.x - cup.x, cp.ball.y - cup.y) <= cur.course.field.cupR + 4) sfxCupDrop();
+    }
+
+    // Water — the active player's stroke count rose during/ending a roll. The
+    // only stroke increment that isn't the shot itself (counted at aiming→
+    // rolling) is the one-stroke water penalty applied as the ball is fished out.
+    if (prev.status === "rolling" && prev.turn !== null) {
+      const pp = prev.players[prev.turn];
+      const cp = cur.players[prev.turn];
+      if (pp && cp && (cp.strokes[h] ?? 0) > (pp.strokes[h] ?? 0)) sfxWaterSplash();
+    }
+
+    // Sand + brick — only while the active ball is actually rolling.
+    if (cur.status === "rolling" && cur.turn !== null && hole) {
+      const slot = cur.turn;
+      const cp = cur.players[slot];
+      if (cp) {
+        const nx = cp.ball.x;
+        const ny = cp.ball.y;
+        const prevM = motionRef.current.get(slot);
+        if (prevM) {
+          const vx = nx - prevM.x;
+          const vy = ny - prevM.y;
+          const sp = Math.hypot(vx, vy);
+          // Ignore sub-pixel jitter and teleports (a tee/shoreline reset is a
+          // jump larger than any real per-tick roll, ~30px max).
+          if (sp > 0.05 && sp < 45) {
+            const lastSp = Math.hypot(prevM.vx, prevM.vy);
+            // A bounce is a sharp direction reversal at speed; a slope-break is
+            // a gentle curve (dot stays well positive) — so gate on both speed
+            // and a > ~105° turn.
+            if (sp > 2.5 && lastSp > 2.5 && (vx * prevM.vx + vy * prevM.vy) / (sp * lastSp) < -0.25) {
+              sfxBrickClunk(Math.min(1, sp / 12));
+            }
+            motionRef.current.set(slot, { x: nx, y: ny, vx, vy });
+          } else {
+            motionRef.current.set(slot, { x: nx, y: ny, vx: 0, vy: 0 });
+          }
+        } else {
+          motionRef.current.set(slot, { x: nx, y: ny, vx: 0, vy: 0 });
+        }
+
+        const nowSand = !!hole.sand && hole.sand.some(rg => regionContains(rg, nx, ny));
+        if (nowSand && !inSandRef.current.has(slot)) sfxSandThud();
+        if (nowSand) inSandRef.current.add(slot);
+        else inSandRef.current.delete(slot);
+      }
+    } else {
+      // No ball in motion — drop the transient tracking so the next shot's
+      // first frame seeds clean (no phantom bounce off a teed-up jump).
+      motionRef.current.clear();
+      inSandRef.current.clear();
+    }
+  }, [puttState]);
+
   // Repaint every animation frame (server positions render directly — 30Hz
   // is smooth enough, same as pong).
   useEffect(() => {
@@ -132,6 +236,7 @@ export const PuttWindow = ({ mesh }: Props) => {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      unlockPuttAudio(); // browsers gate the AudioContext behind a user gesture
       if (!isMyTurn || myPuttSlot === null) return;
       const me = stateRef.current.players[myPuttSlot];
       if (!me) return;
@@ -242,6 +347,19 @@ export const PuttWindow = ({ mesh }: Props) => {
               Play Again
             </button>
           )}
+          <button
+            type="button"
+            title={muted ? "Unmute course sounds" : "Mute course sounds"}
+            onClick={() => {
+              const next = !muted;
+              setPuttMuted(next);
+              setMuted(next);
+              if (!next) unlockPuttAudio();
+            }}
+            className="text-[15px] leading-none text-white/60 hover:text-white"
+          >
+            {muted ? "🔈" : "🔊"}
+          </button>
         </div>
       </div>
 
@@ -780,6 +898,19 @@ function drawSail(ctx: CanvasRenderingContext2D, a: number, hubR: number, len: n
 // --- Hazards (water + sand) -------------------------------------------------
 // Region shapes mirror the relay's PuttRegion (circle | rect). Geometry is
 // authoritative on the server (packages/relay/src/putt.ts); these only paint.
+
+// Is (x,y) inside a hazard region? Mirrors the relay's regionHit (same wavy
+// shoreline for circles) so the sand-thud cue fires exactly when the physics
+// considers the ball over the bunker.
+function regionContains(rg: PuttRegion, x: number, y: number): boolean {
+  if (rg.kind === "circle") {
+    const dx = x - rg.x;
+    const dy = y - rg.y;
+    const rr = wavyRadius(rg.x, rg.y, rg.r, Math.atan2(dy, dx), HAZARD_WOB);
+    return dx * dx + dy * dy <= rr * rr;
+  }
+  return x >= rg.x && x <= rg.x + rg.w && y >= rg.y && y <= rg.y + rg.h;
+}
 
 // Trace a region's outline as the current path (no fill/stroke). A circle is
 // traced as a wavy polygon (wavyRadius, same warp + seed the relay's regionHit
