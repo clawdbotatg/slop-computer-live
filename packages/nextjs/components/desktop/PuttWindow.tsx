@@ -173,11 +173,6 @@ export const PuttWindow = ({ mesh }: Props) => {
   const canStart = amSeated && puttState.status === "waiting" && seated.length >= 1;
   const hole = holes[puttState.hole];
   const overlay = buildOverlay(puttState);
-  // The turn banner sits at the top of the course; if the active player's ball
-  // is up there too, the banner covers it — so drop the banner to the bottom
-  // whenever the current ball is in the top quarter of the field.
-  const activeBall = puttState.turn !== null ? puttState.players[puttState.turn]?.ball : undefined;
-  const overlayAtBottom = !!activeBall && activeBall.y < field.h * 0.25;
 
   return (
     <div className="flex h-full w-full flex-col gap-2 bg-[#5a5a3a] p-3 text-white">
@@ -234,6 +229,17 @@ export const PuttWindow = ({ mesh }: Props) => {
         </div>
       </div>
 
+      {/* Turn / status bar — lives outside the course so it never covers a
+          ball, wherever the ball ends up on the field. Fixed height keeps the
+          course from resizing as the text appears/disappears. */}
+      <div className="flex h-7 shrink-0 items-center justify-center">
+        {overlay && (
+          <div className="rounded bg-black/70 px-4 py-1 text-center font-mono text-sm uppercase tracking-widest text-white">
+            {overlay}
+          </div>
+        )}
+      </div>
+
       {/* Course */}
       <div ref={containerRef} className="relative flex flex-1 items-center justify-center overflow-hidden">
         <canvas
@@ -251,17 +257,6 @@ export const PuttWindow = ({ mesh }: Props) => {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
         />
-        {overlay && (
-          <div
-            className={`pointer-events-none absolute inset-x-0 flex justify-center ${
-              overlayAtBottom ? "bottom-3" : "top-3"
-            }`}
-          >
-            <div className="rounded bg-black/70 px-4 py-2 text-center font-mono text-sm uppercase tracking-widest text-white">
-              {overlay}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Scorecard */}
