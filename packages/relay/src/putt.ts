@@ -87,7 +87,9 @@ export type PuttWall = { x: number; y: number; w: number; h: number };
 // Optional r0 (< r) gives a flat top/bottom of that radius — a raised plateau
 // (or flat-bottomed pit) — with the squared-falloff ramp running from r0 out
 // to the rim r. r0 omitted/0 → a plain squared-falloff hump (original shape).
-export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
+// Optional wob warps the rim by sine harmonics of the bearing so the outline is
+// wavy/lobed rather than a perfect circle (see wavyRadius); omitted → default.
+export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number; wob?: number };
 // A hazard region — a circle (radius r at center x,y) or an axis-aligned rect
 // (top-left x,y with size w,h). A hole carries arrays of each kind. WATER = a
 // one-stroke penalty plus a drop on the bank where the ball crossed the
@@ -334,20 +336,45 @@ function buildCourse(): PuttHole[] {
   ];
 }
 
+// Organic-rim warp shared by mounds and hazard circles: a circle of radius r at
+// (x,y) whose *effective* radius along bearing `theta` is warped by three sine
+// harmonics, so its outline is wavy/lobed and never a perfect circle. The phases
+// are hashed deterministically from the circle's own (x,y,r) — so the shape is
+// stable and reproducible with no extra data, and (this is the point) IDENTICAL
+// on the relay and every client. wob = wobble as a fraction of r (0 → a clean
+// circle). |w| peaks ~1.07, so the rim spans roughly r·(1 ± 1.07·wob). Pure;
+// mirrored byte-for-byte in the client (PuttWindow.tsx) so the rendered shoreline
+// matches where the physics actually puts the hazard. KEEP THE TWO IN SYNC.
+function wavyRadius(x: number, y: number, r: number, theta: number, wob: number): number {
+  if (wob <= 0) return r;
+  const tau = Math.PI * 2;
+  const fr = (n: number) => n - Math.floor(n);
+  const p1 = fr(Math.sin(x * 12.9898 + y * 4.1414 + r * 0.713) * 43758.5453) * tau;
+  const p2 = fr(Math.sin(x * 39.346 + y * 11.135 + r * 9.917) * 24634.6345) * tau;
+  const p3 = fr(Math.sin(x * 73.156 + y * 52.235 + r * 3.171) * 13734.2371) * tau;
+  const w = 0.55 * Math.sin(2 * theta + p1) + 0.3 * Math.sin(3 * theta + p2) + 0.22 * Math.sin(5 * theta + p3);
+  return r * (1 + wob * w);
+}
+const PUTT_MOUND_WOB = 0.18; // default mound rim wobble (organic hills/dips)
+const HAZARD_WOB = 0.16; // water/sand rim wobble (a touch tamer than the mounds)
+
 // Height of the terrain at a point: linear tilt across the green plus each
 // mound's squared-falloff hump. Pure — shared shape with the client renderer.
 function puttHeightAt(t: PuttTerrain, x: number, y: number): number {
   let h = t.tiltX * (x - FIELD_W / 2) + t.tiltY * (y - FIELD_H / 2);
   for (const m of t.mounds) {
-    const d = Math.hypot(x - m.x, y - m.y);
-    if (d >= m.r) continue;
-    const r0 = m.r0 ?? 0;
+    const dx = x - m.x;
+    const dy = y - m.y;
+    const d = Math.hypot(dx, dy);
+    const r = wavyRadius(m.x, m.y, m.r, Math.atan2(dy, dx), m.wob ?? PUTT_MOUND_WOB);
+    if (d >= r) continue;
+    const r0 = Math.min(m.r0 ?? 0, r * 0.92); // keep the flat top inside the wavy rim
     if (d <= r0) {
       h += m.h; // flat plateau top / pit floor
     } else {
       // Squared-falloff ramp from the plateau edge (k=1) to the rim (k=0).
       // r0=0 collapses to the original (1 - d/r)² hump.
-      const k = (m.r - d) / (m.r - r0);
+      const k = (r - d) / (r - r0);
       h += m.h * k * k;
     }
   }
@@ -381,7 +408,9 @@ function regionHit(rg: PuttRegion, x: number, y: number): boolean {
   if (rg.kind === "circle") {
     const dx = x - rg.x;
     const dy = y - rg.y;
-    return dx * dx + dy * dy <= rg.r * rg.r;
+    // Wavy shoreline (matches the rendered outline), not a flat circle.
+    const rr = wavyRadius(rg.x, rg.y, rg.r, Math.atan2(dy, dx), HAZARD_WOB);
+    return dx * dx + dy * dy <= rr * rr;
   }
   return x >= rg.x && x <= rg.x + rg.w && y >= rg.y && y <= rg.y + rg.h;
 }

@@ -781,11 +781,23 @@ function drawSail(ctx: CanvasRenderingContext2D, a: number, hubR: number, len: n
 // Region shapes mirror the relay's PuttRegion (circle | rect). Geometry is
 // authoritative on the server (packages/relay/src/putt.ts); these only paint.
 
-// Trace a region's outline as the current path (no fill/stroke).
+// Trace a region's outline as the current path (no fill/stroke). A circle is
+// traced as a wavy polygon (wavyRadius, same warp + seed the relay's regionHit
+// uses) so water/sand read as organic blobs, never perfect discs — and the
+// painted shoreline lines up with where the physics actually penalizes.
 function regionPath(ctx: CanvasRenderingContext2D, rg: PuttRegion) {
   ctx.beginPath();
   if (rg.kind === "circle") {
-    ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2);
+    const STEPS = 72;
+    for (let i = 0; i <= STEPS; i++) {
+      const a = (i / STEPS) * Math.PI * 2;
+      const rr = wavyRadius(rg.x, rg.y, rg.r, a, HAZARD_WOB);
+      const px = rg.x + Math.cos(a) * rr;
+      const py = rg.y + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
   } else {
     const r = Math.min(14, rg.w / 2, rg.h / 2);
     roundRect(ctx, rg.x, rg.y, rg.w, rg.h, r);
@@ -963,21 +975,40 @@ function drawWallBricks(cx: CanvasRenderingContext2D, rx: number, ry: number, rw
 }
 
 // --- Topography ------------------------------------------------------------
-// Mirror of the relay's puttHeightAt (packages/relay/src/putt.ts) — kept in
-// sync by hand, like the seat-color hexes. Linear tilt across the green plus
-// each mound's squared-falloff hump.
+// Mirror of the relay's wavyRadius / puttHeightAt (packages/relay/src/putt.ts)
+// — kept in sync BY HAND, like the seat-color hexes. wavyRadius warps a circle's
+// rim with three sine harmonics of the bearing (phases hashed from x,y,r) so the
+// outline is wavy/lobed, never a perfect circle; it backs both the mound shapes
+// here and the hazard shorelines (regionPath). Must stay byte-for-byte the relay
+// version or the rendered terrain/shoreline drifts from where the physics is.
+function wavyRadius(x: number, y: number, r: number, theta: number, wob: number): number {
+  if (wob <= 0) return r;
+  const tau = Math.PI * 2;
+  const fr = (n: number) => n - Math.floor(n);
+  const p1 = fr(Math.sin(x * 12.9898 + y * 4.1414 + r * 0.713) * 43758.5453) * tau;
+  const p2 = fr(Math.sin(x * 39.346 + y * 11.135 + r * 9.917) * 24634.6345) * tau;
+  const p3 = fr(Math.sin(x * 73.156 + y * 52.235 + r * 3.171) * 13734.2371) * tau;
+  const w = 0.55 * Math.sin(2 * theta + p1) + 0.3 * Math.sin(3 * theta + p2) + 0.22 * Math.sin(5 * theta + p3);
+  return r * (1 + wob * w);
+}
+const PUTT_MOUND_WOB = 0.18;
+const HAZARD_WOB = 0.16;
+
 function puttHeightAt(t: PuttTerrain, x: number, y: number, fw: number, fh: number): number {
   let h = t.tiltX * (x - fw / 2) + t.tiltY * (y - fh / 2);
   for (const m of t.mounds) {
-    const d = Math.hypot(x - m.x, y - m.y);
-    if (d >= m.r) continue;
-    const r0 = m.r0 ?? 0;
+    const dx = x - m.x;
+    const dy = y - m.y;
+    const d = Math.hypot(dx, dy);
+    const r = wavyRadius(m.x, m.y, m.r, Math.atan2(dy, dx), m.wob ?? PUTT_MOUND_WOB);
+    if (d >= r) continue;
+    const r0 = Math.min(m.r0 ?? 0, r * 0.92); // keep the flat top inside the wavy rim
     if (d <= r0) {
       h += m.h; // flat plateau top / pit floor
     } else {
       // Squared-falloff ramp from the plateau edge (k=1) to the rim (k=0);
       // r0=0 collapses to the original (1 - d/r)² hump.
-      const k = (m.r - d) / (m.r - r0);
+      const k = (r - d) / (r - r0);
       h += m.h * k * k;
     }
   }
@@ -992,6 +1023,8 @@ const BAND_RGB: Array<[number, number, number]> = HEIGHT_BANDS.map(hex => [
 ]);
 const TERRAIN_CELL = 12; // px per color block — the chunky, pixelated grid
 const TERRAIN_STEPS = 16; // discrete elevation steps across the gradient
+const GRASS_MOTTLE = 0.1; // per-cell elevation jitter → light/dark green patches
+const GRASS_DOT_CHANCE = 0.38; // fraction of cells that get a surface grain dot
 
 // Color along the band palette for t∈[0,1] — lerp between the two nearest
 // anchors. We quantize t into TERRAIN_STEPS before calling this, so the result
@@ -1037,12 +1070,30 @@ function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: num
     const steps = TERRAIN_STEPS - 1;
     for (let y = 0; y < fh; y += TERRAIN_CELL) {
       for (let x = 0; x < fw; x += TERRAIN_CELL) {
+        const col = Math.floor(x / TERRAIN_CELL);
+        const row = Math.floor(y / TERRAIN_CELL);
         const h = puttHeightAt(hole.terrain, x + TERRAIN_CELL / 2, y + TERRAIN_CELL / 2, fw, fh);
-        const t = Math.max(0, Math.min(1, (h - min) / span));
+        // Deterministic per-cell mottle: nudge the elevation a touch so even the
+        // flat green breaks into light/dark patches instead of one solid color.
+        const n = brickRand(col, row);
+        const t = Math.max(0, Math.min(1, (h - min) / span + (n - 0.5) * 2 * GRASS_MOTTLE));
         const q = Math.round(t * steps) / steps; // snap to a discrete elevation step
         const [r, g, b] = rampColor(q);
         cx.fillStyle = `rgb(${r},${g},${b})`;
         cx.fillRect(x, y, TERRAIN_CELL, TERRAIN_CELL);
+        // Surface grain: a small lighter/darker green pip in some cells, so the
+        // turf is dotted/textured all over — the same speckle the sand bunkers
+        // have, just greener and sparser.
+        const n2 = brickRand(col + 17, row + 5);
+        if (n2 > 1 - GRASS_DOT_CHANCE) {
+          const dq = Math.max(0, Math.min(1, q + (n2 > 0.81 ? 0.13 : -0.13)));
+          const [dr, dg, db] = rampColor(dq);
+          cx.fillStyle = `rgb(${dr},${dg},${db})`;
+          const ds = 3;
+          const ox = 2 + Math.floor(brickRand(col + 3, row + 11) * (TERRAIN_CELL - ds - 3));
+          const oy = 2 + Math.floor(brickRand(col + 9, row + 2) * (TERRAIN_CELL - ds - 3));
+          cx.fillRect(x + ox, y + oy, ds, ds);
+        }
       }
     }
   }

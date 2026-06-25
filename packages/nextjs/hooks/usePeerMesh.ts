@@ -902,7 +902,9 @@ export type PuttWall = { x: number; y: number; w: number; h: number };
 // at (x, y). Optional r0 (< r) gives a flat top/bottom of that radius — a
 // raised plateau (or flat-bottomed pit) — with a squared-falloff ramp from r0
 // out to r. r0 omitted/0 → a plain squared-falloff hump (the original shape).
-export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
+// wob (optional) warps the rim by sine harmonics of the bearing so the outline
+// is wavy/lobed rather than a perfect circle (see wavyRadius in PuttWindow).
+export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number; wob?: number };
 export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
 // A hazard region — a circle (radius r at center x,y) or an axis-aligned rect
 // (top-left x,y with size w,h). WATER = one-stroke penalty + shoreline drop;
