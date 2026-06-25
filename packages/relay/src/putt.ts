@@ -132,6 +132,12 @@ export type PuttHole = {
   sand?: PuttRegion[];
 };
 
+// Every match plays a course generated *deterministically from its name* — the
+// name IS the seed. "Green Links" always yields the same nine holes, on the
+// relay and (since the holes ship in the snapshot) on every client. Rename the
+// course in the lobby and you get a fresh, reproducible nine.
+export const HOLE_COUNT = 9;
+
 // Blade base angle (radians) at a given wall-clock time. Shared verbatim with
 // the client renderer so the drawn sails line up with the server's collision.
 // We REDUCE to [0, 2π): at raw scale the angle is billions of radians, which
@@ -165,6 +171,9 @@ export type PuttPlayer = {
 export type PuttSnapshot = {
   /** Indexed by slot; null = open seat. Length MAX_PLAYERS. */
   players: (PuttPlayer | null)[];
+  /** The course name — also the seed the nine holes were generated from.
+   *  Shown + editable in the lobby; editing it regenerates the course. */
+  courseName: string;
   status: PuttStatus;
   /** Current hole index (0-based). */
   hole: number;
@@ -187,153 +196,232 @@ export type PuttSnapshot = {
 
 type Listener = (snapshot: PuttSnapshot) => void;
 
-// --- The 3-hole course ------------------------------------------------------
-// Hand-designed in field units (420×620, portrait). Tee at the bottom, cup
-// near the top. Walls are partial obstacles that force a curve/bank shot.
-function buildCourse(): PuttHole[] {
-  return [
-    {
-      // Hole 1 — a right-side detour around a left-anchored wall. A raised
-      // plateau guards the gap (you climb over its flank or skirt it), a small
-      // hill sits in the bottom-left fairway, and a shallow bowl rings the cup
-      // to gather a ball that arrives with the right pace. A sand bunker sits
-      // off the left of the cup approach — overcut the turn and you bury in it
-      // (no penalty, but you lose all your pace). The straight right-lane line
-      // up and over the plateau flank stays clean.
-      par: 3,
-      tee: { x: 210, y: 545 },
-      cup: { x: 230, y: 95 },
-      walls: [{ x: 40, y: 300, w: 220, h: 16 }],
-      terrain: {
-        tiltX: 0,
-        tiltY: 0,
-        mounds: [
-          { x: 340, y: 370, r: 120, h: 30, r0: 38 }, // flat-topped plateau in the gap
-          { x: 90, y: 470, r: 80, h: 20 }, // bottom-left rise
-          { x: 310, y: 230, r: 58, h: 16 }, // small rise on the right cup approach (adds break)
-          { x: 230, y: 120, r: 78, h: -14 }, // gathering bowl around the cup
-        ],
-      },
-      sand: [{ kind: "circle", x: 140, y: 185, r: 42 }], // bunker left of the cup approach
-    },
-    {
-      // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. A
-      // dip sits in the elbow to gather a well-placed ball, a big central hill
-      // breaks the cross-corridor, a plateau guards the cup approach, and a
-      // short post pinches the lower channel so the line off the tee matters.
-      par: 3,
-      tee: { x: 90, y: 545 },
-      cup: { x: 330, y: 100 },
-      walls: [
-        { x: 150, y: 360, w: 16, h: 200 },
-        { x: 150, y: 200, w: 220, h: 16 },
-        { x: 60, y: 470, w: 16, h: 70 },
-      ],
-      terrain: {
-        tiltX: 0,
-        tiltY: 0,
-        mounds: [
-          { x: 255, y: 295, r: 118, h: 32 }, // central hill in the cross-corridor
-          { x: 108, y: 445, r: 92, h: -18 }, // elbow dip that gathers a good ball
-          { x: 288, y: 175, r: 85, h: 24, r0: 28 }, // plateau guarding the cup approach (clear of the pin)
-          { x: 70, y: 120, r: 64, h: -12 }, // dished sand bunker, top-left corner
-          { x: 352, y: 162, r: 52, h: -9 }, // small gathering dip just below-right of the cup
-        ],
-      },
-      // A real sand trap sunk into the top-left corner dip — hug the left wall
-      // too tightly on the run across the top and you bury here. The line that
-      // stays a ball-width off the wall clears it.
-      sand: [{ kind: "circle", x: 70, y: 120, r: 46 }],
-    },
-    {
-      // Hole 3 — go left (the long, flat, safe route) or right over a raised
-      // plateau (shorter, but it breaks your line AND skirts a pond). The whole
-      // green runs uphill to the cup, so you need pace; a hill behind the
-      // central box punishes a ball that skirts it too tight, and a shallow
-      // bowl funnels the cup. The water sits only in the right lane — the left
-      // lane is a clean, water-free line to the pin.
-      par: 3,
-      tee: { x: 210, y: 550 },
-      cup: { x: 210, y: 95 },
-      walls: [{ x: 160, y: 270, w: 100, h: 70 }],
-      terrain: {
-        tiltX: 0,
-        tiltY: -0.045, // uphill toward the cup (gentle — below the static-friction creep threshold)
-        mounds: [
-          { x: 340, y: 300, r: 120, h: 30, r0: 40 }, // right-lane plateau
-          { x: 175, y: 180, r: 110, h: 28 }, // hill behind the box
-          { x: 210, y: 140, r: 64, h: -12 }, // bowl below the cup
-        ],
-      },
-      // Pond in the lower-right lane: take the plateau shortcut and you have to
-      // thread between the central box and the water. Bail left and you avoid
-      // it entirely.
-      water: [{ kind: "circle", x: 362, y: 448, r: 52 }],
-    },
-    {
-      // Hole 4 — THE WINDMILL. A brick base spans the green with a central
-      // doorway, and four sails spin over it. The hub + sail-cross fully guard
-      // the dead-center line, so you aim just inside a wall and thread the gap
-      // as the sails sweep clear — clip one and it swats you back down the
-      // fairway. The central threading line stays flat (you supply the pace),
-      // but two gentle rises flank the lower fairway to add a little break on
-      // the run-up.
-      par: 3,
-      tee: { x: 210, y: 560 },
-      cup: { x: 210, y: 92 },
-      walls: [
-        { x: 0, y: 288, w: 140, h: 20 },
-        { x: 280, y: 288, w: 140, h: 20 },
-      ],
-      terrain: {
-        tiltX: 0,
-        tiltY: 0,
-        mounds: [
-          { x: 105, y: 470, r: 88, h: 18 }, // lower-left rise (off the center line)
-          { x: 315, y: 470, r: 88, h: 18 }, // lower-right rise (off the center line)
-          { x: 210, y: 150, r: 70, h: -12 }, // gathering bowl past the sails, below the cup
-        ],
-      },
-      // Two small bunkers tucked behind the brick base, flanking the cup — a
-      // ball that bursts through the gap too hot and skitters wide buries in
-      // one instead of settling near the pin. The centred threading line is
-      // clear of both.
-      sand: [
-        { kind: "circle", x: 70, y: 210, r: 34 },
-        { kind: "circle", x: 350, y: 210, r: 34 },
-      ],
-      windmill: { x: 210, y: 298, hubR: 7, bladeLen: 52, bladeW: 5, blades: 4, rpm: 9 },
-    },
-    {
-      // Hole 5 — THE CARRY. A wide lake spans the center-left of the green, so
-      // the straight line off the tee runs into the water; the safe play is up
-      // the open right lane, around the lake, then a cut back left to the cup.
-      // A second small pond sits top-right (so you can't just rocket straight
-      // up the right edge to the pin) and a bunker guards the left of the cup
-      // for an over-cooked approach. Longer hole — par 4.
-      par: 4,
-      tee: { x: 210, y: 560 },
-      cup: { x: 205, y: 80 },
-      walls: [],
-      terrain: {
-        tiltX: 0,
-        tiltY: 0,
-        mounds: [
-          { x: 345, y: 470, r: 82, h: 18 }, // right-lane rise on the run-up (adds break)
-          { x: 360, y: 300, r: 72, h: 14 }, // gentle right-lane shoulder past the lake
-          { x: 205, y: 95, r: 62, h: -12 }, // gathering bowl below the cup
-        ],
-      },
-      // The lake (rect) blocks the direct line; the top-right pond (circle)
-      // forces the approach back toward the center. Both are skirtable up the
-      // right and across the top — no shot is forced over water.
-      water: [
-        { kind: "rect", x: 40, y: 238, w: 232, h: 124 },
-        { kind: "circle", x: 332, y: 178, r: 44 },
-      ],
-      sand: [{ kind: "circle", x: 138, y: 152, r: 40 }], // bunker left of the cup approach
-    },
-  ];
+// --- Seeded course generation -----------------------------------------------
+// The whole course is a deterministic function of the course *name*. Same name
+// → same nine holes, byte-for-byte, on the relay and every client (the client
+// just renders the holes shipped in the snapshot — it never runs the generator).
+
+// String → a fast deterministic float stream in [0,1). xmur3 hashes the seed to
+// a 32-bit state, mulberry32 turns that into a PRNG. Both are well-known public
+// snippets chosen for being tiny, pure, and reproducible across engines.
+function makeRng(seedStr: string): () => number {
+  let h = 1779033703 ^ seedStr.length;
+  for (let i = 0; i < seedStr.length; i++) {
+    h = Math.imul(h ^ seedStr.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = (h ^= h >>> 16) >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+type Rng = () => number;
+const rRange = (r: Rng, lo: number, hi: number): number => lo + r() * (hi - lo);
+const rInt = (r: Rng, lo: number, hi: number): number => Math.floor(rRange(r, lo, hi + 1));
+const rChance = (r: Rng, p: number): boolean => r() < p;
+
+// Two-part links names — adjective + noun, in the slop cyberdelic register. The
+// initial pick is non-deterministic (Math.random) so each fresh lobby suggests
+// a new one; once chosen, the name deterministically seeds the holes.
+const NAME_ADJ = [
+  "Green", "Whispering", "Cyber", "Royal", "Hidden", "Sunset", "Crystal", "Thunder",
+  "Emerald", "Misty", "Iron", "Crimson", "Neon", "Velvet", "Wandering", "Phantom",
+  "Glitch", "Pixel", "Chrome", "Acid", "Lunar", "Static", "Vapor", "Hollow",
+] as const;
+const NAME_NOUN = [
+  "Links", "Pines", "Dunes", "Hollow", "Greens", "Hills", "Meadows", "Springs",
+  "Ridge", "Glen", "Sands", "Shores", "Bluffs", "Cove", "Fairway", "Gardens",
+  "Circuit", "Grid", "Mirage", "Reef", "Wastes", "Heights", "Run", "Drift",
+] as const;
+function randomCourseName(): string {
+  const a = NAME_ADJ[Math.floor(Math.random() * NAME_ADJ.length)];
+  const n = NAME_NOUN[Math.floor(Math.random() * NAME_NOUN.length)];
+  return `${a} ${n}`;
+}
+
+// Nearest-point distance from (x,y) to an axis-aligned rect — used to keep
+// generated walls/hazards a respectful distance off the tee and cup.
+function rectDist(x: number, y: number, rx: number, ry: number, rw: number, rh: number): number {
+  const nx = clamp(x, rx, rx + rw);
+  const ny = clamp(y, ry, ry + rh);
+  return Math.hypot(x - nx, y - ny);
+}
+
+// Clearance kept around the two fixed points so a hole is always *reachable*:
+// nothing solid spawns on the tee, and the cup keeps an open collar so a ball
+// arriving with the right pace can actually drop. This is the only "fairness"
+// guard for now — no full solver — so holes can still be weird and hard, just
+// not impossible.
+const TEE_CLEAR = 48;
+const CUP_CLEAR = 66;
+
+// Generate one hole, seeded by the course name + hole index so each hole is
+// independent yet fully reproducible.
+function generateHole(seed: string, index: number): PuttHole {
+  const r = makeRng(`${seed}#${index}`);
+  const W = FIELD_W;
+  const H = FIELD_H;
+  const margin = 46;
+
+  // Tee in the bottom band, cup in the top band, both with free lateral play.
+  const tee: PuttVec = { x: rRange(r, margin, W - margin), y: rRange(r, H - 92, H - 54) };
+  const cup: PuttVec = { x: rRange(r, margin, W - margin), y: rRange(r, 58, 132) };
+
+  const clearOfEnds = (x: number, y: number, pad = 0): boolean =>
+    Math.hypot(x - tee.x, y - tee.y) > TEE_CLEAR + pad && Math.hypot(x - cup.x, y - cup.y) > CUP_CLEAR + pad;
+
+  // A windmill hole skips the generic walls and instead gets a brick base with
+  // a central doorway the sails sweep across — the classic gauntlet. ~1 in 4.
+  const hasWindmill = rChance(r, 0.26);
+  const walls: PuttWall[] = [];
+  let windmill: PuttWindmill | undefined;
+
+  if (hasWindmill) {
+    const wmX = rRange(r, 140, W - 140);
+    const wmY = rRange(r, 250, 380);
+    const gapHalf = rRange(r, 58, 80);
+    const barH = 20;
+    const barY = wmY - barH / 2;
+    const leftW = wmX - gapHalf;
+    const rightX = wmX + gapHalf;
+    if (leftW > 12) walls.push({ x: 0, y: barY, w: leftW, h: barH });
+    if (W - rightX > 12) walls.push({ x: rightX, y: barY, w: W - rightX, h: barH });
+    windmill = {
+      x: wmX,
+      y: wmY,
+      hubR: 7,
+      bladeLen: rRange(r, 44, 56),
+      bladeW: 5,
+      blades: 4,
+      rpm: rRange(r, 7, 11) * (rChance(r, 0.5) ? 1 : -1),
+    };
+  } else {
+    // 0–4 free-standing bars/posts in the mid band (well clear of both end rows
+    // so they can never box the tee or cup in).
+    const wallCount = rInt(r, 0, 4);
+    for (let i = 0; i < wallCount; i++) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const horiz = rChance(r, 0.5);
+        const w = horiz ? rRange(r, 70, 220) : rRange(r, 14, 18);
+        const h = horiz ? rRange(r, 14, 18) : rRange(r, 70, 200);
+        const x = rRange(r, 8, W - 8 - w);
+        const y = rRange(r, 150, H - 200 - h);
+        if (rectDist(tee.x, tee.y, x, y, w, h) < TEE_CLEAR) continue;
+        if (rectDist(cup.x, cup.y, x, y, w, h) < CUP_CLEAR) continue;
+        walls.push({ x, y, w, h });
+        break;
+      }
+    }
+  }
+
+  // Mounds: 2–5 hills/dips/plateaus scattered anywhere. A tall hill that lands
+  // on the cup would seal it, so any rise too near the pin is flipped to a dip
+  // (a gathering bowl — both fair and pretty).
+  const mounds: PuttMound[] = [];
+  const moundCount = rInt(r, 2, 5);
+  for (let i = 0; i < moundCount; i++) {
+    const x = rRange(r, 30, W - 30);
+    const y = rRange(r, 56, H - 56);
+    const rad = rRange(r, 50, 130);
+    let isDip = rChance(r, 0.35);
+    if (!isDip && Math.hypot(x - cup.x, y - cup.y) < CUP_CLEAR + rad * 0.5) isDip = true;
+    const height = isDip ? -rRange(r, 8, 18) : rRange(r, 12, 34);
+    const plateau = !isDip && rChance(r, 0.4);
+    const r0 = plateau ? rad * rRange(r, 0.25, 0.45) : 0;
+    mounds.push({ x, y, r: rad, h: height, r0, wob: rRange(r, 0.12, 0.24) });
+  }
+  // A gentle gathering bowl around the cup most of the time — gives a well-paced
+  // approach somewhere to settle.
+  if (rChance(r, 0.6)) {
+    mounds.push({ x: cup.x, y: cup.y, r: rRange(r, 54, 70), h: -rRange(r, 10, 15) });
+  }
+
+  // Gentle global tilt for break. The physics has static-friction/creep guards,
+  // so a modest grade just bends the line — it won't ooze a resting ball away.
+  const terrain: PuttTerrain = {
+    tiltX: rRange(r, -0.035, 0.035),
+    tiltY: rRange(r, -0.045, 0.035),
+    mounds,
+  };
+
+  // Water: ~half the holes get a pond or two. Capped well under field width so a
+  // dry lane to the cup always exists, and kept off the tee/cup collars.
+  const water: PuttRegion[] = [];
+  const waterCount = rChance(r, 0.5) ? rInt(r, 1, 2) : 0;
+  for (let i = 0; i < waterCount; i++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (rChance(r, 0.55)) {
+        const rad = rRange(r, 38, 60);
+        const x = rRange(r, rad + 8, W - rad - 8);
+        const y = rRange(r, 170, H - 170);
+        if (!clearOfEnds(x, y, rad)) continue;
+        water.push({ kind: "circle", x, y, r: rad });
+        break;
+      } else {
+        const w = rRange(r, 90, 200);
+        const h = rRange(r, 70, 130);
+        const x = rRange(r, 8, W - 8 - w);
+        const y = rRange(r, 165, H - 165 - h);
+        if (rectDist(tee.x, tee.y, x, y, w, h) < TEE_CLEAR + 10) continue;
+        if (rectDist(cup.x, cup.y, x, y, w, h) < CUP_CLEAR + 10) continue;
+        water.push({ kind: "rect", x, y, w, h });
+        break;
+      }
+    }
+  }
+
+  // Sand: ~half the holes get 1–2 bunkers. No penalty, so they may sit closer to
+  // the pin than water — just not on it.
+  const sand: PuttRegion[] = [];
+  const sandCount = rChance(r, 0.5) ? rInt(r, 1, 2) : 0;
+  for (let i = 0; i < sandCount; i++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const rad = rRange(r, 30, 55);
+      const x = rRange(r, rad + 8, W - rad - 8);
+      const y = rRange(r, 110, H - 130);
+      if (Math.hypot(x - tee.x, y - tee.y) < TEE_CLEAR + rad) continue;
+      if (Math.hypot(x - cup.x, y - cup.y) < CUP_R + BALL_R + 18 + rad * 0.4) continue;
+      sand.push({ kind: "circle", x, y, r: rad });
+      break;
+    }
+  }
+
+  // Par scales with the trouble in the way + the raw length of the hole.
+  const dist = Math.hypot(cup.x - tee.x, cup.y - tee.y);
+  let par = dist > 510 ? 4 : 3;
+  if (windmill) par += 1;
+  if (water.length >= 1) par += 1;
+  par = clamp(par, 2, 5);
+
+  return {
+    par,
+    tee,
+    cup,
+    walls,
+    terrain,
+    windmill,
+    water: water.length ? water : undefined,
+    sand: sand.length ? sand : undefined,
+  };
+}
+
+/** Build a full deterministic course from a name. */
+function generateCourse(seed: string): PuttHole[] {
+  const name = seed.trim() || "Slop Links";
+  const holes: PuttHole[] = [];
+  for (let i = 0; i < HOLE_COUNT; i++) holes.push(generateHole(name, i));
+  return holes;
+}
+
+/** Trim/cap a user-supplied course name; fall back to a fresh random one. */
+function sanitizeCourseName(raw: string): string {
+  const trimmed = (raw ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+  return trimmed || randomCourseName();
 }
 
 // Organic-rim warp shared by mounds and hazard circles: a circle of radius r at
@@ -444,9 +532,12 @@ function shorelinePoint(regions: PuttRegion[], x0: number, y0: number, x1: numbe
 }
 
 export class Putt {
-  private readonly holes: PuttHole[] = buildCourse();
+  // Seed + holes are mutable: renaming the course in the lobby regenerates both.
+  private courseName: string = randomCourseName();
+  private holes: PuttHole[] = generateCourse(this.courseName);
   private snapshot: PuttSnapshot = {
     players: new Array(MAX_PLAYERS).fill(null),
+    courseName: this.courseName,
     status: "waiting",
     hole: 0,
     turn: null,
@@ -574,12 +665,47 @@ export class Putt {
   }
 
   /** Reset to the lobby (keeping seats + clearing scores). Seated players
-   *  only — the "Play Again" button after a course ends hits this. */
+   *  only — the "Play Again" button after a course ends hits this. Rolls a
+   *  fresh random course so "again" means a new nine, not a replay. */
   reset(ownerKey: string): boolean {
     if (this.findSlot(ownerKey) === null) return false;
     this.resetToLobby();
     this.notify();
     return true;
+  }
+
+  /** Rename the course (and thereby reseed + regenerate the nine holes). Only
+   *  in the lobby/after a course ends, and only by a seated player. Empty names
+   *  fall back to a fresh random one. Returns true if the course changed. */
+  rename(ownerKey: string, name: string): boolean {
+    if (this.findSlot(ownerKey) === null) return false;
+    if (this.snapshot.status !== "waiting" && this.snapshot.status !== "ended") return false;
+    const next = sanitizeCourseName(name);
+    this.loadCourse(next);
+    // A rename after a course ended drops everyone back to the lobby for the
+    // new layout (their old scorecard was for a different course).
+    this.snapshot.status = "waiting";
+    this.snapshot.hole = 0;
+    this.snapshot.turn = null;
+    this.snapshot.winner = null;
+    this.snapshot.holeDoneAt = 0;
+    this.notify();
+    return true;
+  }
+
+  /** Swap in a freshly generated course and reset every scorecard + ball to the
+   *  new hole 1 tee. Used by rename and the lobby reset. */
+  private loadCourse(name: string): void {
+    this.courseName = name;
+    this.holes = generateCourse(name);
+    this.snapshot.courseName = name;
+    this.snapshot.course.holes = this.holes;
+    for (const p of this.snapshot.players) {
+      if (!p) continue;
+      p.strokes = new Array(this.holes.length).fill(0);
+      p.done = new Array(this.holes.length).fill(false);
+      p.ball = { ...this.teeFor(0) };
+    }
   }
 
   subscribe(fn: Listener): () => void {
@@ -613,12 +739,9 @@ export class Putt {
     this.snapshot.turn = null;
     this.snapshot.winner = null;
     this.snapshot.holeDoneAt = 0;
-    for (const p of this.snapshot.players) {
-      if (!p) continue;
-      p.strokes = new Array(this.holes.length).fill(0);
-      p.done = new Array(this.holes.length).fill(false);
-      p.ball = { ...this.teeFor(0) };
-    }
+    // Fresh random course each time we drop to the lobby (players can rename it
+    // before starting). loadCourse also resets every scorecard + ball to tee 1.
+    this.loadCourse(randomCourseName());
   }
 
   /** The tee position for a hole, with a safe fallback (the course always

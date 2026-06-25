@@ -69,7 +69,7 @@ type Props = { mesh: PeerMeshState };
 type Drag = { startX: number; startY: number; curX: number; curY: number };
 
 export const PuttWindow = ({ mesh }: Props) => {
-  const { puttState, myPuttSlot, puttClaim, puttRelease, puttStart, puttShoot, puttReset } = mesh;
+  const { puttState, myPuttSlot, puttClaim, puttRelease, puttStart, puttShoot, puttReset, puttRename } = mesh;
   const { field, holes } = puttState.course;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,6 +93,20 @@ export const PuttWindow = ({ mesh }: Props) => {
 
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(isPuttMuted()), []);
+
+  // Course-name editor. The name IS the course seed: editing it reseeds the
+  // nine holes. We keep a local draft so typing isn't clobbered by the steady
+  // snapshot stream, syncing it from the server name only while unfocused.
+  const [nameDraft, setNameDraft] = useState("");
+  const nameFocused = useRef(false);
+  useEffect(() => {
+    if (!nameFocused.current) setNameDraft(puttState.courseName);
+  }, [puttState.courseName]);
+  const commitName = useCallback(() => {
+    const next = nameDraft.replace(/\s+/g, " ").trim();
+    if (next && next !== puttState.courseName) puttRename(next);
+    else setNameDraft(puttState.courseName); // snap back if unchanged/empty
+  }, [nameDraft, puttState.courseName, puttRename]);
 
   // Sound effects, derived by diffing consecutive public snapshots so the whole
   // course is audible to every client (not just the player taking the shot).
@@ -295,8 +309,52 @@ export const PuttWindow = ({ mesh }: Props) => {
   const hole = holes[puttState.hole];
   const overlay = buildOverlay(puttState);
 
+  const canEditName = amSeated && (puttState.status === "waiting" || puttState.status === "ended");
+
   return (
     <div className="flex h-full w-full flex-col gap-2 bg-[#5a5a3a] p-3 text-white">
+      {/* Course name == the seed. Editable in the lobby (regenerates the nine
+          holes); a static plaque once a round is underway. */}
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--slop-lime)]">⛳ Course</span>
+        {canEditName ? (
+          <>
+            <input
+              type="text"
+              value={nameDraft}
+              maxLength={40}
+              spellCheck={false}
+              placeholder="Course name = seed"
+              onFocus={() => {
+                nameFocused.current = true;
+              }}
+              onChange={e => setNameDraft(e.target.value)}
+              onBlur={() => {
+                nameFocused.current = false;
+                commitName();
+              }}
+              onKeyDown={e => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+              className="min-w-0 flex-1 rounded border border-white/30 bg-black/30 px-2 py-1 font-mono text-sm text-white outline-none focus:border-[var(--slop-cyan)]"
+            />
+            <button
+              type="button"
+              title="Roll a random course name"
+              onClick={() => {
+                nameFocused.current = false;
+                puttRename(""); // empty → the relay invents a fresh random name
+              }}
+              className="rounded border border-white/40 bg-white/10 px-2 py-1 text-[13px] leading-none hover:bg-white/20"
+            >
+              🎲
+            </button>
+          </>
+        ) : (
+          <span className="truncate font-mono text-sm text-white">{puttState.courseName || "—"}</span>
+        )}
+      </div>
+
       {/* Header: hole + par, status, controls */}
       <div className="flex items-center justify-between text-[11px] uppercase tracking-widest text-white/80">
         <div className="flex items-baseline gap-3">
@@ -544,7 +602,7 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.save();
   roundRect(ctx, pad, pad, f.w - 2 * pad, f.h - 2 * pad, 8);
   ctx.clip();
-  ctx.drawImage(getTerrainCanvas(state.hole, hole, f.w, f.h), 0, 0);
+  ctx.drawImage(getTerrainCanvas(state.courseName, state.hole, hole, f.w, f.h), 0, 0);
   ctx.restore();
 
   // Hazards sit on top of the felt but under the tee/cup/walls/balls. Sand
@@ -593,7 +651,7 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
     ctx.fillStyle = "rgba(0,0,0,0.25)";
     ctx.fillRect(w.x + 2, w.y + 3, w.w, w.h);
   }
-  ctx.drawImage(getWallsCanvas(state.hole, hole, f.w, f.h), 0, 0);
+  ctx.drawImage(getWallsCanvas(state.courseName, state.hole, hole, f.w, f.h), 0, 0);
 
   // Windmill (hole 4): the spinning sails mounted over the gap in the brick
   // base. Drawn from Date.now() so the rendered angle tracks the relay's
@@ -1029,10 +1087,14 @@ function brickRand(r: number, c: number): number {
 // Each wall's bricks are clipped to its rounded rect so they never bleed past
 // the wall; positions/sizes come straight from hole.walls (server collision).
 const wallsCache = new Map<string, HTMLCanvasElement>();
-function getWallsCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
-  const key = `${holeIndex}:${fw}x${fh}`;
+// Keyed by course name (the seed) AND hole index: a renamed course regenerates
+// every hole, so an index-only key would blit a previous course's hole. Capped
+// so a flurry of renames can't grow the cache without bound.
+function getWallsCanvas(sig: string, holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
+  const key = `${sig}:${holeIndex}:${fw}x${fh}`;
   const cached = wallsCache.get(key);
   if (cached) return cached;
+  if (wallsCache.size > 60) wallsCache.clear();
   const cv = document.createElement("canvas");
   cv.width = fw;
   cv.height = fh;
@@ -1178,10 +1240,12 @@ function rampColor(t: number): [number, number, number] {
 // it each frame. Chunky cells quantized into many elevation steps give a
 // pixelated, stepped gradient (more steps than the first cut, same blocky feel).
 const terrainCache = new Map<string, HTMLCanvasElement>();
-function getTerrainCanvas(holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
-  const key = `${holeIndex}:${fw}x${fh}`;
+// Keyed by course name (seed) + hole index — see getWallsCanvas for why.
+function getTerrainCanvas(sig: string, holeIndex: number, hole: PuttHole, fw: number, fh: number): HTMLCanvasElement {
+  const key = `${sig}:${holeIndex}:${fw}x${fh}`;
   const cached = terrainCache.get(key);
   if (cached) return cached;
+  if (terrainCache.size > 60) terrainCache.clear();
   const cv = document.createElement("canvas");
   cv.width = fw;
   cv.height = fh;

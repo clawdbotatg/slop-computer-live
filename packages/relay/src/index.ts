@@ -8715,6 +8715,17 @@ app.register(async function signalRoutes(fastify) {
           if (!ok) return send(socket, { type: "error", error: "not-seated" });
           return;
         }
+        case "putt_rename": {
+          // Seated players only — set the course name (= the seed); the relay
+          // regenerates the nine holes deterministically and broadcasts them.
+          if (typeof msg.name !== "string") {
+            return send(socket, { type: "error", error: "bad_putt_name" });
+          }
+          const callerKey = (info.address ?? info.handle ?? info.id).toLowerCase();
+          const ok = room.putt.rename(callerKey, msg.name as string);
+          if (!ok) return send(socket, { type: "error", error: "cannot_rename" });
+          return;
+        }
         case "tx_request": {
           // Forward the captured impersonator tx to every peer so they all see
           // the same calldata. We don't validate or store — this is just a

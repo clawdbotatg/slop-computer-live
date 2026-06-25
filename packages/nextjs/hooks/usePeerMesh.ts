@@ -944,6 +944,8 @@ export type PuttPlayer = {
 };
 export type PuttState = {
   players: (PuttPlayer | null)[];
+  /** Course name == the seed the holes were generated from. */
+  courseName: string;
   status: PuttStatus;
   hole: number;
   turn: number | null;
@@ -958,6 +960,7 @@ export type PuttState = {
 
 const DEFAULT_PUTT_STATE: PuttState = {
   players: [null, null, null, null],
+  courseName: "",
   status: "waiting",
   hole: 0,
   turn: null,
@@ -1632,6 +1635,8 @@ export type PeerMeshState = {
   /** Reset the course to the lobby. Seated players only — the "Play Again"
    *  button after a course ends hits this. */
   puttReset: () => void;
+  /** Rename the course (= reseed the holes). Seated players, lobby/ended only. */
+  puttRename: (name: string) => void;
   /** Shared QR-window state (text + center logo). Every peer's QR
    *  renders this. Last-writer-wins. */
   qrState: QrState;
@@ -2545,6 +2550,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const puttReset = useCallback(() => {
     send({ type: "putt_reset" });
   }, [send]);
+  const puttRename = useCallback(
+    (name: string) => {
+      send({ type: "putt_rename", name });
+    },
+    [send],
+  );
 
   const sendClick = useCallback(
     (x: number, y: number) => {
@@ -4634,6 +4645,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     puttStart,
     puttShoot,
     puttReset,
+    puttRename,
     previewMedia,
     setPreviewMedia,
     scrollSync,
