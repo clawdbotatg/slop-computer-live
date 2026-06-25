@@ -2,7 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePageVisible } from "~~/hooks/usePageVisible";
-import type { PeerMeshState, PuttColor, PuttHole, PuttState, PuttTerrain, PuttWindmill } from "~~/hooks/usePeerMesh";
+import type {
+  PeerMeshState,
+  PuttColor,
+  PuttHole,
+  PuttRegion,
+  PuttState,
+  PuttTerrain,
+  PuttWindmill,
+} from "~~/hooks/usePeerMesh";
 
 // Turn-based multiplayer mini golf. The relay is authoritative for the ball
 // physics and the whole turn/scorecard flow; a client only sends a shot
@@ -22,6 +30,14 @@ const COLOR_HEX: Record<PuttColor, string> = {
 const FELT_GREEN = "#3a9d3a"; // flat fallback (empty/lobby with no hole yet)
 const FRAME_BROWN = "#9c6b35";
 const AIM_YELLOW = "#ffe14d";
+// Hazard fills. Water = a blue pool with a lighter center + dark shoreline;
+// sand = a warm tan bunker with a soft rim. Both are distinct from the green
+// height-banded felt so they read instantly.
+const WATER_DEEP = "#1763b8";
+const WATER_SHALLOW = "#3fa9f5";
+const WATER_EDGE = "#0c3d77";
+const SAND_FILL = "#e6d3a0";
+const SAND_EDGE = "#c4a86a";
 // Topographic height bands (low → high). Distinct green steps so different
 // elevations read as different colors, like a contour map.
 const HEIGHT_BANDS = ["#14692f", "#1c7a37", "#2c8e40", "#43a44a", "#5fbb55", "#80d263", "#a3e678"];
@@ -387,6 +403,7 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   if (!ctx) return;
   const f = state.course.field;
   const hole = state.course.holes[state.hole];
+  const now = Date.now(); // shared clock for the windmill sails + water shimmer
 
   // Backdrop (the brown surround) + the green felt frame.
   ctx.fillStyle = "#5a5a3a";
@@ -411,6 +428,19 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   ctx.clip();
   ctx.drawImage(getTerrainCanvas(state.hole, hole, f.w, f.h), 0, 0);
   ctx.restore();
+
+  // Hazards sit on top of the felt but under the tee/cup/walls/balls. Sand
+  // first, then water (so a pool reads on top where they ever touch). Clipped
+  // to the play area like the terrain so a rect can't bleed past the rounded
+  // frame.
+  if (hole.sand?.length || hole.water?.length) {
+    ctx.save();
+    roundRect(ctx, pad, pad, f.w - 2 * pad, f.h - 2 * pad, 8);
+    ctx.clip();
+    if (hole.sand) for (const rg of hole.sand) drawSand(ctx, rg);
+    if (hole.water) for (const rg of hole.water) drawWater(ctx, rg, now);
+    ctx.restore();
+  }
 
   // Tee marker (subtle ring).
   ctx.strokeStyle = "rgba(255,255,255,0.3)";
@@ -452,7 +482,7 @@ function paint(canvas: HTMLCanvasElement | null, state: PuttState, mySlot: numbe
   // collision (which reads the same clock) — see windmillAngle. Drawn here,
   // over the walls but under the balls, so your ball always stays visible on
   // top as it threads (or clips) the gap.
-  if (hole.windmill) drawWindmill(ctx, hole.windmill, Date.now());
+  if (hole.windmill) drawWindmill(ctx, hole.windmill, now);
 
   // Balls. Draw a single dimpled, rolling golf ball for a player. The server
   // exposes only position (no velocity), so we derive roll direction + speed
@@ -745,6 +775,91 @@ function drawSail(ctx: CanvasRenderingContext2D, a: number, hubR: number, len: n
   roundRect(ctx, inner, -half, len - inner, half * 2, half * 0.6);
   ctx.stroke();
   ctx.restore();
+}
+
+// --- Hazards (water + sand) -------------------------------------------------
+// Region shapes mirror the relay's PuttRegion (circle | rect). Geometry is
+// authoritative on the server (packages/relay/src/putt.ts); these only paint.
+
+// Trace a region's outline as the current path (no fill/stroke).
+function regionPath(ctx: CanvasRenderingContext2D, rg: PuttRegion) {
+  ctx.beginPath();
+  if (rg.kind === "circle") {
+    ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2);
+  } else {
+    const r = Math.min(14, rg.w / 2, rg.h / 2);
+    roundRect(ctx, rg.x, rg.y, rg.w, rg.h, r);
+  }
+}
+
+// Approximate center + extent of a region (for the water gradient + ripples).
+function regionBounds(rg: PuttRegion): { cx: number; cy: number; rad: number } {
+  if (rg.kind === "circle") return { cx: rg.x, cy: rg.y, rad: rg.r };
+  return { cx: rg.x + rg.w / 2, cy: rg.y + rg.h / 2, rad: Math.max(rg.w, rg.h) / 2 };
+}
+
+// Sand bunker: a flat tan fill with a soft darker rim and a scatter of
+// deterministic speckles so it reads as grainy, not a solid blob.
+function drawSand(ctx: CanvasRenderingContext2D, rg: PuttRegion) {
+  regionPath(ctx, rg);
+  ctx.fillStyle = SAND_FILL;
+  ctx.fill();
+  // Speckle texture, clipped to the bunker.
+  const { cx, cy, rad } = regionBounds(rg);
+  ctx.save();
+  regionPath(ctx, rg);
+  ctx.clip();
+  ctx.fillStyle = "rgba(150,120,60,0.35)";
+  for (let i = 0; i < 90; i++) {
+    const n = brickRand(i, Math.round(cx + cy));
+    const n2 = brickRand(i + 31, Math.round(rad));
+    const sx = cx - rad + n * rad * 2;
+    const sy = cy - rad + n2 * rad * 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 0.8 + n * 1.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  // Soft rim.
+  regionPath(ctx, rg);
+  ctx.strokeStyle = SAND_EDGE;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+}
+
+// Water hazard: a radial blue pool (lighter center → deeper rim) with a dark
+// shoreline and a couple of slow concentric ripples that drift over time so it
+// reads as live water, not a painted disc.
+function drawWater(ctx: CanvasRenderingContext2D, rg: PuttRegion, now: number) {
+  const { cx, cy, rad } = regionBounds(rg);
+  const grad = ctx.createRadialGradient(cx, cy, rad * 0.1, cx, cy, rad);
+  grad.addColorStop(0, WATER_SHALLOW);
+  grad.addColorStop(0.7, WATER_DEEP);
+  grad.addColorStop(1, WATER_EDGE);
+  regionPath(ctx, rg);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  // Drifting ripples, clipped to the pool.
+  ctx.save();
+  regionPath(ctx, rg);
+  ctx.clip();
+  ctx.strokeStyle = "rgba(255,255,255,0.22)";
+  ctx.lineWidth = 1.5;
+  const phase = (now / 2600) % 1;
+  for (let i = 0; i < 3; i++) {
+    const t = ((phase + i / 3) % 1) * 1.05;
+    ctx.globalAlpha = Math.max(0, 1 - t) * 0.8;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad * t, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  // Dark shoreline.
+  regionPath(ctx, rg);
+  ctx.strokeStyle = WATER_EDGE;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
 }
 
 // --- Cup --------------------------------------------------------------------

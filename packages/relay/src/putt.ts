@@ -41,6 +41,15 @@ const KINETIC_FRICTION = 0.08; // constant decel while rolling (px/tick²) — s
 //                                a normal putt.
 const STATIC_FRICTION = 0.12; // max downhill pull a resting ball holds (px/tick²)
 const MIN_SPEED = 0.6; // below this a ball is slow enough to test for sticking
+// Sand traps (bunkers): a ball whose center is over sand meets far heavier
+// resistance — it digs in, slows hard, and buries (settles fast). No penalty,
+// just sticky/slow. These replace the grass FRICTION/KINETIC for that tick.
+const SAND_FRICTION = 0.8; // velocity retained per tick in sand (vs 0.955 grass)
+const SAND_KINETIC = 0.4; // constant decel in sand (vs 0.08 grass) — bites hard
+const SAND_STICK_SPEED = 1.8; // a ball this slow in sand just buries and stops
+// Water hazard penalty: a ball that crosses the shoreline costs one extra
+// stroke and is dropped back on the bank where it entered (not the tee).
+const WATER_PENALTY = 1;
 // Settle backstop: if the ball crawls below SETTLE_SPEED for SETTLE_TICKS in a
 // row it's force-stopped. Kills any residual imperceptible creep (a ball that
 // reaches a tiny terminal velocity on a slope and never quite sticks) without
@@ -79,6 +88,14 @@ export type PuttWall = { x: number; y: number; w: number; h: number };
 // (or flat-bottomed pit) — with the squared-falloff ramp running from r0 out
 // to the rim r. r0 omitted/0 → a plain squared-falloff hump (original shape).
 export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
+// A hazard region — a circle (radius r at center x,y) or an axis-aligned rect
+// (top-left x,y with size w,h). A hole carries arrays of each kind. WATER = a
+// one-stroke penalty plus a drop on the bank where the ball crossed the
+// shoreline (standard mini-golf rule); SAND = heavy friction (sticky/slow), no
+// penalty. Both are pure regions tested against the ball center.
+export type PuttRegion =
+  | { kind: "circle"; x: number; y: number; r: number }
+  | { kind: "rect"; x: number; y: number; w: number; h: number };
 // Per-hole topography: a linear tilt across the green (tiltX/tiltY are slope
 // fractions — height rises by tiltX per px in +x, tiltY per px in +y) plus a
 // set of mounds/dips. Height units are arbitrary; only the gradient matters
@@ -107,6 +124,10 @@ export type PuttHole = {
   walls: PuttWall[];
   terrain: PuttTerrain;
   windmill?: PuttWindmill;
+  /** Water hazards (one-stroke penalty + shoreline drop). */
+  water?: PuttRegion[];
+  /** Sand traps / bunkers (heavy friction, no penalty). */
+  sand?: PuttRegion[];
 };
 
 // Blade base angle (radians) at a given wall-clock time. Shared verbatim with
@@ -155,7 +176,7 @@ export type PuttSnapshot = {
    *  a rolling update (interpolate) from a structural change (snap). */
   tick: number;
   /** Whole course + physics constants, shipped so clients don't keep them
-   *  in sync. Small enough (3 holes) to send every snapshot. */
+   *  in sync. Small enough (a handful of holes) to send every snapshot. */
   course: {
     holes: PuttHole[];
     field: { w: number; h: number; ballR: number; cupR: number; maxStrokes: number; maxPower: number };
@@ -173,7 +194,10 @@ function buildCourse(): PuttHole[] {
       // Hole 1 — a right-side detour around a left-anchored wall. A raised
       // plateau guards the gap (you climb over its flank or skirt it), a small
       // hill sits in the bottom-left fairway, and a shallow bowl rings the cup
-      // to gather a ball that arrives with the right pace.
+      // to gather a ball that arrives with the right pace. A sand bunker sits
+      // off the left of the cup approach — overcut the turn and you bury in it
+      // (no penalty, but you lose all your pace). The straight right-lane line
+      // up and over the plateau flank stays clean.
       par: 3,
       tee: { x: 210, y: 545 },
       cup: { x: 230, y: 95 },
@@ -184,9 +208,11 @@ function buildCourse(): PuttHole[] {
         mounds: [
           { x: 340, y: 370, r: 120, h: 30, r0: 38 }, // flat-topped plateau in the gap
           { x: 90, y: 470, r: 80, h: 20 }, // bottom-left rise
+          { x: 310, y: 230, r: 58, h: 16 }, // small rise on the right cup approach (adds break)
           { x: 230, y: 120, r: 78, h: -14 }, // gathering bowl around the cup
         ],
       },
+      sand: [{ kind: "circle", x: 140, y: 185, r: 42 }], // bunker left of the cup approach
     },
     {
       // Hole 2 — a dogleg: bank off the walls to reach the top-right cup. A
@@ -208,15 +234,22 @@ function buildCourse(): PuttHole[] {
           { x: 255, y: 295, r: 118, h: 32 }, // central hill in the cross-corridor
           { x: 108, y: 445, r: 92, h: -18 }, // elbow dip that gathers a good ball
           { x: 288, y: 175, r: 85, h: 24, r0: 28 }, // plateau guarding the cup approach (clear of the pin)
-          { x: 78, y: 135, r: 66, h: -12 }, // decorative bunker, top-left corner
+          { x: 70, y: 120, r: 64, h: -12 }, // dished sand bunker, top-left corner
+          { x: 352, y: 162, r: 52, h: -9 }, // small gathering dip just below-right of the cup
         ],
       },
+      // A real sand trap sunk into the top-left corner dip — hug the left wall
+      // too tightly on the run across the top and you bury here. The line that
+      // stays a ball-width off the wall clears it.
+      sand: [{ kind: "circle", x: 70, y: 120, r: 46 }],
     },
     {
       // Hole 3 — go left (the long, flat, safe route) or right over a raised
-      // plateau (shorter, but it breaks your line). The whole green runs uphill
-      // to the cup, so you need pace; a hill behind the central box punishes a
-      // ball that skirts it too tight, and a shallow bowl funnels the cup.
+      // plateau (shorter, but it breaks your line AND skirts a pond). The whole
+      // green runs uphill to the cup, so you need pace; a hill behind the
+      // central box punishes a ball that skirts it too tight, and a shallow
+      // bowl funnels the cup. The water sits only in the right lane — the left
+      // lane is a clean, water-free line to the pin.
       par: 3,
       tee: { x: 210, y: 550 },
       cup: { x: 210, y: 95 },
@@ -230,6 +263,10 @@ function buildCourse(): PuttHole[] {
           { x: 210, y: 140, r: 64, h: -12 }, // bowl below the cup
         ],
       },
+      // Pond in the lower-right lane: take the plateau shortcut and you have to
+      // thread between the central box and the water. Bail left and you avoid
+      // it entirely.
+      water: [{ kind: "circle", x: 362, y: 448, r: 52 }],
     },
     {
       // Hole 4 — THE WINDMILL. A brick base spans the green with a central
@@ -252,9 +289,47 @@ function buildCourse(): PuttHole[] {
         mounds: [
           { x: 105, y: 470, r: 88, h: 18 }, // lower-left rise (off the center line)
           { x: 315, y: 470, r: 88, h: 18 }, // lower-right rise (off the center line)
+          { x: 210, y: 150, r: 70, h: -12 }, // gathering bowl past the sails, below the cup
         ],
       },
+      // Two small bunkers tucked behind the brick base, flanking the cup — a
+      // ball that bursts through the gap too hot and skitters wide buries in
+      // one instead of settling near the pin. The centred threading line is
+      // clear of both.
+      sand: [
+        { kind: "circle", x: 70, y: 210, r: 34 },
+        { kind: "circle", x: 350, y: 210, r: 34 },
+      ],
       windmill: { x: 210, y: 298, hubR: 7, bladeLen: 52, bladeW: 5, blades: 4, rpm: 9 },
+    },
+    {
+      // Hole 5 — THE CARRY. A wide lake spans the center-left of the green, so
+      // the straight line off the tee runs into the water; the safe play is up
+      // the open right lane, around the lake, then a cut back left to the cup.
+      // A second small pond sits top-right (so you can't just rocket straight
+      // up the right edge to the pin) and a bunker guards the left of the cup
+      // for an over-cooked approach. Longer hole — par 4.
+      par: 4,
+      tee: { x: 210, y: 560 },
+      cup: { x: 205, y: 80 },
+      walls: [],
+      terrain: {
+        tiltX: 0,
+        tiltY: 0,
+        mounds: [
+          { x: 345, y: 470, r: 82, h: 18 }, // right-lane rise on the run-up (adds break)
+          { x: 360, y: 300, r: 72, h: 14 }, // gentle right-lane shoulder past the lake
+          { x: 205, y: 95, r: 62, h: -12 }, // gathering bowl below the cup
+        ],
+      },
+      // The lake (rect) blocks the direct line; the top-right pond (circle)
+      // forces the approach back toward the center. Both are skirtable up the
+      // right and across the top — no shot is forced over water.
+      water: [
+        { kind: "rect", x: 40, y: 238, w: 232, h: 124 },
+        { kind: "circle", x: 332, y: 178, r: 44 },
+      ],
+      sand: [{ kind: "circle", x: 138, y: 152, r: 40 }], // bunker left of the cup approach
     },
   ];
 }
@@ -299,6 +374,44 @@ function clamp(n: number, lo: number, hi: number): number {
   if (n < lo) return lo;
   if (n > hi) return hi;
   return n;
+}
+
+// Is (x,y) inside a single hazard region? Tested against the ball center.
+function regionHit(rg: PuttRegion, x: number, y: number): boolean {
+  if (rg.kind === "circle") {
+    const dx = x - rg.x;
+    const dy = y - rg.y;
+    return dx * dx + dy * dy <= rg.r * rg.r;
+  }
+  return x >= rg.x && x <= rg.x + rg.w && y >= rg.y && y <= rg.y + rg.h;
+}
+
+function inAnyRegion(regions: PuttRegion[] | undefined, x: number, y: number): boolean {
+  if (!regions) return false;
+  for (const rg of regions) if (regionHit(rg, x, y)) return true;
+  return false;
+}
+
+// Where a ball crossing a shoreline should be dropped: walk the segment from
+// the last dry point (x0,y0) to the wet point (x1,y1), bisect to the boundary,
+// then back the ball off by BALL_R along its travel so it rests clear of the
+// bank (and never re-triggers the hazard on the next shot). Clamped to field.
+function shorelinePoint(regions: PuttRegion[], x0: number, y0: number, x1: number, y1: number): PuttVec {
+  let lo = 0; // known dry
+  let hi = 1; // known wet
+  for (let i = 0; i < 12; i++) {
+    const mid = (lo + hi) / 2;
+    if (inAnyRegion(regions, x0 + (x1 - x0) * mid, y0 + (y1 - y0) * mid)) hi = mid;
+    else lo = mid;
+  }
+  let ex = x0 + (x1 - x0) * lo;
+  let ey = y0 + (y1 - y0) * lo;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const d = Math.hypot(dx, dy) || 1;
+  ex -= (dx / d) * BALL_R;
+  ey -= (dy / d) * BALL_R;
+  return { x: clamp(ex, BALL_R, FIELD_W - BALL_R), y: clamp(ey, BALL_R, FIELD_H - BALL_R) };
 }
 
 export class Putt {
@@ -611,7 +724,12 @@ export class Putt {
     const now = Date.now();
 
     let holed = false;
-    for (let s = 0; s < SUBSTEPS && !holed; s++) {
+    let watered = false;
+    for (let s = 0; s < SUBSTEPS && !holed && !watered; s++) {
+      // Substep start = the last known dry point (the ball can't begin a
+      // substep in water — it's caught and dropped the moment it crosses).
+      const sx = p.ball.x;
+      const sy = p.ball.y;
       // Gravity along the slope: accelerate downhill (negative gradient).
       const slope = puttSlopeAt(hole.terrain, p.ball.x, p.ball.y);
       this.vel.x -= (SLOPE_ACCEL / SUBSTEPS) * slope.x;
@@ -621,11 +739,30 @@ export class Putt {
       this.resolveBorders(p.ball);
       for (const w of hole.walls) this.resolveWall(p.ball, w);
       if (hole.windmill) this.resolveWindmill(p.ball, hole.windmill, now);
+      // Water: a ball whose center crosses the shoreline is penalised and
+      // dropped back on the bank at the crossing point. Checked per-substep so
+      // a fast ball can't skip over a pond between ticks.
+      if (inAnyRegion(hole.water, p.ball.x, p.ball.y)) {
+        p.ball = shorelinePoint(hole.water!, sx, sy, p.ball.x, p.ball.y);
+        watered = true;
+        break;
+      }
       // Cup capture — a slow enough ball over the hole drops in.
       if (dist2(p.ball, hole.cup) <= CUP_R * CUP_R && Math.hypot(this.vel.x, this.vel.y) <= CAPTURE_SPEED) {
         p.ball = { ...hole.cup };
         holed = true;
       }
+    }
+
+    if (watered) {
+      // One-stroke penalty; the ball already sits on the bank. The shot stroke
+      // was counted in shoot(), so a watered shot costs that + this penalty.
+      this.vel = { x: 0, y: 0 };
+      const h = this.snapshot.hole;
+      p.strokes[h] = (p.strokes[h] ?? 0) + WATER_PENALTY;
+      if ((p.strokes[h] ?? 0) >= MAX_STROKES) p.done[h] = true;
+      this.advanceTurn();
+      return;
     }
 
     if (holed) {
@@ -635,14 +772,19 @@ export class Putt {
       return;
     }
 
-    // Viscous bleed (smooth, speed-proportional).
-    this.vel.x *= FRICTION;
-    this.vel.y *= FRICTION;
+    // Sand digs in: over a bunker the ball meets much heavier resistance for
+    // this tick (and buries at a higher speed, below). Tested at the ball's
+    // resting position for this tick.
+    const inSand = inAnyRegion(hole.sand, p.ball.x, p.ball.y);
+    // Viscous bleed (smooth, speed-proportional) — sand bleeds far more.
+    const visc = inSand ? SAND_FRICTION : FRICTION;
+    this.vel.x *= visc;
+    this.vel.y *= visc;
     // Constant rolling resistance (Coulomb): subtract a fixed decel opposing
     // motion, capped so it can't reverse the ball. Guarantees a real stop.
     let speed = Math.hypot(this.vel.x, this.vel.y);
     if (speed > 0) {
-      const dec = Math.min(speed, KINETIC_FRICTION);
+      const dec = Math.min(speed, inSand ? SAND_KINETIC : KINETIC_FRICTION);
       this.vel.x -= (this.vel.x / speed) * dec;
       this.vel.y -= (this.vel.y / speed) * dec;
       speed -= dec;
@@ -662,7 +804,9 @@ export class Putt {
     const slopePull = SLOPE_ACCEL * Math.hypot(grad.x, grad.y);
     this.rollTicks += 1;
     this.slowTicks = speed < SETTLE_SPEED ? this.slowTicks + 1 : 0;
-    const stuck = speed < MIN_SPEED && slopePull <= STATIC_FRICTION;
+    // In sand a slow ball just buries (sand holds far more than a grass slope);
+    // on grass it sticks only if the slope is too gentle for gravity to win.
+    const stuck = inSand ? speed < SAND_STICK_SPEED : speed < MIN_SPEED && slopePull <= STATIC_FRICTION;
     if (stuck || this.slowTicks >= SETTLE_TICKS || this.rollTicks >= MAX_ROLL_TICKS) {
       // Ball at rest. Stroke cap: if the player can't sink it, auto-finish
       // the hole so play never stalls.

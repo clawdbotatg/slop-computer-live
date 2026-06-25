@@ -904,6 +904,13 @@ export type PuttWall = { x: number; y: number; w: number; h: number };
 // out to r. r0 omitted/0 → a plain squared-falloff hump (the original shape).
 export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number };
 export type PuttTerrain = { tiltX: number; tiltY: number; mounds: PuttMound[] };
+// A hazard region — a circle (radius r at center x,y) or an axis-aligned rect
+// (top-left x,y with size w,h). WATER = one-stroke penalty + shoreline drop;
+// SAND = heavy friction (sticky/slow), no penalty. Physics live on the relay
+// (packages/relay/src/putt.ts); the client only renders these.
+export type PuttRegion =
+  | { kind: "circle"; x: number; y: number; r: number }
+  | { kind: "rect"; x: number; y: number; w: number; h: number };
 export type PuttWindmill = {
   x: number;
   y: number;
@@ -920,6 +927,8 @@ export type PuttHole = {
   walls: PuttWall[];
   terrain: PuttTerrain;
   windmill?: PuttWindmill;
+  water?: PuttRegion[];
+  sand?: PuttRegion[];
 };
 export type PuttStatus = "waiting" | "aiming" | "rolling" | "holed" | "ended";
 export type PuttPlayer = {
