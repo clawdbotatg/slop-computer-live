@@ -319,18 +319,23 @@ function generateHole(seed: string, index: number): PuttHole {
     }
   }
 
-  // Mounds: 2–5 hills/dips/plateaus scattered anywhere. A tall hill that lands
-  // on the cup would seal it, so any rise too near the pin is flipped to a dip
-  // (a gathering bowl — both fair and pretty).
+  // Mounds: 5–9 hills/dips/plateaus scattered anywhere — a dense, rolling
+  // topography of highs and lows (they overlap into compound ridges and
+  // hollows). Taller peaks + deeper dips than before so the height-banding
+  // really reads. A tall hill that lands on the cup would seal it, so any rise
+  // too near the pin is flipped to a dip (a gathering bowl — both fair and
+  // pretty). Tall hills are widened a touch so a big rise isn't a thin spike.
   const mounds: PuttMound[] = [];
-  const moundCount = rInt(r, 2, 5);
+  const moundCount = rInt(r, 5, 9);
   for (let i = 0; i < moundCount; i++) {
     const x = rRange(r, 30, W - 30);
     const y = rRange(r, 56, H - 56);
-    const rad = rRange(r, 50, 130);
-    let isDip = rChance(r, 0.35);
-    if (!isDip && Math.hypot(x - cup.x, y - cup.y) < CUP_CLEAR + rad * 0.5) isDip = true;
-    const height = isDip ? -rRange(r, 8, 18) : rRange(r, 12, 34);
+    let isDip = rChance(r, 0.42);
+    if (!isDip && Math.hypot(x - cup.x, y - cup.y) < CUP_CLEAR) isDip = true;
+    const height = isDip ? -rRange(r, 12, 28) : rRange(r, 18, 48);
+    // Bigger rises get a bigger footprint (radius grows with height) so the
+    // steepest flank stays rollable rather than wall-like.
+    const rad = isDip ? rRange(r, 50, 120) : rRange(r, 60, 100) + height * 1.1;
     const plateau = !isDip && rChance(r, 0.4);
     const r0 = plateau ? rad * rRange(r, 0.25, 0.45) : 0;
     mounds.push({ x, y, r: rad, h: height, r0, wob: rRange(r, 0.12, 0.24) });
