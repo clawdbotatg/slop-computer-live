@@ -349,29 +349,20 @@ function generateHole(seed: string, index: number): PuttHole {
     mounds,
   };
 
-  // Water: ~half the holes get a pond or two. Capped well under field width so a
-  // dry lane to the cup always exists, and kept off the tee/cup collars.
+  // Water: ~half the holes get a pond or two. Always circular — the wavy-rim
+  // circles read as real ponds; rectangular pools looked fake, so we never
+  // generate them. Capped well under field width so a dry lane to the cup
+  // always exists, and kept off the tee/cup collars.
   const water: PuttRegion[] = [];
   const waterCount = rChance(r, 0.5) ? rInt(r, 1, 2) : 0;
   for (let i = 0; i < waterCount; i++) {
     for (let attempt = 0; attempt < 8; attempt++) {
-      if (rChance(r, 0.55)) {
-        const rad = rRange(r, 38, 60);
-        const x = rRange(r, rad + 8, W - rad - 8);
-        const y = rRange(r, 170, H - 170);
-        if (!clearOfEnds(x, y, rad)) continue;
-        water.push({ kind: "circle", x, y, r: rad });
-        break;
-      } else {
-        const w = rRange(r, 90, 200);
-        const h = rRange(r, 70, 130);
-        const x = rRange(r, 8, W - 8 - w);
-        const y = rRange(r, 165, H - 165 - h);
-        if (rectDist(tee.x, tee.y, x, y, w, h) < TEE_CLEAR + 10) continue;
-        if (rectDist(cup.x, cup.y, x, y, w, h) < CUP_CLEAR + 10) continue;
-        water.push({ kind: "rect", x, y, w, h });
-        break;
-      }
+      const rad = rRange(r, 38, 60);
+      const x = rRange(r, rad + 8, W - rad - 8);
+      const y = rRange(r, 170, H - 170);
+      if (!clearOfEnds(x, y, rad)) continue;
+      water.push({ kind: "circle", x, y, r: rad });
+      break;
     }
   }
 
