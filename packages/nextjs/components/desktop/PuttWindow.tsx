@@ -20,6 +20,7 @@ import {
   sfxSandThud,
   sfxWaterSplash,
   unlockPuttAudio,
+  warmPuttAudio,
 } from "~~/utils/puttSounds";
 
 // Turn-based multiplayer mini golf. The relay is authoritative for the ball
@@ -93,6 +94,9 @@ export const PuttWindow = ({ mesh }: Props) => {
 
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(isPuttMuted()), []);
+  // Decode the splash recording ahead of time so the first watered shot isn't
+  // silent waiting on the fetch.
+  useEffect(() => warmPuttAudio(), []);
 
   // Course-name editor. The name IS the course seed: editing it reseeds the
   // nine holes. We keep a local draft so typing isn't clobbered by the steady

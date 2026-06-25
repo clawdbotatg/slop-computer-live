@@ -1,10 +1,13 @@
-// Putt-Putt (mini golf) sound effects via the Web Audio API. Unlike the poker
-// table — whose chips/cards are real foley recordings — every putt cue is
-// SYNTHESIZED on the fly: a putter knock, a cup rattle-and-drop, a water
-// sploosh, a sand thud, and a brick clunk are all short, percussive, and read
-// right generated from noise bursts + a couple of pitched blips. Keeping them
-// synthetic means no audio assets to ship and every shot sounds a touch
-// different (the bursts carry their own random pitch jitter).
+// Putt-Putt (mini golf) sound effects via the Web Audio API. Two kinds of
+// source, the same split the poker table uses:
+//   • FOLEY (the water splash) = a real recording. A synthesized splash never
+//     reads as water — a recording of a splash is just a splash — so it's an
+//     MP3 served from /public/sounds/putt, decoded once and played through the
+//     master gain (Mixkit, "Water splash", free for commercial use, no
+//     attribution required: https://mixkit.co/free-sound-effects/splash/).
+//   • TONAL cues (putter knock, cup rattle-and-drop, sand thud, brick clunk) =
+//     still synthesized; those are short, percussive and read right generated
+//     from noise bursts + a couple of pitched blips.
 //
 // PuttWindow diffs the relay's public snapshot stream (positions + status +
 // strokes, no velocity, no collision events) and calls these — exactly the
@@ -13,16 +16,20 @@
 // snapshot transition fires which cue.
 //
 // Browsers gate an AudioContext behind a user gesture, so the first local
-// interaction (tapping the course / the mute toggle) unlocks playback via
-// unlockPuttAudio. There are no samples to warm — synthesis needs only the
-// (resumed) context — so unlock is all the warm-up there is.
+// interaction (tapping the course / the mute toggle) unlocks playback AND warms
+// the splash sample (warmPuttAudio decodes it ahead of time, so the first ball
+// in the drink isn't silent).
 
 const MUTE_KEY = "slop-putt-muted-v1";
+// Recorded foley, served from /public/sounds/putt (Mixkit, free license).
+const WATER_SPLASH_URL = "/sounds/putt/water-splash.mp3";
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let noiseBuf: AudioBuffer | null = null;
 let muted = false;
+const buffers = new Map<string, AudioBuffer>();
+const loadingSamples = new Set<string>();
 
 export function isPuttMuted(): boolean {
   if (typeof window === "undefined") return false;
@@ -74,18 +81,63 @@ function audio(): { c: AudioContext; m: GainNode } | null {
   return a;
 }
 
+// Decode the splash sample once, ahead of time, into an AudioBuffer. Safe to
+// call without a user gesture (decodeAudioData works on a suspended context),
+// so the first watered shot isn't silent waiting on a fetch. Idempotent.
+function loadSample(c: AudioContext, url: string): void {
+  if (buffers.has(url) || loadingSamples.has(url)) return;
+  loadingSamples.add(url);
+  fetch(url)
+    .then(r => r.arrayBuffer())
+    .then(b => c.decodeAudioData(b))
+    .then(buf => void buffers.set(url, buf))
+    .catch(() => {
+      /* missing/undecodable sample — the splash just stays silent, no throw */
+    })
+    .finally(() => loadingSamples.delete(url));
+}
+
+// Play a decoded sample through the master gain. If it isn't decoded yet, kick
+// off a load so the next trigger has it and skip this one.
+function playSample(url: string, gain = 1): void {
+  const a = audio();
+  if (!a) return;
+  const buf = buffers.get(url);
+  if (!buf) {
+    loadSample(a.c, url);
+    return;
+  }
+  const src = a.c.createBufferSource();
+  src.buffer = buf;
+  const g = a.c.createGain();
+  g.gain.value = gain;
+  src.connect(g).connect(a.m);
+  src.start();
+}
+
+// Warm the splash sample so it's ready before the first ball hits the water.
+// Safe to call on mount WITHOUT a user gesture (decode doesn't need a running
+// context).
+export function warmPuttAudio(): void {
+  const a = ensureAudio();
+  if (!a) return;
+  loadSample(a.c, WATER_SPLASH_URL);
+}
+
 // Unlock audio for playback from a real user gesture (a pointerdown on the
-// course or the mute toggle). All cues are synthesized, so there's nothing to
-// preload — resuming the context is the whole job.
+// course or the mute toggle): resume the context and warm the splash sample in
+// case warmPuttAudio hasn't run yet.
 export function unlockPuttAudio(): void {
-  void audio();
+  const a = audio();
+  if (!a) return;
+  loadSample(a.c, WATER_SPLASH_URL);
 }
 
 function noise(c: AudioContext): AudioBuffer {
   if (!noiseBuf) {
-    // 1s of noise — long enough that the extended bursts (the big water
-    // splooosh's ~0.6s tail) play out fully without the source running dry.
-    noiseBuf = c.createBuffer(1, c.sampleRate, c.sampleRate);
+    // Half a second of noise — comfortably longer than any synth burst here
+    // (the longest is the cup plonk at ~0.22s), so a source never runs dry.
+    noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.5), c.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
@@ -185,33 +237,12 @@ export function sfxCupDrop(): void {
   tone(a.c, a.m, t + 0.26, 1320, 0.22, 0.08, "triangle");
 }
 
-// Ball into the water — a big "SPLOOOSH". Layered so it reads as real water
-// being displaced, not a thin tick: a deep sub-thump as the ball punches the
-// surface, a long full-bodied wash of filtered noise sweeping from open down to
-// a dark watery low (the displaced water + spray), a brighter foam/droplet
-// layer over the plunge, a high wash of settling ripples, and a gurgle of
-// bubbles rising at random pitches through the tail.
+// Ball into the water — a real recorded splash (Mixkit foley). A synthesized
+// splash never convinces; this is the genuine sploosh, played through the
+// master gain so mute/volume still apply.
 export function sfxWaterSplash(): void {
   if (muted) return;
-  const a = audio();
-  if (!a) return;
-  const { c, m } = a;
-  const t = c.currentTime;
-  // Heavy plunge: a deep sub thump for the heft of the ball hitting the water.
-  tone(c, m, t, 155, 0.2, 0.28, "sine", 52);
-  // The main body of the splooosh — a big, long sweep from open down to a
-  // watery low. This is the bulk of the sound; the long tail sells the size.
-  burst(c, m, t, 0.62, { type: "lowpass", freq: 2600, q: 0.8, gain: 0.46, sweepTo: 260, attack: 0.008 });
-  // Foam / droplets sprayed up on impact — a brighter bandpass layer on top.
-  burst(c, m, t + 0.01, 0.46, { type: "bandpass", freq: 1500, q: 0.9, gain: 0.24, sweepTo: 480, attack: 0.006 });
-  // The spray settling back — a soft high wash sweeping up and fading out.
-  burst(c, m, t + 0.18, 0.42, { type: "highpass", freq: 1700, gain: 0.1, sweepTo: 900 });
-  // Gurgle: a handful of bubbles rising (pitch sweeps upward) through the wake.
-  for (let i = 0; i < 5; i++) {
-    const dt = 0.12 + i * 0.07 + Math.random() * 0.04;
-    const f0 = 220 + Math.random() * 220;
-    tone(c, m, t + dt, f0, 0.1, 0.07, "sine", f0 + 180 + Math.random() * 160);
-  }
+  playSample(WATER_SPLASH_URL, 0.95);
 }
 
 // Ball burying in a bunker — a dull, soft "fff/thud", no pitch: sand absorbs
