@@ -137,11 +137,19 @@ export function createSession(args: {
   anonId?: string | null;
   spectator?: boolean;
   passkey?: { qx: string; qy: string; credentialIdHash: string };
+  // Override the session lifetime. Defaults to config.sessionTTLSeconds
+  // (7 days). God-mode/spectator sessions pass a shorter value so a
+  // leftover capture-box cookie can't keep an everyday browser in god
+  // mode for a full week. The caller is responsible for matching the
+  // cookie's maxAge to this value.
+  ttlSeconds?: number;
 }): Session {
   pruneSessions();
   const token = randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + config.sessionTTLSeconds * 1000;
-  const session: Session = { token, expiresAt, ...args };
+  const { ttlSeconds, ...rest } = args;
+  const ttl = ttlSeconds ?? config.sessionTTLSeconds;
+  const expiresAt = Date.now() + ttl * 1000;
+  const session: Session = { token, expiresAt, ...rest };
   sessions.set(token, session);
   persistToDisk();
   return session;

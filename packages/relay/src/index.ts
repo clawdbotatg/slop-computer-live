@@ -6214,8 +6214,11 @@ app.post<{ Body: GodModeBody }>("/auth/godmode", PASSWORD_RATE_LIMIT, async (req
     address: null,
     handle: null,
     spectator: true,
+    // Short-lived on purpose: see config.godSessionTTLSeconds. Bounds the
+    // "leftover god cookie" footgun to a day instead of the 7-day default.
+    ttlSeconds: config.godSessionTTLSeconds,
   });
-  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.sessionTTLSeconds }));
+  reply.setCookie(SESSION_COOKIE, session.token, sessionCookieOpts({ maxAge: config.godSessionTTLSeconds }));
   return { ok: true, role: "guest", spectator: true };
 });
 

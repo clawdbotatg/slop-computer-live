@@ -77,6 +77,17 @@ export const config = {
   // on any box missing the SESSION_TTL_SECONDS override), so they could no
   // longer re-mint and had to hand the agent a fresh link. Keep these in lockstep.
   sessionTTLSeconds: Number(env("SESSION_TTL_SECONDS", "604800")),
+  // God-mode (spectator) sessions get a deliberately SHORT TTL — 1 day by
+  // default, vs the 7-day normal session above. A spectator cookie is the
+  // OBS/capture box's pass; it confers an invisible, no-wallet, viewport-
+  // broadcasting session. If a regular operator ever opens a `?godMode=…`
+  // link on their everyday browser profile, the leftover cookie silently
+  // keeps them in god mode on every later visit (no JoinCard, no wallet,
+  // pink broadcast bounds tracking their resolution) until it expires.
+  // A 1-day TTL bounds that footgun to a day instead of a week. The
+  // capture box re-opens its god link every show anyway, so a daily
+  // re-auth costs it nothing.
+  godSessionTTLSeconds: Number(env("GOD_SESSION_TTL_SECONDS", "86400")),
   alchemyApiKey: env("ALCHEMY_API_KEY", ""),
   mediamtxRtmpIngress: env("MEDIAMTX_RTMP_INGRESS_URL", "rtmp://localhost:1935"),
   mediamtxPublishUser: env("MEDIAMTX_PUBLISH_USER", "live"),
