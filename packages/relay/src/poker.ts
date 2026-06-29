@@ -786,7 +786,14 @@ export class PokerState {
         }));
         const winners = bestOf(hands);
         this.awardSplit(pot.amountChips, winners);
-        for (const w of winners) overallWinners.add(w);
+        // Only a *contested* pot (≥2 eligible) produces real winners. A
+        // single-eligible pot is an uncalled overbet being refunded to the
+        // seat that posted it — that seat didn't "win" anything, it just got
+        // its own chips back. Flagging it would paint the showdown as a SPLIT
+        // (two highlighted seats) when only one player actually won the pot,
+        // even though the chip math above is correct. Gate the win flag on a
+        // genuine contest so the displayed winners match the real award.
+        if (eligible.length >= 2) for (const w of winners) overallWinners.add(w);
       }
       // Reveal contenders' hands (showdown is public; folded muck isn't),
       // each with a readable description, its best 5 cards, and won flag.
