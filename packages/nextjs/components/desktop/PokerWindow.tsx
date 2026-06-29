@@ -1262,6 +1262,55 @@ const DealButton = ({ onClick, readyAt }: { onClick: () => void; readyAt: number
   );
 };
 
+// ─── Pre-action queue ───────────────────────────────────────────────────
+// While it isn't yet our turn, a player can arm one of these so it fires the
+// instant the action reaches them (PokerStars-style check/fold buttons).
+type PreActionKind = "check-fold" | "check" | "call" | "call-any";
+type ArmedPreAction = { kind: PreActionKind; atBet: number; handId: string | null };
+
+const PRE_ACTIONS: { kind: PreActionKind; label: string; color: string }[] = [
+  { kind: "check-fold", label: "Check/Fold", color: ACCENT },
+  { kind: "check", label: "Check", color: CYAN },
+  { kind: "call", label: "Call", color: CYAN },
+  { kind: "call-any", label: "Call Any", color: LIME },
+];
+
+// A sticky pre-action toggle: outlined when idle, filled solid when armed.
+function preBtn(color: string, armed: boolean): React.CSSProperties {
+  return {
+    background: armed ? color : "transparent",
+    color: armed ? "#0a061a" : color,
+    border: `2px solid ${color}`,
+    borderRadius: 8,
+    padding: "6px 12px",
+    fontFamily: "var(--slop-font-display)",
+    fontSize: 13,
+    cursor: "pointer",
+    fontWeight: 700,
+  };
+}
+
+const PreActionBar = ({ armed, onArm }: { armed: PreActionKind | null; onArm: (kind: PreActionKind) => void }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+    <span style={{ fontSize: 11, color: "var(--slop-text-dim, #9a86c4)", fontWeight: 700 }}>
+      Pre-action — fires the instant it&apos;s your turn
+    </span>
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      {PRE_ACTIONS.map(pa => (
+        <button
+          key={pa.kind}
+          type="button"
+          onClick={() => onArm(pa.kind)}
+          style={preBtn(pa.color, armed === pa.kind)}
+          aria-pressed={armed === pa.kind}
+        >
+          {pa.label}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
 const ActionBar = ({
   mesh,
   mySeat,
@@ -1456,6 +1505,45 @@ const Felt = ({
   const mySeat = poker.seats.find(s => s.key === myOwnerKey) ?? null;
   const myTurn = mySeat && poker.status === "running" && poker.actor === mySeat.idx;
   const winnerSeats = new Set(poker.showdown.filter(s => s.won).map(s => s.seat));
+
+  // ─── Pre-action queue ───────────────────────────────────────────────────
+  // A player still in the hand but not on the clock can arm a next action; it
+  // auto-fires the moment the action reaches them — provided it's still valid.
+  const [preAction, setPreAction] = useState<ArmedPreAction | null>(null);
+  const inHand = !!mySeat && poker.status === "running" && mySeat.status === "active";
+
+  const armPreAction = useCallback(
+    (kind: PreActionKind) =>
+      setPreAction(prev => (prev?.kind === kind ? null : { kind, atBet: poker.currentBet, handId: poker.handId })),
+    [poker.currentBet, poker.handId],
+  );
+
+  // Drop a queued pre-action whenever firing it would be unsafe: the hand
+  // changed, we left the hand, or the bet we sized against moved (unless we
+  // explicitly armed "Call Any", which honours any amount). Skipped on our own
+  // turn — there the fire effect below consumes it instead of clearing it.
+  useEffect(() => {
+    if (!preAction || myTurn) return;
+    const stillInHand = poker.status === "running" && mySeat?.status === "active";
+    const handChanged = poker.handId !== preAction.handId;
+    const betMoved = poker.currentBet !== preAction.atBet && preAction.kind !== "call-any";
+    if (!stillInHand || handChanged || betMoved) setPreAction(null);
+  }, [preAction, myTurn, poker.status, poker.handId, poker.currentBet, mySeat?.status]);
+
+  // Fire the armed pre-action the instant it becomes our turn, down the same
+  // path the manual buttons use. Validity is re-checked against live state: a
+  // check only goes when nothing is owed, otherwise check/fold falls through to
+  // a fold and a plain check simply clears (the player acts manually instead).
+  useEffect(() => {
+    if (!myTurn || !mySeat || !preAction) return;
+    const { kind } = preAction;
+    setPreAction(null);
+    const toCall = Math.max(0, poker.currentBet - mySeat.committed);
+    if (kind === "check-fold") mesh.pokerAct(toCall === 0 ? "check" : "fold");
+    else if (kind === "check") {
+      if (toCall === 0) mesh.pokerAct("check");
+    } else if (kind === "call" || kind === "call-any") mesh.pokerAct(toCall === 0 ? "check" : "call");
+  }, [myTurn, mySeat, preAction, poker.currentBet, mesh]);
 
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(isPokerMuted()), []);
@@ -1790,6 +1878,7 @@ const Felt = ({
           <Countdown deadline={poker.actorDeadline} />
         </div>
       )}
+      {!myTurn && inHand && !poker.runningOut && <PreActionBar armed={preAction?.kind ?? null} onArm={armPreAction} />}
     </div>
   );
 };
