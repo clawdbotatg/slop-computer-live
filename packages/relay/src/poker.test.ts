@@ -170,6 +170,34 @@ test("contested showdown marks the winner + describes the hand", () => {
   assert.equal(alice.cards.length, 5);
 });
 
+test("uncalled overbet is refunded, not shown as a winning split", () => {
+  // alice (short) shoves; bob over-shoves a deeper stack. Only 50 of bob's
+  // 200 is callable — the extra 150 is uncalled and forms a single-eligible
+  // side pot that's simply refunded to bob. alice (AA) wins the one contested
+  // pot, so the showdown must show ONE winner (alice), not a split.
+  const t = table();
+  t.sit(0, "alice", "Alice", 50); // short stack
+  t.sit(1, "bob", "Bob", 200); // deep — can over-shove
+  const deck = deckFor([["Ah", "As"], ["Kh", "Ks"]], ["2c", "7d", "9h", "Js", "4c"]);
+  assert.equal(t.startHand(deck).ok, true);
+  assert.equal(t.act("alice", { action: "raise", toChips: 50 }).ok, true); // all-in 50
+  assert.equal(t.act("bob", { action: "raise", toChips: 200 }).ok, true); // over-shove; 150 uncalled
+  t.finishRunout();
+  const g = t.getGame();
+  assert.equal(g.status, "complete");
+  const get = (k: string) => g.seats.find(s => s.key === k)!;
+  // Chip award is correct either way: alice wins the 100 contested pot, bob's
+  // 150 overbet is refunded.
+  assert.equal(get("alice").stack, 100);
+  assert.equal(get("bob").stack, 150);
+  assert.equal(sumDeltas(t), 0);
+  // The display must NOT flag bob — he only got his own uncalled chips back.
+  const alice = g.showdown.find(s => g.seats[s.seat]!.key === "alice")!;
+  const bob = g.showdown.find(s => g.seats[s.seat]!.key === "bob")!;
+  assert.equal(alice.won, true);
+  assert.equal(bob.won, false); // ← phantom-split regression guard
+});
+
 test("contested showdown blocks the next hand until the pause elapses", () => {
   const t = table();
   t.sit(0, "alice", "Alice", 100);
