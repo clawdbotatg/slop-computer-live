@@ -48,7 +48,8 @@ const SAND_FRICTION = 0.8; // velocity retained per tick in sand (vs 0.955 grass
 const SAND_KINETIC = 0.4; // constant decel in sand (vs 0.08 grass) — bites hard
 const SAND_STICK_SPEED = 1.8; // a ball this slow in sand just buries and stops
 // Water hazard penalty: a ball that crosses the shoreline costs one extra
-// stroke and is dropped back on the bank where it entered (not the tee).
+// stroke and is returned to the spot it was struck from this stroke
+// (stroke-and-distance), not the bank and not the tee.
 const WATER_PENALTY = 1;
 // Settle backstop: if the ball crawls below SETTLE_SPEED for SETTLE_TICKS in a
 // row it's force-stopped. Kills any residual imperceptible creep (a ball that
@@ -92,9 +93,9 @@ export type PuttWall = { x: number; y: number; w: number; h: number };
 export type PuttMound = { x: number; y: number; r: number; h: number; r0?: number; wob?: number };
 // A hazard region — a circle (radius r at center x,y) or an axis-aligned rect
 // (top-left x,y with size w,h). A hole carries arrays of each kind. WATER = a
-// one-stroke penalty plus a drop on the bank where the ball crossed the
-// shoreline (standard mini-golf rule); SAND = heavy friction (sticky/slow), no
-// penalty. Both are pure regions tested against the ball center.
+// one-stroke penalty plus a return to where the shot was struck from
+// (stroke-and-distance); SAND = heavy friction (sticky/slow), no penalty.
+// Both are pure regions tested against the ball center.
 export type PuttRegion =
   | { kind: "circle"; x: number; y: number; r: number }
   | { kind: "rect"; x: number; y: number; w: number; h: number };
@@ -126,7 +127,7 @@ export type PuttHole = {
   walls: PuttWall[];
   terrain: PuttTerrain;
   windmill?: PuttWindmill;
-  /** Water hazards (one-stroke penalty + shoreline drop). */
+  /** Water hazards (one-stroke penalty + return to the pre-shot spot). */
   water?: PuttRegion[];
   /** Sand traps / bunkers (heavy friction, no penalty). */
   sand?: PuttRegion[];
@@ -505,28 +506,6 @@ function inAnyRegion(regions: PuttRegion[] | undefined, x: number, y: number): b
   return false;
 }
 
-// Where a ball crossing a shoreline should be dropped: walk the segment from
-// the last dry point (x0,y0) to the wet point (x1,y1), bisect to the boundary,
-// then back the ball off by BALL_R along its travel so it rests clear of the
-// bank (and never re-triggers the hazard on the next shot). Clamped to field.
-function shorelinePoint(regions: PuttRegion[], x0: number, y0: number, x1: number, y1: number): PuttVec {
-  let lo = 0; // known dry
-  let hi = 1; // known wet
-  for (let i = 0; i < 12; i++) {
-    const mid = (lo + hi) / 2;
-    if (inAnyRegion(regions, x0 + (x1 - x0) * mid, y0 + (y1 - y0) * mid)) hi = mid;
-    else lo = mid;
-  }
-  let ex = x0 + (x1 - x0) * lo;
-  let ey = y0 + (y1 - y0) * lo;
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const d = Math.hypot(dx, dy) || 1;
-  ex -= (dx / d) * BALL_R;
-  ey -= (dy / d) * BALL_R;
-  return { x: clamp(ex, BALL_R, FIELD_W - BALL_R), y: clamp(ey, BALL_R, FIELD_H - BALL_R) };
-}
-
 export class Putt {
   // Seed + holes are mutable: renaming the course in the lobby regenerates both.
   private courseName: string = randomCourseName();
@@ -548,6 +527,11 @@ export class Putt {
   // Active ball velocity — internal, never serialized; clients read ball
   // positions off the snapshot and render directly.
   private vel: PuttVec = { x: 0, y: 0 };
+  // The active ball's resting position at the moment the current shot was
+  // struck. A ball that finds the water is returned here (stroke-and-distance)
+  // rather than dropped on the bank. Transient single-shot state like `vel`
+  // (only one ball ever rolls at a time), so it stays off the wire snapshot.
+  private shotStart: PuttVec = { x: 0, y: 0 };
   // Ticks the current shot has been rolling — drives the runaway safety valve.
   private rollTicks = 0;
   // Consecutive ticks the ball has been crawling below SETTLE_SPEED — drives
@@ -651,6 +635,8 @@ export class Putt {
       speed = MAX_POWER;
     }
     this.vel = { x: vx, y: vy };
+    // Remember where the ball sat when struck — a watered shot returns here.
+    this.shotStart = { x: p.ball.x, y: p.ball.y };
     this.rollTicks = 0;
     this.slowTicks = 0;
     p.strokes[this.snapshot.hole] = (p.strokes[this.snapshot.hole] ?? 0) + 1;
@@ -874,10 +860,6 @@ export class Putt {
     let holed = false;
     let watered = false;
     for (let s = 0; s < SUBSTEPS && !holed && !watered; s++) {
-      // Substep start = the last known dry point (the ball can't begin a
-      // substep in water — it's caught and dropped the moment it crosses).
-      const sx = p.ball.x;
-      const sy = p.ball.y;
       // Gravity along the slope: accelerate downhill (negative gradient).
       const slope = puttSlopeAt(hole.terrain, p.ball.x, p.ball.y);
       this.vel.x -= (SLOPE_ACCEL / SUBSTEPS) * slope.x;
@@ -888,10 +870,9 @@ export class Putt {
       for (const w of hole.walls) this.resolveWall(p.ball, w);
       if (hole.windmill) this.resolveWindmill(p.ball, hole.windmill, now);
       // Water: a ball whose center crosses the shoreline is penalised and
-      // dropped back on the bank at the crossing point. Checked per-substep so
-      // a fast ball can't skip over a pond between ticks.
+      // returned to where it was struck from (handled below). Checked
+      // per-substep so a fast ball can't skip over a pond between ticks.
       if (inAnyRegion(hole.water, p.ball.x, p.ball.y)) {
-        p.ball = shorelinePoint(hole.water!, sx, sy, p.ball.x, p.ball.y);
         watered = true;
         break;
       }
@@ -903,9 +884,11 @@ export class Putt {
     }
 
     if (watered) {
-      // One-stroke penalty; the ball already sits on the bank. The shot stroke
-      // was counted in shoot(), so a watered shot costs that + this penalty.
+      // Stroke-and-distance: one-stroke penalty AND the ball goes back to where
+      // it was struck from this shot (not the bank). The shot stroke was counted
+      // in shoot(), so a watered shot costs that + this penalty.
       this.vel = { x: 0, y: 0 };
+      p.ball = { x: this.shotStart.x, y: this.shotStart.y };
       const h = this.snapshot.hole;
       p.strokes[h] = (p.strokes[h] ?? 0) + WATER_PENALTY;
       if ((p.strokes[h] ?? 0) >= MAX_STROKES) p.done[h] = true;
