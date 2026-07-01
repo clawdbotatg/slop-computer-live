@@ -16,11 +16,16 @@ import { withSlug } from "~~/lib/slug";
 // the request to the caller's room. Returns a map keyed by lowercased
 // address → total USD (number).
 //
-// Quota note: the Zerion quota is shared across all peers, so we poll
-// gently (60s) and only re-fetch when the address set actually changes or
-// the tab regains focus.
+// Quota note: the Zerion quota is shared across all peers AND people just
+// leave the live screen open, so a tight poll here is brutal — every idle
+// tab was re-fetching every peer once a minute, and each fetch fans out to
+// one /v1/wallet/portfolio per peer × 3 Zerion calls apiece. So we barely
+// poll: fetch on mount and whenever the tab regains focus (landing on the
+// screen is the moment you care), then only a lazy 5min safety-net tick to
+// catch passive drift. Users can hit refresh in the wallet window for an
+// on-demand pull.
 const RELAY_BASE = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
-const POLL_MS = 60_000;
+const POLL_MS = 300_000;
 
 export function usePeerPortfolios(addresses: (string | null | undefined)[], slug: string): Record<string, number> {
   const uniq = useMemo(

@@ -292,7 +292,11 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
       }
     }
     executedTxIdsRef.current = current;
-    if (hasNew) schedulePortfolioRefresh([5_000, 15_000]);
+    // A tx just executed — pull a few times to ride out Zerion's indexer
+    // lag. This (plus the tip-landed cascade below) is now the PRIMARY way
+    // balances stay fresh, since we no longer poll tightly in the
+    // background — so cover immediate + short + long indexer delays.
+    if (hasNew) schedulePortfolioRefresh([0, 5_000, 15_000, 30_000]);
   }, [mesh.walletTxs, walletAddress, schedulePortfolioRefresh]);
 
   // A spectator tip just flew into the vault. Tips are incoming transfers
@@ -302,7 +306,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
   // 5s and 15s to cover Zerion's indexer lag.
   useEffect(() => {
     if (!walletAddress) return;
-    const onTipLanded = () => schedulePortfolioRefresh([0, 5_000, 15_000]);
+    const onTipLanded = () => schedulePortfolioRefresh([0, 5_000, 15_000, 30_000]);
     window.addEventListener("slop-tip-landed", onTipLanded);
     return () => window.removeEventListener("slop-tip-landed", onTipLanded);
   }, [walletAddress, schedulePortfolioRefresh]);
@@ -316,15 +320,18 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
     };
   }, []);
 
-  // Periodic background refresh while the wallet window is open. Skipped
-  // when the browser tab is hidden so we don't burn Zerion quota on
-  // backgrounded clients. 30s is a guess at a sane default — tune up if
-  // Zerion complains, tune down if balances feel laggy.
+  // Lazy background refresh while the wallet window is open, mostly a
+  // safety net for slow idle drift. We deliberately DON'T poll tightly:
+  // Zerion quota is precious and each refresh fans out to 3 Zerion calls.
+  // Balances get pulled on mount, on tx execution (see the cascades above),
+  // and whenever the user hits the refresh button — so 5min here just
+  // catches passive drift (price moves, incoming transfers we didn't see).
+  // Skipped when the tab is hidden so backgrounded clients cost nothing.
   useEffect(() => {
     if (!walletAddress) return;
     const handle = setInterval(() => {
       if (document.visibilityState === "visible") void refreshPortfolio();
-    }, 30_000);
+    }, 300_000);
     return () => clearInterval(handle);
   }, [walletAddress, refreshPortfolio]);
 
