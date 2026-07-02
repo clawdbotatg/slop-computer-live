@@ -393,6 +393,46 @@ export type TodoItem = {
   done: boolean;
 };
 
+/** Voting Booth ballot as broadcast (ciphertext stripped — only a hex
+ *  preview + size ride the mesh). Mirrors `packages/relay/src/voting.ts`. */
+export type VoteBallotPublic = {
+  voterKey: string;
+  address: string | null;
+  handle: string | null;
+  anonId?: string | null;
+  ts: number;
+  size: number;
+  preview: string;
+};
+
+/** Private poll — server-authoritative, mirrors the broadcast-safe view in
+ *  `packages/relay/src/voting.ts`. The relay only ever holds ciphertexts;
+ *  `tally` appears once the committee's reveal ceremony posts it. */
+export type VotePoll = {
+  id: string;
+  ts: number;
+  question: string;
+  options: string[];
+  status: "open" | "closed" | "revealed";
+  creatorKey: string;
+  address: string | null;
+  handle: string | null;
+  anonId?: string | null;
+  committee: { size: number; threshold: number };
+  pubKeyLen: number;
+  ballots: VoteBallotPublic[];
+  tally: number[] | null;
+  revealedAt: number | null;
+};
+
+/** Full ciphertext payload for one poll, fetched on demand (reveal
+ *  ceremony / attacker panel) — too heavy for broadcast snapshots. */
+export type VoteBallotsPayload = {
+  pollId: string;
+  pubKey: string;
+  ballots: (VoteBallotPublic & { ct: string })[];
+};
+
 /** Shared note — server-authoritative, mirrors
  *  `packages/relay/src/notes.ts`. */
 export type Note = {
@@ -1421,6 +1461,27 @@ export type PeerMeshState = {
   /** Apply a new ordering to the todo list. Unknown ids are ignored;
    *  ids missing from `ids` are appended at the end. */
   todoReorder: (ids: string[]) => void;
+  /** Voting Booth polls. Full-state replace from server on every change. */
+  votingPolls: VotePoll[];
+  /** Create a poll. `pubKey` is the committee threshold-BFV public key
+   *  (base64) produced by the key ceremony in the creator's browser. */
+  voteCreate: (input: {
+    question: string;
+    options: string[];
+    pubKey: string;
+    committeeSize: number;
+    threshold: number;
+  }) => void;
+  /** Cast an encrypted ballot. Resolves with the relay's verdict. */
+  voteCast: (pollId: string, ct: string) => Promise<string>;
+  voteClose: (pollId: string) => void;
+  /** Post the decrypted tally after the reveal ceremony (creator only). */
+  voteReveal: (pollId: string, tally: number[]) => void;
+  voteRemove: (pollId: string) => void;
+  /** Fetch a poll's full ciphertexts (reveal ceremony / attacker panel). */
+  voteRequestBallots: (pollId: string) => Promise<VoteBallotsPayload>;
+  /** Fetch just the committee public key (base64) — needed to encrypt. */
+  voteRequestPubKey: (pollId: string) => Promise<string>;
   /** Shared notes. Full-state replace from server on every change. */
   notes: Note[];
   noteCreate: (text: string) => void;
@@ -1888,6 +1949,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [hiddenAvatars, setHiddenAvatars] = useState<Set<string>>(new Set());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [votingPolls, setVotingPolls] = useState<VotePoll[]>([]);
+  // Pending request/response resolvers for the two voting messages that
+  // reply directly to the requester instead of broadcasting.
+  const voteBallotsWaitersRef = useRef<Map<string, (payload: VoteBallotsPayload) => void>>(new Map());
+  const voteCastWaitersRef = useRef<Map<string, (result: string) => void>>(new Map());
+  const votePubKeyWaitersRef = useRef<Map<string, (pubKey: string) => void>>(new Map());
   const [notes, setNotes] = useState<Note[]>([]);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [gasState, setGasState] = useState<GasState | null>(null);
@@ -2636,6 +2703,88 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const todoReorder = useCallback(
     (ids: string[]) => {
       send({ type: "todo_reorder", ids });
+    },
+    [send],
+  );
+
+  const voteCreate = useCallback(
+    (input: { question: string; options: string[]; pubKey: string; committeeSize: number; threshold: number }) => {
+      const question = input.question.trim();
+      const options = input.options.map(o => o.trim()).filter(Boolean);
+      if (!question || options.length < 2 || !input.pubKey) return;
+      send({
+        type: "vote_create",
+        question: question.slice(0, 280),
+        options: options.slice(0, 8),
+        pubKey: input.pubKey,
+        committeeSize: input.committeeSize,
+        threshold: input.threshold,
+      });
+    },
+    [send],
+  );
+  const voteCast = useCallback(
+    (pollId: string, ct: string) => {
+      return new Promise<string>(resolve => {
+        voteCastWaitersRef.current.set(pollId, resolve);
+        send({ type: "vote_cast", pollId, ct });
+        // Relay unreachable / message dropped — don't hang the ballot UI.
+        setTimeout(() => {
+          if (voteCastWaitersRef.current.get(pollId) === resolve) {
+            voteCastWaitersRef.current.delete(pollId);
+            resolve("timeout");
+          }
+        }, 15_000);
+      });
+    },
+    [send],
+  );
+  const voteClose = useCallback(
+    (pollId: string) => {
+      send({ type: "vote_close", pollId });
+    },
+    [send],
+  );
+  const voteReveal = useCallback(
+    (pollId: string, tally: number[]) => {
+      send({ type: "vote_reveal", pollId, tally });
+    },
+    [send],
+  );
+  const voteRemove = useCallback(
+    (pollId: string) => {
+      send({ type: "vote_remove", pollId });
+    },
+    [send],
+  );
+  const voteRequestBallots = useCallback(
+    (pollId: string) => {
+      return new Promise<VoteBallotsPayload>((resolve, reject) => {
+        voteBallotsWaitersRef.current.set(pollId, resolve);
+        send({ type: "vote_ballots", pollId });
+        setTimeout(() => {
+          if (voteBallotsWaitersRef.current.has(pollId)) {
+            voteBallotsWaitersRef.current.delete(pollId);
+            reject(new Error("timed out fetching ballots"));
+          }
+        }, 15_000);
+      });
+    },
+    [send],
+  );
+
+  const voteRequestPubKey = useCallback(
+    (pollId: string) => {
+      return new Promise<string>((resolve, reject) => {
+        votePubKeyWaitersRef.current.set(pollId, resolve);
+        send({ type: "vote_pubkey", pollId });
+        setTimeout(() => {
+          if (votePubKeyWaitersRef.current.has(pollId)) {
+            votePubKeyWaitersRef.current.delete(pollId);
+            reject(new Error("timed out fetching poll public key"));
+          }
+        }, 15_000);
+      });
     },
     [send],
   );
@@ -3500,6 +3649,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           if (Array.isArray(msg.todos)) {
             setTodos(msg.todos as TodoItem[]);
           }
+          if (Array.isArray(msg.voting)) {
+            setVotingPolls(msg.voting as VotePoll[]);
+          }
           if (Array.isArray(msg.notes)) {
             setNotes(msg.notes as Note[]);
           }
@@ -4131,6 +4283,38 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "voting" && Array.isArray(msg.polls)) {
+          setVotingPolls(msg.polls as VotePoll[]);
+          return;
+        }
+
+        if (msg.type === "vote_ballots" && typeof msg.pollId === "string") {
+          const waiter = voteBallotsWaitersRef.current.get(msg.pollId);
+          if (waiter) {
+            voteBallotsWaitersRef.current.delete(msg.pollId);
+            waiter(msg as unknown as VoteBallotsPayload);
+          }
+          return;
+        }
+
+        if (msg.type === "vote_pubkey" && typeof msg.pollId === "string" && typeof msg.pubKey === "string") {
+          const waiter = votePubKeyWaitersRef.current.get(msg.pollId);
+          if (waiter) {
+            votePubKeyWaitersRef.current.delete(msg.pollId);
+            waiter(msg.pubKey);
+          }
+          return;
+        }
+
+        if (msg.type === "vote_cast_ack" && typeof msg.pollId === "string") {
+          const waiter = voteCastWaitersRef.current.get(msg.pollId);
+          if (waiter) {
+            voteCastWaitersRef.current.delete(msg.pollId);
+            waiter(typeof msg.result === "string" ? msg.result : "error");
+          }
+          return;
+        }
+
         if (msg.type === "notes" && Array.isArray(msg.items)) {
           setNotes(msg.items as Note[]);
           return;
@@ -4579,6 +4763,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     todoDelete,
     todoClearDone,
     todoReorder,
+    votingPolls,
+    voteCreate,
+    voteCast,
+    voteClose,
+    voteReveal,
+    voteRemove,
+    voteRequestBallots,
+    voteRequestPubKey,
     notes,
     noteCreate,
     noteUpdate,

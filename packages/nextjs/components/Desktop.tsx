@@ -50,6 +50,7 @@ import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
 import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
+import { VotingWindow } from "~~/components/desktop/VotingWindow";
 import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
@@ -197,7 +198,8 @@ type AppEntry = {
     | "news"
     | "transcript"
     | "card"
-    | "ens";
+    | "ens"
+    | "voting";
   // "app" → shared-browser window renders as a clean titled app (label in
   // the title bar, URL/nav bar hidden). Omitted/"browser" = full chrome.
   chrome?: "app" | "browser";
@@ -2599,6 +2601,7 @@ function DesktopInner({ slug }: { slug: string }) {
         case "putt":
         case "qr":
         case "todo":
+        case "voting":
         case "notes":
         case "glossary":
         case "gas":
@@ -3982,6 +3985,16 @@ function DesktopInner({ slug }: { slug: string }) {
               minHeight={300}
             >
               <TodoWindow mesh={mesh} />
+            </SharedAppWindow>
+            <SharedAppWindow
+              mesh={mesh}
+              id="voting"
+              title="VOTING BOOTH"
+              defaultSlot={{ x: 260, y: 110, width: 420, height: 520 }}
+              minWidth={320}
+              minHeight={360}
+            >
+              <VotingWindow mesh={mesh} />
             </SharedAppWindow>
             <SharedAppWindow
               mesh={mesh}

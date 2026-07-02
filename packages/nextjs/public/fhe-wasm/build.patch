@@ -1,0 +1,37 @@
+diff --git a/examples/weft-web/crates/fhe-wasm/Cargo.toml b/examples/weft-web/crates/fhe-wasm/Cargo.toml
+index def51d3..cb641ed 100644
+--- a/examples/weft-web/crates/fhe-wasm/Cargo.toml
++++ b/examples/weft-web/crates/fhe-wasm/Cargo.toml
+@@ -15,6 +15,7 @@ e3-fhe-params = { path = "vendor/e3-fhe-params" }
+ fhe = { path = "vendor/fhe-rs/crates/fhe" }
+ fhe-traits = { path = "vendor/fhe-rs/crates/fhe-traits" }
+ getrandom = { version = "0.2", features = ["js"] }
++console_error_panic_hook = "0.1"
+ js-sys = "0.3.95"
+ ndarray = "0.15.6"
+ rand = "0.8.5"
+diff --git a/examples/weft-web/crates/fhe-wasm/src/lib.rs b/examples/weft-web/crates/fhe-wasm/src/lib.rs
+index 4f5ef3d..8a275a2 100644
+--- a/examples/weft-web/crates/fhe-wasm/src/lib.rs
++++ b/examples/weft-web/crates/fhe-wasm/src/lib.rs
+@@ -9,4 +9,6 @@ pub use bfv::*;
+ use wasm_bindgen::prelude::*;
+ 
+ #[wasm_bindgen(start)]
+-pub fn init() {}
++pub fn init() {
++    console_error_panic_hook::set_once();
++}
+diff --git a/examples/weft-web/crates/fhe-wasm/vendor/fhe-rs/crates/fhe/src/trbfv/shares.rs b/examples/weft-web/crates/fhe-wasm/vendor/fhe-rs/crates/fhe/src/trbfv/shares.rs
+index 4214a8f..b00ad97 100644
+--- a/examples/weft-web/crates/fhe-wasm/vendor/fhe-rs/crates/fhe/src/trbfv/shares.rs
++++ b/examples/weft-web/crates/fhe-wasm/vendor/fhe-rs/crates/fhe/src/trbfv/shares.rs
+@@ -110,7 +110,7 @@ impl ShareManager {
+         let min_modulus = moduli.iter().min().expect("moduli vector is empty");
+ 
+         assert!(
+-            self.n < (*min_modulus).try_into().unwrap(),
++            (self.n as u64) < *min_modulus,
+             "n {} is not smaller than the smallest modulus {}, the MPC protocol implemented assumes that n is smaller than the smallest moduli defining the ciphertext space",
+             self.n,
+             min_modulus

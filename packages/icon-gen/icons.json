@@ -269,6 +269,10 @@
     {
       "name": "putt",
       "prompt": "A top-down mini-golf putt-putt scene: a bright green felt fairway with a white golf ball, a black hole cup with a little red flag, and a putter club."
+    },
+    {
+      "name": "voting",
+      "prompt": "A chunky retro ballot box icon with an encrypted envelope sliding into the slot and a glowing padlock badge on the front."
     }
   ],
   "sheet": {

@@ -44,6 +44,7 @@ import { WalletChatState, type WalletChatSnapshot } from "./wallet-chat.js";
 import { RoomMeta } from "./room-meta.js";
 import { TldrState } from "./tldr-state.js";
 import { TodoList } from "./todos.js";
+import { VotingBooth } from "./voting.js";
 import { Transcript } from "./transcript.js";
 import { formatBytes, ownerKeyActor } from "./transcript-actions.js";
 import { WalletState } from "./wallet.js";
@@ -122,6 +123,7 @@ function roomPaths(id: string): {
   escrow: { path: string };
   research: { path: string };
   researchCorpus: { path: string };
+  voting: { path: string };
   leftclaw: { path: string };
   walletChat: { path: string };
   auth: { path: string };
@@ -222,6 +224,10 @@ function roomPaths(id: string): {
     researchCorpus: {
       // No legacy path — corpus docs are a new concept. Cold start = empty.
       path: `${dir}/research-corpus.json`,
+    },
+    voting: {
+      // No legacy path — the Voting Booth is new. Cold start = no polls.
+      path: `${dir}/voting.json`,
     },
     leftclaw: {
       // No legacy path — the Hire app is new; cold start = idle.
@@ -359,6 +365,7 @@ export class Room {
   readonly putt = new Putt();
   readonly research: ResearchState;
   readonly researchCorpus: ResearchCorpus;
+  readonly voting: VotingBooth;
   readonly leftclaw: LeftclawState;
   readonly qr = new QrState();
   readonly previewMedia = new PreviewMedia();
@@ -443,6 +450,7 @@ export class Room {
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
     this.researchCorpus = new ResearchCorpus(paths.researchCorpus.path);
+    this.voting = new VotingBooth(paths.voting.path);
     this.leftclaw = new LeftclawState(paths.leftclaw.path);
     this.auth = new RoomAuth(paths.auth.path);
     this.chyron = new Chyron(paths.chyron.path);
@@ -462,6 +470,7 @@ export class Room {
     this.jamendo.subscribeCustom(tracks => this.broadcast({ type: "music_custom", tracks }));
     this.research.subscribe(state => this.broadcast({ type: "research_state", state }));
     this.researchCorpus.subscribe(items => this.broadcast({ type: "research_corpus", items }));
+    this.voting.subscribe(polls => this.broadcast({ type: "voting", polls }));
     this.leftclaw.subscribe(state => this.broadcast({ type: "leftclaw_state", state }));
     this.walletChat.subscribe(state => this.broadcast({ type: "wallet_chat", state }));
     this.chyron.subscribe(state => this.broadcast({ type: "chyron", state }));

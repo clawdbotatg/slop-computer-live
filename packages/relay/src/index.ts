@@ -1067,7 +1067,8 @@ type AppEntry = {
     | "news"
     | "transcript"
     | "card"
-    | "ens";
+    | "ens"
+    | "voting";
   // Window chrome for browser/iframe apps. "app" presents the shared
   // browser window as a clean titled app: the title bar shows the app's
   // label and the URL/nav bar is hidden (so it doesn't look like a
@@ -1164,6 +1165,12 @@ const DEFAULT_APPS: AppEntry[] = [
     icon: "/icons/paint.png",
     url: "https://nifty.ink/",
     chrome: "app",
+  },
+  {
+    id: "voting",
+    label: "Voting",
+    icon: "/icons/voting.png",
+    kind: "voting",
   },
   {
     id: "qr",
@@ -7584,6 +7591,7 @@ app.register(async function signalRoutes(fastify) {
       pokerPrivate: info.address ? room.poker.privateFor(info.address) : null,
       aiPlayers: listAvailableAIPlayers(),
       todos: room.todos.list(),
+      voting: room.voting.list(),
       notes: room.notes.list(),
       glossary: glossaryList(),
       gasState: getGasState(),
@@ -7932,6 +7940,77 @@ app.register(async function signalRoutes(fastify) {
           if (!Array.isArray(msg.ids)) return;
           const ids = msg.ids.filter((s: unknown): s is string => typeof s === "string");
           room.todos.reorder(ids);
+          return;
+        }
+        // --- Voting Booth (private voting) --------------------------------
+        // Ballots arrive as opaque threshold-BFV ciphertexts — the relay
+        // stores and counts them but can't read them (see voting.ts).
+        // Mutations broadcast via the Room's wired-in VotingBooth subscriber.
+        case "vote_create": {
+          if (typeof msg.question !== "string" || typeof msg.pubKey !== "string") return;
+          const creatorKey = info.address?.toLowerCase() ?? info.anonId ?? null;
+          if (!creatorKey) return send(socket, { type: "error", error: "no_stable_id" });
+          room.voting.create({
+            creatorKey,
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            question: msg.question,
+            options: msg.options,
+            pubKey: msg.pubKey,
+            committeeSize: typeof msg.committeeSize === "number" ? msg.committeeSize : 0,
+            threshold: typeof msg.threshold === "number" ? msg.threshold : 0,
+          });
+          return;
+        }
+        case "vote_cast": {
+          if (typeof msg.pollId !== "string" || typeof msg.ct !== "string") return;
+          const voterKey = info.address?.toLowerCase() ?? info.anonId ?? null;
+          if (!voterKey) return send(socket, { type: "error", error: "no_stable_id" });
+          const result = room.voting.cast({
+            pollId: msg.pollId,
+            voterKey,
+            address: info.address,
+            handle: info.handle,
+            anonId: info.anonId,
+            ct: msg.ct,
+          });
+          send(socket, { type: "vote_cast_ack", pollId: msg.pollId, result });
+          return;
+        }
+        case "vote_close": {
+          if (typeof msg.pollId !== "string") return;
+          const byKey = info.address?.toLowerCase() ?? info.anonId ?? null;
+          if (byKey) room.voting.close(msg.pollId, byKey);
+          return;
+        }
+        case "vote_reveal": {
+          if (typeof msg.pollId !== "string") return;
+          const byKey = info.address?.toLowerCase() ?? info.anonId ?? null;
+          if (byKey) room.voting.reveal(msg.pollId, byKey, msg.tally);
+          return;
+        }
+        case "vote_remove": {
+          if (typeof msg.pollId !== "string") return;
+          const byKey = info.address?.toLowerCase() ?? info.anonId ?? null;
+          if (byKey) room.voting.remove(msg.pollId, byKey);
+          return;
+        }
+        case "vote_pubkey": {
+          // Committee public key on demand — a voter needs it to encrypt,
+          // but at a few hundred KB it doesn't ride the broadcasts.
+          if (typeof msg.pollId !== "string") return;
+          const data = room.voting.pubKeyFor(msg.pollId);
+          if (data) send(socket, { type: "vote_pubkey", ...data });
+          return;
+        }
+        case "vote_ballots": {
+          // Full ciphertexts on demand (reveal ceremony / attacker panel) —
+          // too heavy to ride the broadcast snapshots. Reply only to the
+          // requester.
+          if (typeof msg.pollId !== "string") return;
+          const data = room.voting.ballotsFor(msg.pollId);
+          if (data) send(socket, { type: "vote_ballots", ...data });
           return;
         }
         case "note_create": {
