@@ -2733,6 +2733,48 @@ DELETE ${BASE}/v1/wallet-chat?slug=${slugStr(slug)}
 # 409 → in-flight; refused so we don't orphan a running AI turn
 \`\`\`
 
+### Tips — celebrate ETH sent to the room
+
+A viewer can \`/tip\` ETH from their own wallet to the room multisig.
+Two helper endpoints (both skip the room password gate, like \`/v1/chat\`,
+so a SIWE-only spectator can tip):
+
+\`\`\`
+GET  ${BASE}/v1/wallet?slug=${slugStr(slug)}
+# → { address }   # the room multisig address to send a tip to (null if none deployed)
+
+POST ${BASE}/v1/tip/parse?slug=${slugStr(slug)}     { "text": "send a couple bucks on base" }
+# → AI-parsed { amountEth, chainId, ... }   # only needed for fuzzy phrasing; rate-limited
+
+POST ${BASE}/v1/tip/announce?slug=${slugStr(slug)}  { "amountEth": "0.001", "chainId": 8453 }
+# → { ok: true }   400 if amount/chain invalid
+\`\`\`
+
+\`/tip/announce\` is the agent-facing twin of the \`tip_announce\` WS verb:
+it appends an attributed chat line and, for **≥ 0.001 ETH**, broadcasts
+the ephemeral \`tip\` event that drives the flying celebration card on the
+live stream. The relay does **not** verify the tip on-chain — it's a chat
+flourish, not accounting; the actual ETH transfer is the viewer's own
+wallet tx, which is browser/human-driven.
+
+### Report a wallet-chat tx as sent
+
+\`\`\`
+POST ${BASE}/v1/wallet-chat/tx-sent?slug=${slugStr(slug)}   { ... }
+\`\`\`
+
+Marks a tx the AI-wallet thread proposed as broadcast, so the thread
+reflects it. Normally the browser fires this after the user signs.
+
+### Personal wallet + onramp — humans only
+
+The **mywallet** desktop app (a passkey user's personal 1-of-2 slop
+multisig, deployed via \`/personal-wallet/deploy\` + executed via
+\`/personal-wallet/exec\`) and the **fiat onramp** (\`/onramp/session\`)
+both require a **real passkey signer / card-payment flow in a browser**.
+There is no agent path — an agent can't hold a passkey or complete a
+card purchase. Read these from \`/v1/state\` if you need to narrate them.
+
 ### Agent recipes
 
 **"What's the current wallet doing?":**
@@ -2867,6 +2909,20 @@ GET ${BASE}/v1/cards/${slugStr(slug)}/published.png    # host-baked PNG with ove
 
 Both are public (no auth). \`card.png\` is cached 5min; \`published.png\`
 is cached 1h.
+
+### Generate a card from a text prompt (the agent path — no image needed)
+
+\`\`\`
+POST ${BASE}/v1/card/prompt?slug=${slugStr(slug)}   { "prompt": "poker night, neon felt, ETH chips" }
+# → { ok: true, job: { startedAt, startedBy } }
+# 400 empty-prompt · 413 prompt-too-long (>500 chars) · 409 already-generating
+\`\`\`
+
+Easiest path for an agent: pass a one-line vibe and the relay generates
+the title-card image in the house style — no image bytes to source or
+upload. Fire-and-forget, same job/broadcast lifecycle as the image path
+below (\`card_job\` → \`card_state\`, image lands at
+\`/v1/cards/${slugStr(slug)}/card.png\`).
 
 ### Generate a card from a PFP / reference
 
@@ -3079,6 +3135,36 @@ This is the password gate. It's separate from the session cookie:
 distinct from "you were invited here" (room cookie). Both required
 for the WS \`/signal?slug=${slugStr(slug)}\` handshake and any mutation.
 
+### Access gate mode — host-only
+
+\`\`\`
+POST ${BASE}/v1/rooms/${slugStr(slug)}/gate { "mode": "password" | "wallet-signers" }
+# → { ok: true, slug, gate }
+# 409 no-wallet-signers (wallet-signers mode needs a deployed multisig with signers)
+# 403 not-a-signer · 404 no-such-room
+\`\`\`
+
+\`password\` = anyone with the password joins (default). \`wallet-signers\`
+= only addresses that are signers on the room's multisig may enter
+(ERC-1271-style gating). Switching to \`wallet-signers\` requires the
+caller to be a current signer.
+
+### Invite link helpers — host-only
+
+\`\`\`
+GET  ${BASE}/v1/rooms/${slugStr(slug)}/invite
+# → { slug, password }   # plaintext invite password so the admin panel can build a ?invite= link (null for pre-plaintext rooms)
+POST ${BASE}/v1/rooms/${slugStr(slug)}/invite { "password": "<known password>" }
+# → { ok: true }   # backfill the plaintext for a room that only has a hash on file; 401 if wrong. Does NOT rotate — existing links keep working
+\`\`\`
+
+### Onboarding questions (the join prompt) — read any, write host-only
+
+\`\`\`
+GET ${BASE}/v1/admin/questions   # → { text }   the shared "questions to ask" prompt shown when joining
+PUT ${BASE}/v1/admin/questions   { "text": "..." }   # host-only; 413 over 20k chars
+\`\`\`
+
 ### Revive a hibernated room
 
 \`\`\`
@@ -3181,15 +3267,20 @@ defense-in-depth measure.
 | \`offer\` / \`answer\` / \`ice\` | \`to\`, \`payload\` | **WS-only** | WebRTC signaling, routed to a single peer |
 | \`god_viewport\` | \`viewport: {width, height} \\| null\` | **WS-only** | OBS-capture dashed rectangle (god-mode only) |
 | \`god_geometry\` | \`vw, vh, windows: [{id, x, y, w, h, z}]\` | **WS-only** | god-mode only; logs each media window's actual rendered rect (px, viewport-relative) → \`geometry.jsonl\` (\`src:"god"\`) for the clipper's 9:16 crop |
+| \`green_room\` | \`on\` | **WS-only** | god-mode/spectator only — flips the off-air/standby/on-air sign every viewer sees |
 | \`cursor\` | \`x, y\` | \`POST /v1/cursor\` | labelled cursor position |
 | \`click\` | \`x, y\` | \`POST /v1/click\` | colored click ripple |
 | \`card_title\` | \`title: { text, x, y, sizeFrac }\` | **WS-only** | shared title overlay on the per-room card; \`0 ≤ x,y ≤ 1\`, \`0.015 ≤ sizeFrac ≤ 0.25\` |
 | \`chat_send\` | \`text\` | \`POST /v1/chat\` | room chat |
+| \`tip_announce\` | \`amountEth\`, \`chainId\` | \`POST /v1/tip/announce\` | celebrate an ETH tip to the room multisig — chat line + (≥0.001) a flying \`tip\` card. See \`/v1/skill/wallet\` |
 | \`live_caption\` / \`live_caption_state\` | \`text\` / \`on\` | none | speaker's in-browser STT subtitle line + on/off |
 | \`set_custom_name\` | \`name\` | \`POST /auth/handle\` | anon-user rename |
+| \`set_balance_hidden\` | \`hidden\` | **WS-only** | hide/show your own USD balance in the room's guest list (swaps the amount for 👛) |
+| \`tldr_request\` | — | **WS-only** | trigger an AI TLDR of the live transcript; result fans out as a \`transcript\`/glossary update |
 | \`todo_add\` / \`todo_toggle\` / \`todo_update\` / \`todo_delete\` / \`todo_clear_done\` / \`todo_reorder\` | mirror REST | \`POST /v1/todos*\` | full CRUD over WS |
 | \`note_create\` / \`note_update\` / \`note_delete\` | mirror REST | \`POST /v1/notes*\` | full CRUD over WS |
 | \`glossary_add\` / \`glossary_regenerate\` / \`glossary_delete\` | mirror REST | \`POST /v1/glossary*\` | full CRUD over WS |
+| \`corpus_create\` / \`corpus_update\` / \`corpus_delete\` | mirror REST | \`POST/DELETE /v1/research/corpus*\` | host-curated research source docs (see \`/v1/skill/research\`) |
 | \`publish\` / \`unpublish\` / \`set_camera_off\` | publication fields | **WS-only** | declare/withdraw a camera/mic/screen publication |
 | \`slot_update\` | \`id\`, partial geometry | \`POST /v1/slots\` | move/resize a window or icon |
 | \`browser_open\` / \`browser_navigate\` / \`browser_close\` | \`id\`, \`url\` | \`POST/DELETE /v1/browsers...\` | shared browsers |
@@ -3201,6 +3292,10 @@ defense-in-depth measure.
 | \`chess_create_game\` / \`chess_move\` / \`chess_resign\` / \`chess_close_game\` | mirror REST | \`POST /v1/chess/...\` | chess |
 | \`pong_claim\` / \`pong_release\` / \`pong_paddle\` / \`pong_reset\` | mirror REST | \`POST /v1/pong/...\` | pong (use WS for paddle @ 30Hz) |
 | \`worm_claim\` / \`worm_release\` / \`worm_dir\` / \`worm_reset\` | mirror REST | \`POST /v1/worm/...\` | worm (use WS for dir) |
+| \`putt_claim\` / \`putt_release\` / \`putt_start\` / \`putt_shoot\` / \`putt_reset\` | mirror REST | \`POST /v1/putt/...\` | putt-putt (turn-based; REST is the agent path) |
+| \`putt_rename\` | \`name\` | **WS-only** | set your putt player's display name |
+| \`poker_act\` / \`poker_next_hand\` / \`poker_show_cards\` | mirror REST | \`POST /v1/poker/...\` | play hands over REST (see \`/v1/skill/poker\`) |
+| \`poker_open_table\` / \`poker_join\` / \`poker_sponsor_ai\` / \`poker_start\` | table config / \`txHash\` | **WS-only** | open table, buy in, fund an AI seat, start dealing — all need a real on-chain deposit (human wallet only) |
 | \`wager_propose\` / \`wager_start\` | white/black keys, \`buyinWei\` | **WS-only** | money-chess: open + start an escrowed wager (real wallets only) |
 | \`escrow_fund\` / \`escrow_cancel\` / \`escrow_clear\` | \`txHash\` (fund) | **WS-only** | deposit a buy-in (relay verifies on-chain) / abort / reset the escrow session |
 | \`tx_request\` | tx | **WS-only** | impersonator captured an \`eth_sendTransaction\` (from browser-host) |
@@ -3211,6 +3306,7 @@ defense-in-depth measure.
 | \`wallet_tx_propose\` | proposal | \`POST /v1/wallet/propose\` | propose a multisig tx (REST mirror is the agent-friendly path) |
 | \`wallet_tx_sign\` | sig | **WS-only** | sign a pending tx (needs a real signer's private key) |
 | \`wallet_tx_status\` / \`wallet_tx_remove\` / \`wallet_tx_resummarize\` | \`txId\`, ... | **WS-only** | tx-queue maintenance |
+| \`wallet_nested_request\` / \`wallet_nested_result\` | \`outerSlug\`, \`outerWalletAddress\`, \`outerTxId\`, sig | **WS-only** | nested-multisig signing (a room wallet that is itself a signer on another room's wallet) — real signers only |
 
 **WS-only** in that table = no REST mirror. The big ones for agents to
 know about: \`card_title\` (the only way to drive the title overlay) and
