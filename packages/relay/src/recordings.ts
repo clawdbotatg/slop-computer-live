@@ -466,6 +466,11 @@ export async function finalizeRecording(opts: {
    *  not dependent on `live.slop.computer/v1/cards/<slug>/published.png`
    *  staying up. Pass `null` if the host never saved a card. */
   cardArchive: { bytes: Buffer; format: string } | null;
+  /** Small tier of the card (768-wide JPEG, see card-bake's bakeCardPreview).
+   *  Pinned alongside the full card as `manifest.card.previewCid` so grid
+   *  consumers (the frontpage stacks ~20 cards) fetch ~100 KB, not ~3 MB.
+   *  Optional — older callers and card-less episodes just omit it. */
+  cardPreviewArchive?: { bytes: Buffer; format: string } | null;
   /** Append-only window-geometry timeline (geometry.jsonl), snapshotted from
    *  the room. Pinned to IPFS and referenced under `manifest.geometry.cid` so
    *  the clipper can read exact window rects instead of recovering them from
@@ -600,7 +605,8 @@ export async function finalizeRecording(opts: {
         // Pin the host-baked unfurl card PNG. Same dedup-on-content-hash
         // semantics as everything else kubo pins — same PNG → same CID
         // across re-finalizes.
-        let cardPin: { cid: string; format: string; sizeBytes: number } | null = null;
+        let cardPin: { cid: string; format: string; sizeBytes: number; previewCid?: string; previewSizeBytes?: number } | null =
+          null;
         const cardArchive = opts.cardArchive;
         if (cardArchive && cardArchive.bytes.length > 0) {
           emit({ phase: "pinning-card", sizeBytes: cardArchive.bytes.length });
@@ -614,6 +620,23 @@ export async function finalizeRecording(opts: {
             format: cardArchive.format,
             sizeBytes: cardArchive.bytes.length,
           };
+          // The small tier pins under the same manifest entry. Best-effort:
+          // a preview pin failure downgrades the manifest to full-card-only
+          // rather than failing the finalize.
+          const previewArchive = opts.cardPreviewArchive;
+          if (previewArchive && previewArchive.bytes.length > 0) {
+            try {
+              cardPin.previewCid = await pinBlobToLocalIpfs({
+                apiUrl: opts.ipfsApiUrl,
+                blob: new Blob([previewArchive.bytes], { type: previewArchive.format }),
+                filename: "card-preview.jpg",
+              });
+              cardPin.previewSizeBytes = previewArchive.bytes.length;
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.error("[finalize] card preview pin failed", err);
+            }
+          }
         }
 
         // Best-effort AI pass: title, one-liner, description, topics, chapters
@@ -656,7 +679,7 @@ export async function finalizeRecording(opts: {
           chat?: { cid: string; messageCount: number };
           transcript?: { cid: string; segmentCount: number };
           geometry?: { cid: string; sampleCount: number; format: string };
-          card?: { cid: string; format: string; sizeBytes: number };
+          card?: { cid: string; format: string; sizeBytes: number; previewCid?: string; previewSizeBytes?: number };
           participants?: {
             address: string | null;
             anonId: string | null;
@@ -761,7 +784,7 @@ type EpisodeManifestV1 = {
   chat?: { cid: string; messageCount: number };
   transcript?: { cid: string; segmentCount: number };
   geometry?: { cid: string; sampleCount: number; format: string };
-  card?: { cid: string; format: string; sizeBytes: number };
+  card?: { cid: string; format: string; sizeBytes: number; previewCid?: string; previewSizeBytes?: number };
   participants?: {
     address: string | null;
     anonId: string | null;

@@ -85,3 +85,25 @@ export async function bakeCardPublished(
   await PImage.encodePNGToStream(img, createWriteStream(outPath));
   return statSync(outPath).size;
 }
+
+// The published card is a full-res PNG (~3 MB at 1536×1024) — right for OG
+// unfurls and YouTube thumbnails, 18× too heavy for the frontpage episode
+// grid, which renders it at ~378×212 CSS px. This bakes the small tier: a
+// half-res JPEG (768 wide covers 2× retina at that display size).
+export const CARD_PREVIEW_WIDTH = 768;
+export const CARD_PREVIEW_JPEG_QUALITY = 80;
+
+export async function bakeCardPreview(
+  publishedPngPath: string,
+  outPath: string,
+  width = CARD_PREVIEW_WIDTH,
+  quality = CARD_PREVIEW_JPEG_QUALITY,
+): Promise<number> {
+  const src = await PImage.decodePNGFromStream(createReadStream(publishedPngPath));
+  const w = Math.min(width, src.width);
+  const h = Math.max(1, Math.round(src.height * (w / src.width)));
+  const out = PImage.make(w, h);
+  out.getContext("2d").drawImage(src, 0, 0, src.width, src.height, 0, 0, w, h);
+  await PImage.encodeJPEGToStream(out, createWriteStream(outPath), quality);
+  return statSync(outPath).size;
+}

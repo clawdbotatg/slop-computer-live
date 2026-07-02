@@ -8,7 +8,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
-import { bakeCardPublished } from "./card-bake.js";
+import { bakeCardPreview, bakeCardPublished } from "./card-bake.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import {
@@ -2996,6 +2996,23 @@ function cardPublishedFilePath(slug: string): string {
   return `./.slop-data/rooms/${slug}/card-published.png`;
 }
 
+// Small tier of the published card (768-wide JPEG) for list/grid consumers —
+// the frontpage loads ~20 of these per view, so serving the full PNG there
+// was ~60 MB of page weight. Baked alongside every publish; `ensure` also
+// lazy-bakes it on first GET so episodes published before this tier existed
+// get one without a migration.
+function cardPreviewFilePath(slug: string): string {
+  return `./.slop-data/rooms/${slug}/card-preview.jpg`;
+}
+
+async function ensureCardPreview(slug: string): Promise<string | null> {
+  const previewPath = cardPreviewFilePath(slug);
+  if (_existsSync(previewPath)) return previewPath;
+  if (!_existsSync(cardPublishedFilePath(slug))) return null;
+  await bakeCardPreview(cardPublishedFilePath(slug), previewPath);
+  return previewPath;
+}
+
 function readCardSnapshot(slug: string): { version: number } | null {
   try {
     const st = _statSync(cardFilePath(slug));
@@ -3228,6 +3245,14 @@ app.post(
       req.log.error({ err }, "card publish failed");
       return reply.code(500).send({ error: "write-failed" });
     }
+    // Re-bake the small tier so it never serves a stale image after a
+    // re-publish. Best-effort: a preview failure must not fail the publish
+    // (the GET route can still lazy-bake it later).
+    try {
+      await bakeCardPreview(cardPublishedFilePath(slug), cardPreviewFilePath(slug));
+    } catch (err) {
+      req.log.error({ err }, "card preview bake failed");
+    }
     noteAction(room, a, "card", `🖼️ ${actorName(a.session)} published the title card`);
     return { ok: true, bytes: body.length };
   },
@@ -3250,6 +3275,11 @@ app.post("/v1/card/publish", async (req, reply) => {
   try {
     await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
     const bytes = await bakeCardPublished(cardPath, cardPublishedFilePath(slug), title);
+    try {
+      await bakeCardPreview(cardPublishedFilePath(slug), cardPreviewFilePath(slug));
+    } catch (err) {
+      req.log.error({ err }, "card preview bake failed");
+    }
     noteAction(room, a, "card", `🖼️ ${actorName(a.session)} published the title card (server bake)`);
     return { ok: true, bytes };
   } catch (err) {
@@ -3303,15 +3333,29 @@ app.put("/v1/admin/questions", async (req, reply) => {
 // `card.png` = raw AI-generated card (5min cache, written by the
 // generation job). `published.png` = host-baked unfurl PNG with title
 // overlay rendered in (1h cache since hosts publish deliberately and
-// re-publishes are rare).
+// re-publishes are rare). `preview.jpg` = the small tier of published.png
+// for list/grid consumers (same 1h cache; lazy-baked on first request so
+// pre-tier episodes get one with no migration).
 app.get<{ Params: { slug: string; filename: string } }>(
   "/v1/cards/:slug/:filename",
   async (req, reply) => {
     const { slug, filename } = req.params;
-    if (!isValidSlug(slug) || (filename !== "card.png" && filename !== "published.png")) {
+    if (!isValidSlug(slug) || (filename !== "card.png" && filename !== "published.png" && filename !== "preview.jpg")) {
       return reply.code(400).send({ error: "bad-name" });
     }
-    const path = filename === "published.png" ? cardPublishedFilePath(slug) : cardFilePath(slug);
+    let path: string;
+    if (filename === "preview.jpg") {
+      let previewPath: string | null = null;
+      try {
+        previewPath = await ensureCardPreview(slug);
+      } catch (err) {
+        req.log.error({ err }, "card preview lazy bake failed");
+      }
+      if (!previewPath) return reply.code(404).send({ error: "not-found" });
+      path = previewPath;
+    } else {
+      path = filename === "published.png" ? cardPublishedFilePath(slug) : cardFilePath(slug);
+    }
     let buf: Buffer;
     try {
       const fs = await import("node:fs/promises");
@@ -3319,8 +3363,8 @@ app.get<{ Params: { slug: string; filename: string } }>(
     } catch {
       return reply.code(404).send({ error: "not-found" });
     }
-    reply.header("content-type", "image/png");
-    reply.header("cache-control", filename === "published.png" ? "public, max-age=3600" : "public, max-age=300");
+    reply.header("content-type", filename === "preview.jpg" ? "image/jpeg" : "image/png");
+    reply.header("cache-control", filename === "card.png" ? "public, max-age=300" : "public, max-age=3600");
     return reply.send(buf);
   },
 );
@@ -6501,12 +6545,24 @@ app.post("/admin/finalize", async (req, reply) => {
       // CardWindow disk button. fs sync is fine here — finalize is
       // already a serialized, host-triggered flow, not a hot path.
       let cardArchive: { bytes: Buffer; format: string } | null = null;
+      let cardPreviewArchive: { bytes: Buffer; format: string } | null = null;
       try {
         const fs = await import("node:fs");
         const cardPath = cardPublishedFilePath(room.id);
         const bytes = fs.readFileSync(cardPath);
         if (bytes.length > 0) {
           cardArchive = { bytes, format: "image/png" };
+          // Small tier rides along so the manifest can point grid consumers
+          // at a ~100 KB JPEG instead of the ~3 MB PNG. Best-effort.
+          try {
+            const previewPath = await ensureCardPreview(room.id);
+            if (previewPath) {
+              const previewBytes = fs.readFileSync(previewPath);
+              if (previewBytes.length > 0) cardPreviewArchive = { bytes: previewBytes, format: "image/jpeg" };
+            }
+          } catch {
+            /* preview bake failed — manifest ships with the full card only */
+          }
         }
       } catch {
         /* no card saved yet — manifest just ships without it */
@@ -6539,6 +6595,7 @@ app.post("/admin/finalize", async (req, reply) => {
         geometryArchive: room.geometry.readArchive(),
         participants,
         cardArchive,
+        cardPreviewArchive,
         roomSlug: room.id,
         roomName: room.meta.getName(),
         researchContext,
