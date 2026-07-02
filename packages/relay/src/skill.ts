@@ -2134,10 +2134,17 @@ The whole flow is a per-room snapshot at \`state.researchState\` in
                                                             //   "I don't have knowledge of them in my training data."
   researched: string,                                       // 2-4 paragraphs of fresh prose
   questions: string[],                                      // 8-10 slow-pitch interview questions
-  tweets: [{ text, url?, date? }, ...],                    // 5-15 sampled recent tweets
+  themes: string[],                                         // 3-6 trends/obsessions across their recent
+                                                            //   tweets + work (absent on old dossiers)
+  tweets: [{ text, url?, date?, kind?, likes?, retweets?, rtOf? }, ...],
+                                                            // guest's last ~40 tweets + RTs crawled live
+                                                            //   from the X API when a twitter handle was
+                                                            //   given (kind: "tweet"|"retweet"|"quote");
+                                                            //   falls back to 5-15 web-search-scraped
+                                                            //   tweets (no kind/likes) if the crawl fails
   sources: [{ title, url, snippet? }, ...],                // cited pages
   corpusDocs: [{ name, chars }, ...],                      // corpus docs tiled into the prompt
-  errors: { socialsDesc?: string, vanilla?: string, researched?: string }  // per-stage failures
+  errors: { socialsDesc?: string, vanilla?: string, researched?: string, tweetCrawl?: string }  // per-stage failures
 }
 \`\`\`
 
@@ -2177,9 +2184,14 @@ POST ${BASE}/v1/guest-research?slug=${slugStr(slug)} {
 # 409 → already-in-flight
 \`\`\`
 
-Runtime: ~30-60s. Two Claude passes run in parallel (vanilla +
-researched); each is independent so a partial failure still returns
-the half that worked. Web search is capped at 12 uses per call. On
+Runtime: ~30-60s. If \`socials.twitter\` is set, the relay first crawls
+the guest's last ~40 tweets + retweets straight from the X API and
+tiles them into the researched prompt as ground truth — that's what
+grounds \`themes\` and the tweet-specific \`questions\`. Then two Claude
+passes run in parallel (vanilla + researched); each is independent so
+a partial failure still returns the half that worked (a failed crawl
+degrades to web-search-scraped tweets, with the reason in
+\`errors.tweetCrawl\`). Web search is capped at 12 uses per call. On
 success: \`phase → "done"\` with \`result\` populated. On error:
 \`phase → "form"\` with \`error\` set so the host can retry.
 

@@ -113,6 +113,7 @@ import {
 } from "./headlines.js";
 import {
   type TimelineState,
+  fetchGuestTimeline,
   getState as getTimelineState,
   refreshNow as refreshTimelineNow,
   setResearchFocus as setTimelineResearchFocus,
@@ -144,7 +145,7 @@ import { type ClockState } from "./clock.js";
 import type { WalletRecord, WalletSigner, WalletState, WalletTx } from "./wallet.js";
 import { summarizeTransaction } from "./wallet-ai.js";
 import { summarizeTranscript } from "./transcript-ai.js";
-import { type ResearchQuery, lookupGuest, researchGuest } from "./guest-research.js";
+import { type ResearchQuery, type TweetSnippet, lookupGuest, researchGuest } from "./guest-research.js";
 import {
   fetchActivity,
   fetchAddressModal,
@@ -4510,7 +4511,23 @@ app.post<{ Body: GuestResearchBody }>("/v1/guest-research", async (req, reply) =
 
   void (async () => {
     try {
-      const result = await researchGuest({ name, socials, notes }, corpus);
+      // Crawl the guest's real timeline first: their last 40 tweets +
+      // retweets straight from the X API beat whatever web_search can
+      // scrape out of x.com, and ground the themes + questions in what
+      // they're actually posting. Fault-tolerant — creds missing or a
+      // dead handle degrade to the old web_search-only behavior, with
+      // the failure surfaced in the dossier's tweets section.
+      let crawled: TweetSnippet[] = [];
+      let crawlError: string | undefined;
+      if (socials.twitter) {
+        try {
+          crawled = await fetchGuestTimeline(socials.twitter, 40);
+        } catch (err) {
+          crawlError = String(err).slice(0, 300);
+        }
+      }
+      const result = await researchGuest({ name, socials, notes }, corpus, crawled);
+      if (crawlError) result.errors.tweetCrawl = crawlError;
       room.research.setPatch({
         phase: "done",
         result,
@@ -6511,6 +6528,7 @@ function researchContextForRoom(room: ReturnType<typeof roomFromReq>): string | 
   if (r.query?.notes?.trim()) lines.push(`Host notes: ${r.query.notes.trim()}`);
   const researched = r.researched?.trim();
   if (researched) lines.push(`Dossier:\n${researched.slice(0, 8000)}`);
+  if (r.themes?.length) lines.push(`Recent-tweet themes:\n${r.themes.map(t => `- ${t}`).join("\n")}`);
   const text = lines.join("\n\n").trim();
   return text.length ? text : undefined;
 }

@@ -46,6 +46,13 @@ export type TweetSnippet = {
   text: string;
   url?: string;
   date?: string;
+  /** Set on API-crawled tweets (timeline.ts fetchGuestTimeline); absent
+   *  on tweets the model scraped out of web search results. */
+  kind?: "tweet" | "retweet" | "quote";
+  likes?: number;
+  retweets?: number;
+  /** For kind === "retweet": handle of the original author. */
+  rtOf?: string;
 };
 
 export type ResearchSource = {
@@ -62,13 +69,16 @@ export type ResearchResult = {
   vanilla: string;
   researched: string;
   questions: string[];
+  /** Trends / recurring topics across the guest's recent tweets + work.
+   *  Optional — dossiers persisted before the tweet-crawl feature lack it. */
+  themes?: string[];
   tweets: TweetSnippet[];
   sources: ResearchSource[];
   /** Names + sizes of the corpus docs that were tiled into the research
    *  prompt, so the dossier shows what host context grounded it. */
   corpusDocs: { name: string; chars: number }[];
   /** Per-stage errors so the UI can show what failed without hiding partial results. */
-  errors: { socialsDesc?: string; vanilla?: string; researched?: string };
+  errors: { socialsDesc?: string; vanilla?: string; researched?: string; tweetCrawl?: string };
 };
 
 // `includeNotes` is false for the vanilla pass: the vanilla call must
@@ -199,6 +209,22 @@ Output rules — follow exactly:
   return extractText(json) || "(model returned empty response)";
 }
 
+// Format the API-crawled guest timeline into a prompt section. ~40
+// tweets × ~300 chars ≈ 12K chars — comfortably inside the researched
+// call's context budget alongside the 24K corpus allowance.
+function crawledTweetsBlock(tweets: TweetSnippet[]): string {
+  if (tweets.length === 0) return "";
+  const lines = tweets.map(t => {
+    const meta: string[] = [];
+    if (t.date) meta.push(t.date);
+    if (t.kind === "retweet") meta.push(`RT of @${t.rtOf ?? "?"}`);
+    else if (t.kind === "quote") meta.push("quote tweet");
+    if (typeof t.likes === "number") meta.push(`${t.likes} likes, ${t.retweets ?? 0} RTs`);
+    return `[${meta.join(" · ")}] ${t.text.replace(/\s*\n\s*/g, " ")}`;
+  });
+  return `\n\nWe pulled their last ${tweets.length} tweets and retweets directly from the X API (newest first, verbatim — treat as ground truth; retweets show what they chose to amplify):\n\n${lines.join("\n")}`;
+}
+
 // Researched pass — web_search tool enabled. Claude does multiple
 // searches, reads tweets, and emits XML-style tags we extract with
 // per-tag regex. We *chose* tags over JSON because:
@@ -214,21 +240,37 @@ Output rules — follow exactly:
 async function researchedReport(
   q: ResearchQuery,
   corpusContext: string,
+  crawledTweets: TweetSnippet[] = [],
 ): Promise<{
   researched: string;
   questions: string[];
+  themes: string[];
   tweets: TweetSnippet[];
   sources: ResearchSource[];
 }> {
   const twitterHandle = (q.socials.twitter ?? "").replace(/^@/, "").trim();
-  const twitterHint = twitterHandle
-    ? `Their Twitter/X handle is @${twitterHandle}. Search "@${twitterHandle}", "${twitterHandle} twitter", and "site:twitter.com ${twitterHandle}" or "site:x.com ${twitterHandle}". Pull out 5–15 actual recent tweets if you can find them.`
-    : `No Twitter handle was provided — try to discover one if possible, otherwise focus on other sources.`;
+  const hasCrawl = crawledTweets.length > 0;
+  const twitterHint = hasCrawl
+    ? `Their real recent timeline is included above — do NOT spend web searches hunting for their tweets. Spend every search on talks, posts, code, and news instead.`
+    : twitterHandle
+      ? `Their Twitter/X handle is @${twitterHandle}. Search "@${twitterHandle}", "${twitterHandle} twitter", and "site:twitter.com ${twitterHandle}" or "site:x.com ${twitterHandle}". Pull out 5–15 actual recent tweets if you can find them.`
+      : `No Twitter handle was provided — try to discover one if possible, otherwise focus on other sources.`;
+
+  const questionsGrounding = hasCrawl
+    ? ` Ground at least half of them in specific tweets from the timeline above — "you tweeted …" openers are great.`
+    : "";
+  const tweetTagSpec = hasCrawl
+    ? "" // we already hold the real timeline — model-scraped tweets would only duplicate it
+    : `
+
+<tweet date="YYYY-MM-DD" url="https://x.com/handle/status/123">
+Verbatim tweet text. Multiple <tweet> tags are fine — emit 5–15 if you found them.
+</tweet>`;
 
   const prompt = `You're prepping a podcast/show host for an interview with this guest. Research them on the public web and return a dossier.
 
 Guest:
-${describeQuery(q)}${corpusContext}
+${describeQuery(q)}${corpusContext}${crawledTweetsBlock(crawledTweets)}
 
 ${twitterHint}
 
@@ -243,16 +285,18 @@ When done, emit ONLY the following XML-style tags. No JSON, no code fences, no p
 2–4 paragraphs of prose describing who they are, what they're known for, what they're working on right now, and their general vibe / interests. Cite specific recent things. No bullet lists.
 </researched>
 
+<themes>
+- One theme per line
+…
+3–6 themes total. The trends, recurring topics, and current obsessions running through their recent tweets${hasCrawl ? " (the timeline above is your primary evidence — weigh what they retweet as well as what they write)" : ""} and work. Each grounded in something specific — name the tweet, project, or post. Most prominent first.
+</themes>
+
 <questions>
 1. First question
 2. Second question
 …
-8–10 questions total. Slow-pitch, conversation-starting, things THIS guest would clearly enjoy talking about based on their recent tweets / posts / work. Specific to them, not generic.
-</questions>
-
-<tweet date="YYYY-MM-DD" url="https://x.com/handle/status/123">
-Verbatim tweet text. Multiple <tweet> tags are fine — emit 5–15 if you found them.
-</tweet>
+8–10 questions total. Slow-pitch, conversation-starting, things THIS guest would clearly enjoy talking about based on their recent tweets / posts / work. Specific to them, not generic.${questionsGrounding}
+</questions>${tweetTagSpec}
 
 <source url="https://…" title="Page title">
 1-line takeaway. One <source> tag per cited page.
@@ -299,12 +343,16 @@ function splitQuestions(block: string): string[] {
 function parseDossierTags(text: string): {
   researched: string;
   questions: string[];
+  themes: string[];
   tweets: TweetSnippet[];
   sources: ResearchSource[];
 } {
   const researched = (text.match(/<researched>([\s\S]*?)<\/researched>/i)?.[1] ?? "").trim();
   const questionsBlock = (text.match(/<questions>([\s\S]*?)<\/questions>/i)?.[1] ?? "").trim();
   const questions = questionsBlock ? splitQuestions(questionsBlock) : [];
+  // Same line splitter as questions — themes arrive as a dash/numbered list.
+  const themesBlock = (text.match(/<themes>([\s\S]*?)<\/themes>/i)?.[1] ?? "").trim();
+  const themes = themesBlock ? splitQuestions(themesBlock) : [];
 
   const tweets: TweetSnippet[] = [];
   const tweetRe = /<tweet\b([^>]*)>([\s\S]*?)<\/tweet>/gi;
@@ -335,11 +383,11 @@ function parseDossierTags(text: string): {
   // If the model emitted no recognizable tags at all, surface the raw
   // text in the researched section so the host at least sees what the
   // model said rather than an empty UI.
-  if (!researched && questions.length === 0 && tweets.length === 0 && sources.length === 0) {
-    return { researched: text.trim() || "(no research output)", questions: [], tweets: [], sources: [] };
+  if (!researched && questions.length === 0 && themes.length === 0 && tweets.length === 0 && sources.length === 0) {
+    return { researched: text.trim() || "(no research output)", questions: [], themes: [], tweets: [], sources: [] };
   }
 
-  return { researched, questions, tweets, sources };
+  return { researched, questions, themes, tweets, sources };
 }
 
 // Pulls the first ```json … ``` block out of the model's reply.
@@ -456,7 +504,14 @@ Never invent handles. If you're not sure a handle is correct, leave it empty.`;
   }
 }
 
-export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []): Promise<ResearchResult> {
+export async function researchGuest(
+  q: ResearchQuery,
+  corpus: CorpusInput[] = [],
+  /** The guest's real recent timeline (timeline.ts fetchGuestTimeline),
+   *  crawled by the caller. When present it's tiled into the researched
+   *  prompt as ground truth and returned verbatim as `tweets`. */
+  crawledTweets: TweetSnippet[] = [],
+): Promise<ResearchResult> {
   // Summarized (name + size, never the bodies) into the result so the
   // dossier can show what host context the research was grounded in.
   const corpusDocs = corpus.filter(d => d.text.trim()).map(d => ({ name: d.name.trim() || "untitled", chars: d.text.trim().length }));
@@ -469,7 +524,8 @@ export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []
       vanilla: "",
       researched: "",
       questions: [],
-      tweets: [],
+      themes: [],
+      tweets: crawledTweets,
       sources: [],
       corpusDocs,
       errors: { socialsDesc: missing, vanilla: missing, researched: missing },
@@ -478,7 +534,7 @@ export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []
 
   const [vanillaR, researchedR] = await Promise.allSettled([
     vanillaKnowledge(q),
-    researchedReport(q, corpusContextBlock(corpus, 24_000)),
+    researchedReport(q, corpusContextBlock(corpus, 24_000), crawledTweets),
   ]);
 
   const result: ResearchResult = {
@@ -487,7 +543,10 @@ export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []
     vanilla: "",
     researched: "",
     questions: [],
-    tweets: [],
+    themes: [],
+    // Crawled tweets survive even if the researched call dies — the host
+    // still gets the raw timeline to scan.
+    tweets: crawledTweets,
     sources: [],
     corpusDocs,
     errors: {},
@@ -499,7 +558,10 @@ export async function researchGuest(q: ResearchQuery, corpus: CorpusInput[] = []
   if (researchedR.status === "fulfilled") {
     result.researched = researchedR.value.researched;
     result.questions = researchedR.value.questions;
-    result.tweets = researchedR.value.tweets;
+    result.themes = researchedR.value.themes;
+    // API-crawled timeline wins over model-scraped tweets (verbatim +
+    // real URLs vs. reconstructed from search snippets).
+    if (crawledTweets.length === 0) result.tweets = researchedR.value.tweets;
     result.sources = researchedR.value.sources;
   } else {
     result.errors.researched = String(researchedR.reason).slice(0, 400);

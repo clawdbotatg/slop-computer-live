@@ -665,7 +665,17 @@ export type ResearchSocials = {
   other?: string;
 };
 
-export type ResearchTweet = { text: string; url?: string; date?: string };
+export type ResearchTweet = {
+  text: string;
+  url?: string;
+  date?: string;
+  /** Set on API-crawled tweets; absent on model-scraped ones. */
+  kind?: "tweet" | "retweet" | "quote";
+  likes?: number;
+  retweets?: number;
+  /** For kind === "retweet": handle of the original author. */
+  rtOf?: string;
+};
 export type ResearchSource = { title: string; url: string; snippet?: string };
 
 export type ResearchResult = {
@@ -674,12 +684,15 @@ export type ResearchResult = {
   vanilla: string;
   researched: string;
   questions: string[];
+  /** Trends / recurring topics across the guest's recent tweets + work.
+   *  Optional — dossiers persisted before the tweet-crawl feature lack it. */
+  themes?: string[];
   tweets: ResearchTweet[];
   sources: ResearchSource[];
   /** Names + sizes of corpus docs that grounded the research prompt.
    *  Optional — dossiers persisted before the corpus feature lack it. */
   corpusDocs?: { name: string; chars: number }[];
-  errors: { socialsDesc?: string; vanilla?: string; researched?: string };
+  errors: { socialsDesc?: string; vanilla?: string; researched?: string; tweetCrawl?: string };
 };
 
 /** Research corpus doc — server-authoritative, mirrors

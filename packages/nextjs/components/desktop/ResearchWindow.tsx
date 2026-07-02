@@ -635,6 +635,19 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
         {result.researched ? <Prose text={result.researched} /> : <Empty>No research output.</Empty>}
       </Section>
 
+      {result.themes && result.themes.length > 0 ? (
+        <Section title={`Themes & trends (${result.themes.length})`}>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            {result.themes.map((t, i) => (
+              <li key={i} style={{ fontSize: 13, lineHeight: 1.5, color: "var(--slop-text)" }}>
+                <span style={{ color: ACCENT, marginRight: 6 }}>▲</span>
+                {t}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
+
       <Section title={`Interview questions (${result.questions.length})`}>
         {result.questions.length > 0 ? (
           <ol style={{ paddingLeft: 20, margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--slop-text)" }}>
@@ -649,7 +662,7 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
         )}
       </Section>
 
-      <Section title={`Recent tweets (${result.tweets.length})`}>
+      <Section title={`Recent tweets (${result.tweets.length})`} error={result.errors.tweetCrawl}>
         {result.tweets.length > 0 ? (
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
             {result.tweets.map((t, i) => (
@@ -666,7 +679,17 @@ const ResultView = ({ result }: { result: ResearchResult }) => {
               >
                 <div style={{ whiteSpace: "pre-wrap", color: "var(--slop-text)" }}>{t.text}</div>
                 <div style={{ marginTop: 4, fontSize: 10, color: "var(--slop-text-muted)", display: "flex", gap: 8 }}>
+                  {t.kind === "retweet" ? (
+                    <span style={{ color: ACCENT, fontWeight: 600 }}>RT{t.rtOf ? ` @${t.rtOf}` : ""}</span>
+                  ) : t.kind === "quote" ? (
+                    <span style={{ color: ACCENT, fontWeight: 600 }}>quote</span>
+                  ) : null}
                   {t.date ? <span>{t.date}</span> : null}
+                  {typeof t.likes === "number" ? (
+                    <span>
+                      ♥ {t.likes} · ⟳ {t.retweets ?? 0}
+                    </span>
+                  ) : null}
                   {t.url ? (
                     <a href={t.url} target="_blank" rel="noreferrer" style={{ color: ACCENT, textDecoration: "none" }}>
                       open

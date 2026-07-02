@@ -190,7 +190,7 @@ type V2Tweet = {
 };
 type V2Response = {
   data?: V2Tweet[];
-  includes?: { users?: V2User[] };
+  includes?: { users?: V2User[]; tweets?: V2Tweet[] };
   meta?: { next_token?: string };
 };
 
@@ -398,6 +398,105 @@ async function fetchUserTweets(username: string): Promise<TimelineItem[]> {
     });
   }
   return out;
+}
+
+// A guest's tweet as the Research app consumes it — mirrors
+// guest-research.ts's TweetSnippet so index.ts can pass the crawl
+// straight into researchGuest() without remapping.
+export type GuestTweet = {
+  text: string;
+  url: string;
+  /** YYYY-MM-DD — for a retweet this is when they RT'd, not the original's date. */
+  date: string;
+  kind: "tweet" | "retweet" | "quote";
+  likes: number;
+  retweets: number;
+  /** For kind === "retweet": handle of the original author. */
+  rtOf?: string;
+};
+
+const stripTco = (text: string): string => text.replace(/\s+https:\/\/t\.co\/\S+$/, "").trim();
+
+// Crawl a guest's own timeline: their last `max` tweets + retweets
+// (replies excluded), straight from `/2/users/:id/tweets`. Unlike
+// fetchUserTweets above this is NOT limited to search/recent's 7-day
+// window — a once-a-week poster still yields a full set — and it
+// deliberately KEEPS retweets: what a guest amplifies is prep signal
+// (themes, current obsessions), even though it's noise for the
+// engagement-ranked bar. Retweet text arrives truncated ("RT @x: …"),
+// so we expand `referenced_tweets.id` and swap in the original's full
+// body. Costs 2 metered reads (handle→id, then one timeline page);
+// only fired per research submit, so no budget concern.
+export async function fetchGuestTimeline(handle: string, max = 40): Promise<GuestTweet[]> {
+  if (!config.twitterConsumerKey) throw new Error("twitter creds missing");
+  const username = handle.replace(/^@/, "").trim();
+  if (!/^[A-Za-z0-9_]{1,15}$/.test(username)) throw new Error(`bad twitter handle: ${handle}`);
+
+  const signedGet = async (base: string, queryParams: Record<string, string>): Promise<V2Response> => {
+    const qs = Object.keys(queryParams)
+      .sort()
+      .map(k => `${pctEnc(k)}=${pctEnc(queryParams[k]!)}`)
+      .join("&");
+    const url = qs ? `${base}?${qs}` : base;
+    const auth = buildOAuthHeader("GET", base, queryParams);
+    const res = await fetch(url, { headers: { Authorization: auth, accept: "application/json" } });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`twitter ${res.status} ${body.slice(0, 200)}`);
+    }
+    return (await res.json()) as V2Response;
+  };
+
+  const userRes = (await signedGet(`https://api.twitter.com/2/users/by/username/${username}`, {})) as unknown as {
+    data?: { id?: string };
+    errors?: Array<{ detail?: string }>;
+  };
+  const userId = userRes.data?.id;
+  if (!userId) throw new Error(`no such twitter user: @${username}`);
+
+  const data = await signedGet(`https://api.twitter.com/2/users/${userId}/tweets`, {
+    max_results: String(Math.min(100, Math.max(5, max))),
+    exclude: "replies",
+    "tweet.fields": "created_at,public_metrics,referenced_tweets,author_id",
+    expansions: "referenced_tweets.id,referenced_tweets.id.author_id",
+    "user.fields": "username",
+  });
+
+  const refTweets = new Map<string, V2Tweet>((data.includes?.tweets ?? []).map(t => [t.id, t]));
+  const users = new Map<string, V2User>((data.includes?.users ?? []).map(u => [u.id, u]));
+
+  const out: GuestTweet[] = [];
+  for (const t of data.data ?? []) {
+    const date = t.created_at ? t.created_at.slice(0, 10) : "";
+    const rtRef = (t.referenced_tweets ?? []).find(r => r.type === "retweeted");
+    const isQuote = (t.referenced_tweets ?? []).some(r => r.type === "quoted");
+    if (rtRef) {
+      const orig = refTweets.get(rtRef.id);
+      const origAuthor = orig?.author_id ? users.get(orig.author_id)?.username : undefined;
+      out.push({
+        // Full original body (the RT's own text is truncated); a
+        // retweet's public_metrics mirror the original's, so the
+        // counts describe the tweet they amplified.
+        text: stripTco(orig?.text ?? t.text.replace(/^RT @[A-Za-z0-9_]+:\s*/, "")),
+        url: origAuthor ? `https://x.com/${origAuthor}/status/${rtRef.id}` : `https://x.com/${username}/status/${t.id}`,
+        date,
+        kind: "retweet",
+        likes: orig?.public_metrics?.like_count ?? t.public_metrics?.like_count ?? 0,
+        retweets: orig?.public_metrics?.retweet_count ?? t.public_metrics?.retweet_count ?? 0,
+        rtOf: origAuthor,
+      });
+      continue;
+    }
+    out.push({
+      text: stripTco(t.text),
+      url: `https://x.com/${username}/status/${t.id}`,
+      date,
+      kind: isQuote ? "quote" : "tweet",
+      likes: t.public_metrics?.like_count ?? 0,
+      retweets: t.public_metrics?.retweet_count ?? 0,
+    });
+  }
+  return out.slice(0, max);
 }
 
 let started = false;
