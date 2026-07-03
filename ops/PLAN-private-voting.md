@@ -176,10 +176,82 @@ RISC Zero.
 - Austin's stated ambition: **BuidlGuidl members running ciphernodes;
   buy + stake FOLD.**
 
+## Phase-2 recon (2026-07-03, from the interfold repo + template)
+
+**CRISP circuits — reusable, question closed.** Beyond Greco
+("valid BFV encryption"), CRISP has a real ballot-validity circuit
+(`examples/CRISP/circuits/bin/crisp/src/main.nr` +
+`check_coefficient_values_with_balance` in lib/utils.nr): binary
+coefficients, per-option decode, one-hot enforced at 2 options; for
+3+ options set `balance = 1` and "vote splitting ≤ balance" degenerates
+to one-hot. `num_options` is a runtime public input (≤ 10) — a K≤8
+ballot needs **no circuit change**. It also proves ECDSA sig →
+address + Poseidon-Merkle census membership (eligibility!). On-chain:
+`CRISPProgram.publishInput` verifies the recursive fold proof via a
+generated Noir `HonkVerifier`; final tally verified by RISC Zero
+Groth16. Client side: 5 proofs via noir_js + bb.js UltraHonk, 2^21 SRS
+(heavy — proving time undocumented).
+
+**SDK decryption — confirmed ciphernode-only.** `@interfold/sdk`
+exposes keygen/encrypt/encryption-proofs; threshold decryption lives
+in the ciphernode crates. (Validates the weft-crate choice for the
+phase-1 in-browser demo.)
+
+**Live Sepolia deployment** (from `deployed_contracts.json` in the
+repo): Interfold proxy `0x64Cd2d88537A18D8E599d786447F9a07Dd9C7f26`,
+CiphernodeRegistry `0xDDd7e1eA2AD8195217D9B25B13fac667b6Fc4dD9`,
+CRISPProgram `0x6DB95806c2292F9d164608C266BE69E694eAE05C`,
+HonkVerifier `0x4838c1dbb33E1B0818d61f510048B5958A48f66d`,
+Faucet `0x94FCD9b624baAf023c7F48C5E7200eAd85dc87Df`.
+**E3 fees are paid in mock USDC** (faucet dispenses it; `interfold
+faucet` CLI); FOLD is only for ciphernode bonding. `sdk.requestE3()`
+targets the live testnet committee per
+`docs/pages/tutorials/deploy-to-testnet.mdx`.
+
+**Template scaffold** (`interfold init` → slop-voting-e3, in session
+scratchpad): the default FHE program is already a ciphertext summer
+(= a tally); `MyProgram.sol` is a generic IE3Program with a LazyIMT
+input tree and a marked slot for validation logic; local dev stack =
+anvil + 5 ciphernodes + express server + `@interfold/sdk`, no RISC
+Zero needed in dev mode. Gotcha hit: template ships a stale Cargo.lock
+vs the fhe.rs git dep — run `cargo update` before `interfold compile`.
+
+## Phase-2 milestone: full local E3 round PASSING (2026-07-03)
+
+`slop-voting-e3` (interfold-init template, in session scratchpad —
+promote to a real repo next): `pnpm test:integration` green end to
+end — E3 requested + fee paid → ciphernode sortition → **real
+distributed DKG across 5 local ciphernodes over libp2p** → committee
+key on-chain → two inputs encrypted client-side + publishInput →
+input-deadline wait → FHE program sums ciphertexts → ciphernodes
+verify decryption-share ZK proofs → threshold decrypt →
+`PlaintextOutputPublished`, decoded 1 + 2 = 3.
+
+Fixes needed to get there (candidates to upstream to
+gnosisguild/interfold):
+1. Template ships a stale `Cargo.lock` vs its pinned interfold rev —
+   `interfold compile` dies on `--locked`. Fix: fresh lock +
+   `cargo update`, then pin `alloy-sol-type-parser` back to 1.5.4
+   (1.6.0 pulls winnow 1.x which breaks the locked alloy-dyn-abi).
+2. Deadline race: the server publishes ciphertext output on a
+   wall-clock timer while the contract enforces the *chain* input
+   deadline → `InputDeadlineNotReached` revert with no retry kills the
+   round. Fixed with retry-on-that-error in `handleWebhookRequest`
+   (server/index.ts) — the same guard our production coordinator needs.
+3. Local gotcha (ours): this machine's shell exports `PORT=8787`
+   (clawd-harness), which the template server honors — set `PORT=8080`
+   or the program-runner callback misses it.
+
+Remaining for Sepolia: promote scaffold to a repo; swap in the
+`sepolia` chain block (drafted in scratchpad `sepolia-chain-config.yaml`
+with live addresses); deploy MyProgram (hardhat config already has
+sepolia); `interfold faucet` for fee tokens; **needs a Sepolia-ETH
+funded key**; then requestE3 against the public testnet committee and
+wire the slop relay/VotingWindow to it as "Sepolia mode".
+
 ## Still open
 
-1. Is `@interfold/sdk` the blessed browser path for input encryption +
-   E3 lifecycle, or will client-side threshold decryption ever be
-   exposed there?
-2. CRISP's Noir ballot-validity circuit — reusable standalone?
-3. BFV preset guidance for room-scale polls.
+1. Will `@interfold/sdk` ever expose client-side threshold decryption?
+2. BFV preset guidance for room-scale polls.
+3. Client-side proving time for CRISP's 5-proof chain on normal
+   hardware (2^21 SRS) — measure before promising it in a live demo.

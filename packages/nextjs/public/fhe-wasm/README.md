@@ -34,3 +34,13 @@ and copy `fhe_wasm.js`, `fhe_wasm_bg.wasm`, `fhe_wasm.d.ts` here.
 2. **console_error_panic_hook** wired into `init()` so future wasm
    panics surface real messages in the browser console instead of
    bare `RuntimeError: unreachable`.
+
+Re-vendoring status (checked 2026-07-03): upstream fhe.rs v0.2.2 fixed
+the DKG bug (proper error instead of the panicking assert), but
+swapping it in is NOT a drop-in — the API moved under weft's crate
+(rand 0.8→0.9 trait bounds, `fhe::proto::trbfv` serializers relocated,
+`ShareManager::new` returns `Result`, `ctx_at_level` gone) and the
+crates now use cargo workspace-inheritance (breaks when vendored into
+another workspace). Porting weft's fhe-wasm to the new API is upstream
+(weft) work — tracked as weft issue #1. Until then this patched build
+stands; it is semantically identical to upstream's fix.
