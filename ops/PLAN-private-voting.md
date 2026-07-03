@@ -145,13 +145,41 @@ RISC Zero.
   (testnet, no real funds). Ballot-validity Noir proof via
   `@interfold/sdk` if CRISP's circuits drop in cleanly.
 
-## Open questions for Auryn
+## Answered on the show (2026-07-03 — transcript in room auryn-macmillan)
 
-1. Hosted/persistent Sepolia ciphernode committee for demos, or BYO
-   ciphernodes only?
-2. Is `@interfold/sdk` the blessed browser path for input encryption +
-   E3 lifecycle, and does anything expose threshold *decryption*
-   client-side, or is that strictly ciphernode territory?
-3. CRISP's Noir ballot-validity circuit — reusable standalone?
-4. BFV preset guidance: is `SECURE_THRESHOLD_8192` right for a
-   ~50-voter poll, or is a smaller preset acceptable for a live demo?
+- **Mainnet: "in a couple of weeks."** Interfold mainnet launch is
+  imminent; Sepolia is the only network today. The PollAnchor track
+  stays useful as the bridge.
+- **There IS a live testnet committee**: "point it at the testnet…
+  you're actually getting other people's nodes to run the DKG
+  process." Phase 2 does NOT require running our own ciphernodes.
+- **Committee filtering (pick-your-own trusted nodes): not yet**, but
+  actively on their roadmap (trusted-subset, jurisdictional
+  distribution, proof-of-personhood filters).
+- **Room-as-committee (v1.5): Auryn endorses it as a demo** — "I like
+  this idea of having the room be the committee… doesn't quite work
+  with the economic model, but fun as a demonstration."
+- **weft uses unreleased Interfold features** (evaluation keys for
+  deeper multiplicative depth — incoming). Voting only needs additive
+  ops, so this doesn't block us.
+- **Auryn's build TLDR for a real voting app**: (1) input-validation
+  logic — who can vote + client-side proof the ciphertext is
+  well-formed; (2) the core FHE program; (3) the app↔Interfold glue
+  (publish inputs, consume output).
+- **The fhe.rs wasm32 DKG bug is already fixed on upstream main** (the
+  panicking assert became a proper error). The show co-host agent filed
+  **issue #1 on auryn-macmillan/weft** live on air documenting it (plus
+  a second silent-truncation spot). So: **re-vendor fhe.rs instead of
+  carrying build.patch**; no upstream PR needed.
+- Their Aragon integration lives at **dao.theinterfold.com** (test
+  deployment) — the reference production integration.
+- Austin's stated ambition: **BuidlGuidl members running ciphernodes;
+  buy + stake FOLD.**
+
+## Still open
+
+1. Is `@interfold/sdk` the blessed browser path for input encryption +
+   E3 lifecycle, or will client-side threshold decryption ever be
+   exposed there?
+2. CRISP's Noir ballot-validity circuit — reusable standalone?
+3. BFV preset guidance for room-scale polls.
