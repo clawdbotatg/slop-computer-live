@@ -85,6 +85,7 @@ import {
   issueNonce,
 } from "./sessions.js";
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
+import { anchorPoll, anchoringEnabled } from "./vote-anchor.js";
 import { bytesToBase64Url, bytesToHex, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import type { ChessGame } from "./chess.js";
@@ -7987,7 +7988,27 @@ app.register(async function signalRoutes(fastify) {
         case "vote_reveal": {
           if (typeof msg.pollId !== "string") return;
           const byKey = info.address?.toLowerCase() ?? info.anonId ?? null;
-          if (byKey) room.voting.reveal(msg.pollId, byKey, msg.tally);
+          if (!byKey) return;
+          const revealed = room.voting.reveal(msg.pollId, byKey, msg.tally);
+          // Anchor the outcome on-chain when configured (vote-anchor.ts).
+          // Fire-and-forget: a failed anchor never un-reveals the poll.
+          if (revealed && revealed.tally && anchoringEnabled()) {
+            const pollId = revealed.id;
+            room.voting.setAnchoring(pollId);
+            const ballotCts = revealed.ballots.map(b => b.ct);
+            anchorPoll({
+              pollId,
+              question: revealed.question,
+              options: revealed.options,
+              tally: revealed.tally,
+              ballotCts,
+            })
+              .then(anchor => room.voting.setAnchor(pollId, anchor))
+              .catch(err => {
+                app.log.warn({ err, pollId }, "poll anchor failed");
+                room.voting.setAnchor(pollId, null);
+              });
+          }
           return;
         }
         case "vote_remove": {

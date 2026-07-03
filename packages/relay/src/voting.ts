@@ -60,6 +60,10 @@ export type VotePoll = {
   /** Plaintext tally per option, posted by the reveal ceremony. */
   tally: number[] | null;
   revealedAt: number | null;
+  /** On-chain anchor of the revealed result (vote-anchor.ts), when the
+   *  relay has anchoring configured. `anchoring` is the in-flight flag. */
+  anchoring?: boolean;
+  anchor?: { chain: string; txHash: string; explorerUrl: string | null } | null;
 };
 
 /** Broadcast-safe poll view: ballots without their ciphertext payloads. */
@@ -237,18 +241,36 @@ export class VotingBooth {
     return true;
   }
 
-  reveal(pollId: string, byKey: string, tally: unknown): boolean {
+  reveal(pollId: string, byKey: string, tally: unknown): VotePoll | null {
     const poll = this.find(pollId);
-    if (!poll || poll.status !== "closed" || poll.creatorKey !== byKey) return false;
-    if (!Array.isArray(tally) || tally.length !== poll.options.length) return false;
+    if (!poll || poll.status !== "closed" || poll.creatorKey !== byKey) return null;
+    if (!Array.isArray(tally) || tally.length !== poll.options.length) return null;
     const counts = tally.map(n => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.round(n)) : -1));
-    if (counts.some(n => n < 0)) return false;
+    if (counts.some(n => n < 0)) return null;
     poll.tally = counts;
     poll.status = "revealed";
     poll.revealedAt = Date.now();
     this.persist();
     this.emit();
-    return true;
+    return poll;
+  }
+
+  /** Mark anchoring in-flight (broadcasts so the UI can show progress). */
+  setAnchoring(pollId: string): void {
+    const poll = this.find(pollId);
+    if (!poll) return;
+    poll.anchoring = true;
+    this.emit();
+  }
+
+  /** Record the on-chain anchor result (or clear the flag on failure). */
+  setAnchor(pollId: string, anchor: { chain: string; txHash: string; explorerUrl: string | null } | null): void {
+    const poll = this.find(pollId);
+    if (!poll) return;
+    poll.anchoring = false;
+    poll.anchor = anchor;
+    this.persist();
+    this.emit();
   }
 
   remove(pollId: string, byKey: string): boolean {

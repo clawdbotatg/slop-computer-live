@@ -423,6 +423,10 @@ export type VotePoll = {
   ballots: VoteBallotPublic[];
   tally: number[] | null;
   revealedAt: number | null;
+  /** On-chain anchor of the revealed result, when the relay has
+   *  anchoring configured. `anchoring` = tx in flight. */
+  anchoring?: boolean;
+  anchor?: { chain: string; txHash: string; explorerUrl: string | null } | null;
 };
 
 /** Full ciphertext payload for one poll, fetched on demand (reveal

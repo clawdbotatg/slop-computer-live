@@ -326,6 +326,28 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
             <div style={{ fontSize: 10, color: "var(--slop-text-muted)", fontStyle: "italic", marginTop: 2 }}>
               Only the aggregate was decrypted — every individual ballot below is ciphertext forever.
             </div>
+            {poll.anchoring ? (
+              <div style={{ fontSize: 10, fontFamily: MONO, color: "var(--slop-cyan, #3ee9ff)" }}>
+                ⚓ anchoring result on-chain…
+              </div>
+            ) : poll.anchor ? (
+              <div style={{ fontSize: 10, fontFamily: MONO }}>
+                ⚓ anchored on {poll.anchor.chain === "mainnet" ? "Ethereum mainnet" : poll.anchor.chain}
+                {" — "}
+                {poll.anchor.explorerUrl ? (
+                  <a
+                    href={poll.anchor.explorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "var(--slop-cyan, #3ee9ff)", wordBreak: "break-all" }}
+                  >
+                    {poll.anchor.txHash.slice(0, 10)}…{poll.anchor.txHash.slice(-6)}
+                  </a>
+                ) : (
+                  <span style={{ wordBreak: "break-all" }}>{poll.anchor.txHash}</span>
+                )}
+              </div>
+            ) : null}
           </div>
         ) : poll.status === "open" && !myBallot ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
