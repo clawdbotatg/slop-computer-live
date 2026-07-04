@@ -64,8 +64,13 @@ export const ClearSignPanel = ({ chainId, target, value, data, calls, isBatch }:
     ? `b:${chainId}:${(calls ?? []).map(c => `${c.target}.${c.data}`).join("|")}`
     : `s:${chainId}:${target}:${data}`;
   const lastKey = useRef<string>("");
+  // A plain value transfer (no calldata) has nothing to decode — the amount and
+  // recipient are already the whole story, shown on the card above. Treat it as
+  // cleanly clear-signed rather than routing it through the can't-decode path.
+  const nativeTransfer = !isBatch && (!data || data === "0x" || data.length < 10);
 
   useEffect(() => {
+    if (nativeTransfer) return;
     if (lastKey.current === key) return;
     lastKey.current = key;
     let alive = true;
@@ -87,7 +92,7 @@ export const ClearSignPanel = ({ chainId, target, value, data, calls, isBatch }:
     return () => {
       alive = false;
     };
-  }, [key, chainId, target, data, value, isBatch, calls]);
+  }, [key, chainId, target, data, value, isBatch, calls, nativeTransfer]);
 
   return (
     <div
@@ -118,7 +123,12 @@ export const ClearSignPanel = ({ chainId, target, value, data, calls, isBatch }:
         </span>
       </div>
 
-      {state === "loading" ? (
+      {nativeTransfer ? (
+        <span style={{ fontSize: 12 }}>
+          Native transfer — no contract call to decode.{" "}
+          <span style={{ color: MUTED }}>The amount and recipient above are the whole transaction.</span>
+        </span>
+      ) : state === "loading" ? (
         <span style={{ fontSize: 11, color: MUTED, fontStyle: "italic" }}>decoding calldata…</span>
       ) : state === "error" || !resp ? (
         <Fallback digest={digestFromData(data)} note="couldn’t reach the decoder" />
