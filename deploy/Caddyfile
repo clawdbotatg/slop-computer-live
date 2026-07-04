@@ -47,3 +47,12 @@ media.slop.computer {
     # Bare-domain access still works for raw MediaMTX paths.
     reverse_proxy localhost:8888
 }
+
+# circle.slop.computer — the greyscale "base slop computer" (E2EE circles).
+# A separate app co-hosted on this box: its own relay on :8789 (serves both
+# the static client and the /signal + /v1 + /turn API). Kept here so
+# ops/deploy.sh doesn't clobber the vhost on the next slop deploy.
+circle.slop.computer {
+    encode zstd gzip
+    reverse_proxy localhost:8789
+}
