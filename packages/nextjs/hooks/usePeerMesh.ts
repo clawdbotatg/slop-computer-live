@@ -405,6 +405,26 @@ export type VoteBallotPublic = {
   preview: string;
 };
 
+/** Live Interfold protocol telemetry for a Sepolia E3 poll — mirrors
+ *  `E3Telemetry` in `packages/relay/src/voting.ts`. */
+export type VoteE3Telemetry = {
+  stage: "requesting" | "sortition" | "dkg" | "open" | "tallying" | "publishing" | "decrypting" | "revealed" | "failed";
+  message: string;
+  log: { ts: number; text: string; txHash?: string }[];
+  e3Id: string | null;
+  requestTx: string | null;
+  committee: string[];
+  keyBytes: number;
+  windowStart: number | null;
+  windowEnd: number | null;
+  ballotTxs: { voterKey: string; txHash: string }[];
+  outputTx: string | null;
+  chain: string;
+  interfold: string;
+  program: string;
+  error: string | null;
+};
+
 /** Private poll — server-authoritative, mirrors the broadcast-safe view in
  *  `packages/relay/src/voting.ts`. The relay only ever holds ciphertexts;
  *  `tally` appears once the committee's reveal ceremony posts it. */
@@ -427,6 +447,9 @@ export type VotePoll = {
    *  anchoring configured. `anchoring` = tx in flight. */
   anchoring?: boolean;
   anchor?: { chain: string; txHash: string; explorerUrl: string | null } | null;
+  /** "sepolia" = a real Interfold E3 settled by the public committee. */
+  mode?: "room" | "sepolia";
+  e3?: VoteE3Telemetry;
 };
 
 /** Full ciphertext payload for one poll, fetched on demand (reveal
@@ -1467,14 +1490,17 @@ export type PeerMeshState = {
   todoReorder: (ids: string[]) => void;
   /** Voting Booth polls. Full-state replace from server on every change. */
   votingPolls: VotePoll[];
-  /** Create a poll. `pubKey` is the committee threshold-BFV public key
-   *  (base64) produced by the key ceremony in the creator's browser. */
+  /** True when the relay settles polls through real Sepolia E3s. */
+  votingE3: boolean;
+  /** Create a poll. In E3 mode omit `pubKey` — the public Sepolia
+   *  committee generates the key. Legacy mode passes the key from the
+   *  in-browser ceremony. */
   voteCreate: (input: {
     question: string;
     options: string[];
-    pubKey: string;
-    committeeSize: number;
-    threshold: number;
+    pubKey?: string;
+    committeeSize?: number;
+    threshold?: number;
   }) => void;
   /** Cast an encrypted ballot. Resolves with the relay's verdict. */
   voteCast: (pollId: string, ct: string) => Promise<string>;
@@ -1954,6 +1980,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [votingPolls, setVotingPolls] = useState<VotePoll[]>([]);
+  const [votingE3, setVotingE3] = useState(false);
   // Pending request/response resolvers for the two voting messages that
   // reply directly to the requester instead of broadcasting.
   const voteBallotsWaitersRef = useRef<Map<string, (payload: VoteBallotsPayload) => void>>(new Map());
@@ -2712,17 +2739,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   );
 
   const voteCreate = useCallback(
-    (input: { question: string; options: string[]; pubKey: string; committeeSize: number; threshold: number }) => {
+    (input: { question: string; options: string[]; pubKey?: string; committeeSize?: number; threshold?: number }) => {
       const question = input.question.trim();
       const options = input.options.map(o => o.trim()).filter(Boolean);
-      if (!question || options.length < 2 || !input.pubKey) return;
+      if (!question || options.length < 2) return;
+      // E3 mode: no pubKey — the public Sepolia committee generates the
+      // key after the relay requests the E3. Legacy mode sends the
+      // browser-ceremony key.
       send({
         type: "vote_create",
         question: question.slice(0, 280),
         options: options.slice(0, 8),
-        pubKey: input.pubKey,
-        committeeSize: input.committeeSize,
-        threshold: input.threshold,
+        ...(input.pubKey
+          ? { pubKey: input.pubKey, committeeSize: input.committeeSize, threshold: input.threshold }
+          : {}),
       });
     },
     [send],
@@ -3655,6 +3685,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
           if (Array.isArray(msg.voting)) {
             setVotingPolls(msg.voting as VotePoll[]);
+          }
+          if (typeof msg.votingE3 === "boolean") {
+            setVotingE3(msg.votingE3);
           }
           if (Array.isArray(msg.notes)) {
             setNotes(msg.notes as Note[]);
@@ -4768,6 +4801,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     todoClearDone,
     todoReorder,
     votingPolls,
+    votingE3,
     voteCreate,
     voteCast,
     voteClose,

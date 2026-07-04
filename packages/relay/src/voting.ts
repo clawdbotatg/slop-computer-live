@@ -43,12 +43,69 @@ export type VoteBallot = {
   ct: string;
 };
 
+/** Live protocol telemetry for a Sepolia E3 poll — everything the nerdy
+ *  frontend timeline renders. Small enough to ride every broadcast. */
+export type E3Telemetry = {
+  stage:
+    | "requesting"
+    | "sortition"
+    | "dkg"
+    | "open"
+    | "tallying"
+    | "publishing"
+    | "decrypting"
+    | "revealed"
+    | "failed";
+  /** Latest one-line narration. */
+  message: string;
+  /** Nerd feed: timestamped protocol events, newest last (capped). */
+  log: { ts: number; text: string; txHash?: string }[];
+  e3Id: string | null;
+  requestTx: string | null;
+  /** Ciphernode addresses serving this poll's committee. */
+  committee: string[];
+  keyBytes: number;
+  /** Unix seconds — on-chain voting window. */
+  windowStart: number | null;
+  windowEnd: number | null;
+  ballotTxs: { voterKey: string; txHash: string }[];
+  outputTx: string | null;
+  chain: string;
+  interfold: string;
+  program: string;
+  error: string | null;
+};
+
+export function newE3Telemetry(chain: string, interfold: string, program: string): E3Telemetry {
+  return {
+    stage: "requesting",
+    message: "preparing E3 request…",
+    log: [],
+    e3Id: null,
+    requestTx: null,
+    committee: [],
+    keyBytes: 0,
+    windowStart: null,
+    windowEnd: null,
+    ballotTxs: [],
+    outputTx: null,
+    chain,
+    interfold,
+    program,
+    error: null,
+  };
+}
+
 export type VotePoll = {
   id: string;
   ts: number;
   question: string;
   options: string[];
   status: "open" | "closed" | "revealed";
+  /** "sepolia" = settled through a real Interfold E3 by the public
+   *  testnet committee; absent/"room" = legacy in-browser committee. */
+  mode?: "room" | "sepolia";
+  e3?: E3Telemetry;
   creatorKey: string;
   address: string | null;
   handle: string | null;
@@ -235,6 +292,8 @@ export class VotingBooth {
   close(pollId: string, byKey: string): boolean {
     const poll = this.find(pollId);
     if (!poll || poll.status !== "open" || poll.creatorKey !== byKey) return false;
+    // Sepolia polls close by the on-chain input deadline, not by hand.
+    if (poll.mode === "sepolia") return false;
     poll.status = "closed";
     this.persist();
     this.emit();
@@ -244,12 +303,97 @@ export class VotingBooth {
   reveal(pollId: string, byKey: string, tally: unknown): VotePoll | null {
     const poll = this.find(pollId);
     if (!poll || poll.status !== "closed" || poll.creatorKey !== byKey) return null;
+    // Sepolia polls are revealed by the committee's decryption, never a client.
+    if (poll.mode === "sepolia") return null;
     if (!Array.isArray(tally) || tally.length !== poll.options.length) return null;
     const counts = tally.map(n => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.round(n)) : -1));
     if (counts.some(n => n < 0)) return null;
     poll.tally = counts;
     poll.status = "revealed";
     poll.revealedAt = Date.now();
+    this.persist();
+    this.emit();
+    return poll;
+  }
+
+  /** Merge an E3 telemetry patch + append log lines; broadcasts. Called
+   *  by the vote-e3 coordinator on every protocol transition. */
+  patchE3(pollId: string, patch: Partial<E3Telemetry>, logLine?: { text: string; txHash?: string }): void {
+    const poll = this.find(pollId);
+    if (!poll || !poll.e3) return;
+    Object.assign(poll.e3, patch);
+    if (logLine) {
+      poll.e3.log.push({ ts: Date.now(), ...logLine });
+      if (poll.e3.log.length > 60) poll.e3.log = poll.e3.log.slice(-60);
+      poll.e3.message = logLine.text;
+    }
+    this.persist();
+    this.emit();
+  }
+
+  /** Coordinator hands us the committee key → poll opens for voting. */
+  openE3Poll(pollId: string, pubKeyB64: string): void {
+    const poll = this.find(pollId);
+    if (!poll) return;
+    poll.pubKey = pubKeyB64;
+    poll.status = "open";
+    this.persist();
+    this.emit();
+  }
+
+  /** Coordinator delivers the committee-decrypted tally. */
+  revealE3Poll(pollId: string, tally: number[]): void {
+    const poll = this.find(pollId);
+    if (!poll) return;
+    poll.tally = tally;
+    poll.status = "revealed";
+    poll.revealedAt = Date.now();
+    this.persist();
+    this.emit();
+  }
+
+  /** Sepolia-mode poll creation: starts in "requesting" state with no
+   *  key yet (the committee will produce it). */
+  createE3(input: {
+    creatorKey: string;
+    address: string | null;
+    handle: string | null;
+    anonId?: string | null;
+    question: string;
+    options: unknown;
+    chain: string;
+    interfold: string;
+    program: string;
+  }): VotePoll | null {
+    this.load();
+    const question = input.question.trim().slice(0, MAX_QUESTION_LEN);
+    const options = Array.isArray(input.options)
+      ? input.options
+          .filter((o): o is string => typeof o === "string" && !!o.trim())
+          .map(o => o.trim().slice(0, MAX_OPTION_LEN))
+          .slice(0, MAX_OPTIONS)
+      : [];
+    if (!question || options.length < 2) return null;
+    const poll: VotePoll = {
+      id: randomBytes(8).toString("hex"),
+      ts: Date.now(),
+      question,
+      options,
+      status: "closed", // not yet open — flips to open when the committee key lands
+      mode: "sepolia",
+      e3: newE3Telemetry(input.chain, input.interfold, input.program),
+      creatorKey: input.creatorKey,
+      address: input.address ? input.address.toLowerCase() : null,
+      handle: input.handle ?? null,
+      anonId: input.anonId ?? null,
+      committee: { size: 3, threshold: 2 },
+      pubKey: "",
+      ballots: [],
+      tally: null,
+      revealedAt: null,
+    };
+    this.polls.push(poll);
+    if (this.polls.length > MAX_POLLS) this.polls = this.polls.slice(-MAX_POLLS);
     this.persist();
     this.emit();
     return poll;

@@ -86,6 +86,19 @@ import {
 } from "./sessions.js";
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { anchorPoll, anchoringEnabled } from "./vote-anchor.js";
+import { VoteE3Coordinator, votingE3Enabled, votingE3Info } from "./vote-e3.js";
+
+// One Sepolia E3 coordinator per room, created lazily on the first
+// on-chain poll. Holds the facilitator tx queue + ballot buffers.
+const e3Coordinators = new Map<object, VoteE3Coordinator>();
+function e3CoordinatorFor(room: { voting: import("./voting.js").VotingBooth }): VoteE3Coordinator {
+  let c = e3Coordinators.get(room);
+  if (!c) {
+    c = new VoteE3Coordinator(room.voting);
+    e3Coordinators.set(room, c);
+  }
+  return c;
+}
 import { bytesToBase64Url, bytesToHex, hexToBytes, verifyPasskey } from "./passkey.js";
 import { isAdminAddress, verifySiwe } from "./siwe.js";
 import type { ChessGame } from "./chess.js";
@@ -7593,6 +7606,7 @@ app.register(async function signalRoutes(fastify) {
       aiPlayers: listAvailableAIPlayers(),
       todos: room.todos.list(),
       voting: room.voting.list(),
+      votingE3: votingE3Enabled(),
       notes: room.notes.list(),
       glossary: glossaryList(),
       gasState: getGasState(),
@@ -7948,9 +7962,30 @@ app.register(async function signalRoutes(fastify) {
         // stores and counts them but can't read them (see voting.ts).
         // Mutations broadcast via the Room's wired-in VotingBooth subscriber.
         case "vote_create": {
-          if (typeof msg.question !== "string" || typeof msg.pubKey !== "string") return;
+          if (typeof msg.question !== "string") return;
           const creatorKey = info.address?.toLowerCase() ?? info.anonId ?? null;
           if (!creatorKey) return send(socket, { type: "error", error: "no_stable_id" });
+          // On-chain mode: no client-side key ceremony — the PUBLIC
+          // Sepolia committee produces the key. The coordinator drives
+          // the whole E3 lifecycle and narrates it into the poll.
+          if (votingE3Enabled()) {
+            const e3Info = votingE3Info();
+            const poll = room.voting.createE3({
+              creatorKey,
+              address: info.address,
+              handle: info.handle,
+              anonId: info.anonId,
+              question: msg.question,
+              options: msg.options,
+              chain: e3Info.chain,
+              interfold: e3Info.interfold,
+              program: e3Info.program,
+            });
+            if (poll) e3CoordinatorFor(room).start(poll);
+            return;
+          }
+          // Legacy in-browser-committee mode (dev boxes without E3 config).
+          if (typeof msg.pubKey !== "string") return;
           room.voting.create({
             creatorKey,
             address: info.address,
@@ -7976,6 +8011,14 @@ app.register(async function signalRoutes(fastify) {
             anonId: info.anonId,
             ct: msg.ct,
           });
+          if (result === "ok") {
+            const poll = room.voting.list().find(p => p.id === msg.pollId);
+            if (poll?.mode === "sepolia") {
+              // Publish the ciphertext on-chain too — the voter pays no
+              // gas; the facilitator's tx queue handles it.
+              e3CoordinatorFor(room).castBallot(msg.pollId, voterKey, msg.ct);
+            }
+          }
           send(socket, { type: "vote_cast_ack", pollId: msg.pollId, result });
           return;
         }

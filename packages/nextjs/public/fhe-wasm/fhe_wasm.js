@@ -179,6 +179,23 @@ export function load_params() {
 }
 
 /**
+ * Load BFV params by Interfold preset name. Values for
+ * INSECURE_THRESHOLD_512 mirror interfold's
+ * crates/fhe-params/src/constants.rs `insecure_512::threshold`
+ * (degree 512, t = 100, moduli [0xffffee001, 0xffffc4001],
+ * error1_variance 3) — the preset the live Sepolia testnet registers
+ * as paramSet 0.
+ * @param {string} name
+ * @returns {ParamsHandle}
+ */
+export function load_params_named(name) {
+    const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.load_params_named(ptr0, len0);
+    return ParamsHandle.__wrap(ret);
+}
+
+/**
  * @param {Uint8Array} secret_share
  * @param {Uint8Array} ciphertext
  * @returns {Uint8Array}

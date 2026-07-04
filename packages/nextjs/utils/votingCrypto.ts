@@ -81,11 +81,20 @@ export async function runKeyCeremony(): Promise<{ pubKeyB64: string; shares: Com
   };
 }
 
-/** Encrypt a one-hot ballot (choice index over `numOptions`). */
-export async function encryptBallot(pubKeyB64: string, choice: number, numOptions: number): Promise<string> {
+/** Encrypt a one-hot ballot (choice index over `numOptions`). `preset`
+ *  selects the BFV params: omit for the legacy in-browser committee
+ *  (SECURE_THRESHOLD_8192); pass "INSECURE_THRESHOLD_512" for Sepolia
+ *  E3 polls — that's the live testnet's paramSet 0, matching the
+ *  public committee's key. */
+export async function encryptBallot(
+  pubKeyB64: string,
+  choice: number,
+  numOptions: number,
+  preset?: string,
+): Promise<string> {
   const plaintext = new Array(numOptions).fill(0);
   plaintext[choice] = 1;
-  const ct = await call<Uint8Array>("encrypt", { publicKey: b64ToBytes(pubKeyB64), plaintext });
+  const ct = await call<Uint8Array>("encrypt", { publicKey: b64ToBytes(pubKeyB64), plaintext, preset });
   return bytesToB64(ct);
 }
 

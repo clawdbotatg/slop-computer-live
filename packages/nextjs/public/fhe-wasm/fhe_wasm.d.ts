@@ -35,6 +35,16 @@ export function init(): void;
 
 export function load_params(): ParamsHandle;
 
+/**
+ * Load BFV params by Interfold preset name. Values for
+ * INSECURE_THRESHOLD_512 mirror interfold's
+ * crates/fhe-params/src/constants.rs `insecure_512::threshold`
+ * (degree 512, t = 100, moduli [0xffffee001, 0xffffc4001],
+ * error1_variance 3) — the preset the live Sepolia testnet registers
+ * as paramSet 0.
+ */
+export function load_params_named(name: string): ParamsHandle;
+
 export function partial_decrypt(secret_share: Uint8Array, ciphertext: Uint8Array): Uint8Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -54,6 +64,7 @@ export interface InitOutput {
     readonly generate_secret_key: (a: number) => number;
     readonly homomorphic_add: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly load_params: () => number;
+    readonly load_params_named: (a: number, b: number) => number;
     readonly init: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

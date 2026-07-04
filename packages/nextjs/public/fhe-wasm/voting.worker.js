@@ -8,7 +8,18 @@
 
 import init, * as fhe from "/fhe-wasm/fhe_wasm.js";
 
-const ready = init("/fhe-wasm/fhe_wasm_bg.wasm").then(() => fhe.load_params());
+const wasmReady = init("/fhe-wasm/fhe_wasm_bg.wasm");
+// Params per preset, lazily built. SECURE_THRESHOLD_8192 = the legacy
+// in-browser committee; INSECURE_THRESHOLD_512 = the live Sepolia
+// testnet's paramSet 0 (what the public committee's key expects).
+const paramsCache = new Map();
+async function paramsFor(preset) {
+  await wasmReady;
+  const name = preset || "SECURE_THRESHOLD_8192";
+  if (!paramsCache.has(name)) paramsCache.set(name, fhe.load_params_named(name));
+  return paramsCache.get(name);
+}
+const ready = paramsFor("SECURE_THRESHOLD_8192");
 
 function toU8(v) {
   return v instanceof Uint8Array ? v : Uint8Array.from(v);
@@ -40,8 +51,9 @@ const ops = {
     };
   },
 
-  async encrypt(params, { publicKey, plaintext }) {
-    return fhe.encrypt_vector(params, toU8(publicKey), Int32Array.from(plaintext));
+  async encrypt(params, { publicKey, plaintext, preset }) {
+    const p = preset ? await paramsFor(preset) : params;
+    return fhe.encrypt_vector(p, toU8(publicKey), Int32Array.from(plaintext));
   },
 
   async aggregate(params, { ciphertexts }) {

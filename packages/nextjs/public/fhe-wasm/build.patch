@@ -10,6 +10,50 @@ index def51d3..cb641ed 100644
  js-sys = "0.3.95"
  ndarray = "0.15.6"
  rand = "0.8.5"
+diff --git a/examples/weft-web/crates/fhe-wasm/src/bfv/mod.rs b/examples/weft-web/crates/fhe-wasm/src/bfv/mod.rs
+index 501393d..d7cdbaa 100644
+--- a/examples/weft-web/crates/fhe-wasm/src/bfv/mod.rs
++++ b/examples/weft-web/crates/fhe-wasm/src/bfv/mod.rs
+@@ -3,7 +3,7 @@
+ use std::sync::Arc;
+ 
+ use e3_fhe_params::{build_bfv_params_from_set_arc, BfvParamSet, BfvPreset};
+-use fhe::bfv::{BfvParameters, Ciphertext, Encoding, Plaintext, PublicKey, SecretKey};
++use fhe::bfv::{BfvParameters, BfvParametersBuilder, Ciphertext, Encoding, Plaintext, PublicKey, SecretKey};
+ use fhe_traits::{
+     DeserializeParametrized, FheDecoder, FheDecrypter, FheEncoder, FheEncrypter, Serialize,
+ };
+@@ -33,6 +33,30 @@ pub fn load_params() -> ParamsHandle {
+     }
+ }
+ 
++/// Load BFV params by Interfold preset name. Values for
++/// INSECURE_THRESHOLD_512 mirror interfold's
++/// crates/fhe-params/src/constants.rs `insecure_512::threshold`
++/// (degree 512, t = 100, moduli [0xffffee001, 0xffffc4001],
++/// error1_variance 3) — the preset the live Sepolia testnet registers
++/// as paramSet 0.
++#[wasm_bindgen]
++pub fn load_params_named(name: &str) -> ParamsHandle {
++    match name {
++        "SECURE_THRESHOLD_8192" => load_params(),
++        "INSECURE_THRESHOLD_512" => ParamsHandle {
++            inner: BfvParametersBuilder::new()
++                .set_degree(512)
++                .set_plaintext_modulus(100)
++                .set_moduli(&[0xffffee001, 0xffffc4001])
++                .set_error1_variance_str("3")
++                .unwrap_or_else(|error| panic!("invalid error1 variance: {error}"))
++                .build_arc()
++                .unwrap_or_else(|error| panic!("insecure-512 params build failed: {error}")),
++        },
++        other => panic!("unknown BFV preset: {other}"),
++    }
++}
++
+ #[wasm_bindgen]
+ pub fn generate_secret_key(params: &ParamsHandle) -> SecretKeyHandle {
+     let mut rng = thread_rng();
 diff --git a/examples/weft-web/crates/fhe-wasm/src/lib.rs b/examples/weft-web/crates/fhe-wasm/src/lib.rs
 index 4f5ef3d..8a275a2 100644
 --- a/examples/weft-web/crates/fhe-wasm/src/lib.rs

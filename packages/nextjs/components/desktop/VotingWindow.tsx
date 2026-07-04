@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { VotingE3Panel } from "~~/components/desktop/VotingE3Panel";
 import { SlopAddress } from "~~/components/ui";
 import type { PeerMeshState, VotePoll } from "~~/hooks/usePeerMesh";
 import {
@@ -69,17 +70,24 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
     const opts = options.map(o => o.trim()).filter(Boolean);
     if (!q || opts.length < 2 || busyRef.current) return;
     busyRef.current = true;
-    setPhase({ step: "dkg" });
     try {
-      const { pubKeyB64, shares } = await runKeyCeremony();
-      saveShares(pubKeyB64, shares);
-      mesh.voteCreate({
-        question: q,
-        options: opts,
-        pubKey: pubKeyB64,
-        committeeSize: COMMITTEE_SIZE,
-        threshold: COMMITTEE_THRESHOLD,
-      });
+      if (mesh.votingE3) {
+        // On-chain mode: no browser key ceremony. The relay requests an
+        // E3 and the PUBLIC Sepolia committee generates the key; the E3
+        // panel narrates the whole thing.
+        mesh.voteCreate({ question: q, options: opts });
+      } else {
+        setPhase({ step: "dkg" });
+        const { pubKeyB64, shares } = await runKeyCeremony();
+        saveShares(pubKeyB64, shares);
+        mesh.voteCreate({
+          question: q,
+          options: opts,
+          pubKey: pubKeyB64,
+          committeeSize: COMMITTEE_SIZE,
+          threshold: COMMITTEE_THRESHOLD,
+        });
+      }
       setCreating(false);
       setQuestion("");
       setOptions(["", ""]);
@@ -98,7 +106,10 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
     try {
       const pubKey = await mesh.voteRequestPubKey(poll.id);
       setPhase({ step: "encrypting" });
-      const ct = await encryptBallot(pubKey, choice, poll.options.length);
+      // Sepolia E3 polls use the testnet's paramSet 0 (512 preset) so
+      // the ciphertext matches the public committee's key.
+      const preset = poll.mode === "sepolia" ? "INSECURE_THRESHOLD_512" : undefined;
+      const ct = await encryptBallot(pubKey, choice, poll.options.length, preset);
       const result = await mesh.voteCast(poll.id, ct);
       if (result !== "ok") throw new Error(`ballot rejected: ${result}`);
       setPhase({ step: "idle" });
@@ -280,7 +291,10 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 · {poll.ballots.length} encrypted ballot{poll.ballots.length === 1 ? "" : "s"}
               </span>
               <span>
-                · {poll.committee.threshold}-of-{poll.committee.size} threshold key
+                ·{" "}
+                {poll.mode === "sepolia"
+                  ? "public Sepolia committee"
+                  : `${poll.committee.threshold}-of-${poll.committee.size} threshold key`}
               </span>
             </div>
           </div>
@@ -296,6 +310,8 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
             {poll.status}
           </span>
         </div>
+
+        {poll.mode === "sepolia" && poll.e3 ? <VotingE3Panel e3={poll.e3} /> : null}
 
         {poll.status === "revealed" && poll.tally ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -444,12 +460,15 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
           </div>
         ) : null}
 
-        {isCreator && poll.status === "open" ? (
+        {/* Manual close/reveal only for legacy in-browser polls. Sepolia
+            polls close by the on-chain deadline and reveal when the
+            committee decrypts — both driven by the E3 panel above. */}
+        {poll.mode !== "sepolia" && isCreator && poll.status === "open" ? (
           <button type="button" disabled={busy} onClick={() => mesh.voteClose(poll.id)} style={buttonStyle(!busy)}>
             Close voting
           </button>
         ) : null}
-        {isCreator && poll.status === "closed" ? (
+        {poll.mode !== "sepolia" && isCreator && poll.status === "closed" ? (
           <button
             type="button"
             disabled={busy || poll.ballots.length === 0}
@@ -540,21 +559,49 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
               {COMMITTEE_THRESHOLD}-of-
               {COMMITTEE_SIZE} committee ceremony decrypts only that aggregate.
             </div>
-            <div>
-              <b>Simulated (this demo):</b> the {COMMITTEE_SIZE} committee members run inside the poll creator&apos;s
-              browser rather than as independent staked ciphernodes; the server trusts the creator&apos;s posted tally
-              (no RISC Zero proof); and there&apos;s no ZK proof a ballot encrypts a valid one-hot vote. The production
-              protocol —{" "}
-              <a
-                href="https://docs.theinterfold.com/CRISP/introduction"
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--slop-cyan, #3ee9ff)" }}
-              >
-                CRISP
-              </a>{" "}
-              — closes all three gaps with on-chain E3s.
-            </div>
+            {mesh.votingE3 ? (
+              <div>
+                <b>On-chain (this room):</b> polls run as real{" "}
+                <a
+                  href="https://docs.theinterfold.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--slop-cyan, #3ee9ff)" }}
+                >
+                  Interfold E3s
+                </a>{" "}
+                on <b>Sepolia</b>. A <i>public</i> ciphernode committee — nodes we don&apos;t control — runs distributed
+                key generation, your encrypted ballot is published on-chain, and only that committee can
+                threshold-decrypt the aggregate. The panel on each poll shows every tx. Still dev-mode: the compute
+                proof is stubbed (real{" "}
+                <a
+                  href="https://docs.theinterfold.com/CRISP/introduction"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--slop-cyan, #3ee9ff)" }}
+                >
+                  CRISP
+                </a>{" "}
+                adds RISC Zero + a ballot-validity ZK proof), and it&apos;s testnet until Interfold&apos;s mainnet
+                launch.
+              </div>
+            ) : (
+              <div>
+                <b>Simulated (this demo):</b> the {COMMITTEE_SIZE} committee members run inside the poll creator&apos;s
+                browser rather than as independent staked ciphernodes; the server trusts the creator&apos;s posted tally
+                (no RISC Zero proof); and there&apos;s no ZK proof a ballot encrypts a valid one-hot vote. The
+                production protocol —{" "}
+                <a
+                  href="https://docs.theinterfold.com/CRISP/introduction"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--slop-cyan, #3ee9ff)" }}
+                >
+                  CRISP
+                </a>{" "}
+                — closes all three gaps with on-chain E3s.
+              </div>
+            )}
             <button
               type="button"
               onClick={() => setShowInfo(false)}
@@ -636,7 +683,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 onClick={createPoll}
                 style={buttonStyle(!busy && !!question.trim() && options.filter(o => o.trim()).length >= 2)}
               >
-                🔑 Run key ceremony &amp; open poll
+                {mesh.votingE3 ? "⛓ Request E3 on Sepolia" : "🔑 Run key ceremony & open poll"}
               </button>
               <button type="button" disabled={busy} onClick={() => setCreating(false)} style={buttonStyle(false)}>
                 Cancel
