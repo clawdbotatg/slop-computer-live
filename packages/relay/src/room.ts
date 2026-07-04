@@ -450,7 +450,9 @@ export class Room {
     this.walletChat = new WalletChatState(paths.walletChat.path);
     this.research = new ResearchState(paths.research.path);
     this.researchCorpus = new ResearchCorpus(paths.researchCorpus.path);
-    this.voting = new VotingBooth(paths.voting.path);
+    // On-chain-only when the relay is configured for Sepolia E3s — drops
+    // any legacy in-browser-committee polls so every poll settles on-chain.
+    this.voting = new VotingBooth(paths.voting.path, process.env.VOTING_E3_CHAIN === "sepolia");
     this.leftclaw = new LeftclawState(paths.leftclaw.path);
     this.auth = new RoomAuth(paths.auth.path);
     this.chyron = new Chyron(paths.chyron.path);

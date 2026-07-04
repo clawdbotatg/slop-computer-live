@@ -149,7 +149,13 @@ export class VotingBooth {
   private subscribers = new Set<Subscriber>();
   private loaded = false;
 
-  constructor(private readonly filePath: string) {}
+  /** When true, legacy in-browser-committee polls are dropped on load
+   *  so every visible poll settled through a real on-chain E3. Set by
+   *  the relay when VOTING_E3_CHAIN is configured. */
+  constructor(
+    private readonly filePath: string,
+    private readonly onChainOnly = false,
+  ) {}
 
   private load(): void {
     if (this.loaded) return;
@@ -157,7 +163,22 @@ export class VotingBooth {
     try {
       const raw = readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as { polls?: unknown };
-      if (Array.isArray(parsed.polls)) this.polls = (parsed.polls as VotePoll[]).slice(-MAX_POLLS);
+      if (Array.isArray(parsed.polls)) {
+        let polls = parsed.polls as VotePoll[];
+        // Purge pre-onchain polls once the room runs real E3s — "everything
+        // onchain from here on out". An in-flight Sepolia poll (has an e3
+        // block) is always kept regardless of its transient status.
+        if (this.onChainOnly) {
+          const before = polls.length;
+          polls = polls.filter(p => p.mode === "sepolia");
+          if (polls.length !== before) {
+            this.polls = polls.slice(-MAX_POLLS);
+            this.persist();
+            return;
+          }
+        }
+        this.polls = polls.slice(-MAX_POLLS);
+      }
     } catch {
       /* missing or unparseable — start empty */
     }
