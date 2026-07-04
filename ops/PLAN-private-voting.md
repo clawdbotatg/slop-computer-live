@@ -368,3 +368,27 @@ Remaining integration (de-risked, but real — the last mile):
    ciphertext (recompute compute_ciphertext_commitment in Solidity, or
    restructure). Getting (b) subtly wrong breaks the guarantee — deserves
    careful, non-rushed work. Mirror CRISPProgram.sol's honkVerifier.verify.
+
+## Ballot-validity: ALL crypto unknowns retired (2026-07-04)
+
+Beyond circuit + on-chain verifier, two more gates passed:
+- **Verifiable-encrypt is committee-compatible.** A Sepolia round using
+  @interfold/wasm bfv_verifiable_encrypt_vector ballots (which yield the
+  Greco witness), summed with weft homomorphic_add, decrypted by the live
+  committee to [1,1,2]. So the browser can switch weft encrypt_vector ->
+  verifiable_encrypt as a DROP-IN (committee decrypts identically, relay
+  tally-decode unchanged). private-voting deploy/sepolia-verifiable-round.mjs.
+- **Browser proving needs no COOP/COEP.** bb.js proves single-threaded
+  (BackendType.Wasm, crossOriginIsolated=false) in a headless browser:
+  SRS init 11s (one-time), prove 5s, verifies. No cross-origin isolation
+  headers -> slop's desktop (cross-origin avatars/iframes) unaffected.
+  private-voting ballot-validity-circuit/browser-prove-poc/.
+
+Everything is de-risked. Remaining = productionization only:
+- Bundle bb.js + noir_js + @interfold/wasm + circuit (840 KB) into the
+  nextjs voting worker; switch Sepolia ballots to verifiable-encrypt;
+  generate the proof at vote time (spinner: ~11s first SRS + 5s prove);
+  attach proof to vote_cast; coordinator forwards to publishInput.
+- On-chain binding (the delicate one): redeploy the E3 program with the
+  HonkVerifier (0xEcc4D77e...9336); publishInput verifies the proof AND
+  binds its 2 commitment public-inputs to the submitted ciphertext.
