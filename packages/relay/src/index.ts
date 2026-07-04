@@ -96,6 +96,9 @@ function e3CoordinatorFor(room: { voting: import("./voting.js").VotingBooth }): 
   if (!c) {
     c = new VoteE3Coordinator(room.voting);
     e3Coordinators.set(room, c);
+    // First time this room's coordinator wakes up — recover any Sepolia
+    // poll whose committee already decrypted while we were away.
+    void c.resumePending();
   }
   return c;
 }
@@ -7585,6 +7588,12 @@ app.register(async function signalRoutes(fastify) {
     }
 
     room.addPeer({ ...info, ws: socket, sessionToken: session.token });
+    // Someone opened this room — spin up its E3 coordinator so any
+    // Sepolia poll the committee already decrypted (while the relay was
+    // away, or after a read hiccup) gets recovered from chain.
+    if (votingE3Enabled() && room.voting.list().some(p => p.mode === "sepolia" && p.status !== "revealed")) {
+      e3CoordinatorFor(room);
+    }
     send(socket, {
       type: "hello",
       id: peerId,

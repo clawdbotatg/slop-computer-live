@@ -52,7 +52,9 @@ const DEV_PROOF = "0x0301040105090206050305" as Hex;
 
 const interfoldAbi = parseAbi([
   "struct E3RequestParams { uint8 committeeSize; uint256[2] inputWindow; address e3Program; uint8 paramSet; bytes computeProviderParams; bytes customParams; bool proofAggregationEnabled; }",
+  "struct E3 { uint256 seed; uint8 committeeSize; uint256 requestBlock; uint256[2] inputWindow; bytes32 encryptionSchemeId; address e3Program; uint8 paramSet; bytes customParams; address decryptionVerifier; address pkVerifier; bytes32 committeePublicKey; bytes32 ciphertextOutput; bytes plaintextOutput; address requester; bool proofAggregationEnabled; }",
   "function request(E3RequestParams params) returns (uint256)",
+  "function getE3(uint256 e3Id) view returns (E3 e3)",
   "function getE3Stage(uint256 e3Id) view returns (uint8)",
   "function publishCiphertextOutput(uint256 e3Id, bytes ciphertextOutput, bytes proof) returns (bool)",
   "event PlaintextOutputPublished(uint256 indexed e3Id, bytes plaintextOutput, bytes proof)",
@@ -120,6 +122,37 @@ export class VoteE3Coordinator {
 
   private note(pollId: string, patch: Parameters<VotingBooth["patchE3"]>[1], text: string, txHash?: string): void {
     this.booth.patchE3(pollId, patch, { text, txHash });
+  }
+
+  /** Self-heal on boot: any Sepolia poll that isn't revealed but whose
+   *  E3 already has a plaintext output on-chain (relay restarted, or a
+   *  read hiccup stranded it) gets revealed from the chain. Polls still
+   *  mid-flight are left for a fresh run / manual retry. */
+  async resumePending(): Promise<void> {
+    for (const poll of this.booth.list()) {
+      if (poll.mode !== "sepolia" || poll.status === "revealed") continue;
+      const e3Id = poll.e3?.e3Id;
+      if (!e3Id) continue;
+      try {
+        const e3 = (await this.pub.readContract({
+          address: INTERFOLD,
+          abi: interfoldAbi,
+          functionName: "getE3",
+          args: [BigInt(e3Id)],
+        })) as { plaintextOutput: Hex };
+        if (e3.plaintextOutput && e3.plaintextOutput.length > 2) {
+          const bytes = Buffer.from(e3.plaintextOutput.slice(2), "hex");
+          const tally: number[] = [];
+          for (let o = 0; o + 8 <= bytes.length && tally.length < poll.options.length; o += 8) {
+            tally.push(Number(bytes.readBigUInt64LE(o)));
+          }
+          this.booth.revealE3Poll(poll.id, tally);
+          this.note(poll.id, { stage: "revealed" }, "✅ recovered from chain — committee tally revealed (relay had missed the read-back).");
+        }
+      } catch {
+        /* transient — leave the poll as-is; a later boot retries */
+      }
+    }
   }
 
   /** Kick off the full E3 lifecycle for a freshly created poll. */
@@ -287,7 +320,11 @@ export class VoteE3Coordinator {
     let sum = cts[0]!;
     for (const ct of cts.slice(1)) sum = fhe.homomorphic_add(params, sum, ct);
 
-    this.note(pollId, { stage: "publishing" }, `📤 publishing the ${sum.length}-byte encrypted tally on-chain…`);
+    this.note(
+      pollId,
+      { stage: "publishing" },
+      `📤 publishing the ${sum.length}-byte encrypted tally on-chain (with a DEV-MODE proof — compute not yet cryptographically proven)…`,
+    );
     let outputTx: Hex | null = null;
     for (let attempt = 1; ; attempt++) {
       try {
@@ -320,22 +357,29 @@ export class VoteE3Coordinator {
       outputTx,
     );
 
-    // 6. The committee's decryption lands as PlaintextOutputPublished.
-    const plaintextEvent = interfoldAbi.find(x => x.type === "event" && x.name === "PlaintextOutputPublished");
+    // 6. The committee's decryption lands in the E3 struct's
+    // plaintextOutput field. Read it via a contract call (getE3) rather
+    // than eth_getLogs — public RPCs (drpc) intermittently reject the
+    // getLogs event+args filter with "invalid parameters", and struct
+    // reads have none of that fragility. Poll on the TX rpc, not the
+    // log rpc.
+    void fromBlock;
+    const poll = this.booth.list().find(p => p.id === pollId);
+    const numOptions = poll?.options.length ?? 0;
     const deadline = Date.now() + 900_000;
     for (;;) {
-      const plainLogs = await this.logs.getLogs({
+      const stage = Number(
+        await this.pub.readContract({ address: INTERFOLD, abi: interfoldAbi, functionName: "getE3Stage", args: [e3Id] }),
+      );
+      const e3 = (await this.pub.readContract({
         address: INTERFOLD,
-        event: plaintextEvent as never,
-        args: { e3Id } as never,
-        fromBlock,
-        toBlock: "latest",
-      });
-      if (plainLogs.length) {
-        const raw = (plainLogs[0] as unknown as { args: { plaintextOutput: Hex } }).args.plaintextOutput;
+        abi: interfoldAbi,
+        functionName: "getE3",
+        args: [e3Id],
+      })) as { plaintextOutput: Hex };
+      const raw = e3.plaintextOutput;
+      if (raw && raw.length > 2) {
         const bytes = Buffer.from(raw.slice(2), "hex");
-        const poll = this.booth.list().find(p => p.id === pollId);
-        const numOptions = poll?.options.length ?? 0;
         const tally: number[] = [];
         for (let o = 0; o + 8 <= bytes.length && tally.length < numOptions; o += 8) {
           tally.push(Number(bytes.readBigUInt64LE(o)));
@@ -348,6 +392,7 @@ export class VoteE3Coordinator {
         );
         return;
       }
+      if (stage === 6) throw new Error("E3 failed on-chain during decryption");
       if (Date.now() > deadline) throw new Error("timed out waiting for the committee's plaintext output");
       await sleep(15_000);
     }

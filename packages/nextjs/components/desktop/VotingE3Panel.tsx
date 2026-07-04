@@ -189,6 +189,38 @@ export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
         </div>
       )}
 
+      {/* Trust model — honest, always visible. Two distinct guarantees:
+          privacy is cryptographically real; tally integrity is not yet
+          proven (dev-mode RISC Zero proof + a mock verifier on our
+          program). We show both so nobody mistakes one for the other. */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          fontSize: 9.5,
+          fontFamily: MONO,
+          paddingTop: 4,
+          borderTop: "1px dashed var(--slop-border, #2a1d4a)",
+        }}
+      >
+        <span style={{ color: "var(--slop-lime, #b6ff3e)" }}>
+          🔒 ballot privacy: REAL — threshold-encrypted, decrypted only by the public committee
+        </span>
+        <span style={{ color: "#f5a623" }}>
+          ⚠ tally integrity: DEV-MODE — the relay&apos;s count is{" "}
+          <a
+            href="https://docs.boundless.network"
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "#f5a623", textDecoration: "underline" }}
+          >
+            not yet proven
+          </a>{" "}
+          (stubbed RISC Zero proof; real proving pending Boundless)
+        </span>
+      </div>
+
       {/* Live protocol log (nerd feed) */}
       {e3.log.length > 0 ? (
         <details style={{ fontSize: 10 }}>
