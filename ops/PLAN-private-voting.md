@@ -242,6 +242,29 @@ gnosisguild/interfold):
    (clawd-harness), which the template server honors — set `PORT=8080`
    or the program-runner callback misses it.
 
+## Phase 3: SEPOLIA MODE LIVE IN PROD (2026-07-03 late night)
+
+Deployed (`f874b3c`). `VOTING_E3_CHAIN=sepolia` +
+`VOTING_E3_WINDOW_SECS=300` set in prod `packages/relay/.env`; relay
+restarted. **Every poll created in any slop room now runs as a real
+Interfold E3** — the relay coordinator (`vote-e3.ts`) requests the E3,
+the public Sepolia committee does DKG, browsers encrypt one-hot ballots
+(512 preset), the facilitator publishes them on-chain (voters pay no
+gas), the relay homomorphically sums in-process, and the committee
+threshold-decrypts. UI: `VotingE3Panel.tsx` shows the full protocol
+timeline (progress bar, stage stepper, committee addrs, per-tx
+Etherscan links, live log). Legacy non-onchain polls purged on load
+(the old auryn-macmillan poll is gone). Prod facilitator is the funded
+`0xBa16…0FF0`. Wasm compat proven by E3 #27 ([1,1,2] from the public
+committee); full UI round proven by E3 #28 headless.
+
+Still dev-mode / to harden: compute proof is stubbed (digits of pi +
+MockRISC0Verifier we deployed) → real RISC Zero via Boundless; no ZK
+ballot-validity proof → CRISP's Noir circuit (reusable, balance=1);
+testnet only until Interfold mainnet (~weeks). Mainnet PollAnchor
+(notarize results on L1) still one funding step away (~0.02 ETH to the
+facilitator).
+
 ## Phase-2 milestone 2: full E3 round on SEPOLIA against the live
 ## public committee — PASSING (2026-07-03 night)
 
