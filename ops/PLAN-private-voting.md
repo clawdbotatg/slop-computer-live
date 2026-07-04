@@ -242,12 +242,44 @@ gnosisguild/interfold):
    (clawd-harness), which the template server honors — set `PORT=8080`
    or the program-runner callback misses it.
 
-Remaining for Sepolia: promote scaffold to a repo; swap in the
-`sepolia` chain block (drafted in scratchpad `sepolia-chain-config.yaml`
-with live addresses); deploy MyProgram (hardhat config already has
-sepolia); `interfold faucet` for fee tokens; **needs a Sepolia-ETH
-funded key**; then requestE3 against the public testnet committee and
-wire the slop relay/VotingWindow to it as "Sepolia mode".
+## Phase-2 milestone 2: full E3 round on SEPOLIA against the live
+## public committee — PASSING (2026-07-03 night)
+
+E3 #26 on Sepolia: requested on the live Interfold
+(0x64Cd2d88537A18D8E599d786447F9a07Dd9C7f26), fee paid in faucet mock
+USDC, a **public 3-node ciphernode committee ran sortition +
+distributed DKG** (~90s, 9,243-byte BFV key via the CommitteePublished
+event), two client-encrypted numbers published on-chain to our
+MyProgram (**0x095C187a5bAC36e1857ad2e3c1F5414c3C738511** — registered
+permissionlessly), local server computed the homomorphic sum, and the
+**public committee threshold-decrypted the aggregate: 1 + 2 = 3**.
+~7 min/round. Facilitator (0xBa16…0FF0) funded with 1 Sepolia ETH by
+Austin; used ~0.02 across 5 requests + deploys.
+
+Hard-won operational facts (all encoded in the private-voting repo):
+- `registerE3Program` on the live Interfold is **permissionless**.
+- The committee key is NOT on-chain (only a 32-byte commitment via
+  getE3PublicKey) — decode the registry's `CommitteePublished` log:
+  `(address[] nodes, bytes publicKey, bytes32 hash, bytes extra)`,
+  topic0 `0xbf0636a3…e67f`.
+- `E3Requested` e3Id is in DATA word 0 (topics[1] is the program).
+- Input window must be computed fresh at request time with ~120s lead
+  (`InvalidInputDeadlineStart` otherwise).
+- Retry `publishCiphertextOutput` on `InputDeadlineNotReached` AND its
+  raw selector `0xbf1af280` (library-declared errors don't decode
+  through the SDK ABI).
+- RPC minefield: publicnode silently filters `eth_getLogs` (use
+  **drpc.org** for event watching); 1rpc rate-limits
+  `sendRawTransaction`; template's `publishInput` passes a bare
+  address → viem falls back to `eth_sendTransaction` (dies on public
+  RPCs — sign locally).
+- SDK crypto (`encryptNumber`) fails under plain tsx
+  (`initializeWasm is not a function`) — run under vitest.
+
+Remaining to productize: push the repo (clawdbotatg/private-voting —
+pending `gh repo create` by Austin), port the round driver into the
+slop relay as a "Sepolia mode" coordinator, add K-option one-hot
+ballots (encryptVector) + CRISP validity circuit, VotingWindow UI mode.
 
 ## Still open
 
