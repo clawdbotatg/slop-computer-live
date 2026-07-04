@@ -21,6 +21,7 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
+import { ClearSignPanel } from "~~/components/desktop/wallet/ClearSignPanel";
 import { TokenAvatar } from "~~/components/desktop/wallet/TokenAvatar";
 import { WalletAssetsPanel } from "~~/components/desktop/wallet/WalletAssetsPanel";
 import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
@@ -3002,6 +3003,21 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
           onRetry={onResummarize}
         />
       )}
+
+      {/* ERC-7730 clear signing: the deterministic "what you're approving"
+       *  decoded from a registry descriptor, sitting between the AI opinion
+       *  above and the raw calldata below. Full cards only (skips the compact
+       *  recent-list to avoid a fetch per row). */}
+      {!compact ? (
+        <ClearSignPanel
+          chainId={tx.chainId}
+          target={tx.target}
+          value={tx.value}
+          data={tx.data}
+          isBatch={isBatchTx}
+          calls={isBatchTx ? tx.calls : undefined}
+        />
+      ) : null}
 
       {!compact && !isBatchTx ? (
         <details style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>

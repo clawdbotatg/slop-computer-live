@@ -699,6 +699,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@ethereum-sourcify/clear-signing@npm:^0.2.1":
+  version: 0.2.1
+  resolution: "@ethereum-sourcify/clear-signing@npm:0.2.1"
+  dependencies:
+    "@noble/hashes": "npm:^1.7.1"
+  checksum: 10/02223bf34dbaffc4016105ca6059389c0991d6eb9799c8010d69df277e8d6868a0e03a5c22c0064c93a217ec60d824d93894a184a160c35f3c6b0b79e44ecc71
+  languageName: node
+  linkType: hard
+
 "@ethereumjs/common@npm:^3.2.0":
   version: 3.2.0
   resolution: "@ethereumjs/common@npm:3.2.0"
@@ -2336,7 +2345,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@noble/hashes@npm:1.8.0, @noble/hashes@npm:^1.3.1, @noble/hashes@npm:^1.4.0, @noble/hashes@npm:^1.5.0, @noble/hashes@npm:^1.8.0, @noble/hashes@npm:~1.8.0":
+"@noble/hashes@npm:1.8.0, @noble/hashes@npm:^1.3.1, @noble/hashes@npm:^1.4.0, @noble/hashes@npm:^1.5.0, @noble/hashes@npm:^1.7.1, @noble/hashes@npm:^1.8.0, @noble/hashes@npm:~1.8.0":
   version: 1.8.0
   resolution: "@noble/hashes@npm:1.8.0"
   checksum: 10/474b7f56bc6fb2d5b3a42132561e221b0ea4f91e590f4655312ca13667840896b34195e2b53b7f097ec080a1fdd3b58d902c2a8d0fbdf51d2e238b53808a177e
@@ -3208,6 +3217,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@slop/nextjs@workspace:packages/nextjs"
   dependencies:
+    "@ethereum-sourcify/clear-signing": "npm:^0.2.1"
     "@heroicons/react": "npm:^2.1.5"
     "@noble/curves": "npm:^1.9.0"
     "@noble/hashes": "npm:^1.5.0"
