@@ -342,3 +342,29 @@ Remaining to ship (all de-risked engineering, no unknowns):
    deploy it, redeploy our program so publishInput verifies the proof
    (mirror CRISPProgram.sol) → rejects any non-one-hot ballot before it
    enters the tally.
+
+## Ballot-validity ZK: circuit + ON-CHAIN VERIFIER working (2026-07-04)
+
+Beyond the gate, the full ZK path is now built and proven on-chain:
+- **Circuit** (private-voting `ballot-validity-circuit/`): single Noir
+  circuit = in-circuit Greco (ct0+ct1) + one-hot assert on k1. Good
+  one-hot ballot → 16 KB UltraHonk proof VERIFIED; bad [2,0]/[500,0] →
+  REJECTED at witness gen. ~2s proving (nargo 1.0.0-beta.16, bb
+  3.0.0-nightly). Toolchain: ~/.nargo/bin, ~/.bb.
+- **On-chain verifier**: `bb write_solidity_verifier` → HonkVerifier
+  (23,721 bytes at optimizer_runs=1, fits EIP-170). **Deployed Sepolia
+  `0xEcc4D77e1761C6828FD4E65D0fe7f0b31FCE9336`.** Real EVM proof
+  (verifierTarget:'evm', 9408 bytes, 2 public inputs) → verify() = true;
+  tampered → reverts.
+
+Remaining integration (de-risked, but real — the last mile):
+1. **Browser proving** (task 20): bundle noir_js + bb.js into the voting
+   worker, ship the compiled circuit (840 KB) + a one-time 2^21 SRS
+   download, generate the proof at ballot time (~2s), attach to
+   vote_cast. UX: SRS download + proving spinner in the E3 panel.
+2. **On-chain publishInput binding** (task 21, the tricky one): redeploy
+   our E3 program with the HonkVerifier; publishInput must (a) verify the
+   proof AND (b) bind its 2 public-input commitments to the submitted
+   ciphertext (recompute compute_ciphertext_commitment in Solidity, or
+   restructure). Getting (b) subtly wrong breaks the guarantee — deserves
+   careful, non-rushed work. Mirror CRISPProgram.sol's honkVerifier.verify.
