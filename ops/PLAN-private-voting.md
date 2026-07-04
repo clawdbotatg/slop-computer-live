@@ -310,3 +310,35 @@ ballots (encryptVector) + CRISP validity circuit, VotingWindow UI mode.
 2. BFV preset guidance for room-scale polls.
 3. Client-side proving time for CRISP's 5-proof chain on normal
    hardware (2^21 SRS) — measure before promising it in a live demo.
+
+## Ballot-validity ZK: gate PASSED (2026-07-04)
+
+The [500,0] hole (a client encrypting a non-one-hot ballot to inflate the
+tally) needs a ZK proof that the ciphertext encrypts a valid one-hot
+vote. Feasibility GATE now passes off-chain:
+
+- **Preset matches exactly.** Interfold's Noir circuits' `default` config
+  is auto-generated for `insecure-512` = OUR exact BFV params (N=512,
+  t=100, moduli 0xffffee001/0xffffc4001). No crypto adaptation.
+- **Witness maps directly.** `@interfold/wasm bfv_verifiable_encrypt_vector`
+  on a real one-hot slop ballot produces the full Greco witness
+  (ct0is, pk0is, u, e0, e0is, e0_quotients, k1, r1is, r2is) — the exact
+  inputs interfold's `user_data_encryption_ct0` circuit takes. k1 is
+  confirmed one-hot (1 nonzero coeff = field(-7)).
+- **Proves + verifies, FAST.** nargo 1.0.0-beta.16 + bb 3.0.0-nightly.20260102:
+  witness 0.2s, SRS(2^21) 2.4s, UltraHonk proof 1.5s (16 KB, 4 public
+  inputs), VERIFIED. The feared "minutes of browser proving" is ~2s —
+  browser-side is viable. Gate script: private-voting
+  deploy/ballot-validity-gate.mjs.
+
+Remaining to ship (all de-risked engineering, no unknowns):
+1. Circuit for the FULL predicate: Greco (ct encrypts k1) + one-hot check
+   on k1. Either reuse CRISP's crisp+fold recursive tree (5 proofs) or a
+   minimal single circuit combining user_data_encryption_ct0/ct1 logic +
+   the trivial one-hot assert. Minimal-single is less browser cost.
+2. Browser: run the proving in the voting worker (bb.js UltraHonk + 2^21
+   SRS download), attach the proof to vote_cast.
+3. On-chain: codegen a HonkVerifier (bb write_vk + solidity codegen),
+   deploy it, redeploy our program so publishInput verifies the proof
+   (mirror CRISPProgram.sol) → rejects any non-one-hot ballot before it
+   enters the tally.
