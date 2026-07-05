@@ -392,3 +392,11 @@ Everything is de-risked. Remaining = productionization only:
 - On-chain binding (the delicate one): redeploy the E3 program with the
   HonkVerifier (0xEcc4D77e...9336); publishInput verifies the proof AND
   binds its 2 commitment public-inputs to the submitted ciphertext.
+
+## Authoritative status
+
+For the clean current-state snapshot + production/mainnet plan, see
+**STATUS.md in the clawdbotatg/private-voting repo** (the dated sections
+below are milestone history). Plan as of 2026-07-05: run real votes, wait
+for Interfold mainnet, then productionize (ballot-validity into the app +
+real compute proofs via Boundless).
