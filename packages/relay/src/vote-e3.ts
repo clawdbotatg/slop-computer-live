@@ -37,6 +37,7 @@ const INTERFOLD = (process.env.VOTING_E3_INTERFOLD ?? "0x64Cd2d88537A18D8E599d78
 const REGISTRY = (process.env.VOTING_E3_REGISTRY ?? "0xDDd7e1eA2AD8195217D9B25B13fac667b6Fc4dD9") as Hex;
 const FEE_TOKEN = (process.env.VOTING_E3_FEE_TOKEN ?? "0x08260aE8970E3555E48caA547988bAD397786E6D") as Hex;
 const E3_PROGRAM = (process.env.VOTING_E3_PROGRAM ?? "0x095C187a5bAC36e1857ad2e3c1F5414c3C738511") as Hex;
+const FAUCET = (process.env.VOTING_E3_FAUCET ?? "0x94FCD9b624baAf023c7F48C5E7200eAd85dc87Df") as Hex;
 const TX_RPC = process.env.VOTING_E3_TX_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com";
 // getLogs-honest RPC — publicnode silently filters log queries.
 const LOG_RPC = process.env.VOTING_E3_LOG_RPC ?? "https://sepolia.drpc.org";
@@ -62,8 +63,10 @@ const interfoldAbi = parseAbi([
 const erc20Abi = parseAbi([
   "function allowance(address, address) view returns (uint256)",
   "function approve(address, uint256) returns (bool)",
+  "function balanceOf(address) view returns (uint256)",
 ]);
 const programAbi = parseAbi(["function publishInput(uint256 e3Id, bytes data)"]);
+const faucetAbi = parseAbi(["function faucet()"]);
 
 export function votingE3Enabled(): boolean {
   return process.env.VOTING_E3_CHAIN === "sepolia" && Boolean(config.personalWalletDeployerKey);
@@ -164,6 +167,30 @@ export class VoteE3Coordinator {
   }
 
   private async run(pollId: string): Promise<void> {
+    // 0. Fee-token top-up. Each E3 request burns ~14 testnet USDC; when the
+    // facilitator runs low the request reverts ERC20InsufficientBalance and
+    // strands the poll at "Request E3". Refill from the Interfold faucet
+    // (free, testnet) before we need it so a vote never dies on empty fuel.
+    const feeBalance = (await this.pub.readContract({
+      address: FEE_TOKEN,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [this.account.address],
+    })) as bigint;
+    if (feeBalance < 20_000_000n) {
+      this.note(pollId, {}, "⛽ topping up testnet fee tokens from the Interfold faucet…");
+      try {
+        const hash = await this.enqueueTx(() =>
+          this.wallet.writeContract({ address: FAUCET, abi: faucetAbi, functionName: "faucet", account: this.account, chain: sepolia }),
+        );
+        await this.pub.waitForTransactionReceipt({ hash, timeout: 300_000 });
+        this.note(pollId, {}, "⛽ fee tokens refilled", hash);
+      } catch (err) {
+        // Faucet may be on cooldown; proceed and let request() report if truly empty.
+        this.note(pollId, {}, `⚠ faucet top-up skipped (${err instanceof Error ? err.message.slice(0, 80) : "error"})`);
+      }
+    }
+
     // 1. Fee allowance (testnet USDC from the Interfold faucet).
     const allowance = (await this.pub.readContract({
       address: FEE_TOKEN,
