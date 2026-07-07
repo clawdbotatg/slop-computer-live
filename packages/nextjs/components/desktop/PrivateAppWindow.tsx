@@ -63,13 +63,24 @@ const LocalWindow = ({
 
   // Eager-persist the default slot on first mount (same reasoning as
   // SlotWindow: without it the first focus/drag goes through updateSlot's
-  // partial-merge fallbacks and snap-shrinks the window).
+  // partial-merge fallbacks and snap-shrinks the window). Refs so the
+  // effect fires once per missing slot, not on every slots/prop churn.
   const updateSlot = local.updateSlot;
   const defaultSlotRef = useRef(defaultSlot);
+  const localSlotsRef = useRef(local.slots);
+  localSlotsRef.current = local.slots;
+  const sharedMaxZRef = useRef(sharedMaxZ);
+  sharedMaxZRef.current = sharedMaxZ;
   const hasSlot = local.slots[slotId] !== undefined;
   useEffect(() => {
     if (hasSlot) return;
-    updateSlot({ ...defaultSlotRef.current, id: slotId });
+    // Same "every brand-new window comes to the front" rule as
+    // usePeerMesh.updateSlot, but across BOTH z spaces: spawn above the
+    // highest shared and private window, not at the static default z.
+    const localMax = Math.max(0, ...Object.values(localSlotsRef.current).map(s => s.z));
+    const sharedMax = sharedMaxZRef.current ? sharedMaxZRef.current() : 0;
+    const z = Math.max(defaultSlotRef.current.z, localMax, sharedMax) + 1;
+    updateSlot({ ...defaultSlotRef.current, id: slotId, z });
   }, [hasSlot, slotId, updateSlot]);
 
   return (

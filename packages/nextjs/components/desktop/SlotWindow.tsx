@@ -1,9 +1,17 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useEffect, useRef } from "react";
+import { type CSSProperties, type ReactNode, createContext, useContext, useEffect, useRef } from "react";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
 import { Window } from "~~/components/ui";
 import type { PeerMeshState, SlotPosition } from "~~/hooks/usePeerMesh";
+
+// Max z of windows OUTSIDE the mesh slot system (today: the private
+// wallet, whose z lives in useLocalWindows). Click-to-front below must
+// clear that space too — mesh z alone can't see a raised wallet, so
+// clicking the top *shared* window under it would no-op and the wallet
+// would stay on top forever. Desktop provides the real value; the
+// default keeps SlotWindow usable in isolation.
+export const ExtraMaxZContext = createContext<() => number>(() => 0);
 
 // Single source of truth for a desktop window: the mesh slot system.
 // All windows on the desktop (browsers, cameras, audio, chat) share the
@@ -59,6 +67,7 @@ export const SlotWindow = ({
   children,
 }: SlotWindowProps) => {
   const slot = mesh.slots[slotId] ?? defaultSlot;
+  const extraMaxZ = useContext(ExtraMaxZContext);
 
   // Persist the defaultSlot to the mesh the first time this window mounts
   // with no existing slot. Without this, the very first interaction
@@ -90,9 +99,10 @@ export const SlotWindow = ({
       bodyStyle={bodyStyle}
       onClose={onClose}
       onFocus={() => {
-        // Promote this window above all others. Bump 1 above the current
-        // max so we don't have to know what the next slot will pick.
-        const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+        // Promote this window above all others — shared AND private
+        // (ExtraMaxZContext). Bump 1 above the current max so we don't
+        // have to know what the next slot will pick.
+        const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, extraMaxZ());
         if (slot.z >= maxZ) return;
         mesh.updateSlot({ id: slotId, z: maxZ + 1 });
       }}

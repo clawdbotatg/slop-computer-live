@@ -41,6 +41,7 @@ import { SaveLayoutDialog } from "~~/components/desktop/SaveLayoutDialog";
 import { SharedAppWindow } from "~~/components/desktop/SharedAppWindow";
 import { SharedBrowser } from "~~/components/desktop/SharedBrowser";
 import { SlopBackdrop } from "~~/components/desktop/SlopBackdrop";
+import { ExtraMaxZContext } from "~~/components/desktop/SlotWindow";
 import { SubtitleCaption } from "~~/components/desktop/SubtitleCaption";
 import { TickerBar } from "~~/components/desktop/TickerBar";
 import { TileBadge } from "~~/components/desktop/TileBadge";
@@ -902,6 +903,19 @@ function DesktopInner({ slug }: { slug: string }) {
   // Wallet is the first such window (see PrivateAppWindow render below).
   const local = useLocalWindows(slug);
 
+  // Private and shared windows keep separate z number spaces (localStorage
+  // vs mesh), but they render in ONE stacking context, so every
+  // "bring to front" on either side must clear the max of BOTH — otherwise
+  // whichever side was raised last becomes unreachable from the other.
+  // Ref-backed stable callbacks so the many raise callbacks below don't
+  // need slots objects in their dep arrays.
+  const localSlotsRefForZ = useRef(local.slots);
+  localSlotsRefForZ.current = local.slots;
+  const privateMaxZ = useCallback(() => Math.max(0, ...Object.values(localSlotsRefForZ.current).map(s => s.z)), []);
+  const meshSlotsRefForZ = useRef(mesh.slots);
+  meshSlotsRefForZ.current = mesh.slots;
+  const sharedMaxZ = useCallback(() => Math.max(0, ...Object.values(meshSlotsRefForZ.current).map(s => s.z)), []);
+
   // === Adding a new desktop app ===
   // 1. Add an entry to DEFAULT_APPS in packages/relay/src/index.ts (or
   //    the live apps.json on the box) with a new `kind`.
@@ -1063,14 +1077,14 @@ function DesktopInner({ slug }: { slug: string }) {
       }
       if (target) {
         meshNavigateBrowser(target.id, url);
-        const maxZ = Math.max(0, ...Object.values(slots).map(s => s.z), 5);
+        const maxZ = Math.max(0, ...Object.values(slots).map(s => s.z), 5, privateMaxZ());
         meshUpdateSlotForOpenUrl({ id: target.slotId, z: maxZ + 1 });
         return;
       }
       const id = `browser-${Math.random().toString(36).slice(2, 8)}`;
       meshOpenBrowser(id, url);
     },
-    [meshOpenBrowser, meshNavigateBrowser, meshUpdateSlotForOpenUrl],
+    [meshOpenBrowser, meshNavigateBrowser, meshUpdateSlotForOpenUrl, privateMaxZ],
   );
 
   // First-visit hint state. `hintActive` controls icon filtering + arrow
@@ -1477,9 +1491,10 @@ function DesktopInner({ slug }: { slug: string }) {
     const screens = meshPublications.filter(p => p.kind === "screen");
     const cameras = meshPublications.filter(p => p.kind === "camera");
 
-    // Bump z above every existing slot so the rearranged set sits on top
-    // of any browsers / app windows the user had floating around.
-    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+    // Bump z above every existing slot (shared AND private) so the
+    // rearranged set sits on top of any browsers / app windows / the
+    // wallet the user had floating around.
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5, privateMaxZ()) + 1;
 
     const stageWidth = Math.max(320, vw - RIGHT_STRIP - PAD * 3);
     const stageHeight = Math.max(240, vh - TOP_INSET - PAD * 2);
@@ -1519,7 +1534,7 @@ function DesktopInner({ slug }: { slug: string }) {
         });
       });
     }
-  }, [meshPublications, meshUpdateSlotForArrange]);
+  }, [meshPublications, meshUpdateSlotForArrange, privateMaxZ]);
 
   const arrangeForVideo = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -1557,7 +1572,7 @@ function DesktopInner({ slug }: { slug: string }) {
     const originX = Math.max(PAD, Math.floor((vw - blockW) / 2));
     const originY = TOP_INSET + Math.max(PAD, Math.floor((vh - TOP_INSET - blockH) / 2));
 
-    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5, privateMaxZ()) + 1;
 
     cameras.forEach((pub, i) => {
       let row = Math.floor(i / layout.cols);
@@ -1582,7 +1597,7 @@ function DesktopInner({ slug }: { slug: string }) {
         z: z++,
       });
     });
-  }, [meshPublications, meshUpdateSlotForArrange]);
+  }, [meshPublications, meshUpdateSlotForArrange, privateMaxZ]);
 
   // "Starting soon" scene: music tall on the left, the guest card as the
   // big hero in the center, chat down the right edge, and the countdown
@@ -1605,7 +1620,7 @@ function DesktopInner({ slug }: { slug: string }) {
     // (clock over the card's + chat's corners) are intentional — see the
     // View ▸ Arrange for Countdown reference. Pushed in back-to-front
     // order: card under everything, clock on top.
-    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5) + 1;
+    let z = Math.max(0, ...Object.values(meshSlotsRefForArrange.current).map(s => s.z), 5, privateMaxZ()) + 1;
     const place = (id: string, fx: number, fy: number, fw: number, fh: number) =>
       meshUpdateSlotForArrange({
         id,
@@ -1632,7 +1647,7 @@ function DesktopInner({ slug }: { slug: string }) {
         endAt: Date.now() + 600 * 1000,
       },
     });
-  }, [meshOpenWindowForArrange, meshUpdateSlotForArrange, meshSetClockStateForArrange]);
+  }, [meshOpenWindowForArrange, meshUpdateSlotForArrange, meshSetClockStateForArrange, privateMaxZ]);
 
   // "Auto Arrange" — tidy every open window into a fresh layout. Each
   // invocation advances through a ring of distinct strategies, so the
@@ -1668,7 +1683,7 @@ function DesktopInner({ slug }: { slug: string }) {
     const appKindById: Record<string, string | undefined> = {};
     for (const a of appsRefForArrange.current) appKindById[a.id] = a.kind ?? "browser";
 
-    let z = Math.max(0, ...Object.values(slots).map(s => s.z), 5) + 1;
+    let z = Math.max(0, ...Object.values(slots).map(s => s.z), 5, privateMaxZ()) + 1;
     // Clamp each window to its sensible max, then center the (possibly
     // smaller) window inside the cell the strategy allotted it — so a layout
     // that hands a window the whole stage still renders it at a usable size
@@ -1756,7 +1771,7 @@ function DesktopInner({ slug }: { slug: string }) {
         rest.forEach((id, i) => set(id, areaX + i * (sw + PAD), areaY + heroH + PAD, sw, stripH));
       }
     }
-  }, [autoArrangeIcons, meshPublications, meshUpdateSlotForArrange]);
+  }, [autoArrangeIcons, meshPublications, meshUpdateSlotForArrange, privateMaxZ]);
 
   const viewMenu = useMemo<Menu>(
     () => ({
@@ -2243,10 +2258,10 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const focusSlot = useCallback(
     (slotId: string) => {
-      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, privateMaxZ());
       mesh.updateSlot({ id: slotId, z: maxZ + 1 });
     },
-    [mesh],
+    [mesh, privateMaxZ],
   );
 
   // Any authenticated peer can close any publication window. When the
@@ -2548,7 +2563,7 @@ function DesktopInner({ slug }: { slug: string }) {
       meshOpenWindowForFocus(id);
       const slotId = `app-${id}`;
       const cur = meshSlotsRefForFocus.current[slotId];
-      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z), 5);
+      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z), 5, privateMaxZ());
       const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
         id: slotId,
         z: maxZ + 1,
@@ -2568,7 +2583,7 @@ function DesktopInner({ slug }: { slug: string }) {
       }
       meshUpdateSlot(patch);
     },
-    [meshOpenWindowForFocus, meshUpdateSlot],
+    [meshOpenWindowForFocus, meshUpdateSlot, privateMaxZ],
   );
 
   // Publication-window counterpart of focusApp. Slot ids for media
@@ -2580,10 +2595,10 @@ function DesktopInner({ slug }: { slug: string }) {
     (kind: StreamKind) => {
       if (!myOwnerKey) return;
       const slotId = `owner-${myOwnerKey}-${kind}`;
-      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z));
+      const maxZ = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z), privateMaxZ());
       meshUpdateSlot({ id: slotId, z: maxZ + 1 });
     },
-    [myOwnerKey, meshUpdateSlot],
+    [myOwnerKey, meshUpdateSlot, privateMaxZ],
   );
 
   // Single source of truth for "what happens when you activate an app" —
@@ -2615,12 +2630,33 @@ function DesktopInner({ slug }: { slug: string }) {
         case "card":
           focusApp(app.id);
           return;
-        case "mywallet":
+        case "mywallet": {
           // Single-player: open the local (private) window, not a shared mesh
           // window. Geometry + open-state persist to localStorage only.
           dismissHint();
           local.openWindow("mywallet");
+          // Summon-to-front, mirroring focusApp but in the local z space:
+          // clear both shared and private maxes, and inflate if docked.
+          // First-ever open has no slot yet — PrivateAppWindow's eager
+          // persist spawns it on top, so skip (bumping here would create
+          // the slot with generic fallback geometry).
+          const cur = local.slots["app-mywallet"];
+          if (cur) {
+            const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, privateMaxZ());
+            const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
+              id: "app-mywallet",
+              z: maxZ + 1,
+            };
+            if (cur.height <= 40) {
+              const h = 400;
+              patch.height = h;
+              patch.width = Math.max(cur.width, 360);
+              patch.y = Math.max(60, window.innerHeight - h - 80);
+            }
+            local.updateSlot(patch);
+          }
           return;
+        }
         case "audio":
           dismissHint();
           if (media.activeAudio) focusPub("audio");
@@ -2651,7 +2687,7 @@ function DesktopInner({ slug }: { slug: string }) {
             if (lastPub) {
               const slotId = slotIdFor(lastPub);
               const slot = mesh.slots[slotId];
-              const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z));
+              const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), privateMaxZ());
               if (slot && slot.z < maxZ) {
                 focusSlot(slotId);
                 return;
@@ -2669,10 +2705,12 @@ function DesktopInner({ slug }: { slug: string }) {
       focusPub,
       focusSlot,
       dismissHint,
+      local,
       media,
       mesh.publications,
       mesh.myId,
       mesh.slots,
+      privateMaxZ,
       wantScreenResume,
       setAudioDialog,
       setVideoDialog,
@@ -2746,7 +2784,7 @@ function DesktopInner({ slug }: { slug: string }) {
     }
     prevVisibleSlotIdsRef.current = visible;
     if (newlyVisible.length === 0) return;
-    let top = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z));
+    let top = Math.max(0, ...Object.values(meshSlotsRefForFocus.current).map(s => s.z), privateMaxZ());
     for (const sid of newlyVisible) {
       top += 1;
       meshUpdateSlotForVis({ id: sid, z: top });
@@ -2761,6 +2799,7 @@ function DesktopInner({ slug }: { slug: string }) {
     wantCameraResume,
     cameraResumeSlotId,
     meshUpdateSlotForVis,
+    privateMaxZ,
   ]);
 
   // When a tx gets proposed from a SharedBrowser dapp, surface the
@@ -3064,7 +3103,7 @@ function DesktopInner({ slug }: { slug: string }) {
 
   const uploadFiles = useCallback(
     async (files: FileList | File[], dropX: number, dropY: number) => {
-      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5);
+      const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, privateMaxZ());
       let cascade = 0;
       for (const file of Array.from(files)) {
         const localId = `upload-${Math.random().toString(36).slice(2, 10)}`;
@@ -3127,7 +3166,7 @@ function DesktopInner({ slug }: { slug: string }) {
         }
       }
     },
-    [mesh.slots, meshUpdateSlotForFiles, slug],
+    [mesh.slots, meshUpdateSlotForFiles, privateMaxZ, slug],
   );
 
   // Keep the latest cursor position in a ref so the paste handler can land
@@ -3220,44 +3259,72 @@ function DesktopInner({ slug }: { slug: string }) {
         slug={slug}
       />
       {session.authenticated ? <CommandPalette actions={paletteActions} /> : null}
-      <div
-        onDragEnter={e => {
-          if (!session.authenticated) return;
-          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
-          e.preventDefault();
-          dragDepthRef.current += 1;
-          setDropHover(true);
-        }}
-        onDragOver={e => {
-          if (!session.authenticated) return;
-          if (!Array.from(e.dataTransfer.types).includes("Files")) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "copy";
-        }}
-        onDragLeave={() => {
-          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-          if (dragDepthRef.current === 0) setDropHover(false);
-        }}
-        onDrop={e => {
-          if (!session.authenticated) return;
-          if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
-          e.preventDefault();
-          dragDepthRef.current = 0;
-          setDropHover(false);
-          // Drop coords in viewport pixels — same coord space slots live in.
-          void uploadFiles(e.dataTransfer.files, e.clientX - 44, e.clientY - 55);
-        }}
-        style={{
-          position: "fixed",
-          inset: 0,
-          paddingTop: 26,
-          overflow: "hidden",
-          // Hide the system cursor — we render a custom one that follows
-          // the mouse and switches to grab/grabbing/text on hover.
-          cursor: "none",
-        }}
-      >
-        {/* Livestream frame guide — dashed rectangle showing the inner
+      {/* ExtraMaxZContext feeds the private-window (wallet) max z into every
+          SlotWindow's click-to-front, so raising a shared window can clear a
+          raised wallet. The wallet itself renders INSIDE this stage div —
+          it must share the stage's stacking context, or its z-index competes
+          against the whole stage as a sibling and it paints above every
+          shared window no matter who was raised last. */}
+      <ExtraMaxZContext.Provider value={privateMaxZ}>
+        <div
+          onDragEnter={e => {
+            if (!session.authenticated) return;
+            if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+            e.preventDefault();
+            dragDepthRef.current += 1;
+            setDropHover(true);
+          }}
+          onDragOver={e => {
+            if (!session.authenticated) return;
+            if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={() => {
+            dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+            if (dragDepthRef.current === 0) setDropHover(false);
+          }}
+          onDrop={e => {
+            if (!session.authenticated) return;
+            if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+            e.preventDefault();
+            dragDepthRef.current = 0;
+            setDropHover(false);
+            // Drop coords in viewport pixels — same coord space slots live in.
+            void uploadFiles(e.dataTransfer.files, e.clientX - 44, e.clientY - 55);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            paddingTop: 26,
+            overflow: "hidden",
+            // Hide the system cursor — we render a custom one that follows
+            // the mouse and switches to grab/grabbing/text on hover.
+            cursor: "none",
+          }}
+        >
+          {/* Personal (single-player) wallet — a private window, but stacked
+            in the SAME context as every shared window so z-order between
+            them reflects who was raised last. Kept as the FIRST window in
+            the stage: on the rare exact z tie between the two spaces, the
+            DOM-later shared window wins, matching the "the window you just
+            opened comes to the front" rule. */}
+          <PrivateAppWindow
+            local={local}
+            id="mywallet"
+            title="WALLET"
+            defaultSlot={{ x: 140, y: 90, width: 480, height: 640 }}
+            minWidth={360}
+            minHeight={420}
+            sharedMaxZ={sharedMaxZ}
+          >
+            <WalletAppWindow
+              mesh={mesh}
+              myAddress={selfSessionAddress}
+              myHandle={session.authenticated ? (session.handle ?? null) : null}
+            />
+          </PrivateAppWindow>
+          {/* Livestream frame guide — dashed rectangle showing the inner
             size of the god-mode (OBS capture) window, broadcast by that
             spectator on resize so every peer sees the same bounds. Falls
             back to the 1920×1080 OBS target when no spectator is online.
@@ -3265,915 +3332,915 @@ function DesktopInner({ slug }: { slug: string }) {
             outside the spectator's own viewport — otherwise the top +
             left edges of the line would be visible on their screen and
             get streamed. Behind everything, never clickable. */}
-        <div
-          aria-hidden
-          style={{
-            position: "fixed",
-            top: -3,
-            left: -3,
-            width: (mesh.godViewport?.width ?? 1920) + 6,
-            height: (mesh.godViewport?.height ?? 1080) + 6,
-            border: "2px dashed var(--slop-magenta, #ff3ec9)",
-            boxShadow: "0 0 0 1px rgba(0, 0, 0, 0.35) inset",
-            boxSizing: "border-box",
-            pointerEvents: "none",
-            zIndex: 0,
-          }}
-        />
-        {/* Desktop icons. Catalog comes from the relay's /apps endpoint
+          <div
+            aria-hidden
+            style={{
+              position: "fixed",
+              top: -3,
+              left: -3,
+              width: (mesh.godViewport?.width ?? 1920) + 6,
+              height: (mesh.godViewport?.height ?? 1080) + 6,
+              border: "2px dashed var(--slop-magenta, #ff3ec9)",
+              boxShadow: "0 0 0 1px rgba(0, 0, 0, 0.35) inset",
+              boxSizing: "border-box",
+              pointerEvents: "none",
+              zIndex: 0,
+            }}
+          />
+          {/* Desktop icons. Catalog comes from the relay's /apps endpoint
             (JSON file on the box, no rebuild needed). Position lives in
             the shared slots system keyed by `icon-${app.id}` so dragging
             syncs across peers and survives reloads. Gated on
             `bootstrapped` to avoid the position-flash on first paint. */}
-        {session.authenticated && mesh.bootstrapped
-          ? apps.map((app, i) => {
-              // First-visit hint: only chat + the three share kinds are
-              // visible. Everything else returns null so the layout is a
-              // clean column of 4 with the arrow image pointing at them.
-              const hidden = hintActive && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
-              if (hidden) return null;
-              const slotId = `icon-${app.id}`;
-              // Match autoArrangeIcons' unlisted-rank counting so a new
-              // (non-grid) app's fallback slot is identical whether it
-              // arrives via first paint or Auto Arrange.
-              const unlistedRank = isCuratedIcon(app.id)
-                ? 0
-                : apps.slice(0, i).filter(a => !isCuratedIcon(a.id)).length;
-              const fallback = defaultIconPosition(app.id, unlistedRank);
-              const slot = mesh.slots[slotId] ?? {
-                id: slotId,
-                x: fallback.x,
-                y: fallback.y,
-                width: 88,
-                height: 110,
-                z: 1,
-              };
-              // After dismiss, the non-priority icons fade in with a
-              // small per-icon stagger so it feels like the desktop is
-              // unlocking, not popping. The priority 4 are already on-
-              // screen and shouldn't re-animate, so they skip the class.
-              const fadingIn = hintDismissedAt !== null && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
-              const fadeStyle = fadingIn
-                ? {
-                    animation: `slop-icon-fade-in 700ms ease-out both`,
-                    animationDelay: `${Math.min(i * 80, 800)}ms`,
-                  }
-                : undefined;
-              return (
-                <DesktopIcon
-                  // Bump the key whenever this icon needs to snap back
-                  // (after a rejected trash drop). React remounts the
-                  // Rnd which re-reads its position prop, undoing
-                  // react-rnd's local-state drift from the cancelled
-                  // drag.
-                  key={`${slotId}-${iconSnapBackKey[slotId] ?? 0}`}
-                  iconSrc={app.icon}
-                  label={app.label}
-                  x={slot.x}
-                  y={slot.y}
-                  zIndex={1}
-                  style={fadeStyle}
-                  onMove={({ x, y }) => {
-                    // Drop onto trash → apps can't be deleted. Bump
-                    // the snap-back counter to force a re-render with
-                    // the unchanged slot position so the icon visually
-                    // returns home.
-                    if (isOverTrash(x, y)) {
-                      setIconSnapBackKey(prev => ({ ...prev, [slotId]: (prev[slotId] ?? 0) + 1 }));
-                      return;
+          {session.authenticated && mesh.bootstrapped
+            ? apps.map((app, i) => {
+                // First-visit hint: only chat + the three share kinds are
+                // visible. Everything else returns null so the layout is a
+                // clean column of 4 with the arrow image pointing at them.
+                const hidden = hintActive && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
+                if (hidden) return null;
+                const slotId = `icon-${app.id}`;
+                // Match autoArrangeIcons' unlisted-rank counting so a new
+                // (non-grid) app's fallback slot is identical whether it
+                // arrives via first paint or Auto Arrange.
+                const unlistedRank = isCuratedIcon(app.id)
+                  ? 0
+                  : apps.slice(0, i).filter(a => !isCuratedIcon(a.id)).length;
+                const fallback = defaultIconPosition(app.id, unlistedRank);
+                const slot = mesh.slots[slotId] ?? {
+                  id: slotId,
+                  x: fallback.x,
+                  y: fallback.y,
+                  width: 88,
+                  height: 110,
+                  z: 1,
+                };
+                // After dismiss, the non-priority icons fade in with a
+                // small per-icon stagger so it feels like the desktop is
+                // unlocking, not popping. The priority 4 are already on-
+                // screen and shouldn't re-animate, so they skip the class.
+                const fadingIn = hintDismissedAt !== null && !HINT_ALLOWED_KINDS.has(app.kind ?? "");
+                const fadeStyle = fadingIn
+                  ? {
+                      animation: `slop-icon-fade-in 700ms ease-out both`,
+                      animationDelay: `${Math.min(i * 80, 800)}ms`,
                     }
-                    mesh.updateSlot({ id: slotId, x, y });
-                  }}
-                  onDoubleClick={() => activateApp(app)}
-                />
-              );
-            })
-          : null}
+                  : undefined;
+                return (
+                  <DesktopIcon
+                    // Bump the key whenever this icon needs to snap back
+                    // (after a rejected trash drop). React remounts the
+                    // Rnd which re-reads its position prop, undoing
+                    // react-rnd's local-state drift from the cancelled
+                    // drag.
+                    key={`${slotId}-${iconSnapBackKey[slotId] ?? 0}`}
+                    iconSrc={app.icon}
+                    label={app.label}
+                    x={slot.x}
+                    y={slot.y}
+                    zIndex={1}
+                    style={fadeStyle}
+                    onMove={({ x, y }) => {
+                      // Drop onto trash → apps can't be deleted. Bump
+                      // the snap-back counter to force a re-render with
+                      // the unchanged slot position so the icon visually
+                      // returns home.
+                      if (isOverTrash(x, y)) {
+                        setIconSnapBackKey(prev => ({ ...prev, [slotId]: (prev[slotId] ?? 0) + 1 }));
+                        return;
+                      }
+                      mesh.updateSlot({ id: slotId, x, y });
+                    }}
+                    onDoubleClick={() => activateApp(app)}
+                  />
+                );
+              })
+            : null}
 
-        {/* First-visit hint arrow. Pinned just to the right of the
+          {/* First-visit hint arrow. Pinned just to the right of the
             left-column icon stack and nudged horizontally so the eye
             catches it. Pointer-events:none so it doesn't shadow the
             icons it's pointing at. */}
-        {session.authenticated && mesh.bootstrapped && hintActive ? (
-          <img
-            src="/hint.png"
-            alt="double click Video, Audio, or Screen to share"
-            draggable={false}
-            className="slop-hint-arrow"
-            style={{
-              position: "absolute",
-              left: 120,
-              top: 100,
-              width: 480,
-              height: "auto",
-              pointerEvents: "none",
-              zIndex: 3,
-              filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.55))",
-            }}
-          />
-        ) : null}
+          {session.authenticated && mesh.bootstrapped && hintActive ? (
+            <img
+              src="/hint.png"
+              alt="double click Video, Audio, or Screen to share"
+              draggable={false}
+              className="slop-hint-arrow"
+              style={{
+                position: "absolute",
+                left: 120,
+                top: 100,
+                width: 480,
+                height: "auto",
+                pointerEvents: "none",
+                zIndex: 3,
+                filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.55))",
+              }}
+            />
+          ) : null}
 
-        {/* Desktop files — server-stored, mesh-broadcast. Position lives
+          {/* Desktop files — server-stored, mesh-broadcast. Position lives
             in the slot system keyed `file-<id>`. Drop new files via the
             wrapper's `onDrop` below; downloading is a double-click on
             the icon. */}
-        {session.authenticated && mesh.bootstrapped
-          ? mesh.files.map((f, i) => {
-              const slotId = `file-${f.id}`;
-              // Default position spreads new files in a diagonal cascade
-              // when no slot exists yet (e.g. fresh upload before our
-              // slot_update broadcast lands).
-              const slot = mesh.slots[slotId] ?? {
-                id: slotId,
-                x: 140 + (i % 8) * 95,
-                y: 60 + Math.floor(i / 8) * 105,
-                width: 88,
-                height: 110,
-                z: 1,
-              };
-              const myKey = session.authenticated ? (session.address ?? session.handle ?? "").toLowerCase() : "";
-              // Uploader can delete their own files; host can delete any;
-              // godMode (spectator) ops can delete any. Mirrors the relay
-              // check at /v1/files/:id DELETE — if we got this wrong the
-              // relay 403s and DesktopFile snaps back, but it's worth
-              // gating client-side so a doomed request never fires.
-              const canDelete =
-                !!myKey && (f.ownerKey === myKey || session.role === "host" || session.spectator === true);
-              return (
-                <DesktopFile
-                  key={slotId}
-                  file={f}
-                  x={slot.x}
-                  y={slot.y}
-                  canDelete={canDelete}
-                  onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
-                  onDelete={() => mesh.deleteFile(f.id)}
-                  onPreview={() => focusApp(`preview-${f.id}`)}
-                  isOverTrash={isOverTrash}
-                  onDragEnd={({ x, y, startX, startY }) => {
-                    // Dropped on the trash → delete IF allowed. The
-                    // file_removed broadcast clears the icon for every
-                    // peer; the orphan slot is harmless. If the dragger
-                    // isn't allowed (not owner, host, or godMode), snap
-                    // the icon back to where the drag started rather
-                    // than firing a DELETE the relay will just 403.
-                    if (!isOverTrash(x, y)) return;
-                    if (canDelete) {
-                      mesh.deleteFile(f.id);
-                    } else {
-                      mesh.updateSlot({ id: slotId, x: startX, y: startY, width: 88, height: 110 });
-                    }
-                  }}
-                />
-              );
-            })
-          : null}
+          {session.authenticated && mesh.bootstrapped
+            ? mesh.files.map((f, i) => {
+                const slotId = `file-${f.id}`;
+                // Default position spreads new files in a diagonal cascade
+                // when no slot exists yet (e.g. fresh upload before our
+                // slot_update broadcast lands).
+                const slot = mesh.slots[slotId] ?? {
+                  id: slotId,
+                  x: 140 + (i % 8) * 95,
+                  y: 60 + Math.floor(i / 8) * 105,
+                  width: 88,
+                  height: 110,
+                  z: 1,
+                };
+                const myKey = session.authenticated ? (session.address ?? session.handle ?? "").toLowerCase() : "";
+                // Uploader can delete their own files; host can delete any;
+                // godMode (spectator) ops can delete any. Mirrors the relay
+                // check at /v1/files/:id DELETE — if we got this wrong the
+                // relay 403s and DesktopFile snaps back, but it's worth
+                // gating client-side so a doomed request never fires.
+                const canDelete =
+                  !!myKey && (f.ownerKey === myKey || session.role === "host" || session.spectator === true);
+                return (
+                  <DesktopFile
+                    key={slotId}
+                    file={f}
+                    x={slot.x}
+                    y={slot.y}
+                    canDelete={canDelete}
+                    onMove={({ x, y }) => mesh.updateSlot({ id: slotId, x, y, width: 88, height: 110 })}
+                    onDelete={() => mesh.deleteFile(f.id)}
+                    onPreview={() => focusApp(`preview-${f.id}`)}
+                    isOverTrash={isOverTrash}
+                    onDragEnd={({ x, y, startX, startY }) => {
+                      // Dropped on the trash → delete IF allowed. The
+                      // file_removed broadcast clears the icon for every
+                      // peer; the orphan slot is harmless. If the dragger
+                      // isn't allowed (not owner, host, or godMode), snap
+                      // the icon back to where the drag started rather
+                      // than firing a DELETE the relay will just 403.
+                      if (!isOverTrash(x, y)) return;
+                      if (canDelete) {
+                        mesh.deleteFile(f.id);
+                      } else {
+                        mesh.updateSlot({ id: slotId, x: startX, y: startY, width: 88, height: 110 });
+                      }
+                    }}
+                  />
+                );
+              })
+            : null}
 
-        {/* In-flight upload markers — per-peer local state, only
+          {/* In-flight upload markers — per-peer local state, only
             visible to the uploader. Render at the same (x, y) the
             eventual file icon will use so the loader visually swaps
             into the icon on completion. */}
-        {uploadsInFlight.map(u => (
-          <div
-            key={u.id}
-            aria-hidden
-            style={{
-              position: "absolute",
-              left: u.x,
-              top: u.y,
-              // Wider than the 88px icon to give the loading bar room
-              // to breathe. The eventual file icon still lands flush-
-              // left at (u.x, u.y) after the upload finishes; the box
-              // is a transient indicator, not a slot placeholder.
-              width: 180,
-              padding: "10px 12px",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              background: "linear-gradient(180deg, rgba(20,10,40,0.92) 0%, rgba(6,3,13,0.92) 100%)",
-              border: "1px solid rgba(255,62,201,0.45)",
-              borderRadius: 6,
-              boxShadow: "0 0 12px rgba(255,62,201,0.25), 0 4px 12px rgba(0,0,0,0.6)",
-              zIndex: 2,
-              pointerEvents: "none",
-              userSelect: "none",
-            }}
-          >
-            <LoadingBar
-              cells={10}
-              // Determinate once XHR upload.onprogress has fired at
-              // least once; before that the bar runs the indeterminate
-              // animation (LoadingBar's default when `progress` is
-              // undefined). Caption is empty here — we render the %
-              // on its own line below the bar so it reads more like
-              // a small status panel than an inline progress meter.
-              progress={u.progress}
-              caption=""
-              style={{ fontSize: 13, color: "var(--slop-lime, #bcff5b)" }}
-            />
-            <span
-              style={{
-                fontSize: 11,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.1em",
-                color: typeof u.progress === "number" ? "var(--slop-amber, #ffae00)" : "var(--slop-text-muted)",
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              {typeof u.progress === "number" ? `${u.progress}%` : "uploading…"}
-            </span>
-            <span
-              style={{
-                width: "100%",
-                fontSize: 9,
-                fontFamily: "var(--slop-font-display)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "var(--slop-text-muted)",
-                textAlign: "center",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              title={u.name}
-            >
-              {u.name}
-            </span>
-          </div>
-        ))}
-
-        {/* Shared windows — one per active publication. Same on every peer. */}
-        {windows.map(({ pub, slotId, slot }) => {
-          const stream = streamFor(pub);
-          const peer = mesh.peers.find(p => p.id === pub.peerId);
-          const pubBands = bandsFromIdentity({
-            address: peer?.address ?? null,
-            anonId: peer?.anonId ?? null,
-            handle: peer?.handle ?? null,
-            fallback: pub.ownerKey || pub.peerId,
-          });
-          // Tile badge label uses the same precedence as the guest list:
-          // custom name > ENS handle > short address > short peer-id.
-          // Fall back to the publication's ownerKey (which carries the
-          // pre-disconnect identity) when the peer record itself is gone
-          // — keeps the tile labelled correctly when a publisher drops
-          // off and the publication lingers a beat before tearing down.
-          const badgeLabel = peer
-            ? resolvePeerLabel(peer, mesh.customNames)
-            : (mesh.customNames[pub.ownerKey.toLowerCase()] ?? pub.label ?? pub.ownerKey.slice(0, 8));
-          return (
-            <Window
-              key={`${pub.peerId}-${pub.streamId}`}
-              title={titleFor(pub)}
-              slotId={slotId}
-              x={slot.x}
-              y={slot.y}
-              width={slot.width}
-              height={slot.height}
-              zIndex={slot.z}
-              onFocus={() => focusSlot(slotId)}
-              onClose={() => closeWindow(pub)}
-              onMove={({ x, y }) => moveSlot(slotId, x, y)}
-              onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
-              bodyStyle={{ padding: 0, overflow: "hidden" }}
-              containerInset={{ top: 38 }}
-              dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
-              dockUnderZ={BOTTOM_BAR_Z}
-            >
-              <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                {stream ? (
-                  pub.kind === "audio" ? (
-                    <AudioDropZone
-                      // Owner-key match (not peer-id) so a user with the
-                      // wallet open in multiple tabs / devices can drag a
-                      // new PFP onto ANY of their audio windows — relay
-                      // auth keys avatars on the session's owner, not the
-                      // publishing peer.
-                      isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
-                      onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
-                    >
-                      <AudioVisualizer
-                        stream={stream}
-                        bands={pubBands}
-                        muted={pub.peerId === mesh.myId}
-                        isMine={pub.peerId === mesh.myId}
-                        avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
-                        address={peer?.address ?? null}
-                        hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
-                        onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
-                        persistMute={pub.peerId === mesh.myId}
-                        // God-mode only: route this peer's audio
-                        // through the bus so the EQ popup can mix it.
-                        // Self-published audio is locally muted to
-                        // prevent feedback so we skip it.
-                        audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
-                        audioBusLabel={badgeLabel}
-                      />
-                    </AudioDropZone>
-                  ) : pub.kind === "camera" ? (
-                    <VideoView
-                      stream={stream}
-                      muted={pub.peerId === mesh.myId}
-                      isMine={pub.peerId === mesh.myId}
-                      onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
-                      // Audio-only toggle. State is the relay-broadcast
-                      // `cameraOff` flag so every viewer (and the
-                      // spectator box) renders the avatar in lockstep;
-                      // only the owner gets the toggle handler.
-                      cameraOff={pub.cameraOff ?? false}
-                      onToggleCameraOff={
-                        pub.peerId === mesh.myId ? off => mesh.setCameraOff(pub.streamId, off) : undefined
-                      }
-                      // Avatar backdrop shown when in audio-only mode —
-                      // resolved the same way the audio-share window does.
-                      bands={pubBands}
-                      avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
-                      address={peer?.address ?? null}
-                      hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
-                      // Audio-only backdrop drop target — owner-key match
-                      // (not peer-id) so a user with the wallet open in
-                      // multiple tabs/devices can drag a new PFP onto any
-                      // of their camera windows. Mirrors the audio window.
-                      onAvatarFile={
-                        !!myOwnerKey && pub.ownerKey === myOwnerKey
-                          ? file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))
-                          : undefined
-                      }
-                      // God-mode only: camera publications bundle the
-                      // publisher's mic on the same stream, so the
-                      // video element is where that audio plays —
-                      // route it through the EQ bus too.
-                      audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
-                      audioBusLabel={`${badgeLabel} · cam`}
-                      // Camera kind: offer the publisher a local mirror
-                      // toggle. Screen-share VideoView below skips this.
-                      mirrorable
-                    />
-                  ) : (
-                    <VideoView
-                      stream={stream}
-                      muted={pub.peerId === mesh.myId}
-                      isMine={pub.peerId === mesh.myId}
-                      // Screen shares can carry system audio (browser
-                      // tab capture with audio=true). Same wiring.
-                      audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
-                      audioBusLabel={`${badgeLabel} · screen`}
-                    />
-                  )
-                ) : (
-                  <div
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      background: "#000",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "var(--slop-text-muted)",
-                      fontSize: 12,
-                    }}
-                  >
-                    waiting for stream…
-                  </div>
-                )}
-                <TileBadge bands={pubBands} label={badgeLabel} />
-                {/* Confirm screen-share audio is actually flowing. Only
-                    shows when the publisher checked "Share tab audio" in
-                    the browser picker; absence is itself a useful signal
-                    ("oh, I forgot to tick the box"). */}
-                {pub.kind === "screen" && stream && stream.getAudioTracks().length > 0 ? (
-                  <div
-                    title="sharing tab audio"
-                    style={{
-                      position: "absolute",
-                      bottom: 8,
-                      right: 8,
-                      padding: "3px 8px",
-                      background: "var(--slop-magenta, #ff3ec9)",
-                      color: "#fff",
-                      fontFamily: "var(--slop-font-display)",
-                      fontSize: 10,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      pointerEvents: "none",
-                      zIndex: 4,
-                    }}
-                  >
-                    🔊 audio
-                  </div>
-                ) : null}
-              </div>
-            </Window>
-          );
-        })}
-
-        {/* Shared browser windows — URL synced across all peers. */}
-        {Object.values(mesh.browsers).map(browser => {
-          const slotId = `browser-${browser.id}`;
-          const slot = mesh.slots[slotId] ?? {
-            id: slotId,
-            x: 120,
-            y: 120,
-            width: 720,
-            height: 540,
-            z: 6,
-          };
-          const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
-          // Apps that pin the window to a fixed dapp hide the URL bar
-          // so users can't navigate away; the title swaps to the app's
-          // label instead of echoing the current URL. This is driven by
-          // the app catalog entry's `chrome: "app"` flag (so any app —
-          // including third-party ones added via POST /v1/apps — can opt
-          // in), with the legacy hardcoded LOCKED_APP_TITLES map kept as
-          // a fallback for built-ins that predate the flag.
-          const lockApp = browser.appId ? apps.find(a => a.id === browser.appId) : undefined;
-          const lockedAppTitle =
-            lockApp?.chrome === "app"
-              ? lockApp.label.toUpperCase()
-              : browser.appId
-                ? LOCKED_APP_TITLES[browser.appId]
-                : undefined;
-          const lockedToApp = lockedAppTitle !== undefined;
-          const windowTitle = lockedAppTitle ?? `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
-          return (
-            <Window
-              key={slotId}
-              title={windowTitle}
-              x={slot.x}
-              y={slot.y}
-              width={slot.width}
-              height={slot.height}
-              zIndex={slot.z}
-              minWidth={320}
-              minHeight={240}
-              onFocus={() => focusSlot(slotId)}
-              onClose={() => mesh.closeBrowser(browser.id)}
-              onMove={({ x, y }) => moveSlot(slotId, x, y)}
-              onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
-              bodyStyle={{ padding: 0, overflow: "hidden" }}
-              containerInset={{ top: 38 }}
-              dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
-              dockUnderZ={BOTTOM_BAR_Z}
-            >
-              <SharedBrowser
-                browser={browser}
-                txRequests={txForThis}
-                onNavigate={url => mesh.navigateBrowser(browser.id, url)}
-                canControl={session.authenticated}
-                wallet={mesh.wallet}
-                walletProposeTx={mesh.walletProposeTx}
-                peers={mesh.peers}
-                selfAddress={session.authenticated ? session.address : null}
-                selfLabel={session.authenticated ? (session.handle ?? null) : null}
-                selfPeerId={mesh.myId}
-                forwardTxToPeer={mesh.forwardTxToPeer}
-                hideUrlBar={lockedToApp}
-                customNames={mesh.customNames}
-                walletTxs={mesh.walletTxs}
-              />
-            </Window>
-          );
-        })}
-
-        {/* Screen-share resume placeholder — appears only on the publisher's
-            own screen, after a reload, until they click to re-acquire. */}
-        {wantScreenResume && screenResumeSlotId ? (
-          <Window
-            title={`SCREEN — ${myLabel} (paused)`}
-            x={screenResumeSlot.x}
-            y={screenResumeSlot.y}
-            width={screenResumeSlot.width}
-            height={screenResumeSlot.height}
-            zIndex={screenResumeSlot.z}
-            onClose={() => {
-              const cur = readResume(slug);
-              delete cur.screen;
-              writeResume(slug, cur);
-              setWantScreenResume(false);
-            }}
-            onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}
-            onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
-            bodyStyle={{ padding: 0, overflow: "hidden" }}
-            containerInset={{ top: 38 }}
-            dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
-            dockUnderZ={BOTTOM_BAR_Z}
-          >
+          {uploadsInFlight.map(u => (
             <div
+              key={u.id}
+              aria-hidden
               style={{
-                width: "100%",
-                height: "100%",
-                background: "#000",
+                position: "absolute",
+                left: u.x,
+                top: u.y,
+                // Wider than the 88px icon to give the loading bar room
+                // to breathe. The eventual file icon still lands flush-
+                // left at (u.x, u.y) after the upload finishes; the box
+                // is a transient indicator, not a slot placeholder.
+                width: 180,
+                padding: "10px 12px",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
-                gap: 12,
-                color: "var(--slop-text)",
-                fontSize: 12,
-                textAlign: "center",
-                padding: 16,
+                gap: 6,
+                background: "linear-gradient(180deg, rgba(20,10,40,0.92) 0%, rgba(6,3,13,0.92) 100%)",
+                border: "1px solid rgba(255,62,201,0.45)",
+                borderRadius: 6,
+                boxShadow: "0 0 12px rgba(255,62,201,0.25), 0 4px 12px rgba(0,0,0,0.6)",
+                zIndex: 2,
+                pointerEvents: "none",
+                userSelect: "none",
               }}
             >
-              <span style={{ color: "var(--slop-text-muted)" }}>
-                screen share paused on reload — browsers require a click to resume
+              <LoadingBar
+                cells={10}
+                // Determinate once XHR upload.onprogress has fired at
+                // least once; before that the bar runs the indeterminate
+                // animation (LoadingBar's default when `progress` is
+                // undefined). Caption is empty here — we render the %
+                // on its own line below the bar so it reads more like
+                // a small status panel than an inline progress meter.
+                progress={u.progress}
+                caption=""
+                style={{ fontSize: 13, color: "var(--slop-lime, #bcff5b)" }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.1em",
+                  color: typeof u.progress === "number" ? "var(--slop-amber, #ffae00)" : "var(--slop-text-muted)",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {typeof u.progress === "number" ? `${u.progress}%` : "uploading…"}
               </span>
-              <Button variant="primary" onClick={startScreenShare}>
-                Resume screen share
-              </Button>
+              <span
+                style={{
+                  width: "100%",
+                  fontSize: 9,
+                  fontFamily: "var(--slop-font-display)",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--slop-text-muted)",
+                  textAlign: "center",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={u.name}
+              >
+                {u.name}
+              </span>
             </div>
-          </Window>
-        ) : null}
+          ))}
 
-        {/* Camera reconnect placeholder — sits in the camera slot after a
+          {/* Shared windows — one per active publication. Same on every peer. */}
+          {windows.map(({ pub, slotId, slot }) => {
+            const stream = streamFor(pub);
+            const peer = mesh.peers.find(p => p.id === pub.peerId);
+            const pubBands = bandsFromIdentity({
+              address: peer?.address ?? null,
+              anonId: peer?.anonId ?? null,
+              handle: peer?.handle ?? null,
+              fallback: pub.ownerKey || pub.peerId,
+            });
+            // Tile badge label uses the same precedence as the guest list:
+            // custom name > ENS handle > short address > short peer-id.
+            // Fall back to the publication's ownerKey (which carries the
+            // pre-disconnect identity) when the peer record itself is gone
+            // — keeps the tile labelled correctly when a publisher drops
+            // off and the publication lingers a beat before tearing down.
+            const badgeLabel = peer
+              ? resolvePeerLabel(peer, mesh.customNames)
+              : (mesh.customNames[pub.ownerKey.toLowerCase()] ?? pub.label ?? pub.ownerKey.slice(0, 8));
+            return (
+              <Window
+                key={`${pub.peerId}-${pub.streamId}`}
+                title={titleFor(pub)}
+                slotId={slotId}
+                x={slot.x}
+                y={slot.y}
+                width={slot.width}
+                height={slot.height}
+                zIndex={slot.z}
+                onFocus={() => focusSlot(slotId)}
+                onClose={() => closeWindow(pub)}
+                onMove={({ x, y }) => moveSlot(slotId, x, y)}
+                onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
+                bodyStyle={{ padding: 0, overflow: "hidden" }}
+                containerInset={{ top: 38 }}
+                dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
+                dockUnderZ={BOTTOM_BAR_Z}
+              >
+                <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                  {stream ? (
+                    pub.kind === "audio" ? (
+                      <AudioDropZone
+                        // Owner-key match (not peer-id) so a user with the
+                        // wallet open in multiple tabs / devices can drag a
+                        // new PFP onto ANY of their audio windows — relay
+                        // auth keys avatars on the session's owner, not the
+                        // publishing peer.
+                        isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
+                        onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
+                      >
+                        <AudioVisualizer
+                          stream={stream}
+                          bands={pubBands}
+                          muted={pub.peerId === mesh.myId}
+                          isMine={pub.peerId === mesh.myId}
+                          avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                          address={peer?.address ?? null}
+                          hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+                          onSettings={pub.peerId === mesh.myId ? () => setAudioDialog("edit") : undefined}
+                          persistMute={pub.peerId === mesh.myId}
+                          // God-mode only: route this peer's audio
+                          // through the bus so the EQ popup can mix it.
+                          // Self-published audio is locally muted to
+                          // prevent feedback so we skip it.
+                          audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                          audioBusLabel={badgeLabel}
+                        />
+                      </AudioDropZone>
+                    ) : pub.kind === "camera" ? (
+                      <VideoView
+                        stream={stream}
+                        muted={pub.peerId === mesh.myId}
+                        isMine={pub.peerId === mesh.myId}
+                        onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
+                        // Audio-only toggle. State is the relay-broadcast
+                        // `cameraOff` flag so every viewer (and the
+                        // spectator box) renders the avatar in lockstep;
+                        // only the owner gets the toggle handler.
+                        cameraOff={pub.cameraOff ?? false}
+                        onToggleCameraOff={
+                          pub.peerId === mesh.myId ? off => mesh.setCameraOff(pub.streamId, off) : undefined
+                        }
+                        // Avatar backdrop shown when in audio-only mode —
+                        // resolved the same way the audio-share window does.
+                        bands={pubBands}
+                        avatarUrl={mesh.avatars[pub.ownerKey] ?? null}
+                        address={peer?.address ?? null}
+                        hidden={mesh.hiddenAvatars.has(pub.ownerKey)}
+                        // Audio-only backdrop drop target — owner-key match
+                        // (not peer-id) so a user with the wallet open in
+                        // multiple tabs/devices can drag a new PFP onto any
+                        // of their camera windows. Mirrors the audio window.
+                        onAvatarFile={
+                          !!myOwnerKey && pub.ownerKey === myOwnerKey
+                            ? file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))
+                            : undefined
+                        }
+                        // God-mode only: camera publications bundle the
+                        // publisher's mic on the same stream, so the
+                        // video element is where that audio plays —
+                        // route it through the EQ bus too.
+                        audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                        audioBusLabel={`${badgeLabel} · cam`}
+                        // Camera kind: offer the publisher a local mirror
+                        // toggle. Screen-share VideoView below skips this.
+                        mirrorable
+                      />
+                    ) : (
+                      <VideoView
+                        stream={stream}
+                        muted={pub.peerId === mesh.myId}
+                        isMine={pub.peerId === mesh.myId}
+                        // Screen shares can carry system audio (browser
+                        // tab capture with audio=true). Same wiring.
+                        audioBusId={isGodMode && pub.peerId !== mesh.myId ? `peer-${pub.streamId}` : null}
+                        audioBusLabel={`${badgeLabel} · screen`}
+                      />
+                    )
+                  ) : (
+                    <div
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        background: "#000",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--slop-text-muted)",
+                        fontSize: 12,
+                      }}
+                    >
+                      waiting for stream…
+                    </div>
+                  )}
+                  <TileBadge bands={pubBands} label={badgeLabel} />
+                  {/* Confirm screen-share audio is actually flowing. Only
+                    shows when the publisher checked "Share tab audio" in
+                    the browser picker; absence is itself a useful signal
+                    ("oh, I forgot to tick the box"). */}
+                  {pub.kind === "screen" && stream && stream.getAudioTracks().length > 0 ? (
+                    <div
+                      title="sharing tab audio"
+                      style={{
+                        position: "absolute",
+                        bottom: 8,
+                        right: 8,
+                        padding: "3px 8px",
+                        background: "var(--slop-magenta, #ff3ec9)",
+                        color: "#fff",
+                        fontFamily: "var(--slop-font-display)",
+                        fontSize: 10,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        pointerEvents: "none",
+                        zIndex: 4,
+                      }}
+                    >
+                      🔊 audio
+                    </div>
+                  ) : null}
+                </div>
+              </Window>
+            );
+          })}
+
+          {/* Shared browser windows — URL synced across all peers. */}
+          {Object.values(mesh.browsers).map(browser => {
+            const slotId = `browser-${browser.id}`;
+            const slot = mesh.slots[slotId] ?? {
+              id: slotId,
+              x: 120,
+              y: 120,
+              width: 720,
+              height: 540,
+              z: 6,
+            };
+            const txForThis = mesh.txRequests.filter(t => t.browserId === browser.id);
+            // Apps that pin the window to a fixed dapp hide the URL bar
+            // so users can't navigate away; the title swaps to the app's
+            // label instead of echoing the current URL. This is driven by
+            // the app catalog entry's `chrome: "app"` flag (so any app —
+            // including third-party ones added via POST /v1/apps — can opt
+            // in), with the legacy hardcoded LOCKED_APP_TITLES map kept as
+            // a fallback for built-ins that predate the flag.
+            const lockApp = browser.appId ? apps.find(a => a.id === browser.appId) : undefined;
+            const lockedAppTitle =
+              lockApp?.chrome === "app"
+                ? lockApp.label.toUpperCase()
+                : browser.appId
+                  ? LOCKED_APP_TITLES[browser.appId]
+                  : undefined;
+            const lockedToApp = lockedAppTitle !== undefined;
+            const windowTitle = lockedAppTitle ?? `BROWSER — ${browser.url.replace(/^https?:\/\//, "").slice(0, 32)}`;
+            return (
+              <Window
+                key={slotId}
+                title={windowTitle}
+                x={slot.x}
+                y={slot.y}
+                width={slot.width}
+                height={slot.height}
+                zIndex={slot.z}
+                minWidth={320}
+                minHeight={240}
+                onFocus={() => focusSlot(slotId)}
+                onClose={() => mesh.closeBrowser(browser.id)}
+                onMove={({ x, y }) => moveSlot(slotId, x, y)}
+                onResize={({ x, y, width, height }) => resizeSlot(slotId, x, y, width, height)}
+                bodyStyle={{ padding: 0, overflow: "hidden" }}
+                containerInset={{ top: 38 }}
+                dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
+                dockUnderZ={BOTTOM_BAR_Z}
+              >
+                <SharedBrowser
+                  browser={browser}
+                  txRequests={txForThis}
+                  onNavigate={url => mesh.navigateBrowser(browser.id, url)}
+                  canControl={session.authenticated}
+                  wallet={mesh.wallet}
+                  walletProposeTx={mesh.walletProposeTx}
+                  peers={mesh.peers}
+                  selfAddress={session.authenticated ? session.address : null}
+                  selfLabel={session.authenticated ? (session.handle ?? null) : null}
+                  selfPeerId={mesh.myId}
+                  forwardTxToPeer={mesh.forwardTxToPeer}
+                  hideUrlBar={lockedToApp}
+                  customNames={mesh.customNames}
+                  walletTxs={mesh.walletTxs}
+                />
+              </Window>
+            );
+          })}
+
+          {/* Screen-share resume placeholder — appears only on the publisher's
+            own screen, after a reload, until they click to re-acquire. */}
+          {wantScreenResume && screenResumeSlotId ? (
+            <Window
+              title={`SCREEN — ${myLabel} (paused)`}
+              x={screenResumeSlot.x}
+              y={screenResumeSlot.y}
+              width={screenResumeSlot.width}
+              height={screenResumeSlot.height}
+              zIndex={screenResumeSlot.z}
+              onClose={() => {
+                const cur = readResume(slug);
+                delete cur.screen;
+                writeResume(slug, cur);
+                setWantScreenResume(false);
+              }}
+              onMove={({ x, y }) => moveSlot(screenResumeSlotId, x, y)}
+              onResize={({ x, y, width, height }) => resizeSlot(screenResumeSlotId, x, y, width, height)}
+              bodyStyle={{ padding: 0, overflow: "hidden" }}
+              containerInset={{ top: 38 }}
+              dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
+              dockUnderZ={BOTTOM_BAR_Z}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  background: "#000",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 12,
+                  color: "var(--slop-text)",
+                  fontSize: 12,
+                  textAlign: "center",
+                  padding: 16,
+                }}
+              >
+                <span style={{ color: "var(--slop-text-muted)" }}>
+                  screen share paused on reload — browsers require a click to resume
+                </span>
+                <Button variant="primary" onClick={startScreenShare}>
+                  Resume screen share
+                </Button>
+              </div>
+            </Window>
+          ) : null}
+
+          {/* Camera reconnect placeholder — sits in the camera slot after a
             reload so the video tile doesn't vanish while the device is
             re-acquired. The timed LoadingBar creeps toward ~95% over ~9s
             and holds; the whole window unmounts the moment the real
             own-camera pub arrives (activeCamera flips true). The Resume
             button is the manual fallback if auto-retries gave up. */}
-        {wantCameraResume && cameraResumeSlotId ? (
-          <Window
-            title={`VIDEO — ${myLabel} (reconnecting…)`}
-            x={cameraResumeSlot.x}
-            y={cameraResumeSlot.y}
-            width={cameraResumeSlot.width}
-            height={cameraResumeSlot.height}
-            zIndex={cameraResumeSlot.z}
-            onClose={() => {
-              const cur = readResume(slug);
-              delete cur.camera;
-              writeResume(slug, cur);
-              setWantCameraResume(false);
-            }}
-            onMove={({ x, y }) => moveSlot(cameraResumeSlotId, x, y)}
-            onResize={({ x, y, width, height }) => resizeSlot(cameraResumeSlotId, x, y, width, height)}
-            bodyStyle={{ padding: 0, overflow: "hidden" }}
-            containerInset={{ top: 38 }}
-            dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
-            dockUnderZ={BOTTOM_BAR_Z}
-          >
-            <div
-              style={{
-                width: "100%",
-                height: "100%",
-                background: "#000",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 14,
-                color: "var(--slop-text)",
-                fontSize: 12,
-                textAlign: "center",
-                padding: 16,
+          {wantCameraResume && cameraResumeSlotId ? (
+            <Window
+              title={`VIDEO — ${myLabel} (reconnecting…)`}
+              x={cameraResumeSlot.x}
+              y={cameraResumeSlot.y}
+              width={cameraResumeSlot.width}
+              height={cameraResumeSlot.height}
+              zIndex={cameraResumeSlot.z}
+              onClose={() => {
+                const cur = readResume(slug);
+                delete cur.camera;
+                writeResume(slug, cur);
+                setWantCameraResume(false);
               }}
+              onMove={({ x, y }) => moveSlot(cameraResumeSlotId, x, y)}
+              onResize={({ x, y, width, height }) => resizeSlot(cameraResumeSlotId, x, y, width, height)}
+              bodyStyle={{ padding: 0, overflow: "hidden" }}
+              containerInset={{ top: 38 }}
+              dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
+              dockUnderZ={BOTTOM_BAR_Z}
             >
-              <span style={{ color: "var(--slop-text-muted)" }}>reconnecting video…</span>
-              <LoadingBar
-                cells={12}
-                estimateMs={4000}
-                caption=""
-                style={{ fontSize: 13, color: "var(--slop-cyan, #5bf0ff)" }}
-              />
-            </div>
-          </Window>
-        ) : null}
+              <div
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  background: "#000",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 14,
+                  color: "var(--slop-text)",
+                  fontSize: 12,
+                  textAlign: "center",
+                  padding: 16,
+                }}
+              >
+                <span style={{ color: "var(--slop-text-muted)" }}>reconnecting video…</span>
+                <LoadingBar
+                  cells={12}
+                  estimateMs={4000}
+                  caption=""
+                  style={{ fontSize: 13, color: "var(--slop-cyan, #5bf0ff)" }}
+                />
+              </div>
+            </Window>
+          ) : null}
 
-        {/* Drop-to-upload overlay — appears while the user is dragging
+          {/* Drop-to-upload overlay — appears while the user is dragging
             files from the OS over the desktop. Pointer-events:none so
             it doesn't intercept the drop itself (the wrapper above does). */}
-        {dropHover ? (
-          <div
-            aria-hidden
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(255,62,201,0.12)",
-              border: "3px dashed var(--slop-magenta, #ff3ec9)",
-              color: "#fff",
-              fontFamily: "var(--slop-font-display)",
-              fontSize: 22,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              pointerEvents: "none",
-              zIndex: 9999,
-              textShadow: "0 2px 4px rgba(0,0,0,0.6)",
-            }}
-          >
-            drop to share
-          </div>
-        ) : null}
+          {dropHover ? (
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(255,62,201,0.12)",
+                border: "3px dashed var(--slop-magenta, #ff3ec9)",
+                color: "#fff",
+                fontFamily: "var(--slop-font-display)",
+                fontSize: 22,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                pointerEvents: "none",
+                zIndex: 9999,
+                textShadow: "0 2px 4px rgba(0,0,0,0.6)",
+              }}
+            >
+              drop to share
+            </div>
+          ) : null}
 
-        {/* === Singleton app windows ============================ */}
-        {/* Each <SharedAppWindow> renders if the shared mesh state
+          {/* === Singleton app windows ============================ */}
+          {/* Each <SharedAppWindow> renders if the shared mesh state
             says its id is open — visibility, position, and the close
             button are all synchronized across peers. Drop new apps in
             here following the same pattern. */}
-        {session.authenticated ? (
-          <>
-            <SharedAppWindow
-              mesh={mesh}
-              id="chat"
-              title="Chat"
-              defaultSlot={{ x: 80, y: 80, width: 360, height: 420 }}
-              minWidth={240}
-              minHeight={220}
-            >
-              <ChatWindow
-                messages={mesh.chatMessages}
-                sendChat={mesh.sendChat}
-                myAddress={session.address}
-                myHandle={session.handle}
-                customNames={mesh.customNames}
+          {session.authenticated ? (
+            <>
+              <SharedAppWindow
                 mesh={mesh}
-              />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="music"
-              title="SLOPAMP"
-              defaultSlot={{ x: 120, y: 120, width: 380, height: 440 }}
-              minWidth={300}
-              minHeight={300}
-              // Keep the player mounted while minimized so its <audio>
-              // element stays in the DOM and music keeps playing.
-              keepMountedWhenDocked
-              // Closing SLOPAMP stops playback (shared across the mesh), so
-              // music doesn't keep going from a detached <audio> element
-              // after the window unmounts. Minimize (above) still keeps it
-              // playing — only the explicit close stops it.
-              onClose={() => {
-                const ms = mesh.musicState;
-                if (ms?.playing) {
-                  mesh.setMusicState({ ...ms, playing: false, position: 0, at: Date.now() });
-                }
-                mesh.closeWindow("music");
-              }}
-            >
-              <MusicPlayerWindow mesh={mesh} audioBusEnabled={isGodMode} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="chess"
-              title="CHESS"
-              defaultSlot={{ x: 160, y: 80, width: 480, height: 560 }}
-              minWidth={340}
-              minHeight={420}
-            >
-              <ChessWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="poker"
-              title="POKER"
-              defaultSlot={{ x: 140, y: 70, width: 720, height: 600 }}
-              minWidth={520}
-              minHeight={460}
-            >
-              <PokerWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="pong"
-              title="PONG"
-              defaultSlot={{ x: 180, y: 100, width: 560, height: 420 }}
-              minWidth={420}
-              minHeight={320}
-            >
-              <PongWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="worm"
-              title="WORM"
-              defaultSlot={{ x: 200, y: 110, width: 600, height: 500 }}
-              minWidth={420}
-              minHeight={380}
-            >
-              <WormWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="putt"
-              title="PUTT-PUTT"
-              defaultSlot={{ x: 220, y: 80, width: 480, height: 720 }}
-              minWidth={360}
-              minHeight={520}
-            >
-              <PuttWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="qr"
-              title="QR"
-              defaultSlot={{ x: 200, y: 100, width: 360, height: 480 }}
-              minWidth={280}
-              minHeight={360}
-            >
-              <QrCodeWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="todo"
-              title="TODO"
-              defaultSlot={{ x: 240, y: 120, width: 360, height: 460 }}
-              minWidth={260}
-              minHeight={300}
-            >
-              <TodoWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="voting"
-              title="VOTING BOOTH"
-              defaultSlot={{ x: 260, y: 110, width: 420, height: 520 }}
-              minWidth={320}
-              minHeight={360}
-            >
-              <VotingWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="notes"
-              title="NOTES"
-              defaultSlot={{ x: 280, y: 140, width: 520, height: 420 }}
-              minWidth={360}
-              minHeight={300}
-            >
-              <NotesWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="glossary"
-              title="GLOSSARY"
-              defaultSlot={{ x: 300, y: 160, width: 420, height: 460 }}
-              minWidth={300}
-              minHeight={280}
-            >
-              <GlossaryWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="gas"
-              title="GAS"
-              defaultSlot={{ x: 320, y: 160, width: 460, height: 460 }}
-              minWidth={360}
-              minHeight={320}
-            >
-              <GasWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="clock"
-              title="CLOCK"
-              defaultSlot={{ x: 360, y: 180, width: 320, height: 380 }}
-              minWidth={260}
-              minHeight={320}
-            >
-              <ClockWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="wallet"
-              title="BANK"
-              defaultSlot={{ x: 400, y: 100, width: 640, height: 680 }}
-              minWidth={420}
-              minHeight={460}
-            >
-              <WalletWindow
+                id="chat"
+                title="Chat"
+                defaultSlot={{ x: 80, y: 80, width: 360, height: 420 }}
+                minWidth={240}
+                minHeight={220}
+              >
+                <ChatWindow
+                  messages={mesh.chatMessages}
+                  sendChat={mesh.sendChat}
+                  myAddress={session.address}
+                  myHandle={session.handle}
+                  customNames={mesh.customNames}
+                  mesh={mesh}
+                />
+              </SharedAppWindow>
+              <SharedAppWindow
                 mesh={mesh}
-                myAddress={session.address}
-                myHandle={session.handle}
-                onBalanceUsd={setMenubarWalletBalanceUsd}
-              />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="ens"
-              title="ENS"
-              defaultSlot={{ x: 420, y: 120, width: 460, height: 560 }}
-              minWidth={360}
-              minHeight={420}
-            >
-              <EnsWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="research"
-              title="RESEARCH"
-              defaultSlot={{ x: 420, y: 120, width: 560, height: 620 }}
-              minWidth={420}
-              minHeight={420}
-            >
-              <ResearchWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="leftclaw"
-              title="HIRE"
-              defaultSlot={{ x: 440, y: 130, width: 540, height: 640 }}
-              minWidth={420}
-              minHeight={460}
-            >
-              <LeftclawWindow mesh={mesh} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="news"
-              title="NEWS"
-              defaultSlot={{ x: 360, y: 100, width: 620, height: 640 }}
-              minWidth={420}
-              minHeight={360}
-            >
-              <NewsWindow mesh={mesh} onOpenUrl={openUrlInBrowser} />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="transcript"
-              title="TRANSCRIPT"
-              defaultSlot={{ x: 380, y: 120, width: 480, height: 520 }}
-              minWidth={320}
-              minHeight={280}
-            >
-              <TranscriptWindow
-                relayHttpUrl={RELAY_HTTP}
-                customNames={mesh.customNames}
+                id="music"
+                title="SLOPAMP"
+                defaultSlot={{ x: 120, y: 120, width: 380, height: 440 }}
+                minWidth={300}
+                minHeight={300}
+                // Keep the player mounted while minimized so its <audio>
+                // element stays in the DOM and music keeps playing.
+                keepMountedWhenDocked
+                // Closing SLOPAMP stops playback (shared across the mesh), so
+                // music doesn't keep going from a detached <audio> element
+                // after the window unmounts. Minimize (above) still keeps it
+                // playing — only the explicit close stops it.
+                onClose={() => {
+                  const ms = mesh.musicState;
+                  if (ms?.playing) {
+                    mesh.setMusicState({ ...ms, playing: false, position: 0, at: Date.now() });
+                  }
+                  mesh.closeWindow("music");
+                }}
+              >
+                <MusicPlayerWindow mesh={mesh} audioBusEnabled={isGodMode} />
+              </SharedAppWindow>
+              <SharedAppWindow
                 mesh={mesh}
-                captionsOn={episode.captionsOn}
-              />
-            </SharedAppWindow>
-            <SharedAppWindow
-              mesh={mesh}
-              id="card"
-              title="CARD"
-              defaultSlot={{ x: 220, y: 120, width: 780, height: 500 }}
-              minWidth={480}
-              minHeight={320}
-            >
-              <CardWindow mesh={mesh} />
-            </SharedAppWindow>
-          </>
-        ) : null}
+                id="chess"
+                title="CHESS"
+                defaultSlot={{ x: 160, y: 80, width: 480, height: 560 }}
+                minWidth={340}
+                minHeight={420}
+              >
+                <ChessWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="poker"
+                title="POKER"
+                defaultSlot={{ x: 140, y: 70, width: 720, height: 600 }}
+                minWidth={520}
+                minHeight={460}
+              >
+                <PokerWindow mesh={mesh} myOwnerKey={myOwnerKey} myLabel={myLabel} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="pong"
+                title="PONG"
+                defaultSlot={{ x: 180, y: 100, width: 560, height: 420 }}
+                minWidth={420}
+                minHeight={320}
+              >
+                <PongWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="worm"
+                title="WORM"
+                defaultSlot={{ x: 200, y: 110, width: 600, height: 500 }}
+                minWidth={420}
+                minHeight={380}
+              >
+                <WormWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="putt"
+                title="PUTT-PUTT"
+                defaultSlot={{ x: 220, y: 80, width: 480, height: 720 }}
+                minWidth={360}
+                minHeight={520}
+              >
+                <PuttWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="qr"
+                title="QR"
+                defaultSlot={{ x: 200, y: 100, width: 360, height: 480 }}
+                minWidth={280}
+                minHeight={360}
+              >
+                <QrCodeWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="todo"
+                title="TODO"
+                defaultSlot={{ x: 240, y: 120, width: 360, height: 460 }}
+                minWidth={260}
+                minHeight={300}
+              >
+                <TodoWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="voting"
+                title="VOTING BOOTH"
+                defaultSlot={{ x: 260, y: 110, width: 420, height: 520 }}
+                minWidth={320}
+                minHeight={360}
+              >
+                <VotingWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="notes"
+                title="NOTES"
+                defaultSlot={{ x: 280, y: 140, width: 520, height: 420 }}
+                minWidth={360}
+                minHeight={300}
+              >
+                <NotesWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="glossary"
+                title="GLOSSARY"
+                defaultSlot={{ x: 300, y: 160, width: 420, height: 460 }}
+                minWidth={300}
+                minHeight={280}
+              >
+                <GlossaryWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="gas"
+                title="GAS"
+                defaultSlot={{ x: 320, y: 160, width: 460, height: 460 }}
+                minWidth={360}
+                minHeight={320}
+              >
+                <GasWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="clock"
+                title="CLOCK"
+                defaultSlot={{ x: 360, y: 180, width: 320, height: 380 }}
+                minWidth={260}
+                minHeight={320}
+              >
+                <ClockWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="wallet"
+                title="BANK"
+                defaultSlot={{ x: 400, y: 100, width: 640, height: 680 }}
+                minWidth={420}
+                minHeight={460}
+              >
+                <WalletWindow
+                  mesh={mesh}
+                  myAddress={session.address}
+                  myHandle={session.handle}
+                  onBalanceUsd={setMenubarWalletBalanceUsd}
+                />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="ens"
+                title="ENS"
+                defaultSlot={{ x: 420, y: 120, width: 460, height: 560 }}
+                minWidth={360}
+                minHeight={420}
+              >
+                <EnsWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="research"
+                title="RESEARCH"
+                defaultSlot={{ x: 420, y: 120, width: 560, height: 620 }}
+                minWidth={420}
+                minHeight={420}
+              >
+                <ResearchWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="leftclaw"
+                title="HIRE"
+                defaultSlot={{ x: 440, y: 130, width: 540, height: 640 }}
+                minWidth={420}
+                minHeight={460}
+              >
+                <LeftclawWindow mesh={mesh} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="news"
+                title="NEWS"
+                defaultSlot={{ x: 360, y: 100, width: 620, height: 640 }}
+                minWidth={420}
+                minHeight={360}
+              >
+                <NewsWindow mesh={mesh} onOpenUrl={openUrlInBrowser} />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="transcript"
+                title="TRANSCRIPT"
+                defaultSlot={{ x: 380, y: 120, width: 480, height: 520 }}
+                minWidth={320}
+                minHeight={280}
+              >
+                <TranscriptWindow
+                  relayHttpUrl={RELAY_HTTP}
+                  customNames={mesh.customNames}
+                  mesh={mesh}
+                  captionsOn={episode.captionsOn}
+                />
+              </SharedAppWindow>
+              <SharedAppWindow
+                mesh={mesh}
+                id="card"
+                title="CARD"
+                defaultSlot={{ x: 220, y: 120, width: 780, height: 500 }}
+                minWidth={480}
+                minHeight={320}
+              >
+                <CardWindow mesh={mesh} />
+              </SharedAppWindow>
+            </>
+          ) : null}
 
-        {/* Trash can — pinned bottom-right of THIS viewer's viewport
+          {/* Trash can — pinned bottom-right of THIS viewer's viewport
             (not in the shared slot system). Drag a file icon onto it
             to delete; drag an app icon onto it and it snaps back
             (apps can't be trashed). Gated on auth so the trash isn't
             visible on the sign-in screen. Both surfaces lift by the
             chyron bar's height when the host has set a chyron, so
             they stay clear of the new bar. */}
-        {session.authenticated ? <SlopBackdrop chyronVisible={!!mesh.chyronState?.text} /> : null}
-        {session.authenticated ? <TrashCan trashRef={trashRef} chyronVisible={!!mesh.chyronState?.text} /> : null}
-        {/* Live STT caption — broadcast-style subtitle of the most
+          {session.authenticated ? <SlopBackdrop chyronVisible={!!mesh.chyronState?.text} /> : null}
+          {session.authenticated ? <TrashCan trashRef={trashRef} chyronVisible={!!mesh.chyronState?.text} /> : null}
+          {/* Live STT caption — broadcast-style subtitle of the most
             recent transcript segment. Sits above the ChyronBar when
             a chyron is set, otherwise above the TimelineBar. Driven
             entirely by the god-mode tab's STT pipeline; auto-fades
             after a few seconds of silence. Hidden when any peer has
             toggled captions off from the transcript app. */}
-        {episode.captionsOn ? <SubtitleCaption mesh={mesh} /> : null}
-        {/* Chyron — broadcast-TV term for the static lower-third
+          {episode.captionsOn ? <SubtitleCaption mesh={mesh} /> : null}
+          {/* Chyron — broadcast-TV term for the static lower-third
             banner. Host-written one-liner that sits on top of the
             timeline bar; collapses to zero height when empty so the
             rest of the bar stack stays put. Host-only edit; everyone
             else just reads it. Distinct from HeadlinesBar (scrolling
             crypto/AI news marquee). */}
-        <ChyronBar mesh={mesh} />
-        {/* Timeline bar — top of the three-bar stack. Host's Twitter
+          <ChyronBar mesh={mesh} />
+          {/* Timeline bar — top of the three-bar stack. Host's Twitter
             home feed (ranked by engagement on the relay). Scrolls
             fastest so the visual hierarchy reads "fastest at top,
             slowest at bottom". */}
-        <TimelineBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
-        {/* Headlines bar — middle band, between timeline and ticker.
+          <TimelineBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
+          {/* Headlines bar — middle band, between timeline and ticker.
             Crypto + AI news headlines. */}
-        <HeadlinesBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
-        {/* Ticker bar — pinned to the very bottom of the desktop on
+          <HeadlinesBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
+          {/* Ticker bar — pinned to the very bottom of the desktop on
             every peer. Reads the shared `tickerState` polled by the
             relay (crypto + AI stocks + private AI valuations +
             $CLAWD). Visible pre-auth too so the entry/join screens
             still feel "alive". */}
-        <TickerBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
-        {/* Always-visible "who's here" panel pinned to the top-right
+          <TickerBar mesh={mesh} onOpenUrl={openUrlInBrowser} />
+          {/* Always-visible "who's here" panel pinned to the top-right
             (per-peer viewport position, not in the shared slot system,
             like the trash). Sign-out / power dropdowns from the menubar
             naturally overlay this via their z=9100. */}
-        {session.authenticated ? (
-          <PinnedPeers
-            peers={mesh.peers}
-            myId={mesh.myId}
-            customNames={mesh.customNames}
-            onSetCustomName={mesh.setCustomName}
-            hiddenBalances={mesh.hiddenBalances}
-            onSetBalanceHidden={mesh.setBalanceHidden}
-            peerPings={mesh.peerPings}
-            slug={slug}
-          />
-        ) : null}
+          {session.authenticated ? (
+            <PinnedPeers
+              peers={mesh.peers}
+              myId={mesh.myId}
+              customNames={mesh.customNames}
+              onSetCustomName={mesh.setCustomName}
+              hiddenBalances={mesh.hiddenBalances}
+              onSetBalanceHidden={mesh.setBalanceHidden}
+              peerPings={mesh.peerPings}
+              slug={slug}
+            />
+          ) : null}
 
-        {/* File previews — shared across the mesh, exactly like every
+          {/* File previews — shared across the mesh, exactly like every
             other singleton window. Each opens via mesh.openWindow
             (`preview-<fileId>`), geometry lives in the slot system
             keyed `app-preview-<fileId>`, focus / move / resize / close
@@ -4181,26 +4248,27 @@ function DesktopInner({ slug }: { slug: string }) {
             defaultSlot off the file count gives each new preview a
             slightly different home position on first open; after that
             the slot persists. */}
-        {openPreviews.map(({ fileId, file }, i) => (
-          <SharedAppWindow
-            key={`preview-${fileId}`}
-            mesh={mesh}
-            id={`preview-${fileId}`}
-            title={file.name}
-            defaultSlot={{
-              x: 180 + (i % 6) * 36,
-              y: 90 + (i % 6) * 28,
-              width: 640,
-              height: 500,
-              z: 500 + i,
-            }}
-            minWidth={320}
-            minHeight={240}
-          >
-            <FilePreviewWindow file={file} mesh={mesh} audioBusEnabled={isGodMode} />
-          </SharedAppWindow>
-        ))}
-      </div>
+          {openPreviews.map(({ fileId, file }, i) => (
+            <SharedAppWindow
+              key={`preview-${fileId}`}
+              mesh={mesh}
+              id={`preview-${fileId}`}
+              title={file.name}
+              defaultSlot={{
+                x: 180 + (i % 6) * 36,
+                y: 90 + (i % 6) * 28,
+                width: 640,
+                height: 500,
+                z: 500 + i,
+              }}
+              minWidth={320}
+              minHeight={240}
+            >
+              <FilePreviewWindow file={file} mesh={mesh} audioBusEnabled={isGodMode} />
+            </SharedAppWindow>
+          ))}
+        </div>
+      </ExtraMaxZContext.Provider>
 
       {/* Sign-in gate. While unauthenticated, a full-viewport blur layer
           covers the desktop AND the menubar so nothing behind it is
@@ -4360,22 +4428,6 @@ function DesktopInner({ slug }: { slug: string }) {
       {videoDialog ? (
         <VideoShareDialog mode={videoDialog} onClose={() => setVideoDialog(null)} onSubmit={handleVideoSubmit} />
       ) : null}
-
-      <PrivateAppWindow
-        local={local}
-        id="mywallet"
-        title="WALLET"
-        defaultSlot={{ x: 140, y: 90, width: 480, height: 640 }}
-        minWidth={360}
-        minHeight={420}
-        sharedMaxZ={() => Math.max(0, ...Object.values(mesh.slots).map(s => s.z))}
-      >
-        <WalletAppWindow
-          mesh={mesh}
-          myAddress={selfSessionAddress}
-          myHandle={session.authenticated ? (session.handle ?? null) : null}
-        />
-      </PrivateAppWindow>
 
       {saveLayoutOpen ? (
         <SaveLayoutDialog
