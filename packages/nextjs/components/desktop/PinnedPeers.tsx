@@ -35,6 +35,13 @@ export type PinnedPeersProps = {
    *  the small bar meter next to each name. Missing keys render as a
    *  gray "no signal" stack. */
   peerPings: Record<string, number>;
+  /** Browser viewport per peer, from `usePeerMesh().peerViewports`.
+   *  Rendered as a "1440×900" readout next to each guest when
+   *  `showResolutions` is on; updates live as peers resize. */
+  peerViewports: Record<string, { width: number; height: number }>;
+  /** God-mode resolution readout gate — true for the host / god-mode
+   *  viewer only, so regular guests don't get the extra clutter. */
+  showResolutions: boolean;
   /** Room slug — scopes the relay portfolio fetch (Zerion proxy) that
    *  drives each guest's USD balance. */
   slug: string;
@@ -142,6 +149,8 @@ export const PinnedPeers = ({
   hiddenBalances,
   onSetBalanceHidden,
   peerPings,
+  peerViewports,
+  showResolutions,
   slug,
 }: PinnedPeersProps) => {
   const [editing, setEditing] = useState(false);
@@ -428,6 +437,23 @@ export const PinnedPeers = ({
                         {usd != null ? formatUsd(usd) : "…"}
                       </span>
                     )
+                  ) : null}
+                  {showResolutions && peerViewports[p.id] ? (
+                    // God-mode resolution readout — this guest's browser
+                    // viewport, live-updated as they resize their window.
+                    <span
+                      title="browser viewport (innerWidth × innerHeight)"
+                      style={{
+                        color: "var(--slop-text-muted)",
+                        fontSize: 10,
+                        fontFamily: "var(--slop-font-display)",
+                        fontVariantNumeric: "tabular-nums",
+                        letterSpacing: "0.04em",
+                        cursor: "help",
+                      }}
+                    >
+                      {peerViewports[p.id]!.width}×{peerViewports[p.id]!.height}
+                    </span>
                   ) : null}
                   <PingMeter rtt={peerPings[p.id]} />
                   <span

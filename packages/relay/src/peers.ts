@@ -35,6 +35,11 @@ export type PeerInfo = {
   // the passkey arrays of `createMultisig`). Undefined for SIWE/anon
   // peers. The pubkey is public-by-design; nothing sensitive here.
   passkey?: { qx: string; qy: string; credentialIdHash: string };
+  // Latest browser viewport (window.innerWidth × innerHeight) this
+  // peer reported via `viewport_report`. Kept on the peer entry so
+  // late joiners get it in the hello peers list; live updates fan out
+  // as `peer_viewport`. Undefined until the first report lands.
+  viewport?: { width: number; height: number };
 };
 
 export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };

@@ -7701,6 +7701,20 @@ app.register(async function signalRoutes(fastify) {
           room.broadcast({ type: "peer_ping", from: peerId, rtt }, peerId);
           return;
         }
+        case "viewport_report": {
+          // Per-peer browser viewport for the god-mode resolution
+          // readout. Stored on the peer entry (so hello carries it to
+          // late joiners) and fanned out live as `peer_viewport`.
+          const w = Number(msg.width);
+          const h = Number(msg.height);
+          if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+          if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
+          const viewport = { width: Math.round(w), height: Math.round(h) };
+          const me = room.getPeer(peerId);
+          if (me) me.viewport = viewport;
+          room.broadcast({ type: "peer_viewport", from: peerId, viewport }, peerId);
+          return;
+        }
         case "offer":
         case "answer":
         case "ice": {
