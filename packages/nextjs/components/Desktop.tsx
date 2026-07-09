@@ -3347,6 +3347,57 @@ function DesktopInner({ slug }: { slug: string }) {
               zIndex: 0,
             }}
           />
+          {/* Guest viewport outlines — host/god-mode only. One teal dashed
+            rectangle per guest, sized to that guest's reported browser
+            viewport (viewport_report → mesh.peerViewports) and anchored
+            at the same top-left origin as the frame guide above, so the
+            operator sees exactly how much of the desktop each guest can
+            see. Own row is skipped (you can see your own window). The
+            label sits at the bottom-right corner — with a shared anchor
+            that's the one corner unique to each rectangle, so stacked
+            guests stay tellable-apart. Thin border, no fill, never
+            clickable; z 2 keeps it over the wallpaper + icons but under
+            real windows' slot z. */}
+          {(session.authenticated && session.role === "host") || isGodMode
+            ? Object.entries(mesh.peerViewports)
+                .filter(([id]) => id !== mesh.myId)
+                .map(([id, vp]) => (
+                  <div
+                    key={`guest-vp-${id}`}
+                    aria-hidden
+                    style={{
+                      position: "fixed",
+                      top: 0,
+                      left: 0,
+                      width: vp.width,
+                      height: vp.height,
+                      border: "1px dashed var(--slop-cyan, #3fcfff)",
+                      boxSizing: "border-box",
+                      pointerEvents: "none",
+                      opacity: 0.65,
+                      zIndex: 2,
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        right: 3,
+                        bottom: 2,
+                        color: "var(--slop-cyan, #3fcfff)",
+                        background: "rgba(6, 3, 13, 0.65)",
+                        padding: "0 4px",
+                        fontSize: 10,
+                        fontFamily: "var(--slop-font-display)",
+                        fontVariantNumeric: "tabular-nums",
+                        letterSpacing: "0.04em",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {peerLabel(id)} {vp.width}×{vp.height}
+                    </span>
+                  </div>
+                ))
+            : null}
           {/* Desktop icons. Catalog comes from the relay's /apps endpoint
             (JSON file on the box, no rebuild needed). Position lives in
             the shared slots system keyed by `icon-${app.id}` so dragging
