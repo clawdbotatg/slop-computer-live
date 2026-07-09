@@ -3276,6 +3276,7 @@ defense-in-depth measure.
 | \`hello\` | — | n/a | handshake ack (no-op, the server-side hello is what matters) |
 | \`ping\` | — | n/a | server replies \`{type:"pong"}\` |
 | \`ping_report\` | \`rtt\` | n/a | publish your relay-RTT to the guest-list meter |
+| \`viewport_report\` | \`width\`, \`height\` | n/a | publish your browser viewport (window.innerWidth × innerHeight) for the god-mode resolution readout |
 | \`offer\` / \`answer\` / \`ice\` | \`to\`, \`payload\` | **WS-only** | WebRTC signaling, routed to a single peer |
 | \`god_viewport\` | \`viewport: {width, height} \\| null\` | **WS-only** | OBS-capture dashed rectangle (god-mode only) |
 | \`god_geometry\` | \`vw, vh, windows: [{id, x, y, w, h, z}]\` | **WS-only** | god-mode only; logs each media window's actual rendered rect (px, viewport-relative) → \`geometry.jsonl\` (\`src:"god"\`) for the clipper's 9:16 crop |
@@ -3333,6 +3334,7 @@ to these to react without polling \`/v1/state\`:
 | --- | --- | --- |
 | \`peer_join\` / \`peer_leave\` | \`peer\` | someone enters / leaves the room |
 | \`peer_ping\` | \`from\`, \`rtt\` | peer reports relay RTT |
+| \`peer_viewport\` | \`from\`, \`viewport: {width, height}\` | peer reports/resizes their browser viewport |
 | \`cursor\` / \`click\` | \`from\`, \`x\`, \`y\` | live presence |
 | \`chat\` | \`msg\` | new chat appended |
 | \`transcript_seg\` | \`seg\` | new STT segment landed |

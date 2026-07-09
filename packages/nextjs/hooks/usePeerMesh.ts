@@ -53,6 +53,10 @@ const PING_INTERVAL_MS = 10_000;
 const CURSOR_THROTTLE_MS = 50; // 20Hz — was 30Hz; imperceptible at slop tile sizes
 const CURSOR_MIN_DELTA_PX = 4; // skip the broadcast for sub-jitter movement
 const RECONNECT_DELAY_MS = 2000;
+// Debounce for viewport_report on window resize — a drag-resize fires
+// resize per frame; one report shortly after the drag settles is plenty
+// for the god-mode resolution readout.
+const VIEWPORT_REPORT_DEBOUNCE_MS = 300;
 
 // Stream watchdog — catches the "waiting for stream…" hang where a
 // publication is live on the relay but no MediaStream has arrived via
@@ -158,6 +162,11 @@ export type Peer = {
    *  with this field into the `passkeyQxs/Qys/credentialIdHashes`
    *  arrays of `createMultisig` instead of the EOA array. */
   passkey?: { qx: string; qy: string; credentialIdHash: string };
+  /** Last browser viewport this peer reported. Only present in the
+   *  relay's `hello` peers list (the relay stores it per peer); live
+   *  updates arrive via `peer_viewport` and land in `peerViewports`,
+   *  which is the map renderers should read. */
+  viewport?: { width: number; height: number };
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
@@ -1923,6 +1932,13 @@ export type PeerMeshState = {
    *  this map carries the latest sample per peer for the guest-list
    *  ping meter. Absent keys = no measurement yet. */
   peerPings: Record<string, number>;
+  /** Browser viewport (window.innerWidth × innerHeight) per peer,
+   *  keyed by peerId. Each peer reports its own size on join and on
+   *  (debounced) window resize via `viewport_report`; the relay stores
+   *  it on the peer entry and fans out `peer_viewport`. Drives the
+   *  god-mode resolution readout in the guest list. Absent keys = no
+   *  report yet. */
+  peerViewports: Record<string, { width: number; height: number }>;
   /** Set or clear the current user's display name. Pass `null` (or an
    *  empty string) to clear. */
   setCustomName: (name: string | null) => void;
@@ -2070,6 +2086,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // guest-list ping meter. Populated by the `peer_ping` broadcast and
   // by our own pong measurements (for the local user's row).
   const [peerPings, setPeerPings] = useState<Record<string, number>>({});
+  // Browser viewport per peer (px), keyed by peerId. Drives the
+  // god-mode resolution readout. Seeded from the hello peers list
+  // (the relay stores each peer's last report) and kept live by the
+  // `peer_viewport` broadcast + our own resize reports.
+  const [peerViewports, setPeerViewports] = useState<Record<string, { width: number; height: number }>>({});
 
   // Mirror of `slots` for synchronous reads inside callbacks (so
   // updateSlot's "new windows come to the front" rule can compute the
@@ -3559,6 +3580,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     // this to derive RTT. We only care about the latest sample — a fresh
     // ping replaces any in-flight measurement.
     let lastPingSentAt: number | null = null;
+    let viewportDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    // Publish our browser viewport for the god-mode resolution readout.
+    // Mirrors ping_report: spectators are filtered out of the visible
+    // guest list, so they don't report. The relay broadcast excludes
+    // the sender, so we also write our own row into the map locally.
+    const reportViewport = () => {
+      const width = Math.round(window.innerWidth);
+      const height = Math.round(window.innerHeight);
+      if (width <= 0 || height <= 0) return;
+      const meId = myIdRef.current;
+      if (meId) {
+        setPeerViewports(prev =>
+          prev[meId]?.width === width && prev[meId]?.height === height ? prev : { ...prev, [meId]: { width, height } },
+        );
+      }
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (selfRef.current?.spectator) return;
+      ws.send(JSON.stringify({ type: "viewport_report", width, height }));
+    };
+    const onWindowResize = () => {
+      if (viewportDebounce) clearTimeout(viewportDebounce);
+      viewportDebounce = setTimeout(reportViewport, VIEWPORT_REPORT_DEBOUNCE_MS);
+    };
+    window.addEventListener("resize", onWindowResize);
 
     const teardownConnections = () => {
       peerConnectionsRef.current.forEach(pc => {
@@ -3635,6 +3682,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             ...(hint?.spectator ? { spectator: true as const } : {}),
           };
           setPeers([...others, me]);
+
+          // Seed viewports from the relay's stored per-peer reports
+          // (late-join catch-up), then announce our own — the "on join"
+          // half of the viewport_report contract; resizes keep it live.
+          const seededViewports: Record<string, { width: number; height: number }> = {};
+          for (const p of others) if (p.viewport) seededViewports[p.id] = p.viewport;
+          setPeerViewports(seededViewports);
+          reportViewport();
 
           if (Array.isArray(msg.publications)) setPublications(msg.publications as Publication[]);
           if (Array.isArray(msg.slots)) {
@@ -3878,6 +3933,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             delete next[peer.id];
             return next;
           });
+          setPeerViewports(prev => {
+            if (!(peer.id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer.id];
+            return next;
+          });
           closePeerConnection(peer.id);
           return;
         }
@@ -3905,6 +3966,20 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           const from = msg.from;
           const rtt = Math.round(msg.rtt);
           setPeerPings(prev => (prev[from] === rtt ? prev : { ...prev, [from]: rtt }));
+          return;
+        }
+
+        if (msg.type === "peer_viewport" && typeof msg.from === "string") {
+          const from = msg.from;
+          const vp = msg.viewport as { width?: unknown; height?: unknown } | undefined;
+          const width = typeof vp?.width === "number" ? Math.round(vp.width) : null;
+          const height = typeof vp?.height === "number" ? Math.round(vp.height) : null;
+          if (width == null || height == null) return;
+          setPeerViewports(prev =>
+            prev[from]?.width === width && prev[from]?.height === height
+              ? prev
+              : { ...prev, [from]: { width, height } },
+          );
           return;
         }
 
@@ -4610,6 +4685,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         // (~60Hz) so the visible roster recovers within a frame.
         setCursors({});
         setPeerPings({});
+        // Same ghost risk as cursors/pings: the post-reconnect hello
+        // re-seeds from the relay's stored per-peer reports.
+        setPeerViewports({});
         lastPingSentAt = null;
         if (cancelled) return;
         reconnectTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
@@ -4628,6 +4706,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
     return () => {
       cancelled = true;
+      window.removeEventListener("resize", onWindowResize);
+      if (viewportDebounce) clearTimeout(viewportDebounce);
       if (pingTimer) clearInterval(pingTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
@@ -4930,5 +5010,6 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setBalanceHidden,
     setCameraOff,
     peerPings,
+    peerViewports,
   };
 }

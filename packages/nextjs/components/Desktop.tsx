@@ -4236,6 +4236,8 @@ function DesktopInner({ slug }: { slug: string }) {
               hiddenBalances={mesh.hiddenBalances}
               onSetBalanceHidden={mesh.setBalanceHidden}
               peerPings={mesh.peerPings}
+              peerViewports={mesh.peerViewports}
+              showResolutions={session.role === "host" || isGodMode}
               slug={slug}
             />
           ) : null}
