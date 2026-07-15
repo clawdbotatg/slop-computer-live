@@ -1,67 +1,62 @@
 {
   "model": "gpt-image-1",
-  "style": "./chess-style-ref.png",
+  "style": "../nextjs/public/icons/chess.png",
   "outDir": "./out/chess",
   "size": "1024x1024",
-  "quality": "medium",
+  "quality": "high",
   "background": "transparent",
   "concurrency": 3,
   "skipExisting": true,
-  "styleHint": "STYLE: a single chess piece rendered as a chunky retrofuture game sprite for the slop.computer desktop \u2014 front-facing (NOT isometric), bold simple silhouette that stays instantly recognizable at 32 pixels, soft-3D chunky shading like a classic Mac OS 9 game asset. TEXTURE: subtle CRT scanline overlay, faint bloom on bright pixels, 1-bit ordered dithering in the shadows. RIM: thin 1-pixel neon outline glow around the whole silhouette. CYPHERPUNK FLAVOR: early-internet BBS vaporwave Y2K cyberdelic. Transparent background. Exactly ONE piece, centered, filling ~85% of the frame height. No text, no chess board, no border, no shadow plate, no reflection.",
-  "bootstrapPrompt": "A chess KNIGHT piece (horse head on a base) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow. Front-facing chunky game sprite, bold silhouette, chunky soft-3D shading, subtle CRT scanlines, transparent background, no text, no board.",
-  "sheet": {
-    "cols": 6,
-    "cell": 192,
-    "padding": 12
-  },
+  "styleHint": "STYLE: match the reference image's rendering exactly — a chunky soft-3D chess piece in the slop.computer desktop-icon style, saturated neon body with painterly pixel-dither shading, rich highlight/shadow modeling, subtle CRT texture, and a glowing rim-light tracing one edge of the silhouette. DETAIL: ornate but readable — visible material shading, glowing accent details (gems, seams, engraved lines), at least three colors per piece. SILHOUETTE: bold and instantly recognizable at 32 pixels, slight 3/4 view like the reference. FRAMING: exactly ONE piece, centered, filling ~85% of the frame height, standing free with NO square base plate under it (unlike the reference), fully transparent background, no text, no chess board, no border.",
+  "sheet": { "cols": 6, "cell": 192, "padding": 12 },
   "items": [
     {
       "name": "wp",
-      "prompt": "A chess PAWN piece for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess PAWN for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white body with deep teal dither shading, a rounded helmet head topped with a small glowing lime (#aaff3d) gem stud, ribbed glowing collar ring, hot magenta rim-light on one edge."
     },
     {
       "name": "wn",
-      "prompt": "A chess KNIGHT piece (horse head on a base) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess KNIGHT (horse head and neck on a round pedestal) for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white body with deep teal dither shading, a flowing spiky lime (#aaff3d) mane, fierce glowing magenta eye, engraved neck lines, hot magenta rim-light on one edge."
     },
     {
       "name": "wb",
-      "prompt": "A chess BISHOP piece (tall mitre with a slotted top) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess BISHOP (tall mitre with a glowing diagonal slot) for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white body with deep teal dither shading, the mitre slot glowing hot magenta, a small lime (#aaff3d) orb on top, engraved band details, hot magenta rim-light on one edge."
     },
     {
       "name": "wr",
-      "prompt": "A chess ROOK piece (castle tower with crenellated battlements) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess ROOK (castle tower with crenellated battlements) for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white brick-textured tower with deep teal dither shading, tiny window slits glowing hot magenta, a thin lime (#aaff3d) trim band, hot magenta rim-light on one edge."
     },
     {
       "name": "wq",
-      "prompt": "A chess QUEEN piece (tall crown with points and an orb) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess QUEEN (tall ornate crown with points and an orb) for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white body with deep teal dither shading, crown points tipped with glowing lime (#aaff3d) and magenta gems, engraved gown lines, hot magenta rim-light on one edge."
     },
     {
       "name": "wk",
-      "prompt": "A chess KING piece (tall crown topped with a cross) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+      "prompt": "A chess KING (tall crown topped with a glowing cross finial) for the CYAN side: luminous electric-cyan (#3df0ff) and ice-white body with deep teal dither shading, the cross finial glowing lime (#aaff3d), a gem-studded magenta crown band, engraved robe lines, hot magenta rim-light on one edge."
     },
     {
       "name": "bp",
-      "prompt": "A chess PAWN piece for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+      "prompt": "A chess PAWN for the MAGENTA side: saturated hot-magenta (#ff2bd6) body with deep purple dither shading exactly like the reference knight, a rounded helmet head topped with a small glowing lime (#aaff3d) gem stud, ribbed glowing collar ring, electric cyan rim-light on one edge."
     },
     {
       "name": "bn",
-      "prompt": "A chess KNIGHT piece (horse head on a base) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+      "prompt": "A chess KNIGHT (horse head and neck on a round pedestal) for the MAGENTA side: saturated hot-magenta (#ff2bd6) body with deep purple dither shading exactly like the reference knight, a flowing spiky lime (#aaff3d) mane, fierce glowing cyan eye, engraved neck lines, electric cyan rim-light on one edge."
     },
     {
       "name": "bb",
-      "prompt": "A chess BISHOP piece (rounded mitre top on a slender body and round base) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow hugging the silhouette tightly. Fully transparent background."
+      "prompt": "A chess BISHOP (tall mitre with a glowing diagonal slot) for the MAGENTA side: saturated hot-magenta (#ff2bd6) body with deep purple dither shading exactly like the reference knight, the mitre slot glowing electric cyan, a small lime (#aaff3d) orb on top, engraved band details, electric cyan rim-light on one edge."
     },
     {
       "name": "br",
-      "prompt": "A chess ROOK piece (castle tower with crenellated battlements) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+      "prompt": "A chess ROOK (castle tower with crenellated battlements) for the MAGENTA side: saturated hot-magenta (#ff2bd6) brick-textured tower with deep purple dither shading exactly like the reference knight, tiny window slits glowing electric cyan, a thin lime (#aaff3d) trim band, electric cyan rim-light on one edge."
     },
     {
       "name": "bq",
-      "prompt": "A chess QUEEN piece (tall crown with points and an orb) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+      "prompt": "A chess QUEEN (tall ornate crown with points and an orb) for the MAGENTA side: saturated hot-magenta (#ff2bd6) body with deep purple dither shading exactly like the reference knight, crown points tipped with glowing lime (#aaff3d) and cyan gems, engraved gown lines, electric cyan rim-light on one edge."
     },
     {
       "name": "bk",
-      "prompt": "A chess KING piece (tall crown topped with a cross) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+      "prompt": "A chess KING (tall crown topped with a glowing cross finial) for the MAGENTA side: saturated hot-magenta (#ff2bd6) body with deep purple dither shading exactly like the reference knight, the cross finial glowing lime (#aaff3d), a gem-studded cyan crown band, engraved robe lines, electric cyan rim-light on one edge."
     }
   ]
 }
