@@ -613,8 +613,6 @@ const Square = ({
       : isLegal
         ? "rgba(63, 207, 255, 0.18)"
         : base;
-  const glyph = cell ? PIECE_GLYPH[cell.color === "w" ? cell.type.toUpperCase() : cell.type] : "";
-  const isWhitePiece = cell?.color === "w";
   return (
     <div
       onClick={() => onClick(square)}
@@ -656,22 +654,8 @@ const Square = ({
         />
       ) : null}
 
-      {/* Piece glyph */}
-      {glyph ? (
-        <span
-          style={{
-            fontSize: "clamp(18px, 6vw, 38px)",
-            lineHeight: 1,
-            color: isWhitePiece ? "#e0f4ff" : "#1a0a1a",
-            textShadow: isWhitePiece
-              ? "0 0 8px rgba(63, 207, 255, 0.85), 0 1px 0 rgba(0,0,0,0.6)"
-              : "0 0 8px rgba(255, 62, 201, 0.85), 0 1px 0 rgba(255,255,255,0.2)",
-            pointerEvents: "none",
-          }}
-        >
-          {glyph}
-        </span>
-      ) : null}
+      {/* Piece sprite */}
+      {cell ? <PieceSprite type={cell.type} color={cell.color} /> : null}
 
       {/* Coordinate labels along edges */}
       {showFileLabel ? <CoordLabel pos="bottomRight">{square[0]}</CoordLabel> : null}
@@ -811,7 +795,6 @@ const PlayerChip = ({
   const accent = color === "white" ? "#3fcfff" : "#ff3ec9";
   const accentSoft = color === "white" ? "rgba(63,207,255,0.18)" : "rgba(255,62,201,0.22)";
   const accentGlow = color === "white" ? "rgba(63,207,255,0.7)" : "rgba(255,62,201,0.7)";
-  const king = color === "white" ? "♔" : "♚";
   return (
     <span
       style={{
@@ -834,8 +817,8 @@ const PlayerChip = ({
         flexDirection: alignRight ? "row-reverse" : "row",
       }}
     >
-      <span aria-hidden style={{ fontSize: 14, lineHeight: 1 }}>
-        {king}
+      <span aria-hidden style={{ display: "inline-flex", width: 16, height: 16 }}>
+        <PieceSprite type="k" color={color === "white" ? "w" : "b"} size={16} />
       </span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
       {active ? (
@@ -890,9 +873,6 @@ const PromotionPicker = ({
   onPick: (piece: "q" | "r" | "b" | "n") => void;
   onCancel: () => void;
 }) => {
-  const isWhite = color === "w";
-  const glow = isWhite ? "rgba(63, 207, 255, 0.85)" : "rgba(255, 62, 201, 0.85)";
-  const ink = isWhite ? "#e0f4ff" : "#1a0a1a";
   return (
     <>
       {/* Click-outside scrim — covers the whole board. Clicking anywhere
@@ -926,34 +906,27 @@ const PromotionPicker = ({
           minWidth: "60%",
         }}
       >
-        {PROMOTION_CHOICES.map(c => {
-          const glyph = PIECE_GLYPH[isWhite ? c.piece.toUpperCase() : c.piece];
-          return (
-            <button
-              key={c.piece}
-              type="button"
-              onClick={() => onPick(c.piece)}
-              aria-label={`promote to ${c.label}`}
-              title={c.label}
-              style={{
-                aspectRatio: "1 / 1",
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255, 62, 201, 0.4)",
-                color: ink,
-                fontSize: "clamp(22px, 5vw, 40px)",
-                lineHeight: 1,
-                padding: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                textShadow: `0 0 8px ${glow}, 0 1px 0 rgba(0,0,0,0.6)`,
-                borderRadius: 0,
-              }}
-            >
-              {glyph}
-            </button>
-          );
-        })}
+        {PROMOTION_CHOICES.map(c => (
+          <button
+            key={c.piece}
+            type="button"
+            onClick={() => onPick(c.piece)}
+            aria-label={`promote to ${c.label}`}
+            title={c.label}
+            style={{
+              aspectRatio: "1 / 1",
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255, 62, 201, 0.4)",
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 0,
+            }}
+          >
+            <PieceSprite type={c.piece} color={color} size="78%" />
+          </button>
+        ))}
       </div>
       {/* Tiny "promote to:" label above the row, plus an X cancel pin
           in the corner. Both purely cosmetic. */}
@@ -981,20 +954,36 @@ const PromotionPicker = ({
 // Helpers
 // =====================================================================
 
-const PIECE_GLYPH: Record<string, string> = {
-  P: "♙",
-  R: "♖",
-  N: "♘",
-  B: "♗",
-  Q: "♕",
-  K: "♔",
-  p: "♟",
-  r: "♜",
-  n: "♞",
-  b: "♝",
-  q: "♛",
-  k: "♚",
+// Pieces render as image sprites (generated via packages/icon-gen chess.json)
+// rather than Unicode chess glyphs — Linux font stacks often lack the black
+// glyphs (♟♜…) and show tofu boxes instead.
+const PIECE_NAME: Record<string, string> = {
+  p: "pawn",
+  r: "rook",
+  n: "knight",
+  b: "bishop",
+  q: "queen",
+  k: "king",
 };
+
+const PieceSprite = ({ type, color, size = "82%" }: { type: string; color: "w" | "b"; size?: number | string }) => (
+  <img
+    src={`/chess/${color}${type.toLowerCase()}.png`}
+    alt={`${color === "w" ? "white" : "black"} ${PIECE_NAME[type.toLowerCase()] ?? type}`}
+    draggable={false}
+    style={{
+      width: size,
+      height: size,
+      objectFit: "contain",
+      filter:
+        color === "w"
+          ? "drop-shadow(0 0 4px rgba(63, 207, 255, 0.55))"
+          : "drop-shadow(0 0 4px rgba(255, 62, 201, 0.55))",
+      pointerEvents: "none",
+      userSelect: "none",
+    }}
+  />
+);
 
 const peerKey = (p: Peer) => (p.address ?? p.anonId ?? p.handle ?? p.id).toLowerCase();
 const peerLabel = (p: Peer, customNames: Record<string, string>) => {

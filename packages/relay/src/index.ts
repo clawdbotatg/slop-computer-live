@@ -860,13 +860,13 @@ function noteChessTranscript(room: Room, game: ChessGame | null): void {
 
 // Quiet moves return null. Castling / captures / checks get a line.
 function chessMoveLine(san: string, who: string): string | null {
-  if (san.startsWith("O-O-O")) return `♟ ${who} castled queenside`;
-  if (san.startsWith("O-O")) return `♟ ${who} castled`;
+  if (san.startsWith("O-O-O")) return `♟️ ${who} castled queenside`;
+  if (san.startsWith("O-O")) return `♟️ ${who} castled`;
   const capture = san.includes("x");
   const check = san.includes("+") || san.includes("#");
-  if (capture && check) return `♟ ${who} captured with check (${san})`;
-  if (capture) return `♟ ${who} captured (${san})`;
-  if (check) return `♟ ${who} checked (${san})`;
+  if (capture && check) return `♟️ ${who} captured with check (${san})`;
+  if (capture) return `♟️ ${who} captured (${san})`;
+  if (check) return `♟️ ${who} checked (${san})`;
   return null;
 }
 
@@ -875,9 +875,9 @@ function chessMoveLine(san: string, who: string): string | null {
 function chessEndingLine(game: ChessGame): { text: string; who: string; key: string } | null {
   switch (game.status) {
     case "white_won":
-      return { text: `♟ ${game.whiteLabel} won by checkmate`, who: game.whiteLabel, key: game.whiteKey };
+      return { text: `♟️ ${game.whiteLabel} won by checkmate`, who: game.whiteLabel, key: game.whiteKey };
     case "black_won":
-      return { text: `♟ ${game.blackLabel} won by checkmate`, who: game.blackLabel, key: game.blackKey };
+      return { text: `♟️ ${game.blackLabel} won by checkmate`, who: game.blackLabel, key: game.blackKey };
     case "white_resigned":
       return {
         text: `🏳️ ${game.whiteLabel} resigned — ${game.blackLabel} wins`,
@@ -894,7 +894,7 @@ function chessEndingLine(game: ChessGame): { text: string; who: string; key: str
     case "draw_threefold":
     case "draw_insufficient":
     case "draw_other":
-      return { text: `♟ ${game.whiteLabel} vs ${game.blackLabel} — drawn`, who: game.whiteLabel, key: game.whiteKey };
+      return { text: `♟️ ${game.whiteLabel} vs ${game.blackLabel} — drawn`, who: game.whiteLabel, key: game.whiteKey };
     default:
       return null;
   }

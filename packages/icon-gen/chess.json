@@ -1,0 +1,67 @@
+{
+  "model": "gpt-image-1",
+  "style": "./chess-style-ref.png",
+  "outDir": "./out/chess",
+  "size": "1024x1024",
+  "quality": "medium",
+  "background": "transparent",
+  "concurrency": 3,
+  "skipExisting": true,
+  "styleHint": "STYLE: a single chess piece rendered as a chunky retrofuture game sprite for the slop.computer desktop \u2014 front-facing (NOT isometric), bold simple silhouette that stays instantly recognizable at 32 pixels, soft-3D chunky shading like a classic Mac OS 9 game asset. TEXTURE: subtle CRT scanline overlay, faint bloom on bright pixels, 1-bit ordered dithering in the shadows. RIM: thin 1-pixel neon outline glow around the whole silhouette. CYPHERPUNK FLAVOR: early-internet BBS vaporwave Y2K cyberdelic. Transparent background. Exactly ONE piece, centered, filling ~85% of the frame height. No text, no chess board, no border, no shadow plate, no reflection.",
+  "bootstrapPrompt": "A chess KNIGHT piece (horse head on a base) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow. Front-facing chunky game sprite, bold silhouette, chunky soft-3D shading, subtle CRT scanlines, transparent background, no text, no board.",
+  "sheet": {
+    "cols": 6,
+    "cell": 192,
+    "padding": 12
+  },
+  "items": [
+    {
+      "name": "wp",
+      "prompt": "A chess PAWN piece for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "wn",
+      "prompt": "A chess KNIGHT piece (horse head on a base) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "wb",
+      "prompt": "A chess BISHOP piece (tall mitre with a slotted top) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "wr",
+      "prompt": "A chess ROOK piece (castle tower with crenellated battlements) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "wq",
+      "prompt": "A chess QUEEN piece (tall crown with points and an orb) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "wk",
+      "prompt": "A chess KING piece (tall crown topped with a cross) for the WHITE side: bone-white body with pale electric-cyan shading and a thin electric cyan (#3df0ff) neon rim glow."
+    },
+    {
+      "name": "bp",
+      "prompt": "A chess PAWN piece for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+    },
+    {
+      "name": "bn",
+      "prompt": "A chess KNIGHT piece (horse head on a base) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+    },
+    {
+      "name": "bb",
+      "prompt": "A chess BISHOP piece (rounded mitre top on a slender body and round base) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow hugging the silhouette tightly. Fully transparent background."
+    },
+    {
+      "name": "br",
+      "prompt": "A chess ROOK piece (castle tower with crenellated battlements) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+    },
+    {
+      "name": "bq",
+      "prompt": "A chess QUEEN piece (tall crown with points and an orb) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+    },
+    {
+      "name": "bk",
+      "prompt": "A chess KING piece (tall crown topped with a cross) for the BLACK side: deep purple-black (#1a0524) body with dark violet shading and a thin hot magenta (#ff2bd6) neon rim glow."
+    }
+  ]
+}

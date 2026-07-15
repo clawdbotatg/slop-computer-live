@@ -125,6 +125,16 @@ const label: React.CSSProperties = {
 
 const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v);
 
+// Decorative pawn — an image sprite, not the ♟ glyph, which tofus on Linux.
+const PawnBadge = ({ size }: { size: number }) => (
+  <img
+    src="/chess/bp.png"
+    alt=""
+    draggable={false}
+    style={{ width: size, height: size, objectFit: "contain", verticalAlign: "-2px" }}
+  />
+);
+
 export const WagerProposeCard = ({
   mesh,
   whiteKey,
@@ -149,7 +159,9 @@ export const WagerProposeCard = ({
   if (!mesh.wallet || chainId == null) {
     return (
       <div style={{ ...card, borderColor: "rgba(255,255,255,0.12)" }}>
-        <div style={label}>♟ Play for ETH</div>
+        <div style={label}>
+          <PawnBadge size={13} /> Play for ETH
+        </div>
         <div style={{ fontSize: 13, color: "var(--slop-text-muted)" }}>
           Deploy the Bank using the Bank app first — it&apos;s the escrow that holds the pot.
         </div>
@@ -186,7 +198,9 @@ export const WagerProposeCard = ({
   return (
     <div style={card}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={label}>♟ Play for ETH</div>
+        <div style={label}>
+          <PawnBadge size={13} /> Play for ETH
+        </div>
         <div style={{ fontSize: 11, color: CYAN }}>
           {chainLabel(chainId)} · escrow {short(mesh.wallet.address)}
         </div>
@@ -253,7 +267,9 @@ export const WagerStage = ({ mesh, escrow }: { mesh: PeerMeshState; escrow: Escr
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: ACCENT }}>♟ Money Chess</div>
+        <div style={{ fontFamily: "var(--slop-font-display)", fontSize: 18, color: ACCENT }}>
+          <PawnBadge size={17} /> Money Chess
+        </div>
         <div style={{ fontSize: 12, color: CYAN }}>
           {fmtEth(buyinWei(escrow))} ETH{usdSuffixFromWei(buyinWei(escrow), ethUsd)} buy-in · {pot} ETH
           {usdSuffixFromWei(potWei(escrow), ethUsd)} pot · {chainLabel(escrow.chainId)}
@@ -289,7 +305,12 @@ const PlayerRow = ({ escrow, account }: { escrow: EscrowSession; account: Escrow
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 18 }}>{isWhite ? "♔" : "♚"}</span>
+        <img
+          src={isWhite ? "/chess/wk.png" : "/chess/bk.png"}
+          alt={isWhite ? "white king" : "black king"}
+          draggable={false}
+          style={{ width: 18, height: 18, objectFit: "contain", verticalAlign: "middle" }}
+        />
         <span style={{ fontFamily: "var(--slop-font-display)", fontSize: 14 }}>{account.label}</span>
         {won && <span style={{ color: LIME, fontSize: 12, fontWeight: 700 }}>WINNER</span>}
       </div>
