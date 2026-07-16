@@ -43,6 +43,32 @@ export type DetectEvent =
   | { phase: "done"; startSeconds: number }
   | { phase: "error"; message: string };
 
+/** Container duration in seconds via ffprobe. Used to map a global session
+ *  timestamp onto the right segment when MediaMTX split the recording. */
+async function probeDurationSec(file: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ff = spawn("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      file,
+    ]);
+    let out = "";
+    let err = "";
+    ff.stdout.on("data", d => (out += String(d)));
+    ff.stderr.on("data", d => (err += String(d)));
+    ff.on("error", reject);
+    ff.on("close", code => {
+      const n = Number(out.trim());
+      if (code === 0 && Number.isFinite(n) && n >= 0) resolve(n);
+      else reject(new Error(`ffprobe ${code}: ${err.slice(0, 200)}`));
+    });
+  });
+}
+
 /** Extract one frame at `atSec` as a downscaled JPEG buffer (1280px wide is
  *  plenty for the timer and keeps vision tokens low). Input-seek (`-ss` before
  *  `-i`) so it's fast even on a long file. */
@@ -116,12 +142,17 @@ async function readTimerSeconds(jpeg: Buffer, opts: { apiKey: string; model: str
 }
 
 /**
- * Detect the start point for `videoPath`. Walks frames in 30s steps until a
- * consecutive pair confirms the countdown is running 1:1, then extrapolates to
- * `TARGET` seconds-left. Returns null if no countdown could be read at all.
+ * Detect the start point across `videoPaths` — the contiguous recording
+ * session, oldest→newest (usually one file; more when MediaMTX rotated
+ * mid-stream). Sample times are GLOBAL stitched-VOD seconds, mapped onto the
+ * owning segment by cumulative container duration — the same arithmetic the
+ * concat stitch produces, so the returned start point is valid for the pinned
+ * VOD. Walks frames in 30s steps until a consecutive pair confirms the
+ * countdown is running 1:1, then extrapolates to `TARGET` seconds-left.
+ * Returns null if no countdown could be read at all.
  */
 export async function detectStartPoint(opts: {
-  videoPath: string;
+  videoPaths: string[];
   apiKey: string;
   model: string;
   /** Seconds of countdown to leave visible at the start point (default 8). */
@@ -135,13 +166,26 @@ export async function detectStartPoint(opts: {
   const cap = opts.maxScanSec ?? 360;
   const emit = opts.onEvent ?? (() => {});
 
+  // Cumulative-duration table: segment i covers [startAt, startAt + dur) in
+  // global session time. A segment whose duration can't be probed is skipped
+  // (treated as zero-length) rather than aborting the scan.
+  const segments: { file: string; startAt: number; dur: number }[] = [];
+  let total = 0;
+  for (const file of opts.videoPaths) {
+    const dur = await probeDurationSec(file).catch(() => 0);
+    segments.push({ file, startAt: total, dur });
+    total += dur;
+  }
+
   const samples: StartSample[] = [];
   let prev: StartSample | null = null;
 
-  for (let t = STEP; t <= cap; t += STEP) {
+  for (let t = STEP; t <= Math.min(cap, total - 1); t += STEP) {
+    const seg = segments.find(s => t >= s.startAt && t < s.startAt + s.dur);
     let seconds: number | null = null;
     try {
-      const buf = await extractFrameJpeg(opts.videoPath, t);
+      if (!seg) throw new Error(`no segment covers t=${t}`);
+      const buf = await extractFrameJpeg(seg.file, t - seg.startAt);
       seconds = await readTimerSeconds(buf, { apiKey: opts.apiKey, model: opts.model });
     } catch {
       seconds = null; // a single bad frame/read shouldn't abort the whole scan

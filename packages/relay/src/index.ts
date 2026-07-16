@@ -6754,13 +6754,15 @@ app.post("/admin/detect-start", async (req, reply) => {
   const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
 
   try {
-    // The countdown lives at the very start of the show, so scan the FIRST
-    // segment of the contiguous recording session (oldest→newest).
+    // Scan the whole contiguous recording session (oldest→newest). The
+    // countdown lives at the start of the SHOW, but when MediaMTX rotated
+    // mid-intro the first segment can be a seconds-long stub with the
+    // countdown continuing in the next file — detectStartPoint maps its
+    // global sample times across segments by cumulative duration.
     const session = await findRecordingSession(config.recordingsDir, "live");
     if (session.length === 0) return reply.code(404).send({ error: "no recording found on disk to scan" });
-    const videoPath = session[0]!.file;
 
-    const result = await detectStartPoint({ videoPath, apiKey, model });
+    const result = await detectStartPoint({ videoPaths: session.map(s => s.file), apiKey, model });
     if (!result) return reply.code(422).send({ error: "could not read a countdown timer in the recording" });
     return reply.send(result);
   } catch (err) {
