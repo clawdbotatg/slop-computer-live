@@ -135,6 +135,7 @@ const CHAIN_SLUG_BY_ID: Record<number, string> = {
   10: "optimism",
   137: "polygon",
   100: "xdai",
+  4663: "robinhood",
 };
 
 // Schema enforced on the client. Mirrored loosely here so the post-

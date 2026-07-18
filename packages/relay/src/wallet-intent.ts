@@ -395,6 +395,7 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
           polygon: alchemyUrl(137),
           xdai: "https://rpc.gnosischain.com",
           gnosis: "https://rpc.gnosischain.com",
+          robinhood: alchemyUrl(4663),
         };
         const rpcUrl = rpcUrls[chain];
         if (!rpcUrl) return { error: `Chain ${chain} not supported for direct lookup` };
@@ -431,6 +432,7 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
         polygon: alchemyUrl(137),
         xdai: "https://rpc.gnosischain.com",
         gnosis: "https://rpc.gnosischain.com",
+        robinhood: alchemyUrl(4663),
       };
       const rpcUrl = rpcUrls[chain];
       if (!rpcUrl) return { error: `Chain '${chain}' not supported` };

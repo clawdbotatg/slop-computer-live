@@ -25,9 +25,18 @@ import type { ExternalDataProvider, RegistryIndex, TokenResult, TrustedTokens } 
 import { createPublicClient, getAddress, http, isAddress, parseAbi } from "viem";
 import type { Address, PublicClient } from "viem";
 import { arbitrum, base, gnosis, mainnet, optimism, polygon } from "viem/chains";
+import scaffoldConfig, { robinhood } from "~~/scaffold.config";
 import { getAlchemyHttpUrl } from "~~/utils/scaffold-eth/networks";
 
-const CHAINS = { 1: mainnet, 10: optimism, 100: gnosis, 137: polygon, 8453: base, 42161: arbitrum } as const;
+const CHAINS = {
+  1: mainnet,
+  10: optimism,
+  100: gnosis,
+  137: polygon,
+  4663: robinhood,
+  8453: base,
+  42161: arbitrum,
+} as const;
 
 // Native currency per supported chain — feeds ERC-7730 `amount` / `chainId`
 // formats (native value transfers, gas, etc.).
@@ -36,6 +45,7 @@ const NATIVE: Record<number, { name: string; symbol: string; decimals: number }>
   10: { name: "Ether", symbol: "ETH", decimals: 18 },
   100: { name: "xDAI", symbol: "xDAI", decimals: 18 },
   137: { name: "POL", symbol: "POL", decimals: 18 },
+  4663: { name: "Ether", symbol: "ETH", decimals: 18 },
   8453: { name: "Ether", symbol: "ETH", decimals: 18 },
   42161: { name: "Ether", symbol: "ETH", decimals: 18 },
 };
@@ -55,7 +65,10 @@ let indexPromise: Promise<RegistryIndex | undefined> | null = null;
 function clientFor(chainId: number): PublicClient | null {
   if (clients.has(chainId)) return clients.get(chainId)!;
   const chain = CHAINS[chainId as keyof typeof CHAINS];
-  const url = getAlchemyHttpUrl(chainId);
+  // rpcOverrides first, mirroring wagmiConfig — Robinhood Chain has no
+  // Alchemy slug enabled yet, so its RPC only exists as an override.
+  const url =
+    (scaffoldConfig.rpcOverrides as Record<number, string> | undefined)?.[chainId] ?? getAlchemyHttpUrl(chainId);
   const client = chain && url ? (createPublicClient({ chain, transport: http(url) }) as PublicClient) : null;
   clients.set(chainId, client);
   return client;

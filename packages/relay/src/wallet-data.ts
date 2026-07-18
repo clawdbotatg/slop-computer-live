@@ -27,7 +27,17 @@ const ALCHEMY_NETWORK: Record<number, string> = {
   100: "gnosis-mainnet",
 };
 
+// Chains we route to their own public RPC instead of Alchemy. Robinhood
+// Chain has an Alchemy slug (robinhood-mainnet) but ROBINHOOD_MAINNET isn't
+// enabled on our Alchemy app yet — move it into ALCHEMY_NETWORK once the
+// dashboard flag is flipped.
+const PUBLIC_RPC: Record<number, string> = {
+  4663: "https://rpc.mainnet.chain.robinhood.com",
+};
+
 export function alchemyUrl(chainId: number): string {
+  const publicRpc = PUBLIC_RPC[chainId];
+  if (publicRpc) return publicRpc;
   const network = ALCHEMY_NETWORK[chainId] ?? "eth-mainnet";
   return `https://${network}.g.alchemy.com/v2/${ALCHEMY_KEY}`;
 }
@@ -42,6 +52,7 @@ export const CHAIN_RPC: Record<string, string> = {
   polygon: `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   xdai: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   gnosis: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+  robinhood: "https://rpc.mainnet.chain.robinhood.com",
 };
 
 const CHAIN_EXPLORERS: Record<string, string> = {
@@ -52,6 +63,7 @@ const CHAIN_EXPLORERS: Record<string, string> = {
   polygon: "https://polygonscan.com/tx/",
   xdai: "https://gnosisscan.io/tx/",
   gnosis: "https://gnosisscan.io/tx/",
+  robinhood: "https://robinhoodchain.blockscout.com/tx/",
   monad: "https://testnet.monadexplorer.com/tx/",
 };
 
@@ -314,9 +326,10 @@ export async function fetchPrices(): Promise<{ symbol: string; price: number | n
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 // eth_simulateV1 emits native-ETH moves under this pseudo-token address.
 const NATIVE_LOG_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-// Chains where Alchemy serves eth_simulateV1. Gnosis (100) is intentionally
-// absent — we don't route it through Alchemy, so sim there returns
-// chain-unsupported and the caller falls back to the AI-decode card.
+// Chains where Alchemy serves eth_simulateV1. Gnosis (100) and Robinhood
+// (4663) are intentionally absent — we don't route them through Alchemy, so
+// sim there returns chain-unsupported and the caller falls back to the
+// AI-decode card.
 const SIMULATABLE_CHAINS = new Set([1, 8453, 42161, 10, 137]);
 // Native balance we override onto the sender before simulating. NOTE:
 // `validation:false` does NOT skip the balance check — Alchemy auto-funds
@@ -603,6 +616,7 @@ const NETWORK_MODAL_CONFIG: Record<string, { chainId: number; explorerUrl: strin
   arbitrum: { chainId: 42161, explorerUrl: "https://arbiscan.io" },
   optimism: { chainId: 10, explorerUrl: "https://optimistic.etherscan.io" },
   polygon: { chainId: 137, explorerUrl: "https://polygonscan.com" },
+  robinhood: { chainId: 4663, explorerUrl: "https://robinhoodchain.blockscout.com" },
 };
 
 export async function fetchNetworkModal(chain: string): Promise<Record<string, unknown>> {

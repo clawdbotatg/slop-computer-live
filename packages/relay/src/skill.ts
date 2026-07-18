@@ -3583,7 +3583,7 @@ L0 or L1. The desktop's shared browser is **not** a vanilla iframe:
 it's a headless Chrome (\`packages/browser-host\`) with an EIP-1193
 provider injected so the dapp sees \`vitalik.eth\` (by default) as the
 connected wallet, with realistic balance + nonce on mainnet / Base /
-OP / Arbitrum.
+OP / Arbitrum / Robinhood Chain.
 
 What this means for your dapp:
 - \`window.ethereum.request({method: "eth_accounts"})\` returns the

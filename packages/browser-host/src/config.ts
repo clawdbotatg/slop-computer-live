@@ -59,8 +59,10 @@ export const config = {
 // Chains the impersonator knows how to proxy. The frontend picks from
 // this set in its network selector, and `wallet_switchEthereumChain`
 // calls validate against it. To add a chain: append { chainId,
-// alchemySubdomain, label } and the rest works automatically.
-export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label: string }> = {
+// alchemySubdomain, label } and the rest works automatically. An entry
+// with `rpcUrl` set bypasses Alchemy entirely and proxies that URL —
+// for chains Alchemy supports but our app doesn't have enabled.
+export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label: string; rpcUrl?: string }> = {
   1: { alchemySubdomain: "eth-mainnet", label: "Ethereum" },
   8453: { alchemySubdomain: "base-mainnet", label: "Base" },
   100: { alchemySubdomain: "gnosis-mainnet", label: "Gnosis" },
@@ -68,12 +70,20 @@ export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label:
   10: { alchemySubdomain: "opt-mainnet", label: "Optimism" },
   137: { alchemySubdomain: "polygon-mainnet", label: "Polygon" },
   11155111: { alchemySubdomain: "eth-sepolia", label: "Sepolia" },
+  // Drop rpcUrl once ROBINHOOD_MAINNET is enabled on our Alchemy app.
+  4663: {
+    alchemySubdomain: "robinhood-mainnet",
+    label: "Robinhood",
+    rpcUrl: "https://rpc.mainnet.chain.robinhood.com",
+  },
 };
 
 export const isSupportedChain = (chainId: number): boolean => chainId in SUPPORTED_CHAINS;
 
 export const upstreamRpcUrl = (chainId: number): string => {
   if (config.rpcUrl && chainId === config.chainId) return config.rpcUrl;
+  const perChainRpc = SUPPORTED_CHAINS[chainId]?.rpcUrl;
+  if (perChainRpc) return perChainRpc;
   if (config.alchemyApiKey) {
     const sub = SUPPORTED_CHAINS[chainId]?.alchemySubdomain ?? "eth-mainnet";
     return `https://${sub}.g.alchemy.com/v2/${config.alchemyApiKey}`;

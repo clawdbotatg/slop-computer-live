@@ -1,5 +1,5 @@
 import * as chains from "viem/chains";
-import scaffoldConfig from "~~/scaffold.config";
+import scaffoldConfig, { robinhood } from "~~/scaffold.config";
 
 type ChainAttributes = {
   // color | [lightThemeColor, darkThemeColor]
@@ -34,6 +34,11 @@ export const RPC_CHAIN_NAMES: Record<number, string> = {
   [chains.baseSepolia.id]: "base-sepolia",
   [chains.celo.id]: "celo-mainnet",
   [chains.celoSepolia.id]: "celo-sepolia",
+  // Robinhood Chain (4663) is deliberately absent: Alchemy's slug is
+  // robinhood-mainnet but the network isn't enabled on our Alchemy app yet,
+  // and an entry here would route requests at a 400ing endpoint. Its RPC
+  // comes from scaffold.config rpcOverrides instead. Add
+  // "robinhood-mainnet" here once the dashboard flag is flipped.
 };
 
 export const getAlchemyHttpUrl = (chainId: number) => {
@@ -90,12 +95,20 @@ export const NETWORKS_EXTRA_DATA: Record<string, ChainAttributes> = {
   [chains.celoSepolia.id]: {
     color: "#476520",
   },
+  [robinhood.id]: {
+    color: "#00c805",
+  },
 };
 
 /**
  * Gives the block explorer transaction URL, returns empty string if the network is a local chain
  */
 export function getBlockExplorerTxLink(chainId: number, txnHash: string) {
+  // Robinhood Chain isn't in viem 2.39's chain registry (shipped in 2.55),
+  // so the viem scan below can't find it — resolve it explicitly.
+  if (chainId === robinhood.id) {
+    return `${robinhood.blockExplorers.default.url}/tx/${txnHash}`;
+  }
   const chainNames = Object.keys(chains);
 
   const targetChainArr = chainNames.filter(chainName => {

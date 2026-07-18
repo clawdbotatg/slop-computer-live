@@ -23,6 +23,10 @@ const ALCHEMY_GNOSIS_RPC = `https://gnosis-mainnet.g.alchemy.com/v2/${process.en
 const ALCHEMY_ARBITRUM_RPC = `https://arb-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_OPTIMISM_RPC = `https://opt-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_POLYGON_RPC = `https://polygon-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
+// Robinhood Chain rides its public RPC, not Alchemy: Alchemy supports it
+// (slug robinhood-mainnet) but ROBINHOOD_MAINNET isn't enabled on our app
+// yet — flip this to the Alchemy URL once it's enabled in the dashboard.
+const ROBINHOOD_RPC = "https://rpc.mainnet.chain.robinhood.com";
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
@@ -81,13 +85,37 @@ export const polygon = {
   },
 } as const satisfies Chain;
 
+// Robinhood Chain (Arbitrum-stack L2 settling to Ethereum, mainnet live
+// 2026-07-01). viem only ships this from 2.55.0 and we're on 2.39, so the
+// definition is inlined — it mirrors viem's `robinhood` export exactly,
+// including the canonical Multicall3 (verified deployed on-chain).
+export const robinhood = {
+  id: 4663,
+  name: "Robinhood Chain",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: {
+    default: { http: [ROBINHOOD_RPC] },
+    public: { http: [ROBINHOOD_RPC] },
+  },
+  blockExplorers: {
+    default: {
+      name: "Blockscout",
+      url: "https://robinhoodchain.blockscout.com",
+      apiUrl: "https://robinhoodchain.blockscout.com/api",
+    },
+  },
+  contracts: {
+    multicall3: { address: "0xcA11bde05977b3631167028862bE2a173976CA11" },
+  },
+} as const satisfies Chain;
+
 const scaffoldConfig = {
   // Base first — wallet deploys + multisig txs cost pennies vs. dollars.
   // Mainnet stays in the list so ENS resolution and the existing Frontpage
   // contract calls (which live on mainnet) keep working. Gnosis is the
   // third supported chain — the multisig factory is deployed at the same
   // address there.
-  targetNetworks: [base, mainnet, gnosis, arbitrum, optimism, polygon],
+  targetNetworks: [base, mainnet, gnosis, arbitrum, optimism, polygon, robinhood],
 
   // The interval at which your front-end polls the RPC servers for new data
   // it has no effect if you only target the local network (default is 4000)
@@ -106,6 +134,7 @@ const scaffoldConfig = {
     [arbitrum.id]: ALCHEMY_ARBITRUM_RPC,
     [optimism.id]: ALCHEMY_OPTIMISM_RPC,
     [polygon.id]: ALCHEMY_POLYGON_RPC,
+    [robinhood.id]: ROBINHOOD_RPC,
   },
 
   // This is ours WalletConnect's default project ID.

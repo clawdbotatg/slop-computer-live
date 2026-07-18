@@ -133,6 +133,9 @@ const ZERION_CHAIN_SLUG: Record<number, string> = {
   10: "optimism",
   137: "polygon",
   100: "xdai",
+  // Verified against GET /v1/chains/ — Zerion supports Robinhood Chain
+  // day-one under the slug "robinhood" (external_id 0x1237).
+  4663: "robinhood",
 };
 
 export const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -143,6 +146,7 @@ const NATIVE_SYMBOL_BY_CHAIN: Record<number, { symbol: string; name: string }> =
   10: { symbol: "ETH", name: "Ether" },
   137: { symbol: "MATIC", name: "Matic" },
   100: { symbol: "xDAI", name: "xDai" },
+  4663: { symbol: "ETH", name: "Ether" },
 };
 
 // Zerion fungible IDs for native assets. Every EVM ETH-chain shares the
@@ -155,6 +159,7 @@ const ZERION_NATIVE_FUNGIBLE_ID: Record<number, string> = {
   10: "eth",
   137: "polygon-ecosystem-token",
   100: "xdai",
+  4663: "eth",
 };
 
 const resolveCache = new Map<string, ResolvedToken | null>();

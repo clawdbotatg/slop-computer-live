@@ -29,6 +29,7 @@ const CHAIN_LABELS: Record<number, string> = {
   137: "Polygon",
   8453: "Base",
   42161: "Arbitrum",
+  4663: "Robinhood",
   11155111: "Sepolia",
   84532: "Base Sepolia",
 };
