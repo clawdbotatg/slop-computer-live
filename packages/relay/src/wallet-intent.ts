@@ -1170,6 +1170,18 @@ RULES:
 - NEVER claim on-chain verification results without actually calling a verification tool.
 - TX STATUS: if a user message reports a submitted transaction with a tx hash (e.g. "submitted tx 0x… on chain N"), NEVER ask the user for the hash — it's already given. Immediately check it yourself: for a cross-chain bridge use getRouteStatus(txHash, fromChain, toChain) (infer the chains from the route you proposed earlier in this conversation); for anything else use getTransactionDetails(txHash, chainId). Then report concisely whether it succeeded, is pending, or what went wrong. If the submitted tx was an ERC-20 approval for a swap/bridge: once you confirm it succeeded, immediately call buildRoute again with the original route args to build the now-ready swap/bridge, simulate it, and present that as the next transaction — don't make the user ask. (If buildRoute still returns approvalStep:true, the approval hasn't settled yet — tell the user to wait a moment and ping you; do NOT present a second approval.)`;
 
+// Appended to SYSTEM_PROMPT when the chat is operating the user's own
+// connected EOA (walletKind:"eoa") rather than a slop Multisig. The base
+// prompt is multisig-framed; without this the AI insists the user's own
+// MetaMask address is a contract and refuses safe cross-chain sends to it.
+const EOA_MODE_OVERRIDE = `
+
+MODE OVERRIDE — CONNECTED EOA SESSION (read last; this section SUPERSEDES every multisig instruction above):
+- The wallet address in context is the user's OWN externally-owned account — their connected wallet (MetaMask, Rainbow, a hardware wallet, …). It is NOT a slop Multisig and NOT a smart contract. Never claim it is, no matter what the sections above say.
+- Transactions you build execute DIRECTLY from that wallet: the user signs and it sends. There is NO proposal queue, NO signer set, NO threshold, NO exec hash. Never mention proposals or M-of-N approval.
+- An EOA is controlled by the same private key on EVERY EVM chain, including Robinhood Chain (4663). Bridging or sending funds to the user's own address on ANY chain is SAFE — the multisig-stranding caution above applies only to multisig contract addresses, never to this wallet.
+- buildSignerChange does not apply here. If the user asks about signers or thresholds, explain that their connected wallet is a regular EOA and those features live in the Bank / personal wallet multisigs.`;
+
 // ─── OpenAI tool schemas ─────────────────────────────────────────────────────
 
 const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
@@ -1529,6 +1541,12 @@ export type WalletIntentInput = {
   // add/remove-signer and threshold changes.
   signers?: { address: string; kind: "account" | "passkey"; label?: string }[];
   threshold?: number;
+  // What kind of wallet the chat is operating: a slop Multisig (Bank or
+  // personal passkey multisig) or the user's own connected EOA. The system
+  // prompt is multisig-framed; "eoa" appends an override so the AI never
+  // treats the user's MetaMask address as a contract. Defaults to multisig
+  // for back-compat.
+  walletKind?: "multisig" | "eoa";
   recentActivity?: {
     type: string;
     chain: string;
@@ -1607,7 +1625,7 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
       : "";
 
   const loopMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: input.walletKind === "eoa" ? SYSTEM_PROMPT + EOA_MODE_OVERRIDE : SYSTEM_PROMPT },
     {
       role: "user",
       content: `User's wallet address: ${input.address}\nConnected chain ID: ${userChainId}${signerSummary}${portfolioSummary}${defiSummary}${activitySummary}\n\n[Context injected — ready for conversation]`,

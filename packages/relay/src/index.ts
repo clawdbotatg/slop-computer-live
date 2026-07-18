@@ -4997,6 +4997,9 @@ async function runWalletChatTurn(
       chainId,
       signers: walletSigners,
       threshold: walletThreshold,
+      // No signer set from the client and not this room's Bank multisig →
+      // the chat is operating the user's own connected EOA.
+      walletKind: walletSigners ? "multisig" : "eoa",
       portfolio: (portfolio?.assets ?? []).map(x => ({
         tokenSymbol: x.tokenSymbol,
         balance: x.balance,
