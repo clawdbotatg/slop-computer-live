@@ -548,8 +548,9 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
   },
 
   buildRoute: {
-    execute: async ({ fromToken, toToken, amountIn, fromChainId, toChainId, fromAddress }: any) => {
-      const url = `https://li.quest/v1/quote?fromChain=${fromChainId}&toChain=${toChainId}&fromToken=${fromToken}&toToken=${toToken}&fromAmount=${amountIn}&fromAddress=${fromAddress}&slippage=0.005`;
+    execute: async ({ fromToken, toToken, amountIn, fromChainId, toChainId, fromAddress, toAddress }: any) => {
+      const recipient = toAddress && /^0x[0-9a-fA-F]{40}$/.test(toAddress) ? `&toAddress=${toAddress}` : "";
+      const url = `https://li.quest/v1/quote?fromChain=${fromChainId}&toChain=${toChainId}&fromToken=${fromToken}&toToken=${toToken}&fromAmount=${amountIn}&fromAddress=${fromAddress}${recipient}&slippage=0.005`;
       try {
         const res = await fetch(url, { headers: { "x-lifi-api-key": config.lifiApiKey } });
         if (!res.ok) return { error: `LI.FI API error (${res.status}): ${await res.text()}` };
@@ -1164,6 +1165,7 @@ RULES:
 - Never return a transaction that failed simulation. Work in wei internally, display human units.
 - The "simulation" field, IF present, MUST be exactly { "verified": bool, "changes": [...] } with a changes array (use [] when there are none). NEVER emit a simulation object with a "note" or any other shape, and if you didn't/couldn't simulate, OMIT the simulation field entirely rather than sending a partial one.
 - For native ETH in LI.FI: use symbol "ETH".
+- buildRoute can deliver a bridge to a DIFFERENT recipient: pass toAddress when the user names one (e.g. "bridge $10 of Base ETH to 0xabc… on Robinhood Chain"). Confirm the recipient address back to the user in the card description.
 - If the user's request is unclear, respond with a chat message asking for clarification.
 - NEVER claim on-chain verification results without actually calling a verification tool.
 - TX STATUS: if a user message reports a submitted transaction with a tx hash (e.g. "submitted tx 0x… on chain N"), NEVER ask the user for the hash — it's already given. Immediately check it yourself: for a cross-chain bridge use getRouteStatus(txHash, fromChain, toChain) (infer the chains from the route you proposed earlier in this conversation); for anything else use getTransactionDetails(txHash, chainId). Then report concisely whether it succeeded, is pending, or what went wrong. If the submitted tx was an ERC-20 approval for a swap/bridge: once you confirm it succeeded, immediately call buildRoute again with the original route args to build the now-ready swap/bridge, simulate it, and present that as the next transaction — don't make the user ask. (If buildRoute still returns approvalStep:true, the approval hasn't settled yet — tell the user to wait a moment and ping you; do NOT present a second approval.)`;
@@ -1301,6 +1303,11 @@ const openAiTools: OpenAI.Chat.ChatCompletionFunctionTool[] = [
           fromChainId: { type: "number" },
           toChainId: { type: "number" },
           fromAddress: { type: "string" },
+          toAddress: {
+            type: "string",
+            description:
+              "Optional recipient on the destination chain (0x address). Omit to deliver to fromAddress. Use when the user names an explicit recipient for a bridge.",
+          },
         },
         required: ["fromToken", "toToken", "amountIn", "fromChainId", "toChainId", "fromAddress"],
       },
