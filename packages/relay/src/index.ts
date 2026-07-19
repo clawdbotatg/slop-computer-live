@@ -1317,12 +1317,20 @@ async function writeHotApps(apps: AppEntry[]): Promise<void> {
 // Resolved catalog: DEFAULT_APPS as the base, then for each hot entry
 // either override the built-in with the same id, or append. Preserves
 // DEFAULT_APPS order so the icon grid layout is stable across deploys.
+// Built-ins gated on box capability: the Privacy Wallet icon only appears
+// once kohaku is configured on this box — shipping the code ahead of the
+// box setup must not put a dead app on every desktop.
+function availableDefaultApps(): AppEntry[] {
+  return DEFAULT_APPS.filter(a => a.kind !== "privacy" || isKohakuConfigured());
+}
+
 function readApps(): AppEntry[] {
   const hot = readHotApps();
-  if (hot.length === 0) return DEFAULT_APPS.slice();
+  const defaults = availableDefaultApps();
+  if (hot.length === 0) return defaults;
   const hotById = new Map(hot.map(a => [a.id, a]));
-  const out: AppEntry[] = DEFAULT_APPS.map(a => hotById.get(a.id) ?? a);
-  const builtInIds = new Set(DEFAULT_APPS.map(a => a.id));
+  const out: AppEntry[] = defaults.map(a => hotById.get(a.id) ?? a);
+  const builtInIds = new Set(defaults.map(a => a.id));
   for (const a of hot) if (!builtInIds.has(a.id)) out.push(a);
   return out;
 }
@@ -1333,11 +1341,12 @@ function readApps(): AppEntry[] {
 // then global extras, then room-only extras.
 function resolveAppsForRoom(roomApps: AppEntry[]): AppEntry[] {
   const hot = readHotApps();
-  const builtInIds = new Set(DEFAULT_APPS.map(a => a.id));
+  const defaults = availableDefaultApps();
+  const builtInIds = new Set(defaults.map(a => a.id));
   const globalIds = new Set(hot.map(a => a.id));
   const hotById = new Map(hot.map(a => [a.id, a]));
   const roomById = new Map(roomApps.map(a => [a.id, a]));
-  const out: AppEntry[] = DEFAULT_APPS.map(a => roomById.get(a.id) ?? hotById.get(a.id) ?? a);
+  const out: AppEntry[] = defaults.map(a => roomById.get(a.id) ?? hotById.get(a.id) ?? a);
   for (const a of hot) if (!builtInIds.has(a.id)) out.push(roomById.get(a.id) ?? a);
   for (const a of roomApps) if (!builtInIds.has(a.id) && !globalIds.has(a.id)) out.push(a);
   return out;
