@@ -101,7 +101,11 @@ type KohakuUser = {
   activity: ActivityEntry[];
 };
 
-type KohakuState = { users: Record<string, KohakuUser> };
+// Per-owner preferences, kept OUTSIDE the user cycle record so they survive
+// "start a new cycle" (which replaces the KohakuUser wholesale).
+type KohakuSettings = { rpcUrl?: string };
+
+type KohakuState = { users: Record<string, KohakuUser>; settings?: Record<string, KohakuSettings> };
 
 // Pool-level snapshot from the last `kohaku balances` run (shared — the
 // Railgun balance is one commingled pot).
@@ -125,8 +129,26 @@ export function setKohakuLogger(fn: (line: string) => void): void {
   emit = fn;
 }
 
-const client = () =>
-  createPublicClient({ chain: mainnet, transport: http(config.kohakuRpcUrl) });
+const client = (rpcUrl?: string) =>
+  createPublicClient({ chain: mainnet, transport: http(rpcUrl ?? config.kohakuRpcUrl) });
+
+// Effective RPC for one owner's ops: their validated override, else the box
+// default. The shared pool sync always uses the box default — it serves
+// everyone's commingled data, not one user's.
+function rpcFor(owner: string): string {
+  return state.settings?.[owner]?.rpcUrl || config.kohakuRpcUrl;
+}
+
+// What the UI may show as "the default RPC". NEVER the raw URL: a box
+// default like Alchemy embeds the API key in the path, and /v1/kohaku/state
+// is readable by every signed-in user. Origin only.
+function defaultRpcDisplay(): string {
+  try {
+    return new URL(config.kohakuRpcUrl).origin;
+  } catch {
+    return "(relay default)";
+  }
+}
 
 // Password handed to the CLI as a file path, never on argv (argv is visible
 // in `ps`). Written 0600 next to the state file at first use.
@@ -179,7 +201,7 @@ let cliQueue: Promise<unknown> = Promise.resolve();
 
 type CliResult = { code: number | null; stdout: string; stderr: string };
 
-function runKohakuRaw(args: string[], timeoutMs: number): Promise<CliResult> {
+function runKohakuRaw(args: string[], timeoutMs: number, rpcUrl?: string): Promise<CliResult> {
   const task = cliQueue.then(
     () =>
       new Promise<CliResult>(resolve => {
@@ -187,7 +209,7 @@ function runKohakuRaw(args: string[], timeoutMs: number): Promise<CliResult> {
         if (config.kohakuDataDir) full.push("--dataDir", config.kohakuDataDir);
         const proc = spawn("npx", full, {
           cwd: config.kohakuCliDir,
-          env: { ...process.env, RPC_URL: config.kohakuRpcUrl },
+          env: { ...process.env, RPC_URL: rpcUrl ?? config.kohakuRpcUrl },
           stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "";
@@ -313,8 +335,8 @@ function userNoteStatus(u: KohakuUser): "spendable" | "pending" | "missing" {
 
 // Count Railgun Shield events in (from, to] — chunked so strict RPCs accept
 // the spans. Incremental: callers persist countedTo and only ask for new blocks.
-async function countShieldEvents(fromBlock: bigint, toBlock: bigint): Promise<number> {
-  const c = client();
+async function countShieldEvents(fromBlock: bigint, toBlock: bigint, rpcUrl?: string): Promise<number> {
+  const c = client(rpcUrl);
   let count = 0;
   for (let lo = fromBlock + 1n; lo <= toBlock; lo += LOG_CHUNK) {
     const hi = lo + LOG_CHUNK - 1n > toBlock ? toBlock : lo + LOG_CHUNK - 1n;
@@ -326,7 +348,7 @@ async function countShieldEvents(fromBlock: bigint, toBlock: bigint): Promise<nu
 
 async function refreshAnonCount(u: KohakuUser): Promise<void> {
   if (!u.depositBlock) return;
-  const c = client();
+  const c = client(rpcFor(u.owner));
   const tip = await c.getBlockNumber();
   const from = BigInt(u.anonCountedTo ?? u.depositBlock);
   if (tip <= from) return;
@@ -334,7 +356,7 @@ async function refreshAnonCount(u: KohakuUser): Promise<void> {
   // the next tick continues from where we stopped.
   const maxTo = from + LOG_CHUNK * 20n;
   const to = tip > maxTo ? maxTo : tip;
-  u.anonCount += await countShieldEvents(from, to);
+  u.anonCount += await countShieldEvents(from, to, rpcFor(u.owner));
   u.anonCountedTo = to.toString();
   persist();
 }
@@ -367,6 +389,7 @@ async function beginShield(u: KohakuUser, balanceWei: bigint): Promise<void> {
         "--broadcast",
       ],
       SHIELD_TIMEOUT_MS,
+      rpcFor(u.owner),
     );
     if (r.code !== 0) {
       u.error = `shield failed: ${cliErrorText(r)}`;
@@ -375,7 +398,7 @@ async function beginShield(u: KohakuUser, balanceWei: bigint): Promise<void> {
     }
     const j = lastJson(r.stdout) as { transactions?: { type?: string; hash?: string }[] } | null;
     const hash = j?.transactions?.find(t => t.type === "shield")?.hash ?? null;
-    const tip = await client().getBlockNumber();
+    const tip = await client(rpcFor(u.owner)).getBlockNumber();
     u.phase = "shielding";
     u.error = null;
     u.depositedWei = amount.toString();
@@ -440,7 +463,7 @@ async function tick(): Promise<void> {
     for (const u of users) {
       if (busyOps.has(u.owner)) continue;
       if (u.phase === "awaiting-deposit" && u.depositAddress) {
-        const bal = await client().getBalance({ address: u.depositAddress as `0x${string}` });
+        const bal = await client(rpcFor(u.owner)).getBalance({ address: u.depositAddress as `0x${string}` });
         const prev = BigInt(u.lastSeenDepositWei || "0");
         if (bal >= MIN_DEPOSIT_WEI && bal === prev) {
           // Stable across two ticks — safe to shield.
@@ -515,14 +538,14 @@ export async function kohakuOpen(ownerRaw: string): Promise<KohakuOpResult> {
     // Re-open after a completed cycle — only once the withdrawal address is
     // (near) empty, so we never orphan accounting for funds still there.
     const bal = existing.withdrawAddress
-      ? await client().getBalance({ address: existing.withdrawAddress as `0x${string}` })
+      ? await client(rpcFor(owner)).getBalance({ address: existing.withdrawAddress as `0x${string}` })
       : 0n;
     if (bal >= MIN_DEPOSIT_WEI) {
       return { ok: false, error: "your wallet still holds funds — send them out before starting a new cycle" };
     }
   }
   // next-fresh-address prints the bare address and persists the account.
-  const r = await runKohakuRaw(["next-fresh-address", ...walletArgs()], QUICK_TIMEOUT_MS);
+  const r = await runKohakuRaw(["next-fresh-address", ...walletArgs()], QUICK_TIMEOUT_MS, rpcFor(owner));
   if (r.code !== 0) return { ok: false, error: `couldn't derive a deposit address: ${cliErrorText(r)}` };
   const addr = r.stdout
     .trim()
@@ -559,7 +582,7 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
   log(u, "withdrawing — deriving a fresh unlinked address and unshielding");
   persist();
   try {
-    const ra = await runKohakuRaw(["next-fresh-address", ...walletArgs()], QUICK_TIMEOUT_MS);
+    const ra = await runKohakuRaw(["next-fresh-address", ...walletArgs()], QUICK_TIMEOUT_MS, rpcFor(owner));
     if (ra.code !== 0) throw new Error(`fresh address: ${cliErrorText(ra)}`);
     const addr = ra.stdout
       .trim()
@@ -587,6 +610,7 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
     const r = await runKohakuRaw(
       ["unshield", "--protocol", "railgun", ...walletArgs(), "--to", u.withdrawAddress, ...amountArgs, "--broadcast"],
       UNSHIELD_TIMEOUT_MS,
+      rpcFor(owner),
     );
     if (r.code !== 0) throw new Error(cliErrorText(r));
     const j = lastJson(r.stdout) as { amountWei?: string; explorerHash?: string | null } | null;
@@ -627,7 +651,7 @@ export async function kohakuSend(ownerRaw: string, toRaw: string, amountWeiRaw: 
 
   let amountArgs: string[];
   if (amountWeiRaw === "max") {
-    const bal = await client().getBalance({ address: u.withdrawAddress as `0x${string}` });
+    const bal = await client(rpcFor(owner)).getBalance({ address: u.withdrawAddress as `0x${string}` });
     if (bal > cap) return { ok: false, error: `sends are capped at ${formatEther(cap)} ETH per op — send in slices` };
     amountArgs = ["--amount-max"];
   } else {
@@ -648,6 +672,7 @@ export async function kohakuSend(ownerRaw: string, toRaw: string, amountWeiRaw: 
     const r = await runKohakuRaw(
       ["transfer", ...walletArgs(), "--from", u.withdrawAddress, "--to", to, ...amountArgs, "--broadcast"],
       QUICK_TIMEOUT_MS,
+      rpcFor(owner),
     );
     if (r.code !== 0) return { ok: false, error: `send failed: ${cliErrorText(r)}` };
     const j = lastJson(r.stdout) as { hash?: string; amount?: string } | null;
@@ -657,6 +682,92 @@ export async function kohakuSend(ownerRaw: string, toRaw: string, amountWeiRaw: 
   } finally {
     busyOps.delete(owner);
   }
+}
+
+/** Set (or clear, with an empty string) this owner's mainnet RPC override.
+ *  Validated hard: the relay will POST to this URL on the user's behalf, so
+ *  it must be a public http(s) endpoint that answers eth_chainId with 0x1 —
+ *  the liveness probe doubles as an SSRF gate (a non-RPC internal service
+ *  won't answer 0x1) on top of the private-address blocks below. */
+export async function kohakuSetRpc(ownerRaw: string, urlRaw: string): Promise<KohakuOpResult> {
+  if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
+  const owner = ownerRaw.toLowerCase();
+  const url = urlRaw.trim();
+  if (!state.settings) state.settings = {};
+  if (!url) {
+    delete state.settings[owner];
+    persist();
+    return { ok: true, rpcUrl: null, defaultRpcUrl: defaultRpcDisplay() };
+  }
+  if (url.length > 300) return { ok: false, error: "URL too long" };
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "not a valid URL" };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { ok: false, error: "must be an http(s) URL" };
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    host.endsWith(".local") ||
+    /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.)/.test(host)
+  ) {
+    return { ok: false, error: "that address isn't reachable from the relay — expose your node publicly (or tunnel it) first" };
+  }
+  // Liveness + right-chain + log-serving probes. The getLogs check matters:
+  // Railgun's incremental sync is getLogs-driven, so an endpoint that
+  // rate-limits or refuses log queries (e.g. the BuidlGuidl public RPC,
+  // verified 2026-07: eth_chainId fine, first eth_getLogs → 429) would break
+  // every shield/withdraw for this user. Better to reject at save time.
+  const probe = async (method: string, params: unknown[]): Promise<{ result?: unknown; error?: unknown } | null> => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 8000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: ac.signal,
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as { result?: unknown; error?: unknown };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  const chainRes = await probe("eth_chainId", []);
+  const chainId = typeof chainRes?.result === "string" ? chainRes.result : undefined;
+  if (chainId !== "0x1") {
+    if (!chainRes) return { ok: false, error: "couldn't reach that RPC from the relay" };
+    return { ok: false, error: chainId ? `that RPC is on chain ${Number(chainId)}, not mainnet` : "that URL didn't answer like an Ethereum RPC" };
+  }
+  const tipRes = await probe("eth_blockNumber", []);
+  const tipHex = typeof tipRes?.result === "string" ? tipRes.result : null;
+  if (tipHex) {
+    const tip = Number.parseInt(tipHex, 16);
+    const logsRes = await probe("eth_getLogs", [
+      { address: RAILGUN_PROXY, fromBlock: `0x${(tip - 20).toString(16)}`, toBlock: tipHex },
+    ]);
+    if (!logsRes || !Array.isArray(logsRes.result)) {
+      return {
+        ok: false,
+        error: "that RPC refuses eth_getLogs queries, which Railgun syncing needs — use a node that serves logs",
+      };
+    }
+  }
+  state.settings[owner] = { rpcUrl: url };
+  persist();
+  const u = state.users[owner];
+  if (u) log(u, `RPC set to ${parsed.hostname}`);
+  emit(`[kohaku ${owner.slice(0, 10)}] rpc override → ${parsed.hostname}`);
+  return { ok: true, rpcUrl: url, defaultRpcUrl: defaultRpcDisplay() };
 }
 
 // --- State views ------------------------------------------------------------
@@ -700,18 +811,30 @@ function publicView(u: KohakuUser) {
 export type KohakuPublicView = ReturnType<typeof publicView>;
 
 /** Full per-user view for GET /v1/kohaku/state (null = no cycle opened). */
-export async function kohakuStateFor(ownerRaw: string): Promise<{ configured: boolean; state: KohakuPublicView | null; walletBalanceEth: string | null }> {
+export async function kohakuStateFor(ownerRaw: string): Promise<{
+  configured: boolean;
+  state: KohakuPublicView | null;
+  walletBalanceEth: string | null;
+  rpcUrl: string | null;
+  defaultRpcUrl: string;
+}> {
   const owner = ownerRaw.toLowerCase();
   const u = state.users[owner];
   let walletBalanceEth: string | null = null;
   if (u?.phase === "wallet" && u.withdrawAddress && isKohakuConfigured()) {
     try {
-      walletBalanceEth = formatEther(await client().getBalance({ address: u.withdrawAddress as `0x${string}` }));
+      walletBalanceEth = formatEther(await client(rpcFor(owner)).getBalance({ address: u.withdrawAddress as `0x${string}` }));
     } catch {
       /* RPC hiccup — the UI shows a stale/blank balance rather than erroring */
     }
   }
-  return { configured: isKohakuConfigured(), state: u ? publicView(u) : null, walletBalanceEth };
+  return {
+    configured: isKohakuConfigured(),
+    state: u ? publicView(u) : null,
+    walletBalanceEth,
+    rpcUrl: state.settings?.[owner]?.rpcUrl ?? null,
+    defaultRpcUrl: defaultRpcDisplay(),
+  };
 }
 
 /** One-line summary folded into the big /v1/state snapshot. */

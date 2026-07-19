@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import { QRCodeSVG } from "qrcode.react";
-import { type Address as AddressType, isAddress } from "viem";
+import { type Address as AddressType, type Hex, isAddress, parseEther } from "viem";
+import { useAccount, useChainId, usePublicClient, useSendTransaction, useSwitchChain } from "wagmi";
+import { MultisigAbi } from "~~/contracts/multisig";
+import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
+import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // The Privacy Wallet desktop app — a personal, single-viewer window (like the
 // Wallet) whose funds pass through Railgun on mainnet so the ETH you end up
@@ -59,14 +63,17 @@ type StateResponse = {
   configured: boolean;
   state: KohakuView | null;
   walletBalanceEth: string | null;
+  rpcUrl: string | null;
+  defaultRpcUrl: string;
 };
 
-export function PrivacyWalletWindow({ myAddress }: { myAddress: string | null }) {
+export function PrivacyWalletWindow({ mesh, myAddress }: { mesh: PeerMeshState; myAddress: string | null }) {
   const slug = useRoomSlug();
   const [snap, setSnap] = useState<StateResponse | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [opBusy, setOpBusy] = useState(false);
   const [opError, setOpError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!myAddress) return;
@@ -179,10 +186,31 @@ export function PrivacyWalletWindow({ myAddress }: { myAddress: string | null })
             custodial while inside — the box holds the keys until you send out
           </div>
         </div>
-        <button type="button" onClick={() => void refresh()} style={pillStyle(false)} title="Refresh">
-          ↻
-        </button>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => setShowSettings(v => !v)}
+            style={pillStyle(showSettings)}
+            title="Settings (RPC)"
+          >
+            ⚙
+          </button>
+          <button type="button" onClick={() => void refresh()} style={pillStyle(false)} title="Refresh">
+            ↻
+          </button>
+        </div>
       </div>
+
+      {showSettings && (
+        <div style={{ padding: "8px 12px 0", flexShrink: 0 }}>
+          <SettingsPanel
+            rpcUrl={snap.rpcUrl}
+            defaultRpcUrl={snap.defaultRpcUrl}
+            busy={opBusy}
+            onSave={url => post("/v1/kohaku/settings", { rpcUrl: url })}
+          />
+        </div>
+      )}
 
       {(opError || s?.error || fetchError) && (
         <div style={{ padding: "6px 12px", fontSize: 11, color: "#ff6b6b", flexShrink: 0, wordBreak: "break-word" }}>
@@ -194,7 +222,7 @@ export function PrivacyWalletWindow({ myAddress }: { myAddress: string | null })
         {!s ? (
           <IntroPanel onOpen={() => void post("/v1/kohaku/open")} busy={opBusy} />
         ) : s.phase === "awaiting-deposit" ? (
-          <DepositPanel s={s} />
+          <DepositPanel s={s} mesh={mesh} />
         ) : s.phase === "shielding" ? (
           <ShieldingPanel s={s} />
         ) : s.phase === "soaking" || s.phase === "withdrawing" ? (
@@ -260,16 +288,163 @@ function IntroPanel({ onOpen, busy }: { onOpen: () => void; busy: boolean }) {
   );
 }
 
-function DepositPanel({ s }: { s: KohakuView }) {
+function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
   const [copied, setCopied] = useState(false);
+  const [amountEth, setAmountEth] = useState("0.01");
+  const [busyBtn, setBusyBtn] = useState<"wallet" | "bank" | null>(null);
+  const [depErr, setDepErr] = useState<string | null>(null);
+  const [sentHash, setSentHash] = useState<string | null>(null);
+  const [bankProposed, setBankProposed] = useState(false);
   const addr = s.depositAddress ?? "";
   const pending = Number(s.pendingDepositEth) > 0;
+
+  const { isConnected } = useAccount();
+  const connectedChainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
+  const { sendTransactionAsync } = useSendTransaction();
+  const mainnetClient = usePublicClient({ chainId: 1 });
+  const bank = mesh.wallet;
+  const bankOnMainnet = !!bank && 1 in bank.deployments;
+
+  const parseAmount = (): bigint | null => {
+    setDepErr(null);
+    let wei: bigint;
+    try {
+      wei = parseEther(amountEth.trim());
+    } catch {
+      setDepErr("enter an ETH amount, e.g. 0.01");
+      return null;
+    }
+    const min = parseEther(s.caps.minDepositEth);
+    const max = parseEther(s.caps.maxDepositEth);
+    if (wei < min || wei > max) {
+      setDepErr(`amount must be between ${s.caps.minDepositEth} and ${s.caps.maxDepositEth} ETH`);
+      return null;
+    }
+    return wei;
+  };
+
+  // Plain ETH send from the user's connected wallet (pops MetaMask etc.),
+  // pinned to mainnet — switches the chain first if needed.
+  const depositFromWallet = async () => {
+    const wei = parseAmount();
+    if (wei === null || !addr) return;
+    setBusyBtn("wallet");
+    setSentHash(null);
+    try {
+      if (connectedChainId !== 1) await switchChainAsync({ chainId: 1 });
+      const hash = await sendTransactionAsync({ to: addr as AddressType, value: wei, chainId: 1 });
+      setSentHash(hash);
+    } catch (e) {
+      setDepErr(String(e).slice(0, 160));
+    } finally {
+      setBusyBtn(null);
+    }
+  };
+
+  // Propose a plain transfer from the room's Bank multisig to the deposit
+  // address — same recipe as the wager payout propose (nonce + execHash
+  // computed client-side, relay queues it for signatures in the Bank app).
+  const depositFromBank = async () => {
+    const wei = parseAmount();
+    if (wei === null || !addr) return;
+    if (!bank) return setDepErr("this room has no Bank multisig yet");
+    if (!bankOnMainnet) return setDepErr("the Bank isn't deployed on mainnet");
+    if (!mainnetClient) return setDepErr("no mainnet RPC client");
+    setBusyBtn("bank");
+    setBankProposed(false);
+    try {
+      const nonce = (await mainnetClient.readContract({
+        address: bank.address as AddressType,
+        abi: MultisigAbi,
+        functionName: "nonce",
+      })) as bigint;
+      const deadline = defaultDeadline();
+      const execHash = computeExecHash({
+        chainId: 1,
+        multisig: bank.address as AddressType,
+        nonce,
+        deadline,
+        target: addr as AddressType,
+        value: wei,
+        data: "0x" as Hex,
+      });
+      mesh.walletProposeTx({
+        chainId: 1,
+        target: addr,
+        value: wei.toString(),
+        data: "0x",
+        deadline: deadline.toString(),
+        nonce: nonce.toString(),
+        execHash,
+        source: "manual",
+        browserId: null,
+      });
+      setBankProposed(true);
+    } catch (e) {
+      setDepErr(String(e).slice(0, 160));
+    } finally {
+      setBusyBtn(null);
+    }
+  };
+
   return (
     <div style={panelStyle}>
       <SectionTitle>Deposit ETH</SectionTitle>
       <div style={{ fontSize: 11, color: "var(--slop-text, #ddd)" }}>
-        Send ETH (mainnet) to your fresh deposit address from any outside account. It auto-shields on arrival.
+        Fund your privacy wallet with mainnet ETH — it auto-shields into Railgun on arrival.
       </div>
+
+      {/* Amount + one-tap sources */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={amountEth}
+          onChange={e => setAmountEth(e.target.value)}
+          placeholder={`ETH (${s.caps.minDepositEth}–${s.caps.maxDepositEth})`}
+          disabled={busyBtn !== null}
+          style={{ ...inputStyle, width: 110, flexShrink: 0 }}
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 0 }}>
+          <button
+            type="button"
+            onClick={() => void depositFromWallet()}
+            disabled={busyBtn !== null}
+            style={bigButtonStyle(busyBtn !== null)}
+            title={isConnected ? "Send from your connected wallet" : "Pops your wallet to connect + send"}
+          >
+            {busyBtn === "wallet" ? "confirm in wallet…" : "Deposit from wallet"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void depositFromBank()}
+            disabled={busyBtn !== null || !bankOnMainnet}
+            style={bigButtonStyle(busyBtn !== null || !bankOnMainnet, true)}
+            title={
+              bankOnMainnet
+                ? "Propose a transfer from the room's Bank multisig"
+                : "Bank multisig isn't deployed on mainnet"
+            }
+          >
+            {busyBtn === "bank" ? "proposing…" : "Deposit from Bank"}
+          </button>
+        </div>
+      </div>
+      {depErr && <div style={{ fontSize: 11, color: "#ff6b6b", wordBreak: "break-word" }}>{depErr}</div>}
+      {sentHash && (
+        <div style={{ fontSize: 11, color: LIME }}>
+          sent — watching for arrival, auto-shields shortly. <TxLink hash={sentHash} label="tx" />
+        </div>
+      )}
+      {bankProposed && (
+        <div style={{ fontSize: 11, color: LIME }}>
+          proposed to the Bank — open the Bank app to sign &amp; execute it.
+        </div>
+      )}
+
+      {/* Manual: QR + address for any outside account */}
+      <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)" }}>…or send from any outside account:</div>
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <div style={{ background: "#fff", padding: 6, borderRadius: 4, flexShrink: 0 }}>
           <QRCodeSVG value={addr} size={96} />
@@ -298,6 +473,72 @@ function DepositPanel({ s }: { s: KohakuView }) {
           incoming {s.pendingDepositEth} ETH spotted — confirming, shielding shortly…
         </div>
       )}
+    </div>
+  );
+}
+
+// RPC settings — mirrors the video-share settings idea: a gear on the window,
+// one setting inside. The URL is stored + validated RELAY-side (it's the
+// relay that talks to the RPC on your behalf), so pasting your own node here
+// keeps a third-party endpoint from ever seeing your privacy-wallet queries.
+function SettingsPanel({
+  rpcUrl,
+  defaultRpcUrl,
+  busy,
+  onSave,
+}: {
+  rpcUrl: string | null;
+  defaultRpcUrl: string;
+  busy: boolean;
+  onSave: (url: string) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState(rpcUrl ?? "");
+  const [saved, setSaved] = useState<string | null>(null);
+  const usingCustom = !!rpcUrl;
+
+  const save = async (url: string) => {
+    setSaved(null);
+    const ok = await onSave(url);
+    if (ok) {
+      setSaved(url ? "saved — your ops now use this RPC" : "reset to default");
+      if (!url) setDraft("");
+    }
+  };
+
+  return (
+    <div style={{ ...panelStyle, gap: 8 }}>
+      <SectionTitle>Settings</SectionTitle>
+      <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)", lineHeight: 1.5 }}>
+        Mainnet RPC for your privacy-wallet operations. Defaults to BuidlGuidl&apos;s community nodes — paste your own
+        node&apos;s public URL for maximum privacy (it must be reachable from the relay, i.e. not a LAN address).
+      </div>
+      <input
+        type="text"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        placeholder={defaultRpcUrl}
+        disabled={busy}
+        spellCheck={false}
+        style={{ ...inputStyle, fontFamily: "monospace", fontSize: 11 }}
+      />
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={() => void save(draft.trim())}
+          disabled={busy || !draft.trim()}
+          style={pillStyle(true)}
+        >
+          {busy ? "checking…" : "Save"}
+        </button>
+        {usingCustom && (
+          <button type="button" onClick={() => void save("")} disabled={busy} style={pillStyle(false)}>
+            use default
+          </button>
+        )}
+        <span style={{ fontSize: 10, color: usingCustom ? LIME : "var(--slop-text-muted, #888)" }}>
+          {saved ?? (usingCustom ? "using your RPC" : `using default (${defaultRpcUrl.replace(/^https?:\/\//, "")})`)}
+        </span>
+      </div>
     </div>
   );
 }

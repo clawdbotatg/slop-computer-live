@@ -3359,7 +3359,7 @@ function DesktopInner({ slug }: { slug: string }) {
             minHeight={420}
             sharedMaxZ={sharedMaxZ}
           >
-            <PrivacyWalletWindow myAddress={selfSessionAddress} />
+            <PrivacyWalletWindow mesh={mesh} myAddress={selfSessionAddress} />
           </PrivateAppWindow>
           {/* Livestream frame guide — dashed rectangle showing the inner
             size of the god-mode (OBS capture) window, broadcast by that

@@ -161,7 +161,11 @@ export const config = {
   // `kohakuCliDir` = a kohaku-cli checkout the relay spawns via `npx tsx`
   // (external tool, like ffmpeg for fanout). Empty → the whole feature 503s.
   kohakuCliDir: env("KOHAKU_CLI_DIR", ""),
-  kohakuRpcUrl: env("KOHAKU_RPC_URL", ""),
+  // Box-default mainnet RPC for kohaku ops + the shared pool sync. BuidlGuidl
+  // (community nodes) by default — privacy-friendlier than a commercial
+  // endpoint for a privacy app. Users can override per-user in the app's
+  // settings (stored relay-side, validated; see kohakuSetRpc).
+  kohakuRpcUrl: env("KOHAKU_RPC_URL", "https://mainnet.rpc.buidlguidl.com"),
   // kohaku-cli --dataDir (wallet keystore + rg-storage.json). Empty → the
   // CLI's default (~/.kohaku-cli).
   kohakuDataDir: env("KOHAKU_DATA_DIR", ""),

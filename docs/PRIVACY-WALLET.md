@@ -49,6 +49,7 @@ same box, so single-seed is operationally simpler and privacy-better.
 | `POST /v1/kohaku/open` | Derive a fresh deposit address; phase → `awaiting-deposit`. Also "start a new cycle" once a finished wallet is emptied. |
 | `POST /v1/kohaku/withdraw` | Unshield to a fresh address. Only from `soaking` (i.e. POI-spendable). Uses `--amount-max` when the user is the pool's only accounted balance, else amount − 60 bps margin. |
 | `POST /v1/kohaku/send` | Plain ETH transfer out of the withdrawal address via kohaku `transfer` (simulates before broadcast). Capped per-op. |
+| `POST /v1/kohaku/settings` | Per-user mainnet RPC override (`{rpcUrl}`; empty = reset to box default). Validated hard server-side: https/http only, no private/LAN addresses, must answer `eth_chainId`=0x1 AND serve `eth_getLogs` (Railgun sync is logs-driven — the public BuidlGuidl RPC fails this with 429s, verified from two IPs 2026-07). The user's override drives all their ops; the shared pool sync stays on the box default. `defaultRpcUrl` in responses is origin-only — never the raw URL, which may embed an API key. |
 
 The **deposit watcher** (30s tick) polls awaiting-deposit addresses; a
 stable balance ≥ 0.002 ETH auto-shields (`shield --protocol railgun`,
@@ -93,6 +94,18 @@ starts.
 4. Set the env above in the relay's env file; restart `slop-relay`.
 5. Watch `journalctl -u slop-relay | grep kohaku` — the watcher logs every
    lifecycle transition.
+
+## ⚠️ Dev/prod share ONE seed — never run a kohaku-configured dev relay
+
+Dev (`~/.kohaku-cli` on the Mac) and prod hold copies of the same wallet.
+Their public-account index files drift independently, so `next-fresh-address`
+on both sides derives THE SAME addresses (observed live: dev probe and prod
+both derived `0x7B15…eB0F`). A kohaku-configured dev relay left running will
+watch — and try to shield — addresses that belong to prod users, racing prod
+with the same keys. Rule: local testing of the kohaku module only with the
+relay shut down immediately after, and never while a prod cycle is active.
+The UI probe suite is fine (it stops before any money moves), but kill the
+local stack when done.
 
 ## Known risks / follow-ups
 

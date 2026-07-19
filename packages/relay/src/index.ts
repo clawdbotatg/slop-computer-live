@@ -68,6 +68,7 @@ import {
   isKohakuConfigured,
   kohakuOpen,
   kohakuSend,
+  kohakuSetRpc,
   kohakuStateFor,
   kohakuSummaryFor,
   kohakuWithdraw,
@@ -2332,6 +2333,20 @@ app.post("/v1/kohaku/withdraw", async (req, reply) => {
   if (!owner) return;
   if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
   const r = await kohakuWithdraw(owner);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
+});
+
+type KohakuSettingsBody = { rpcUrl?: unknown };
+
+// Per-user settings — today just the mainnet RPC override (validated +
+// liveness-probed server-side; empty string resets to the box default).
+app.post<{ Body: KohakuSettingsBody }>("/v1/kohaku/settings", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
+  const rpcUrl = typeof req.body?.rpcUrl === "string" ? req.body.rpcUrl : "";
+  const r = await kohakuSetRpc(owner, rpcUrl);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
