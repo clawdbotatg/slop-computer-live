@@ -322,7 +322,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, marginBottom: 2, wordBreak: "break-word" }}>{opt}</div>
-                    <LoadingBar cells={14} progress={pct} caption="" style={{ fontSize: 12 }} />
+                    <LoadingBar cells="fill" progress={pct} caption="" style={{ fontSize: 12 }} />
                   </div>
                   <div style={{ fontSize: 12, fontFamily: MONO, width: 64, textAlign: "right" }}>
                     {count} · {pct}%

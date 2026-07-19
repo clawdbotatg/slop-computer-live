@@ -310,6 +310,13 @@ async function syncPool(): Promise<void> {
 // Railgun isn't ours to reproduce exactly — match within [−30 bps, 0] of the
 // shielded amount. Collisions between identically-sized concurrent shields
 // just advance both users, which is harmless.
+//
+// Status vocabulary: Railgun NOTE rows carry the POI status ("Valid" |
+// "ProofSubmitted" | "Missing" | "ShieldBlocked"), defaulting to "spendable"
+// when the plugin reports none — NOT the "spendable"/"pending" labels the
+// aggregate balance rows use. Accepting only "spendable" here left the first
+// real prod cycle stuck in `shielding` forever after its note matured to
+// "Valid" (2026-07-19).
 function userNoteStatus(u: KohakuUser): "spendable" | "pending" | "missing" {
   if (!pool) return "missing";
   const amt = BigInt(u.depositedWei || "0");
@@ -324,7 +331,7 @@ function userNoteStatus(u: KohakuUser): "spendable" | "pending" | "missing" {
       continue;
     }
     if (v >= lo && v <= amt) {
-      if (n.status === "spendable") return "spendable";
+      if (n.status === "spendable" || n.status === "valid") return "spendable";
       best = "pending";
     }
   }

@@ -109,7 +109,7 @@ export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
 
       {/* Animated progress bar */}
       <LoadingBar
-        cells={20}
+        cells="fill"
         progress={Math.min(100, progress * 100)}
         style={{ fontSize: 13, ...(failed ? ({ "--slop-magenta": "#ff6b6b" } as CSSProperties) : {}) }}
       />

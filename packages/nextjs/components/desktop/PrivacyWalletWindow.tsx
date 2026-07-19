@@ -724,7 +724,7 @@ function SoakBar({ s }: { s: KohakuView }) {
   const remainM = Math.round((remainMs % 3_600_000) / 60_000);
   return (
     <div>
-      <LoadingBar cells={20} progress={pct} caption="" style={{ fontSize: 14 }} />
+      <LoadingBar cells="fill" progress={pct} caption="" style={{ fontSize: 14 }} />
       <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)", marginTop: 3 }}>
         {pct}% of the {s.soakHours}h soak{remainMs > 0 ? ` — ${remainH}h ${remainM}m left` : " — done"}
       </div>

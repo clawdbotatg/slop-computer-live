@@ -1,14 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 const FILLED = "▓"; // U+2593 medium shade
 const EMPTY = "░"; // U+2591 light shade
 
 export type LoadingBarProps = {
-  /** Total cells in the bar (filled + empty). */
-  cells?: number;
+  /**
+   * Total cells in the bar (filled + empty), or "fill" to stretch to the
+   * container and render as many cells as fit (measured live, so the bar
+   * tracks window/panel resizes like a block-element progress bar would).
+   */
+  cells?: number | "fill";
   /** 0–100 for a static fill (e.g. BITRATE 70%). Omit for animated indeterminate mode. */
   progress?: number;
   /**
@@ -58,6 +62,31 @@ export const LoadingBar = ({
   const [tick, setTick] = useState(0);
   const [elapsed, setElapsed] = useState(0);
 
+  // "fill" mode: flex the bar span to the container and derive the cell
+  // count from its measured width / the width of one block character
+  // (measured off a hidden probe span so font metrics are never guessed).
+  const isFill = cells === "fill";
+  const [fitCells, setFitCells] = useState(10);
+  const barRef = useRef<HTMLSpanElement>(null);
+  const probeRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!isFill) return;
+    const bar = barRef.current;
+    const probe = probeRef.current;
+    if (!bar || !probe) return;
+    const fit = () => {
+      const charW = probe.getBoundingClientRect().width;
+      if (charW <= 0) return;
+      const n = Math.max(4, Math.floor(bar.getBoundingClientRect().width / charW));
+      setFitCells(prev => (prev === n ? prev : n));
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [isFill]);
+  const cellCount = isFill ? fitCells : (cells as number);
+
   // Indeterminate animation: step 0 → cells, hold at full briefly, reset.
   useEffect(() => {
     if (!isIndeterminate) return;
@@ -66,7 +95,7 @@ export const LoadingBar = ({
     const advance = () => {
       if (cancelled) return;
       setTick(prev => {
-        if (prev >= cells) {
+        if (prev >= cellCount) {
           // hit full — pause, then reset on next tick
           timer = setTimeout(() => {
             if (!cancelled) setTick(0);
@@ -83,7 +112,7 @@ export const LoadingBar = ({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isIndeterminate, cells, stepMs, holdMs]);
+  }, [isIndeterminate, cellCount, stepMs, holdMs]);
 
   // Timed mode: sample wall-clock elapsed every ~250ms and let the fill
   // computation below derive the fraction. Holds at TIMED_MAX_FRACTION
@@ -101,13 +130,15 @@ export const LoadingBar = ({
   } else if (isTimed) {
     fraction = Math.min(TIMED_MAX_FRACTION, elapsed / estimateMs!);
   } else {
-    fraction = tick / cells;
+    fraction = tick / cellCount;
   }
   // In timed mode never let the bar visually top out — keep at least the
-  // last cell empty so it reads as "still working", not "done".
-  const filledRaw = Math.round(fraction * cells);
-  const filled = isTimed ? Math.min(cells - 1, filledRaw) : filledRaw;
-  const empty = cells - filled;
+  // last cell empty so it reads as "still working", not "done". Clamp to
+  // [0, cellCount] either way: in fill mode the count can shrink under a
+  // live animation tick, and a negative repeat() would throw.
+  const filledRaw = Math.round(fraction * cellCount);
+  const filled = Math.max(0, Math.min(isTimed ? cellCount - 1 : cellCount, filledRaw));
+  const empty = cellCount - filled;
   const pct = Math.round(fraction * 100);
 
   return (
@@ -121,25 +152,38 @@ export const LoadingBar = ({
         fontSize: 16,
         letterSpacing: "0.04em",
         color: "var(--slop-text)",
+        ...(isFill ? { width: "100%" } : {}),
         ...style,
       }}
     >
-      <span>[</span>
+      <span style={{ flexShrink: 0 }}>[</span>
       <span
+        ref={barRef}
         aria-hidden
         style={{
           color: "var(--slop-magenta, #ff3ec9)",
           letterSpacing: 0,
           textShadow: "0 0 4px var(--slop-magenta, #ff3ec9)",
-          // Reserve enough width for the full bar so the layout doesn't
-          // shift between empty and full frames.
-          minWidth: `${cells}ch`,
+          position: "relative",
+          ...(isFill
+            ? // Stretch to whatever the flex row leaves us; the cell count
+              // is floored to fit, and overflow-hidden hides the one-frame
+              // spill while a resize is being remeasured.
+              { flex: "1 1 0", minWidth: 0, overflow: "hidden", whiteSpace: "nowrap" }
+            : // Reserve enough width for the full bar so the layout doesn't
+              // shift between empty and full frames.
+              { minWidth: `${cellCount}ch` }),
         }}
       >
+        {isFill ? (
+          <span ref={probeRef} aria-hidden style={{ position: "absolute", visibility: "hidden" }}>
+            {FILLED}
+          </span>
+        ) : null}
         {FILLED.repeat(filled)}
         {EMPTY.repeat(empty)}
       </span>
-      <span>] {caption ?? `${pct}%`}</span>
+      <span style={{ flexShrink: 0 }}>] {caption ?? `${pct}%`}</span>
     </span>
   );
 };

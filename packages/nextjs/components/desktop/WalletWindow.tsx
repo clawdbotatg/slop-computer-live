@@ -1814,7 +1814,7 @@ const SignerCollectionBar = ({
         </span>
       </div>
       <LoadingBar
-        cells={16}
+        cells="fill"
         progress={pct}
         style={{ fontSize: 13, ...(complete ? ({ "--slop-magenta": "#7be88a" } as React.CSSProperties) : {}) }}
       />
@@ -1977,7 +1977,7 @@ const TxProgressBar = ({
         </span>
       </div>
       <LoadingBar
-        cells={16}
+        cells="fill"
         progress={pct}
         style={{ fontSize: 13, ...(stage === 2 ? ({ "--slop-magenta": "#7be88a" } as React.CSSProperties) : {}) }}
       />
