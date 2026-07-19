@@ -1083,9 +1083,8 @@ HOW A TRANSACTION ACTUALLY EXECUTES (the multisig flow):
 - The wallet can also batch several calls into one atomic approval (execBatchTransaction) — relevant if the user wants multiple actions to land together.
 
 WHERE THIS WALLET LIVES (cross-chain — same address everywhere):
-- The slop Multisig is deployed at the SAME address on every chain we support: Ethereum (1), Optimism (10), Gnosis (100), Polygon (137), Arbitrum (42161), and Base (8453). The address in context is valid on all of them.
-- Robinhood Chain (4663) is ALSO a supported network for balances, swaps, sends, and bridges: it's Robinhood's Arbitrum-stack L2 (ETH gas, settles to Ethereum, mainnet since July 2026), and LI.FI routes to it — buildRoute with toChainId 4663 works. Native ETH there is plain ETH.
-- CAUTION for Robinhood Chain (4663) specifically: the slop Multisig FACTORY is not deployed there yet, so the multisig's own address is NOT controlled by anyone on 4663. NEVER bridge the multisig's funds to its own address on Robinhood Chain — they would be stranded. Bridging to an EOA the user controls (their own connected address, or an explicit recipient) on 4663 is fine.
+- The slop Multisig is deployed at the SAME address on every chain we support: Ethereum (1), Optimism (10), Gnosis (100), Polygon (137), Arbitrum (42161), Base (8453), and Robinhood Chain (4663). The address in context is valid on all of them.
+- Robinhood Chain (4663) is Robinhood's Arbitrum-stack L2 (ETH gas, settles to Ethereum, mainnet since July 2026). LI.FI routes to it — buildRoute with toChainId 4663 works — and native ETH there is plain ETH.
 - BUT each chain is independent: separate balances, separate nonce, separate signer-set state. Holding ETH on Base says nothing about Polygon.
 - Approvals are per-chain too. Each exec hash is bound to its chainId, so a signature collected on one chain CANNOT be replayed on another. To do the same action on two chains, you propose it once per chain. Build every transaction for the chain the user means (see CHAIN SELECTION below — never silently assume one).
 

@@ -34,6 +34,7 @@ import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useSyncedUIState } from "~~/hooks/useSyncedUIState";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
+import { robinhood } from "~~/scaffold.config";
 import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
 import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
 
@@ -84,6 +85,7 @@ const SUPPORTED_CHAINS = [
   { id: arbitrum.id, label: "Arbitrum", explorer: "https://arbiscan.io" },
   { id: optimism.id, label: "Optimism", explorer: "https://optimistic.etherscan.io" },
   { id: polygon.id, label: "Polygon", explorer: "https://polygonscan.com" },
+  { id: robinhood.id, label: "Robinhood", explorer: "https://robinhoodchain.blockscout.com" },
   { id: mainnet.id, label: "Ethereum", explorer: "https://etherscan.io" },
 ] as const;
 

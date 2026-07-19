@@ -39,6 +39,7 @@ export function zerionChainToId(slug: string): number | null {
   if (s === "arbitrum") return 42161;
   if (s === "optimism") return 10;
   if (s === "polygon") return 137;
+  if (s === "robinhood") return 4663;
   return null;
 }
 

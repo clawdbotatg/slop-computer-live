@@ -240,19 +240,27 @@ const SendAllModal = ({
   }, [onClose]);
 
   // One publicClient per supported chain — wagmi hooks must be called
-  // unconditionally on render, so we fan out across all three (Base,
-  // Mainnet, Gnosis) and pick at proposal time.
+  // unconditionally on render, so we fan out across every chain
+  // zerionChainToId can return and pick at proposal time.
   const baseClient = usePublicClient({ chainId: 8453 });
   const mainnetClient = usePublicClient({ chainId: 1 });
   const gnosisClient = usePublicClient({ chainId: 100 });
+  const arbitrumClient = usePublicClient({ chainId: 42161 });
+  const optimismClient = usePublicClient({ chainId: 10 });
+  const polygonClient = usePublicClient({ chainId: 137 });
+  const robinhoodClient = usePublicClient({ chainId: 4663 });
   const clientFor = useCallback(
     (chainId: number) => {
       if (chainId === 8453) return baseClient;
       if (chainId === 1) return mainnetClient;
       if (chainId === 100) return gnosisClient;
+      if (chainId === 42161) return arbitrumClient;
+      if (chainId === 10) return optimismClient;
+      if (chainId === 137) return polygonClient;
+      if (chainId === 4663) return robinhoodClient;
       return null;
     },
-    [baseClient, mainnetClient, gnosisClient],
+    [baseClient, mainnetClient, gnosisClient, arbitrumClient, optimismClient, polygonClient, robinhoodClient],
   );
 
   const onSendAll = useCallback(async () => {
