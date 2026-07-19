@@ -48,6 +48,9 @@ const MIN_DEPOSIT_WEI = BigInt(process.env.KOHAKU_MIN_DEPOSIT_WEI ?? "2000000000
 // Left at the deposit address to pay the shield tx's own gas (shield is
 // self-broadcast FROM the deposit account).
 const SHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_SHIELD_GAS_RESERVE_WEI ?? "600000000000000"); // 0.0006
+// Reserved from the private balance for the unshield's 4337 bundler gas
+// (paid out of the pool, on top of the withdrawn amount).
+const UNSHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_UNSHIELD_GAS_RESERVE_WEI ?? "500000000000000"); // 0.0005
 // Railgun shield fee is 25 bps; the credited note = amount − fee.
 const SHIELD_FEE_BPS = 25n;
 // Fallback POI gate: if we can't match the user's note in private_notes,
@@ -221,6 +224,14 @@ function runKohakuRaw(args: string[], timeoutMs: number, rpcUrl?: string): Promi
         }, timeoutMs);
         proc.on("close", code => {
           clearTimeout(killer);
+          if (code !== 0) {
+            // Full tails to the journal — the UI only gets the cleaned
+            // one-liner, and debugging the first prod failure without
+            // these meant reproducing the whole op by hand.
+            emit(
+              `[kohaku] cli '${args[0]}' exit ${code} — stdout tail: ${stdout.trim().slice(-600) || "(empty)"} | stderr tail: ${stderr.trim().slice(-600) || "(empty)"}`,
+            );
+          }
           resolve({ code, stdout, stderr });
         });
         proc.on("error", err => {
@@ -261,9 +272,22 @@ function lastJson(stdout: string): unknown {
   }
 }
 
+// Node's stderr is polluted with harmless runtime chatter (the tsx loader's
+// ExperimentalWarning etc.) — the first prod withdraw failure surfaced ONLY
+// that warning while the real error sat in stdout. Strip the noise and fall
+// through to stdout so the user sees the actual reason.
 function cliErrorText(r: CliResult): string {
-  const t = (r.stderr || r.stdout || "").trim();
-  return t.slice(-400) || `exit ${r.code}`;
+  const clean = (s: string) =>
+    s
+      .split("\n")
+      .filter(l => {
+        const t = l.trim();
+        return t && !t.startsWith("(node:") && !t.includes("ExperimentalWarning") && !t.includes("--trace-warnings");
+      })
+      .join("\n")
+      .trim();
+  const err = clean(r.stderr) || clean(r.stdout);
+  return err.slice(-400) || `exit ${r.code}`;
 }
 
 // --- Pool sync (kohaku balances) -------------------------------------------
@@ -601,19 +625,16 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
     u.withdrawAddress = getAddress(addr);
     persist();
 
-    // How much to unshield: the user's accounted note, minus a margin for
-    // the 25 bps unshield fee + the 4337 bundler gas (both paid out of the
-    // private balance). If this user is the ONLY accounted balance in the
-    // pool, --amount-max is exact (drains their balance cleanly); with
-    // co-soakers we take note × (1 − 60 bps) and leave the sliver as
-    // accounted private dust rather than risk spending a neighbour's note.
-    const others = Object.values(state.users).some(
-      o => o.owner !== owner && (o.phase === "shielding" || o.phase === "soaking") && BigInt(o.expectedNoteWei || "0") > 0n,
-    );
+    // How much to unshield: the user's accounted note, minus the 25 bps
+    // unshield fee margin and a flat gas reserve (both paid out of the
+    // private balance on top of the amount). NEVER --amount-max: the pool
+    // is commingled, so "max" is the whole pool — including other users'
+    // notes and legacy change (observed live: max quoted 0.0164 against a
+    // 0.0094 accounted note). The leftover sliver stays as private dust.
     const expected = BigInt(u.expectedNoteWei || "0");
-    const amountArgs = others
-      ? ["--amount-wei", (expected - (expected * 60n) / 10_000n).toString()]
-      : ["--amount-max"];
+    const amount = expected - (expected * 30n) / 10_000n - UNSHIELD_GAS_RESERVE_WEI;
+    if (amount <= 0n) throw new Error("balance too small to cover the unshield fee + gas reserve");
+    const amountArgs = ["--amount-wei", amount.toString()];
     const r = await runKohakuRaw(
       ["unshield", "--protocol", "railgun", ...walletArgs(), "--to", u.withdrawAddress, ...amountArgs, "--broadcast"],
       UNSHIELD_TIMEOUT_MS,
