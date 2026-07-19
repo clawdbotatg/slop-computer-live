@@ -975,6 +975,11 @@ const PieceSprite = ({ type, color, size = "82%" }: { type: string; color: "w" |
       width: size,
       height: size,
       objectFit: "contain",
+      // The pawn art fills its frame more than the taller pieces do, so at
+      // equal box size it reads oversized on the board. Scale it down about
+      // its base so all pieces sit on the same line.
+      transform: type.toLowerCase() === "p" ? "scale(0.7)" : undefined,
+      transformOrigin: "50% 100%",
       filter:
         color === "w"
           ? "drop-shadow(0 0 4px rgba(63, 207, 255, 0.55))"
