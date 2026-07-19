@@ -277,6 +277,10 @@
     {
       "name": "privacy",
       "prompt": "A ghostly translucent wallet with a glowing shield emblem on its flap, wisps of vapor curling off it, isometric 3/4 view"
+    },
+    {
+      "name": "shield",
+      "prompt": "A chunky heraldic shield with a glowing keyhole emblem, hot magenta and cyan energy crackling around its rim, a wisp of ghostly vapor rising off the top, isometric 3/4 view"
     }
   ],
   "sheet": {

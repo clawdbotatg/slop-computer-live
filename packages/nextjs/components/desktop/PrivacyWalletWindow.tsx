@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Portfolio } from "./wallet/types";
 import { Address } from "@scaffold-ui/components";
 import { QRCodeSVG } from "qrcode.react";
 import { type Address as AddressType, type Hex, isAddress, parseEther } from "viem";
@@ -12,14 +13,15 @@ import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
-// The Privacy Wallet desktop app — a personal, single-viewer window (like the
-// Wallet) whose funds pass through Railgun on mainnet so the ETH you end up
-// spending has no on-chain link to where it came from. All money movement is
-// server-side (the relay drives kohaku-cli); this window is a phase-driven
-// view over GET /v1/kohaku/state:
+// Shield — a personal, single-viewer window (like the Wallet) that passes
+// your ETH through Railgun on mainnet so what comes out has no on-chain link
+// to where it came from. A pass-through, not a resident wallet: the honest
+// pitch is "ETH in linked to you, ETH out clean" (the internal app id stays
+// "privacy"). All money movement is server-side (the relay drives EF's
+// kohaku-cli); this window is a phase-driven view over GET /v1/kohaku/state:
 //
 //   awaiting-deposit → shielding (POI maturation) → soaking (the big
-//   anonymity progress bar) → wallet (send your clean ETH anywhere).
+//   anonymity progress bar) → wallet (holdings / chat / send).
 //
 // ⚠️ Custody: while funds are inside, the slop box holds the keys — this is
 // a custodial privacy service, stated plainly in the UI. Mainnet, small
@@ -27,9 +29,9 @@ import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 //
 // Wallet mode deliberately does NOT embed WalletAssetsPanel / WalletChatPanel:
 // those panels' send/propose affordances route through wagmi or the passkey —
-// signers the user does not hold here (the relay does). A misleading "Send"
-// that pops MetaMask for an address whose key lives on the box is worse than
-// a plain form that calls the one endpoint that actually works.
+// signers the user does not hold here (the relay does). Holdings is a slim
+// read-only Zerion view; chat proposals execute only via the confirm chip →
+// the capped /v1/kohaku/send.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -152,8 +154,7 @@ export function PrivacyWalletWindow({ mesh, myAddress }: { mesh: PeerMeshState; 
     return (
       <Centered>
         <div style={{ fontSize: 12, color: "var(--slop-text-muted, #999)", textAlign: "center", maxWidth: 300 }}>
-          The privacy wallet isn&apos;t configured on this box (missing kohaku-cli / RPC / wallet password in the relay
-          env).
+          Shield isn&apos;t configured on this box (missing kohaku-cli / RPC / wallet password in the relay env).
         </div>
       </Centered>
     );
@@ -178,7 +179,7 @@ export function PrivacyWalletWindow({ mesh, myAddress }: { mesh: PeerMeshState; 
       >
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--slop-text, #eee)" }}>
-            Privacy wallet
+            Shield
             <span style={{ marginLeft: 8, fontSize: 10, color: "var(--slop-accent, #7cf)" }}>
               {s ? phaseLabel(s.phase, s.busy) : "railgun · mainnet"}
             </span>
@@ -269,21 +270,22 @@ function phaseLabel(phase: KohakuView["phase"], busy: string | null): string {
 function IntroPanel({ onOpen, busy }: { onOpen: () => void; busy: boolean }) {
   return (
     <div style={panelStyle}>
-      <SectionTitle>Fund your privacy wallet</SectionTitle>
+      <SectionTitle>Shield your ETH</SectionTitle>
       <div style={{ fontSize: 11, color: "var(--slop-text, #ddd)", lineHeight: 1.5 }}>
-        Deposit ETH from any account → it&apos;s shielded into{" "}
+        Pass your ETH through{" "}
         <a href="https://railgun.org" target="_blank" rel="noreferrer" style={{ color: ACCENT }}>
           Railgun
-        </a>{" "}
-        → it soaks in the private pool while the anonymity set grows → you withdraw to a fresh address with no on-chain
-        link to the source, and send it anywhere.
+        </a>
+        &apos;s private pool and withdraw it with no on-chain history: deposit → auto-shield → soak while the anonymity
+        set grows → withdraw to a fresh address → spend or send it anywhere. Powered by Railgun via EF&apos;s Kohaku.
       </div>
       <div style={{ fontSize: 10, color: "#ffb347", lineHeight: 1.5 }}>
         ⚠️ While funds are inside, the slop box holds the keys — this is a custodial privacy service, not self-custody.
-        Mainnet, small amounts only.
+        Mainnet, small amounts only. To STAY anonymous afterwards, send the clean ETH to a fresh wallet — not one the
+        world already knows is yours.
       </div>
       <button type="button" onClick={onOpen} disabled={busy} style={bigButtonStyle(busy)}>
-        {busy ? "opening…" : "Open privacy wallet"}
+        {busy ? "opening…" : "Open your Shield"}
       </button>
     </div>
   );
@@ -608,12 +610,278 @@ function WalletPanel({
   onSend: (to: string, amountWei: string, max: boolean) => Promise<boolean>;
   onReopen: () => void;
 }) {
+  const [tab, setTab] = useState<"holdings" | "chat" | "send">("holdings");
+  const balance = balanceEth != null ? Number(balanceEth) : null;
+  const empty = balance != null && balance < Number(s.caps.minDepositEth);
+
+  return (
+    <div style={panelStyle}>
+      <SectionTitle>Your clean wallet</SectionTitle>
+      <div>
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--slop-text-muted, #999)",
+            textTransform: "uppercase",
+            letterSpacing: "0.1em",
+          }}
+        >
+          Balance
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--slop-text, #eee)" }}>
+          {balanceEth != null ? `${Number(balanceEth).toFixed(5)} ETH` : "…"}
+        </div>
+        {s.withdrawAddress && <Address address={s.withdrawAddress as AddressType} size="sm" />}
+      </div>
+      {s.unshieldHash && <TxLink hash={s.unshieldHash} label="unshield" />}
+      <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)", lineHeight: 1.5 }}>
+        This address has no on-chain link to your deposit source — but the box still holds its key. Send to a FRESH
+        wallet to regain self-custody AND stay anonymous; sending to a wallet the world knows is yours publicly ties the
+        clean ETH back to you.
+      </div>
+
+      {/* Tab bar */}
+      <div style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(255,62,201,0.18)" }}>
+        {(["holdings", "chat", "send"] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            style={{
+              padding: "6px 10px",
+              fontSize: 10,
+              fontFamily: "var(--slop-font-display, monospace)",
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              fontWeight: 700,
+              background: "transparent",
+              color: t === tab ? ACCENT : "var(--slop-text-muted, #999)",
+              border: "none",
+              borderBottom: t === tab ? `2px solid ${ACCENT}` : "2px solid transparent",
+              cursor: "pointer",
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "holdings" && s.withdrawAddress && <HoldingsTab address={s.withdrawAddress} />}
+      {tab === "chat" && <ChatTab opBusy={opBusy} onSend={onSend} />}
+      {tab === "send" && <SendTab s={s} balanceEth={balanceEth} opBusy={opBusy} onSend={onSend} />}
+
+      {empty && (
+        <button type="button" onClick={onReopen} disabled={opBusy} style={pillStyle(false)}>
+          start a new cycle
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Read-only Zerion holdings for the clean address, via the relay's existing
+// /v1/wallet/portfolio proxy (the same feed the Wallet/Bank apps use). No
+// send affordances here — those panels sign via wagmi/passkey, keys this
+// wallet's user doesn't hold. Sends live in the Send/Chat tabs → relay.
+function HoldingsTab({ address }: { address: string }) {
+  const slug = useRoomSlug();
+  const [pf, setPf] = useState<Portfolio | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/wallet/portfolio?address=${address}`, slug), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setErr(`portfolio: relay ${res.status}`);
+        return;
+      }
+      setPf((await res.json()) as Portfolio);
+    } catch (e) {
+      setErr(String(e).slice(0, 100));
+    } finally {
+      setLoading(false);
+    }
+  }, [address, slug]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const assets = (pf?.assets ?? []).filter(a => Number(a.balanceUsd) > 0.005 || Number(a.balance) > 0);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--slop-text, #eee)" }}>
+          {pf ? `$${Number(pf.totalBalanceUsd).toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "…"}
+        </div>
+        <button type="button" onClick={() => void load()} style={pillStyle(false)} disabled={loading}>
+          {loading ? "…" : "↻"}
+        </button>
+      </div>
+      {err && <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div>}
+      {pf && assets.length === 0 && (
+        <div style={{ fontSize: 11, color: "var(--slop-text-muted, #999)" }}>nothing here yet</div>
+      )}
+      {assets.map((a, i) => (
+        <div
+          key={`${a.contractAddress}-${a.blockchain}-${i}`}
+          style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slop-text, #ddd)" }}
+        >
+          <span>
+            {a.tokenSymbol}
+            <span style={{ marginLeft: 6, fontSize: 9, color: "var(--slop-text-muted, #888)" }}>{a.blockchain}</span>
+          </span>
+          <span>
+            {Number(a.balance).toLocaleString("en-US", { maximumFractionDigits: 5 })}
+            <span style={{ marginLeft: 6, color: "var(--slop-text-muted, #999)" }}>
+              ${Number(a.balanceUsd).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+            </span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// "Talk to your funds" — chat over /v1/kohaku/chat. The model only PROPOSES
+// sends; nothing moves until the confirm chip fires the capped send endpoint.
+type ChatMsg = {
+  who: "you" | "shield";
+  text: string;
+  proposal?: { to: string; toLabel: string; amountEth: string; max: boolean };
+  proposalDone?: boolean;
+};
+
+function ChatTab({
+  opBusy,
+  onSend,
+}: {
+  opBusy: boolean;
+  onSend: (to: string, amountWei: string, max: boolean) => Promise<boolean>;
+}) {
+  const slug = useRoomSlug();
+  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "nearest" });
+  }, [msgs.length]);
+
+  const say = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    setMsgs(m => [...m, { who: "you", text }]);
+    setBusy(true);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/kohaku/chat`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        reply?: string;
+        proposal?: ChatMsg["proposal"] | null;
+      };
+      if (!res.ok || !j.ok) {
+        setMsgs(m => [...m, { who: "shield", text: j.error ?? `relay ${res.status}` }]);
+      } else {
+        setMsgs(m => [...m, { who: "shield", text: j.reply ?? "…", proposal: j.proposal ?? undefined }]);
+      }
+    } catch (e) {
+      setMsgs(m => [...m, { who: "shield", text: `network: ${String(e).slice(0, 80)}` }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async (idx: number, p: NonNullable<ChatMsg["proposal"]>) => {
+    const amountWei = p.max ? "0" : parseEther(p.amountEth).toString();
+    const ok = await onSend(p.to, amountWei, p.max);
+    if (ok) {
+      setMsgs(m => m.map((msg, i) => (i === idx ? { ...msg, proposalDone: true } : msg)));
+      setMsgs(m => [...m, { who: "shield", text: "sent ✓ — details in the activity log" }]);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ maxHeight: 200, overflow: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+        {msgs.length === 0 && (
+          <div style={{ fontSize: 11, color: "var(--slop-text-muted, #999)" }}>
+            ask your funds anything — &quot;how much do I have?&quot;, &quot;send 0.002 to vitalik.eth&quot;…
+          </div>
+        )}
+        {msgs.map((m, i) => (
+          <div key={i} style={{ fontSize: 11, lineHeight: 1.45 }}>
+            <span style={{ color: m.who === "you" ? "var(--slop-accent, #7cf)" : ACCENT, fontWeight: 700 }}>
+              {m.who === "you" ? "you" : "shield"}:
+            </span>{" "}
+            <span style={{ color: "var(--slop-text, #ddd)", whiteSpace: "pre-wrap" }}>{m.text}</span>
+            {m.proposal && !m.proposalDone && (
+              <button
+                type="button"
+                onClick={() => void confirm(i, m.proposal!)}
+                disabled={opBusy}
+                style={{ ...pillStyle(true), display: "block", marginTop: 4 }}
+              >
+                {opBusy
+                  ? "sending…"
+                  : `confirm: send ${m.proposal.max ? "max" : `${m.proposal.amountEth} ETH`} → ${m.proposal.toLabel}`}
+              </button>
+            )}
+            {m.proposal && m.proposalDone && (
+              <span style={{ marginLeft: 6, fontSize: 10, color: LIME }}>✓ executed</span>
+            )}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") void say();
+          }}
+          placeholder="talk to your funds…"
+          disabled={busy}
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <button type="button" onClick={() => void say()} disabled={busy || !input.trim()} style={pillStyle(true)}>
+          {busy ? "…" : "send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SendTab({
+  s,
+  balanceEth,
+  opBusy,
+  onSend,
+}: {
+  s: KohakuView;
+  balanceEth: string | null;
+  opBusy: boolean;
+  onSend: (to: string, amountWei: string, max: boolean) => Promise<boolean>;
+}) {
   const [to, setTo] = useState("");
   const [amountEth, setAmountEth] = useState("");
   const [sendMax, setSendMax] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const balance = balanceEth != null ? Number(balanceEth) : null;
-  const empty = balance != null && balance < Number(s.caps.minDepositEth);
 
   const submit = useCallback(async () => {
     setLocalError(null);
@@ -641,76 +909,45 @@ function WalletPanel({
   }, [to, amountEth, sendMax, onSend]);
 
   return (
-    <div style={panelStyle}>
-      <SectionTitle>Your clean wallet</SectionTitle>
-      <div>
-        <div
-          style={{
-            fontSize: 10,
-            color: "var(--slop-text-muted, #999)",
-            textTransform: "uppercase",
-            letterSpacing: "0.1em",
-          }}
-        >
-          Balance
-        </div>
-        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--slop-text, #eee)" }}>
-          {balanceEth != null ? `${Number(balanceEth).toFixed(5)} ETH` : "…"}
-        </div>
-        {s.withdrawAddress && <Address address={s.withdrawAddress as AddressType} size="sm" />}
-      </div>
-      {s.unshieldHash && <TxLink hash={s.unshieldHash} label="unshield" />}
-      <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)", lineHeight: 1.5 }}>
-        This address has no on-chain link to your deposit source. Send it to your own wallet to regain self-custody —
-        until then the box still holds this key.
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <input
+        type="text"
+        value={to}
+        onChange={e => setTo(e.target.value)}
+        placeholder="Destination address (0x…)"
+        disabled={opBusy}
+        style={inputStyle}
+      />
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
           type="text"
-          value={to}
-          onChange={e => setTo(e.target.value)}
-          placeholder="Destination address (0x…)"
-          disabled={opBusy}
-          style={inputStyle}
+          inputMode="decimal"
+          value={sendMax ? (balanceEth ?? "") : amountEth}
+          onChange={e => setAmountEth(e.target.value)}
+          placeholder="ETH amount"
+          disabled={opBusy || sendMax}
+          style={{ ...inputStyle, flex: 1 }}
         />
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={sendMax ? (balanceEth ?? "") : amountEth}
-            onChange={e => setAmountEth(e.target.value)}
-            placeholder="ETH amount"
-            disabled={opBusy || sendMax}
-            style={{ ...inputStyle, flex: 1 }}
-          />
-          <label
-            style={{
-              fontSize: 11,
-              color: "var(--slop-text-muted, #999)",
-              display: "flex",
-              gap: 4,
-              alignItems: "center",
-            }}
-          >
-            <input type="checkbox" checked={sendMax} onChange={e => setSendMax(e.target.checked)} disabled={opBusy} />
-            max
-          </label>
-        </div>
-        <button type="button" onClick={() => void submit()} disabled={opBusy} style={bigButtonStyle(opBusy)}>
-          {opBusy ? "sending…" : "Send"}
-        </button>
-        <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)" }}>
-          capped at {s.caps.maxSendEth} ETH per send
-        </div>
-        {localError && <div style={{ fontSize: 11, color: "#ff6b6b" }}>{localError}</div>}
+        <label
+          style={{
+            fontSize: 11,
+            color: "var(--slop-text-muted, #999)",
+            display: "flex",
+            gap: 4,
+            alignItems: "center",
+          }}
+        >
+          <input type="checkbox" checked={sendMax} onChange={e => setSendMax(e.target.checked)} disabled={opBusy} />
+          max
+        </label>
       </div>
-
-      {empty && (
-        <button type="button" onClick={onReopen} disabled={opBusy} style={pillStyle(false)}>
-          start a new cycle
-        </button>
-      )}
+      <button type="button" onClick={() => void submit()} disabled={opBusy} style={bigButtonStyle(opBusy)}>
+        {opBusy ? "sending…" : "Send"}
+      </button>
+      <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)" }}>
+        capped at {s.caps.maxSendEth} ETH per send
+      </div>
+      {localError && <div style={{ fontSize: 11, color: "#ff6b6b" }}>{localError}</div>}
     </div>
   );
 }

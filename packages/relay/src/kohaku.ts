@@ -23,8 +23,10 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
-import { http, createPublicClient, formatEther, getAddress, isAddress, parseAbiItem } from "viem";
+import { http, createPublicClient, formatEther, getAddress, isAddress, parseAbiItem, parseEther } from "viem";
 import { mainnet } from "viem/chains";
+import { normalize } from "viem/ens";
+import { bankrChat, hasBankrLlm } from "./bankr-llm.js";
 
 const STATE_FILE = process.env.KOHAKU_STATE_PATH ?? "/var/lib/slop-relay/kohaku-state.json";
 
@@ -796,6 +798,109 @@ export async function kohakuSetRpc(ownerRaw: string, urlRaw: string): Promise<Ko
   if (u) log(u, `RPC set to ${parsed.hostname}`);
   emit(`[kohaku ${owner.slice(0, 10)}] rpc override → ${parsed.hostname}`);
   return { ok: true, rpcUrl: url, defaultRpcUrl: defaultRpcDisplay() };
+}
+
+// --- Chat ("talk to your funds") ---------------------------------------------
+
+const CHAT_SYS = [
+  "You are the voice of a user's Shield wallet on slop.computer — ETH that was passed through Railgun's private pool and now sits at a fresh, unlinkable address held by the relay.",
+  "Answer questions about the wallet plainly in 1-3 short sentences, plain text, a light cyberdelic vibe is fine. You know only what WALLET STATE says.",
+  "If (and only if) the user asks to SEND ETH somewhere, include a proposal. The destination must be one the USER explicitly gave — a 0x address or a .eth name. NEVER invent a destination or an amount. 'send all/everything/max' → amountEth \"max\".",
+  'Return ONLY compact JSON, no markdown: {"reply":"<text>","proposal":{"to":"<0x-or-ens>","amountEth":"<decimal or max>"}|null}',
+  "If the user wants to send to their main/known/public wallet, still propose it but warn in the reply that sending to a known wallet publicly ties the clean ETH to them — a FRESH wallet preserves anonymity.",
+].join("\n");
+
+function chatJson(text: string): { reply?: unknown; proposal?: unknown } | null {
+  const fenced = text.replace(/```(?:json)?/gi, "").trim();
+  const start = fenced.indexOf("{");
+  const end = fenced.lastIndexOf("}");
+  if (start === -1 || end <= start) return null;
+  try {
+    return JSON.parse(fenced.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+/** One turn of wallet chat. Stateless server-side; the LLM only ever
+ *  PROPOSES a send — the UI confirms and the capped /v1/kohaku/send
+ *  executes, so the model holds no authority. */
+export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<KohakuOpResult> {
+  if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
+  if (!hasBankrLlm()) return { ok: false, error: "chat isn't configured on this box" };
+  const owner = ownerRaw.toLowerCase();
+  const u = state.users[owner];
+  if (!u) return { ok: false, error: "open your Shield first" };
+  const text = textRaw.trim().slice(0, 500);
+  if (!text) return { ok: false, error: "say something" };
+
+  let balanceEth: string | null = null;
+  if (u.phase === "wallet" && u.withdrawAddress) {
+    try {
+      balanceEth = formatEther(await client(rpcFor(owner)).getBalance({ address: u.withdrawAddress as `0x${string}` }));
+    } catch {
+      /* stale is fine for chat */
+    }
+  }
+  const v = publicView(u);
+  const ctx = {
+    phase: v.phase,
+    balanceEth,
+    address: u.withdrawAddress,
+    soakProgressPct: Math.round(v.soakProgress * 100),
+    anonymityShields: v.anonymityShields,
+    depositedEth: v.depositedEth,
+    withdrawnEth: v.withdrawnEth,
+    sendCapEth: v.caps.maxSendEth,
+    recentActivity: u.activity.slice(-6).map(a => a.text),
+    sendsPossible: u.phase === "wallet",
+  };
+
+  const res = await bankrChat(
+    [
+      { role: "system", content: CHAT_SYS },
+      { role: "user", content: `WALLET STATE: ${JSON.stringify(ctx)}\n\nUSER: ${text}` },
+    ],
+    { maxTokens: 300, temperature: 0.4 },
+  );
+  if (!res.ok) return { ok: false, error: "the wallet's brain is unreachable — try again" };
+  const parsed = chatJson(res.text);
+  let reply = typeof parsed?.reply === "string" && parsed.reply ? parsed.reply : res.text.slice(0, 400);
+
+  // Validate any proposal down to something the send endpoint would accept.
+  let proposal: { to: string; toLabel: string; amountEth: string; max: boolean } | null = null;
+  const p = parsed?.proposal as { to?: unknown; amountEth?: unknown } | null | undefined;
+  if (p && typeof p.to === "string" && typeof p.amountEth === "string" && u.phase === "wallet") {
+    const rawTo = p.to.trim();
+    let to: string | null = null;
+    let toLabel = rawTo;
+    if (isAddress(rawTo)) {
+      to = getAddress(rawTo);
+    } else if (/^[a-z0-9-.]+\.eth$/i.test(rawTo)) {
+      try {
+        const resolved = await client(rpcFor(owner)).getEnsAddress({ name: normalize(rawTo) });
+        if (resolved) {
+          to = resolved;
+          toLabel = `${rawTo} (${resolved.slice(0, 8)}…)`;
+        }
+      } catch {
+        /* fall through */
+      }
+      if (!to) reply += `\n(couldn't resolve ${rawTo} — check the name)`;
+    }
+    const max = p.amountEth.trim().toLowerCase() === "max";
+    let amountOk = max;
+    if (!max) {
+      try {
+        amountOk = parseEther(p.amountEth.trim()) > 0n;
+      } catch {
+        amountOk = false;
+      }
+    }
+    if (to && amountOk) proposal = { to, toLabel, amountEth: max ? "max" : p.amountEth.trim(), max };
+  }
+
+  return { ok: true, reply, proposal };
 }
 
 // --- State views ------------------------------------------------------------

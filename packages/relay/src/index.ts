@@ -66,6 +66,7 @@ import {
 } from "./personal-wallet.js";
 import {
   isKohakuConfigured,
+  kohakuChat,
   kohakuOpen,
   kohakuSend,
   kohakuSetRpc,
@@ -1250,9 +1251,11 @@ const DEFAULT_APPS: AppEntry[] = [
     kind: "mywallet",
   },
   {
+    // id stays "privacy" (slot geometry + activateApp key) — the user-facing
+    // name is Shield: a Railgun pass-through, not a resident wallet.
     id: "privacy",
-    label: "Privacy Wallet",
-    icon: "/icons/privacy.png",
+    label: "Shield",
+    icon: "/icons/shield.png",
     kind: "privacy",
   },
   {
@@ -2347,6 +2350,25 @@ app.post<{ Body: KohakuSettingsBody }>("/v1/kohaku/settings", async (req, reply)
   if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
   const rpcUrl = typeof req.body?.rpcUrl === "string" ? req.body.rpcUrl : "";
   const r = await kohakuSetRpc(owner, rpcUrl);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
+});
+
+// "Talk to your funds" — LLM chat over the user's Shield state. The model
+// only proposes; execution stays behind the capped /v1/kohaku/send.
+// Rate-limited per owner: it's an LLM call.
+const kohakuChatLimiter = new TokenBucket(6, 1 / 20);
+
+type KohakuChatBody = { text?: unknown };
+
+app.post<{ Body: KohakuChatBody }>("/v1/kohaku/chat", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!kohakuChatLimiter.allow(owner)) {
+    return reply.code(429).send({ ok: false, error: "slow down a sec" });
+  }
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const r = await kohakuChat(owner, text);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });

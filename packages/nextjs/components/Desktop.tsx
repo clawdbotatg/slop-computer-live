@@ -3353,7 +3353,7 @@ function DesktopInner({ slug }: { slug: string }) {
           <PrivateAppWindow
             local={local}
             id="privacy"
-            title="PRIVACY WALLET"
+            title="SHIELD"
             defaultSlot={{ x: 180, y: 110, width: 440, height: 620 }}
             minWidth={360}
             minHeight={420}
