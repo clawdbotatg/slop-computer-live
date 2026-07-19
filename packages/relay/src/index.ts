@@ -64,6 +64,16 @@ import {
   passkeyAddressFromCoords,
   personalWalletAddressFor,
 } from "./personal-wallet.js";
+import {
+  isKohakuConfigured,
+  kohakuOpen,
+  kohakuSend,
+  kohakuStateFor,
+  kohakuSummaryFor,
+  kohakuWithdraw,
+  setKohakuLogger,
+  startKohakuWatcher,
+} from "./kohaku.js";
 import { createOnrampSession, isOnrampConfigured } from "./onramp.js";
 import { TIP_CHAIN_LABELS, parseTipIntent } from "./tip.js";
 import {
@@ -1079,6 +1089,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "mywallet"
+    | "privacy"
     | "research"
     | "leftclaw"
     | "news"
@@ -1236,6 +1247,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Wallet",
     icon: "/icons/wallet.png",
     kind: "mywallet",
+  },
+  {
+    id: "privacy",
+    label: "Privacy Wallet",
+    icon: "/icons/privacy.png",
+    kind: "privacy",
   },
   {
     id: "ens",
@@ -1526,6 +1543,8 @@ app.get("/v1/state", async (req, reply) => {
     uiState: roomFromReq(req).uiState.all(),
     walletChat: roomFromReq(req).walletChat.current().state,
     chyronState: roomFromReq(req).chyron.getState(),
+    // Slim per-user privacy-wallet view (full detail at /v1/kohaku/state).
+    kohaku: kohakuSummaryFor(a.session.address),
   };
 });
 
@@ -2261,6 +2280,66 @@ app.get("/v1/wallet", async (req, reply) => {
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   reply.header("cache-control", "no-store");
   return { address: roomFromReq(req).wallet.getCurrent()?.address ?? null };
+});
+
+// --- Privacy Wallet (Railgun via kohaku-cli) ---------------------------------
+// Per-user, keyed to the authed session's ADDRESS (SIWE or passkey) — an
+// anonymous session has no durable owner for custodial funds, so it's
+// rejected. Room gate skipped like /v1/tip: the privacy wallet is personal,
+// not room-scoped. All money movement is server-side (see kohaku.ts for the
+// custody caveats); these routes only gate + relay to that module.
+
+function kohakuOwnerFromReq(req: Parameters<typeof v1AuthFromReq>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }): string | null {
+  const a = v1AuthFromReq(req, { skipRoomGate: true });
+  if (!a) {
+    reply.code(401).send({ ok: false, error: "unauthenticated" });
+    return null;
+  }
+  if (!a.session.address) {
+    reply.code(403).send({ ok: false, error: "sign in with a wallet or passkey first — privacy funds need a durable owner" });
+    return null;
+  }
+  return a.session.address.toLowerCase();
+}
+
+app.get("/v1/kohaku/state", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  reply.header("cache-control", "no-store");
+  return { ok: true, ...(await kohakuStateFor(owner)) };
+});
+
+app.post("/v1/kohaku/open", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
+  const r = await kohakuOpen(owner);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
+});
+
+app.post("/v1/kohaku/withdraw", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
+  const r = await kohakuWithdraw(owner);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
+});
+
+type KohakuSendBody = { to?: unknown; amountWei?: unknown; max?: unknown };
+
+app.post<{ Body: KohakuSendBody }>("/v1/kohaku/send", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
+  const to = typeof req.body?.to === "string" ? req.body.to.trim() : "";
+  const max = req.body?.max === true;
+  const amountWei = typeof req.body?.amountWei === "string" ? req.body.amountWei : "";
+  if (!to || (!max && !amountWei)) return reply.code(400).send({ ok: false, error: "need to + amountWei (or max:true)" });
+  const r = await kohakuSend(owner, to, max ? "max" : amountWei);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
 });
 
 // Deploy a passkey user's personal ("single-player") wallet — a 1-of-2 slop
@@ -9493,6 +9572,10 @@ app
     // The supervisor retries failures with backoff — see fanout.ts.
     setFanoutLogger(line => app.log.info(line));
     restoreFanouts();
+    // Privacy wallet (Railgun via kohaku-cli): deposit watcher + pool sync.
+    // No-op unless KOHAKU_* env is configured — see kohaku.ts.
+    setKohakuLogger(line => app.log.info(line));
+    startKohakuWatcher();
   })
   .catch(err => {
     app.log.error(err);

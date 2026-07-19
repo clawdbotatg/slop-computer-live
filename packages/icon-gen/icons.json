@@ -273,6 +273,10 @@
     {
       "name": "voting",
       "prompt": "A chunky retro ballot box icon with an encrypted envelope sliding into the slot and a glowing padlock badge on the front."
+    },
+    {
+      "name": "privacy",
+      "prompt": "A ghostly translucent wallet with a glowing shield emblem on its flap, wisps of vapor curling off it, isometric 3/4 view"
     }
   ],
   "sheet": {

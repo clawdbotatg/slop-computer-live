@@ -123,3 +123,16 @@ Verify relay admin allowlist on EC2:
 ```bash
 ssh slopcomputer "grep ADMIN_ADDRESSES /home/ubuntu/slop-computer-live/packages/relay/.env"
 ```
+
+## Privacy Wallet — the one place the box DOES hold user keys
+
+Everything above upholds "no server-held user keys." The **Privacy Wallet**
+app (Railgun via kohaku-cli — see `docs/PRIVACY-WALLET.md`) is the explicit,
+documented exception: while a user's funds are inside its
+deposit → shield → soak → withdraw lifecycle, the relay box holds the kohaku
+HD seed that controls them. It is a custodial privacy service (unlinkability,
+not trustlessness), gated to signed-in users and capped to small mainnet
+amounts (`KOHAKU_MAX_DEPOSIT_WEI` / `KOHAKU_MAX_SEND_WEI`). The kohaku seed +
+master password live in relay env / gitignored files on the box — never in
+git, never in the browser. Don't extend server-side key custody to any other
+feature without the same level of documentation and caps.

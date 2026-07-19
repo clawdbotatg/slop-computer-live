@@ -134,3 +134,16 @@ https://platform.openai.com/api-keys).
 the local cache, and composites a sheet at
 `packages/icon-gen/out/sheet.png` with a manifest. Use this if the
 style ref ever changes and we need to rebuild the whole set.
+
+## Privacy Wallet (Railgun / kohaku-cli)
+
+The Privacy Wallet app is **custodial while funds are inside** (the box
+holds the kohaku seed) — read `docs/PRIVACY-WALLET.md` before touching
+`packages/relay/src/kohaku.ts` or its endpoints. Deploy notes: the relay
+spawns an external **kohaku-cli checkout** (`KOHAKU_CLI_DIR`, run via
+`npx tsx` — the packaged dist is broken); prod needs that checkout, the
+`KOHAKU_*` env block, and the **pre-synced `rg-storage.json`** in the kohaku
+data dir (cold Railgun sync needs archive RPC + ~hours; the seeded file
+makes every later sync incremental). Feature degrades cleanly when
+unconfigured (routes 503, UI says "not configured"), so shipping the code
+without the box setup is safe.

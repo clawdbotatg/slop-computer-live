@@ -33,6 +33,7 @@ import { NotesWindow } from "~~/components/desktop/NotesWindow";
 import { PinnedPeers } from "~~/components/desktop/PinnedPeers";
 import { PokerWindow } from "~~/components/desktop/PokerWindow";
 import { PongWindow } from "~~/components/desktop/PongWindow";
+import { PrivacyWalletWindow } from "~~/components/desktop/PrivacyWalletWindow";
 import { PrivateAppWindow } from "~~/components/desktop/PrivateAppWindow";
 import { PuttWindow } from "~~/components/desktop/PuttWindow";
 import { QrCodeWindow } from "~~/components/desktop/QrCodeWindow";
@@ -194,6 +195,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "mywallet"
+    | "privacy"
     | "research"
     | "leftclaw"
     | "news"
@@ -2657,6 +2659,27 @@ function DesktopInner({ slug }: { slug: string }) {
           }
           return;
         }
+        case "privacy": {
+          // Single-player, like mywallet: a local (private) window.
+          dismissHint();
+          local.openWindow("privacy");
+          const cur = local.slots["app-privacy"];
+          if (cur) {
+            const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, privateMaxZ());
+            const patch: { id: string; z: number; width?: number; height?: number; y?: number } = {
+              id: "app-privacy",
+              z: maxZ + 1,
+            };
+            if (cur.height <= 40) {
+              const h = 420;
+              patch.height = h;
+              patch.width = Math.max(cur.width, 380);
+              patch.y = Math.max(60, window.innerHeight - h - 80);
+            }
+            local.updateSlot(patch);
+          }
+          return;
+        }
         case "audio":
           dismissHint();
           if (media.activeAudio) focusPub("audio");
@@ -3323,6 +3346,20 @@ function DesktopInner({ slug }: { slug: string }) {
               myAddress={selfSessionAddress}
               myHandle={session.authenticated ? (session.handle ?? null) : null}
             />
+          </PrivateAppWindow>
+          {/* Privacy Wallet — Railgun-backed, per-user, custodial while funds
+            are inside (see PrivacyWalletWindow). Private window like the
+            personal Wallet above. */}
+          <PrivateAppWindow
+            local={local}
+            id="privacy"
+            title="PRIVACY WALLET"
+            defaultSlot={{ x: 180, y: 110, width: 440, height: 620 }}
+            minWidth={360}
+            minHeight={420}
+            sharedMaxZ={sharedMaxZ}
+          >
+            <PrivacyWalletWindow myAddress={selfSessionAddress} />
           </PrivateAppWindow>
           {/* Livestream frame guide — dashed rectangle showing the inner
             size of the god-mode (OBS capture) window, broadcast by that

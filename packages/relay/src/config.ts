@@ -154,6 +154,29 @@ export const config = {
   // Default 0.05 ETH — comfortably above a poker/chess buy-in, well below a
   // drain. See docs/PASSKEY-WALLET.md §7.1.
   personalWalletMaxSpendWei: env("PERSONAL_WALLET_MAX_SPEND_WEI", "50000000000000000"),
+  // --- Privacy Wallet (Railgun via kohaku-cli; docs/PRIVACY-WALLET.md) -------
+  // ⚠️ CUSTODIAL: while funds are in the privacy wallet the BOX holds the
+  // keys (kohaku seed + master password live in relay env / on disk, never
+  // in git). Mainnet, small amounts only — hence the caps below.
+  // `kohakuCliDir` = a kohaku-cli checkout the relay spawns via `npx tsx`
+  // (external tool, like ffmpeg for fanout). Empty → the whole feature 503s.
+  kohakuCliDir: env("KOHAKU_CLI_DIR", ""),
+  kohakuRpcUrl: env("KOHAKU_RPC_URL", ""),
+  // kohaku-cli --dataDir (wallet keystore + rg-storage.json). Empty → the
+  // CLI's default (~/.kohaku-cli).
+  kohakuDataDir: env("KOHAKU_DATA_DIR", ""),
+  kohakuWalletName: env("KOHAKU_WALLET", "slop"),
+  // Master password for the kohaku wallet keystore. Passed to the CLI as a
+  // 0600 password FILE (never on argv — argv is visible in `ps`).
+  kohakuWalletPassword: env("KOHAKU_WALLET_PASSWORD", ""),
+  // Per-user deposit ceiling: the watcher refuses to auto-shield a deposit
+  // above this (funds sit at the deposit address for manual handling).
+  // Default 0.05 ETH, matching personalWalletMaxSpendWei's posture.
+  kohakuMaxDepositWei: env("KOHAKU_MAX_DEPOSIT_WEI", "50000000000000000"),
+  // Per-op cap on the send endpoint (the dangerous op). Default 0.05 ETH.
+  kohakuMaxSendWei: env("KOHAKU_MAX_SEND_WEI", "50000000000000000"),
+  // Soak window: how long the anonymity progress bar runs after shielding.
+  kohakuSoakHours: Number(env("KOHAKU_SOAK_HOURS", "4")),
   // --- Apple Pay → personal-wallet on-ramp (Coinbase Onramp; docs §13) -------
   // A CDP Secret API key used to mint single-use Coinbase Onramp session tokens
   // server-side (required since 2025-07-31). The key never touches the browser —
