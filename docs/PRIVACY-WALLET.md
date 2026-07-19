@@ -1,6 +1,9 @@
-# Privacy Wallet — Railgun via kohaku-cli
+# Shield (né Privacy Wallet) — Railgun via kohaku-cli
 
-A desktop app ("Privacy Wallet", id `privacy`) that walks one signed-in user
+User-facing name: **Shield** (app id stays `privacy`). It is a shielded
+pass-through, not a resident wallet — ETH in linked to you, ETH out clean.
+
+The desktop app (label "Shield", id `privacy`) that walks one signed-in user
 through: **deposit ETH → auto-shield into Railgun (mainnet) → soak while the
 anonymity set grows → withdraw to a fresh unlinked address → send anywhere.**
 The ETH you end up spending has no on-chain link to where it came from.
@@ -118,9 +121,9 @@ local stack when done.
   retry later.
 - **One prover at a time**: kohaku ops are serialized in-process; concurrent
   withdrawals queue. Fine at slop scale.
-- **Wallet-mode chat** ("talk to your funds") is not wired yet: the Bank/
-  Wallet chat panels' executors (wagmi / passkey) can't sign for a
-  relay-held key, so v1 ships holdings + send only. A relay-executor chat
-  mode is the follow-up.
+- **Wallet-mode chat + holdings shipped 2026-07-19**: read-only Zerion
+  holdings via the relay proxy, and `POST /v1/kohaku/chat` (Bankr LLM) where
+  the model only PROPOSES sends — the UI confirm chip fires the capped
+  `/v1/kohaku/send`. Destinations must be user-given (0x or ENS).
 - The de-risk run (2026-07, ~0.015 ETH end-to-end: shield `0x260ce0d2…`,
   unshield userOp `0x8541c55b…`) validated the whole mechanism on mainnet.
