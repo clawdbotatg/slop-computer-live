@@ -48,6 +48,8 @@ const CHAIN_LABELS: Record<number, string> = {
   10: "Optimism",
   42161: "Arbitrum",
   137: "Polygon",
+  100: "Gnosis",
+  4663: "Robinhood",
 };
 const chainLabel = (id: number) => CHAIN_LABELS[id] ?? `chain ${id}`;
 
@@ -57,6 +59,8 @@ const EXPLORERS: Record<number, string> = {
   10: "https://optimistic.etherscan.io/tx/",
   42161: "https://arbiscan.io/tx/",
   137: "https://polygonscan.com/tx/",
+  100: "https://gnosisscan.io/tx/",
+  4663: "https://robinhoodchain.blockscout.com/tx/",
 };
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;

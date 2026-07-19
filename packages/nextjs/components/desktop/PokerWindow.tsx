@@ -209,6 +209,7 @@ const CHAIN_LABELS: Record<number, string> = {
   42161: "Arbitrum",
   137: "Polygon",
   100: "Gnosis",
+  4663: "Robinhood",
 };
 
 const OpenTableForm = ({ mesh }: { mesh: PeerMeshState }) => {
