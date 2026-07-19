@@ -34,11 +34,7 @@ export const RPC_CHAIN_NAMES: Record<number, string> = {
   [chains.baseSepolia.id]: "base-sepolia",
   [chains.celo.id]: "celo-mainnet",
   [chains.celoSepolia.id]: "celo-sepolia",
-  // Robinhood Chain (4663) is deliberately absent: Alchemy's slug is
-  // robinhood-mainnet but the network isn't enabled on our Alchemy app yet,
-  // and an entry here would route requests at a 400ing endpoint. Its RPC
-  // comes from scaffold.config rpcOverrides instead. Add
-  // "robinhood-mainnet" here once the dashboard flag is flipped.
+  [robinhood.id]: "robinhood-mainnet",
 };
 
 export const getAlchemyHttpUrl = (chainId: number) => {

@@ -23,10 +23,7 @@ const ALCHEMY_GNOSIS_RPC = `https://gnosis-mainnet.g.alchemy.com/v2/${process.en
 const ALCHEMY_ARBITRUM_RPC = `https://arb-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_OPTIMISM_RPC = `https://opt-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 const ALCHEMY_POLYGON_RPC = `https://polygon-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
-// Robinhood Chain rides its public RPC, not Alchemy: Alchemy supports it
-// (slug robinhood-mainnet) but ROBINHOOD_MAINNET isn't enabled on our app
-// yet — flip this to the Alchemy URL once it's enabled in the dashboard.
-const ROBINHOOD_RPC = "https://rpc.mainnet.chain.robinhood.com";
+const ROBINHOOD_RPC = `https://robinhood-mainnet.g.alchemy.com/v2/${process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? ""}`;
 
 // Patched mainnet: viem ships chains.mainnet with eth.merkle.io as the public RPC,
 // which gets used by any code path that reads chain.rpcUrls directly (ENS,
