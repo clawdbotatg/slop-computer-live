@@ -25,19 +25,10 @@ const ALCHEMY_NETWORK: Record<number, string> = {
   10: "opt-mainnet",
   137: "polygon-mainnet",
   100: "gnosis-mainnet",
-};
-
-// Chains we route to their own public RPC instead of Alchemy. Robinhood
-// Chain has an Alchemy slug (robinhood-mainnet) but ROBINHOOD_MAINNET isn't
-// enabled on our Alchemy app yet — move it into ALCHEMY_NETWORK once the
-// dashboard flag is flipped.
-const PUBLIC_RPC: Record<number, string> = {
-  4663: "https://rpc.mainnet.chain.robinhood.com",
+  4663: "robinhood-mainnet",
 };
 
 export function alchemyUrl(chainId: number): string {
-  const publicRpc = PUBLIC_RPC[chainId];
-  if (publicRpc) return publicRpc;
   const network = ALCHEMY_NETWORK[chainId] ?? "eth-mainnet";
   return `https://${network}.g.alchemy.com/v2/${ALCHEMY_KEY}`;
 }
@@ -52,7 +43,7 @@ export const CHAIN_RPC: Record<string, string> = {
   polygon: `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   xdai: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
   gnosis: `https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-  robinhood: "https://rpc.mainnet.chain.robinhood.com",
+  robinhood: `https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
 };
 
 const CHAIN_EXPLORERS: Record<string, string> = {
@@ -326,11 +317,12 @@ export async function fetchPrices(): Promise<{ symbol: string; price: number | n
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 // eth_simulateV1 emits native-ETH moves under this pseudo-token address.
 const NATIVE_LOG_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-// Chains where Alchemy serves eth_simulateV1. Gnosis (100) and Robinhood
-// (4663) are intentionally absent — we don't route them through Alchemy, so
-// sim there returns chain-unsupported and the caller falls back to the
-// AI-decode card.
-const SIMULATABLE_CHAINS = new Set([1, 8453, 42161, 10, 137]);
+// Chains where Alchemy serves eth_simulateV1. Gnosis (100) is intentionally
+// absent — we don't route it through Alchemy, so sim there returns
+// chain-unsupported and the caller falls back to the AI-decode card.
+// Robinhood (4663) verified working 2026-07-18 (native-transfer sentinel
+// logs emitted as expected).
+const SIMULATABLE_CHAINS = new Set([1, 8453, 42161, 10, 137, 4663]);
 // Native balance we override onto the sender before simulating. NOTE:
 // `validation:false` does NOT skip the balance check — Alchemy auto-funds
 // only ~0.003 of the gas token, so a swap/send whose value exceeds the

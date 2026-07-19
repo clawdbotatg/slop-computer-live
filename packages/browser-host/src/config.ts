@@ -70,12 +70,7 @@ export const SUPPORTED_CHAINS: Record<number, { alchemySubdomain: string; label:
   10: { alchemySubdomain: "opt-mainnet", label: "Optimism" },
   137: { alchemySubdomain: "polygon-mainnet", label: "Polygon" },
   11155111: { alchemySubdomain: "eth-sepolia", label: "Sepolia" },
-  // Drop rpcUrl once ROBINHOOD_MAINNET is enabled on our Alchemy app.
-  4663: {
-    alchemySubdomain: "robinhood-mainnet",
-    label: "Robinhood",
-    rpcUrl: "https://rpc.mainnet.chain.robinhood.com",
-  },
+  4663: { alchemySubdomain: "robinhood-mainnet", label: "Robinhood" },
 };
 
 export const isSupportedChain = (chainId: number): boolean => chainId in SUPPORTED_CHAINS;
