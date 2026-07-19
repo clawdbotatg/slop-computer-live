@@ -1813,28 +1813,11 @@ const SignerCollectionBar = ({
           {signedCount} / {threshold}
         </span>
       </div>
-      <div
-        style={{
-          height: 10,
-          background: "rgba(255,255,255,0.06)",
-          border: "1px solid rgba(255,62,201,0.25)",
-          borderRadius: 5,
-          overflow: "hidden",
-          position: "relative",
-        }}
-      >
-        <div
-          style={{
-            width: `${pct}%`,
-            height: "100%",
-            background: complete
-              ? "linear-gradient(90deg, #7be88a 0%, #3fcfff 100%)"
-              : "linear-gradient(90deg, var(--slop-magenta, #ff3ec9) 0%, var(--slop-cyan, #3fcfff) 100%)",
-            boxShadow: complete ? "0 0 10px rgba(123,232,138,0.55)" : "0 0 10px rgba(255,62,201,0.5)",
-            transition: "width 220ms ease-out",
-          }}
-        />
-      </div>
+      <LoadingBar
+        cells={16}
+        progress={pct}
+        style={{ fontSize: 13, ...(complete ? ({ "--slop-magenta": "#7be88a" } as React.CSSProperties) : {}) }}
+      />
       {!compact ? (
         <ul
           style={{
@@ -1993,29 +1976,11 @@ const TxProgressBar = ({
           {stageLabel} · {elapsedSec}s
         </span>
       </div>
-      <div
-        style={{
-          height: 10,
-          background: "rgba(255,255,255,0.06)",
-          border: "1px solid rgba(63,207,255,0.25)",
-          borderRadius: 5,
-          overflow: "hidden",
-          position: "relative",
-        }}
-      >
-        <div
-          style={{
-            width: `${pct}%`,
-            height: "100%",
-            background:
-              stage === 2
-                ? "linear-gradient(90deg, #7be88a 0%, #3fcfff 100%)"
-                : "linear-gradient(90deg, var(--slop-cyan, #3fcfff) 0%, var(--slop-magenta, #ff3ec9) 100%)",
-            boxShadow: stage === 2 ? "0 0 10px rgba(123,232,138,0.55)" : "0 0 10px rgba(63,207,255,0.5)",
-            transition: "width 220ms ease-out",
-          }}
-        />
-      </div>
+      <LoadingBar
+        cells={16}
+        progress={pct}
+        style={{ fontSize: 13, ...(stage === 2 ? ({ "--slop-magenta": "#7be88a" } as React.CSSProperties) : {}) }}
+      />
       {watchedHash ? (
         <div
           style={{

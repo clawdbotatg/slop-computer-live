@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { VotingE3Panel } from "~~/components/desktop/VotingE3Panel";
-import { SlopAddress } from "~~/components/ui";
+import { LoadingBar, SlopAddress } from "~~/components/ui";
 import type { PeerMeshState, VotePoll } from "~~/hooks/usePeerMesh";
 import {
   COMMITTEE_SIZE,
@@ -322,16 +322,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, marginBottom: 2, wordBreak: "break-word" }}>{opt}</div>
-                    <div style={{ height: 10, background: "#0e0820", borderRadius: 3, overflow: "hidden" }}>
-                      <div
-                        style={{
-                          width: `${pct}%`,
-                          height: "100%",
-                          background: "linear-gradient(90deg, var(--slop-magenta, #ff3ec9), var(--slop-cyan, #3ee9ff))",
-                          transition: "width 600ms ease",
-                        }}
-                      />
-                    </div>
+                    <LoadingBar cells={14} progress={pct} caption="" style={{ fontSize: 12 }} />
                   </div>
                   <div style={{ fontSize: 12, fontFamily: MONO, width: 64, textAlign: "right" }}>
                     {count} · {pct}%

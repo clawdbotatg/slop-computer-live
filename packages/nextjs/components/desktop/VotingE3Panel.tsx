@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { LoadingBar } from "~~/components/ui";
 import type { VoteE3Telemetry } from "~~/hooks/usePeerMesh";
 
 // The nerdy protocol panel for a Sepolia E3 poll — shows exactly what's
@@ -61,10 +63,6 @@ export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
     progress = stageIdx / (STAGES.length - 1) + (total > 0 ? (elapsed / total) * slot : 0);
   }
 
-  const barColor = failed
-    ? "#ff6b6b"
-    : "linear-gradient(90deg, var(--slop-magenta, #ff3ec9), var(--slop-cyan, #3ee9ff))";
-
   const chip = (text: string, href?: string) =>
     href ? (
       <a
@@ -110,16 +108,11 @@ export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
       </div>
 
       {/* Animated progress bar */}
-      <div style={{ height: 12, background: "#0e0820", borderRadius: 4, overflow: "hidden", position: "relative" }}>
-        <div
-          style={{
-            width: `${Math.min(100, Math.max(3, progress * 100))}%`,
-            height: "100%",
-            background: barColor,
-            transition: "width 900ms ease",
-          }}
-        />
-      </div>
+      <LoadingBar
+        cells={20}
+        progress={Math.min(100, progress * 100)}
+        style={{ fontSize: 13, ...(failed ? ({ "--slop-magenta": "#ff6b6b" } as CSSProperties) : {}) }}
+      />
 
       {/* Stage stepper */}
       <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>

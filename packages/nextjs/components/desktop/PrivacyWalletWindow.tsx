@@ -5,6 +5,7 @@ import { Address } from "@scaffold-ui/components";
 import { QRCodeSVG } from "qrcode.react";
 import { type Address as AddressType, type Hex, isAddress, parseEther } from "viem";
 import { useAccount, useChainId, usePublicClient, useSendTransaction, useSwitchChain } from "wagmi";
+import { LoadingBar } from "~~/components/ui";
 import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
@@ -723,24 +724,7 @@ function SoakBar({ s }: { s: KohakuView }) {
   const remainM = Math.round((remainMs % 3_600_000) / 60_000);
   return (
     <div>
-      <div
-        style={{
-          height: 18,
-          borderRadius: 4,
-          border: `1px solid rgba(255,62,201,0.4)`,
-          background: "rgba(0,0,0,0.4)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            width: `${pct}%`,
-            height: "100%",
-            background: `linear-gradient(90deg, ${ACCENT}, var(--slop-cyan, #00e5ff))`,
-            transition: "width 1s linear",
-          }}
-        />
-      </div>
+      <LoadingBar cells={20} progress={pct} caption="" style={{ fontSize: 14 }} />
       <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)", marginTop: 3 }}>
         {pct}% of the {s.soakHours}h soak{remainMs > 0 ? ` — ${remainH}h ${remainM}m left` : " — done"}
       </div>
