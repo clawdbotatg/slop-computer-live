@@ -216,14 +216,14 @@ const LOCKED_APP_TITLES: Record<string, string> = {
   "nifty-ink": "NIFTYINK",
 };
 
-// Default cascade for icons whose slot hasn't been saved yet — 6 icons
-// stack vertically down the left edge, then wrap to a new column 100px
-// to the right.
+// Default cascade for icons whose slot hasn't been saved yet — 4 icons
+// stack vertically down the left edge (matching the curated grid's row
+// count), then wrap to a new column 100px to the right.
 const ICON_DEFAULT_X = 24;
 const ICON_DEFAULT_Y0 = 60;
 const ICON_ROW_PITCH = 110;
 const ICON_COL_PITCH = 100;
-const ICONS_PER_COL = 6;
+const ICONS_PER_COL = 4;
 
 // Explicit grid for View → Auto Arrange Icons AND for the default position
 // of any icon whose slot hasn't been set yet. 5 columns × 4 rows, hand-
