@@ -186,6 +186,24 @@ const AI_PLAYERS: AIPlayerConfig[] = [
   // EMPTY content; even throttled to low effort it was the slowest of the
   // fast-tier and stalled the table. Also the WORST performer at the Kaggle
   // chess arena (lost every game in under 8 moves). Gone for now.
+  // Kimi K3 — Moonshot's newer flagship, added by request despite the
+  // family's rough K2.6 history (above). Smoke-tested 2026-07 on the real
+  // mover prompts and it's a different animal: chess ~6s/move with near-zero
+  // reasoning tokens and legal UCI; poker ~14s/decision with only ~120–210
+  // reasoning tokens and legal, blind-aligned raises — never hit the cap or
+  // returned empty. reasoning_effort didn't move its latency, so unset.
+  // Priciest hand in the lineup (~$1.05/100 hands); the dropdown surfaces it.
+  // Chess strength unproven for the family — watch its early games.
+  {
+    id: "bankr-kimi-k3",
+    label: "Kimi K3 (Bankr) 🧠",
+    baseURL: "https://llm.bankr.bot/v1",
+    model: "kimi-k3",
+    envVar: "BANKR_API_KEY",
+    authStyle: "x-api-key",
+    avgMs: 14000,
+    costPerHandUsd: 0.0105,
+  },
   // Claude Opus 4.8 (Bankr + Venice) and Claude Sonnet 4.6 (Venice) PULLED
   // by request to keep the poker lineup lean.
   // ---- Venice — non-Claude picks ----------------------------------
