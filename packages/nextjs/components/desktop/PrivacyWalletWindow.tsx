@@ -294,10 +294,13 @@ function IntroPanel({ onOpen, busy }: { onOpen: () => void; busy: boolean }) {
 
 function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
   const [copied, setCopied] = useState(false);
-  // Default to the padded deposit that exits as a clean 0.01 — the most
-  // common Railgun exit size at our scale (field-measured, 2026-07).
+  // Default to the padded deposit whose exit lands in the biggest Railgun
+  // crowd at our scale — received 0.009975 (n=100/mo), i.e. gross 0.01 minus
+  // the fee. Field-measured, see ops/RAILGUN-DENOMINATION-STUDY.md.
   const suggestions = s.depositSuggestions ?? [];
-  const [amountEth, setAmountEth] = useState(() => suggestions.find(x => x.exitEth === "0.01")?.depositEth ?? "0.01");
+  const [amountEth, setAmountEth] = useState(
+    () => suggestions.find(x => x.exitEth.startsWith("0.009"))?.depositEth ?? "0.0114",
+  );
   const [busyBtn, setBusyBtn] = useState<"wallet" | "bank" | null>(null);
   const [depErr, setDepErr] = useState<string | null>(null);
   const [sentHash, setSentHash] = useState<string | null>(null);
@@ -440,14 +443,14 @@ function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
       </div>
       {suggestions.length > 0 && (
         <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ fontSize: 9, color: "var(--slop-text-muted, #888)" }}>clean exits:</span>
+          <span style={{ fontSize: 9, color: "var(--slop-text-muted, #888)" }}>blend-in sizes:</span>
           {suggestions.slice(-3).map(x => (
             <button
               key={x.exitEth}
               type="button"
               onClick={() => setAmountEth(x.depositEth)}
               style={{ ...pillStyle(amountEth === x.depositEth), fontSize: 9, padding: "2px 6px" }}
-              title={`Deposit ${x.depositEth} to withdraw a clean ${x.exitEth} — blends with the most common Railgun exit sizes`}
+              title={`Deposit ${x.depositEth} → your withdrawal receives exactly ${x.exitEth} ETH, the amount the biggest Railgun crowd receives (round gross minus the 0.25% fee). Blends you in; a "cleaner" round number is a smaller crowd.`}
             >
               {x.depositEth} → {x.exitEth} out
             </button>

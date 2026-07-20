@@ -56,11 +56,19 @@ const SHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_SHIELD_GAS_RESERVE_WEI 
 const UNSHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_UNSHIELD_GAS_RESERVE_WEI ?? "500000000000000"); // 0.0005
 // Withdrawals are rounded DOWN to this grid so every exit is a common
 // denomination instead of a wei-precision fingerprint (fallback when no
-// 1-2-5 denomination below fits well).
+// crowd denomination below fits well).
 const WITHDRAW_GRID_WEI = BigInt(process.env.KOHAKU_WITHDRAW_GRID_WEI ?? "500000000000000"); // 0.0005
-// The 1-2-5 exit denominations the Railgun crowd actually uses (largest
-// first), within our cap. See the field study note in kohakuWithdraw.
-const WITHDRAW_DENOMS_WEI = [50n, 20n, 10n, 5n, 2n, 1n].map(m => m * 1_000_000_000_000_000n); // 0.05 … 0.001
+// The RECEIVED amounts the biggest Railgun crowds actually emit (largest
+// first, within our cap). Key finding from the 30-day study
+// (ops/RAILGUN-DENOMINATION-STUDY.md): the dominant convention is round
+// *gross* on the 1-2-5 series, so the recipient receives gross × (1 − 25 bps
+// Railgun fee). At our scale that's 0.009975 (crowd of 100/mo) — NOT a clean
+// 0.01 (crowd of 29). kohaku's --amount-wei is the RECEIVED amount, so we
+// target these exact values directly. Recompute from the 1-2-5 gross grid so
+// the fee math stays honest if the fee ever changes.
+const RG_UNSHIELD_FEE_BPS = 25n;
+const WITHDRAW_GROSS_125 = [50n, 20n, 10n, 5n, 2n, 1n].map(m => m * 1_000_000_000_000_000n); // 0.05 … 0.001 gross
+const WITHDRAW_RECV_DENOMS_WEI = WITHDRAW_GROSS_125.map(g => g - (g * RG_UNSHIELD_FEE_BPS) / 10_000n);
 // Railgun shield fee is 25 bps; the credited note = amount − fee.
 const SHIELD_FEE_BPS = 25n;
 // Fallback POI gate: if we can't match the user's note in private_notes,
@@ -647,20 +655,22 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
     // change (observed live: max quoted 0.0164 against a 0.0094 note).
     // The crumbs stay in the pool as anonymity-set ballast.
     //
-    // Denomination choice comes from watching the actual crowd: a week of
-    // mainnet Unshield events (n=559, 2026-07 via the local node) shows the
-    // dominant deliberate pattern is "recipient receives exactly X" on the
-    // 1-2-5 series (0.01 received was the single biggest cluster at our
-    // size; then 0.005 / 0.05 / 0.1 / 0.5 / 1). So: snap to the largest
-    // 1-2-5 denomination when it captures ≥85% of the balance — the
-    // deposit-suggestion UI pads deposits so this is the normal case — and
-    // fall back to the fine grid otherwise so funds are never stranded.
+    // Denomination choice comes from watching the actual crowd: 30 days of
+    // mainnet Unshield events (n=2627 via the local node — see
+    // ops/RAILGUN-DENOMINATION-STUDY.md). The dominant convention is round
+    // *gross*, so the biggest crowds RECEIVE gross×(1−25bps): 0.009975
+    // (n=100), 0.09975 (45), 0.9975 (40), 0.49875 (19)… kohaku's
+    // --amount-wei IS the received amount, so we target those values
+    // directly. Snap to the largest crowd denom the balance affords (≥85%
+    // capture); fine-grid fallback so funds never strand.
     const expected = BigInt(u.expectedNoteWei || "0");
     const available = expected - UNSHIELD_GAS_RESERVE_WEI;
-    // Max receivable after the 25 bps unshield fee (+5 bps safety).
-    const maxRecv = (available * 9_965n) / 10_000n;
+    // Max we can have the recipient RECEIVE: the note still owes the 25 bps
+    // unshield fee on the gross, pulled from balance on top. received ≈
+    // available / (1 + 25bps); use a 30 bps safety divisor.
+    const maxRecv = (available * 10_000n) / 10_030n;
     let amount = (maxRecv / WITHDRAW_GRID_WEI) * WITHDRAW_GRID_WEI;
-    for (const d of WITHDRAW_DENOMS_WEI) {
+    for (const d of WITHDRAW_RECV_DENOMS_WEI) {
       if (d <= maxRecv && d * 100n >= maxRecv * 85n) {
         amount = d;
         break;
@@ -948,20 +958,23 @@ export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<Koh
 
 // --- State views ------------------------------------------------------------
 
-// Deposits that land a clean 1-2-5 exit, working the fee waterfall
-// backwards: deposit → −shield gas → −25 bps shield fee → note →
-// −unshield gas reserve → −25(+5) bps unshield fee → received. Padded a
-// touch and rounded up to 0.0001 so it's a typeable number.
+// Deposits pre-padded to land exactly on a big-crowd RECEIVED denomination,
+// working the fee waterfall backwards: deposit → −shield gas → −25 bps shield
+// fee → note → −unshield gas reserve → −25 bps unshield fee → received. The
+// exit shown is the crowd amount (0.009975…), not a clean round number — the
+// clean number is a smaller crowd (see the study). Rounded up to 0.0001 so
+// the deposit is typeable.
 function depositSuggestions(): { depositEth: string; exitEth: string }[] {
   const out: { depositEth: string; exitEth: string }[] = [];
   const grid = 100_000_000_000_000n; // 0.0001 display grid
-  for (const d of [...WITHDRAW_DENOMS_WEI].reverse()) {
-    const noteNeeded = (d * 10_000n) / 9_965n + UNSHIELD_GAS_RESERVE_WEI;
+  for (const recv of [...WITHDRAW_RECV_DENOMS_WEI].reverse()) {
+    // note must cover received + unshield fee (25bps of gross≈recv) + gas.
+    const noteNeeded = recv + (recv * RG_UNSHIELD_FEE_BPS) / 10_000n + UNSHIELD_GAS_RESERVE_WEI;
     const beforeShieldFee = (noteNeeded * 10_000n) / 9_975n;
-    let dep = beforeShieldFee + SHIELD_GAS_RESERVE_WEI + 200_000_000_000_000n;
+    let dep = beforeShieldFee + SHIELD_GAS_RESERVE_WEI + 200_000_000_000_000n; // +0.0002 pad
     dep = ((dep + grid - 1n) / grid) * grid;
     if (dep < MIN_DEPOSIT_WEI || dep > BigInt(config.kohakuMaxDepositWei)) continue;
-    out.push({ depositEth: formatEther(dep), exitEth: formatEther(d) });
+    out.push({ depositEth: formatEther(dep), exitEth: formatEther(recv) });
   }
   return out;
 }
