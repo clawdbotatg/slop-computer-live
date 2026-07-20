@@ -27,6 +27,7 @@ import { http, createPublicClient, formatEther, getAddress, isAddress, parseAbiI
 import { mainnet } from "viem/chains";
 import { normalize } from "viem/ens";
 import { bankrChat, hasBankrLlm } from "./bankr-llm.js";
+import { getState as getGasState } from "./gas.js";
 
 const STATE_FILE = process.env.KOHAKU_STATE_PATH ?? "/var/lib/slop-relay/kohaku-state.json";
 
@@ -805,6 +806,7 @@ export async function kohakuSetRpc(ownerRaw: string, urlRaw: string): Promise<Ko
 const CHAT_SYS = [
   "You are the voice of a user's Shield wallet on slop.computer — ETH that was passed through Railgun's private pool and now sits at a fresh, unlinkable address held by the relay.",
   "Answer questions about the wallet plainly in 1-3 short sentences, plain text, a light cyberdelic vibe is fine. You know only what WALLET STATE says.",
+  "WALLET STATE may include ethUsdPrice (Chainlink ETH/USD spot) and balanceUsd (the holding's precomputed dollar value) — quote those for any what's-it-worth question; never do your own multiplication. If they're null, say price data is briefly unavailable.",
   "If (and only if) the user asks to SEND ETH somewhere, include a proposal. The destination must be one the USER explicitly gave — a 0x address or a .eth name. NEVER invent a destination or an amount. 'send all/everything/max' → amountEth \"max\".",
   'Return ONLY compact JSON, no markdown: {"reply":"<text>","proposal":{"to":"<0x-or-ens>","amountEth":"<decimal or max>"}|null}',
   "If the user wants to send to their main/known/public wallet, still propose it but warn in the reply that sending to a known wallet publicly ties the clean ETH to them — a FRESH wallet preserves anonymity.",
@@ -843,9 +845,20 @@ export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<Koh
     }
   }
   const v = publicView(u);
+  // Chainlink ETH/USD from the gas poller — precompute the USD value so
+  // the model reports it instead of attempting arithmetic (or refusing).
+  // Pre-wallet phases have no withdraw balance yet; value whatever ETH is
+  // in flight (pool note, then raw deposit) instead.
+  const ethUsd = getGasState()?.ethUsd ?? null;
+  const holdingEth = [balanceEth, v.poolSpendableEth, v.expectedNoteEth, v.depositedEth].find(
+    x => x && Number(x) > 0,
+  );
+  const balanceUsd = ethUsd && holdingEth ? (Number(holdingEth) * ethUsd).toFixed(2) : null;
   const ctx = {
     phase: v.phase,
     balanceEth,
+    balanceUsd,
+    ethUsdPrice: ethUsd ? ethUsd.toFixed(2) : null,
     address: u.withdrawAddress,
     soakProgressPct: Math.round(v.soakProgress * 100),
     anonymityShields: v.anonymityShields,
