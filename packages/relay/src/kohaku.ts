@@ -54,6 +54,9 @@ const SHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_SHIELD_GAS_RESERVE_WEI 
 // Reserved from the private balance for the unshield's 4337 bundler gas
 // (paid out of the pool, on top of the withdrawn amount).
 const UNSHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_UNSHIELD_GAS_RESERVE_WEI ?? "500000000000000"); // 0.0005
+// Withdrawals are rounded DOWN to this grid so every exit is a common
+// denomination (0.0085, 0.0090, …) instead of a wei-precision fingerprint.
+const WITHDRAW_GRID_WEI = BigInt(process.env.KOHAKU_WITHDRAW_GRID_WEI ?? "500000000000000"); // 0.0005
 // Railgun shield fee is 25 bps; the credited note = amount − fee.
 const SHIELD_FEE_BPS = 25n;
 // Fallback POI gate: if we can't match the user's note in private_notes,
@@ -630,12 +633,18 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
 
     // How much to unshield: the user's accounted note, minus the 25 bps
     // unshield fee margin and a flat gas reserve (both paid out of the
-    // private balance on top of the amount). NEVER --amount-max: the pool
-    // is commingled, so "max" is the whole pool — including other users'
-    // notes and legacy change (observed live: max quoted 0.0164 against a
-    // 0.0094 accounted note). The leftover sliver stays as private dust.
+    // private balance on top of the amount), then rounded DOWN to the
+    // withdrawal grid. The grid is a privacy feature, not cosmetics: the
+    // first live cycle exited with 0.0088483705 ETH — a wei-precision
+    // snowflake that fingerprints the withdrawal against the deposit no
+    // matter how long it soaked. Round denominations make every exit look
+    // like every other exit. NEVER --amount-max: the pool is commingled,
+    // so "max" is the whole pool — including other users' notes and legacy
+    // change (observed live: max quoted 0.0164 against a 0.0094 note).
+    // The crumbs stay in the pool as anonymity-set ballast.
     const expected = BigInt(u.expectedNoteWei || "0");
-    const amount = expected - (expected * 30n) / 10_000n - UNSHIELD_GAS_RESERVE_WEI;
+    const raw = expected - (expected * 30n) / 10_000n - UNSHIELD_GAS_RESERVE_WEI;
+    const amount = (raw / WITHDRAW_GRID_WEI) * WITHDRAW_GRID_WEI;
     if (amount <= 0n) throw new Error("balance too small to cover the unshield fee + gas reserve");
     const amountArgs = ["--amount-wei", amount.toString()];
     const r = await runKohakuRaw(
