@@ -1558,7 +1558,7 @@ app.get("/v1/state", async (req, reply) => {
     walletChat: roomFromReq(req).walletChat.current().state,
     chyronState: roomFromReq(req).chyron.getState(),
     // Slim per-user privacy-wallet view (full detail at /v1/kohaku/state).
-    kohaku: kohakuSummaryFor(a.session.address),
+    kohaku: kohakuSummaryFor(a.session.address, slugFromReq(req)),
   };
 });
 
@@ -2297,11 +2297,13 @@ app.get("/v1/wallet", async (req, reply) => {
 });
 
 // --- Privacy Wallet (Railgun via kohaku-cli) ---------------------------------
-// Per-user, keyed to the authed session's ADDRESS (SIWE or passkey) — an
-// anonymous session has no durable owner for custodial funds, so it's
-// rejected. Room gate skipped like /v1/tip: the privacy wallet is personal,
-// not room-scoped. All money movement is server-side (see kohaku.ts for the
-// custody caveats); these routes only gate + relay to that module.
+// Per-(user, ROOM): keyed to the authed session's ADDRESS (SIWE or passkey)
+// plus the request's room slug — the same user gets an independent shield in
+// every room (legacy pre-room records still resolve everywhere; see the owner
+// key block in kohaku.ts). An anonymous session has no durable owner for
+// custodial funds, so it's rejected. Auth room gate still skipped like
+// /v1/tip — the slug only scopes the record. All money movement is
+// server-side (see kohaku.ts for the custody caveats).
 
 function kohakuOwnerFromReq(req: Parameters<typeof v1AuthFromReq>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }): string | null {
   const a = v1AuthFromReq(req, { skipRoomGate: true });
@@ -2320,14 +2322,14 @@ app.get("/v1/kohaku/state", async (req, reply) => {
   const owner = kohakuOwnerFromReq(req, reply);
   if (!owner) return;
   reply.header("cache-control", "no-store");
-  return { ok: true, ...(await kohakuStateFor(owner)) };
+  return { ok: true, ...(await kohakuStateFor(owner, slugFromReq(req))) };
 });
 
 app.post("/v1/kohaku/open", async (req, reply) => {
   const owner = kohakuOwnerFromReq(req, reply);
   if (!owner) return;
   if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
-  const r = await kohakuOpen(owner);
+  const r = await kohakuOpen(owner, slugFromReq(req));
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
@@ -2336,7 +2338,7 @@ app.post("/v1/kohaku/withdraw", async (req, reply) => {
   const owner = kohakuOwnerFromReq(req, reply);
   if (!owner) return;
   if (!isKohakuConfigured()) return reply.code(503).send({ ok: false, error: "privacy wallet not configured" });
-  const r = await kohakuWithdraw(owner);
+  const r = await kohakuWithdraw(owner, slugFromReq(req));
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
@@ -2370,7 +2372,7 @@ app.post<{ Body: KohakuChatBody }>("/v1/kohaku/chat", async (req, reply) => {
     return reply.code(429).send({ ok: false, error: "slow down a sec" });
   }
   const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const r = await kohakuChat(owner, text);
+  const r = await kohakuChat(owner, slugFromReq(req), text);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
@@ -2385,7 +2387,7 @@ app.post<{ Body: KohakuSendBody }>("/v1/kohaku/send", async (req, reply) => {
   const max = req.body?.max === true;
   const amountWei = typeof req.body?.amountWei === "string" ? req.body.amountWei : "";
   if (!to || (!max && !amountWei)) return reply.code(400).send({ ok: false, error: "need to + amountWei (or max:true)" });
-  const r = await kohakuSend(owner, to, max ? "max" : amountWei);
+  const r = await kohakuSend(owner, slugFromReq(req), to, max ? "max" : amountWei);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
@@ -2405,7 +2407,7 @@ app.post<{ Body: KohakuExecuteBody }>("/v1/kohaku/execute", async (req, reply) =
   }
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   if (!id) return reply.code(400).send({ ok: false, error: "missing proposal id" });
-  const r = await kohakuExecuteChatTx(owner, id);
+  const r = await kohakuExecuteChatTx(owner, slugFromReq(req), id);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });

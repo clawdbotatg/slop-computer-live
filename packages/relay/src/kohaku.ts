@@ -5,8 +5,10 @@
 // slop box holds the keys. This buys UNLINKABILITY between the deposit source
 // and the eventual spend, not trustlessness. Mainnet, small amounts, caps.
 //
-// Architecture: ONE box kohaku wallet ("slop"), per-user accounting. Each
-// user gets a distinct HD public account for deposit and another for
+// Architecture: ONE box kohaku wallet ("slop"), per-(user, room) accounting
+// — the same signed-in user gets an independent shield cycle in every room
+// (see the owner-key block below). Each cycle gets a distinct HD public
+// account for deposit and another for
 // withdrawal (addresses isolate users); all shielded funds commingle in one
 // Railgun balance — the best case for anonymity and one historical sync for
 // the whole app. The relay tracks who owns what; Railgun notes are fungible
@@ -156,11 +158,40 @@ export function setKohakuLogger(fn: (line: string) => void): void {
 const client = (rpcUrl?: string) =>
   createPublicClient({ chain: mainnet, transport: http(rpcUrl ?? config.kohakuRpcUrl) });
 
+// --- Owner keys (per-room shields) -----------------------------------------
+//
+// A shield cycle is scoped to (user, ROOM): the same signed-in user gets an
+// independent wallet in every room. Record keys are `${address}::${slug}`.
+// Records written before room-scoping used the bare address — those LEGACY
+// records resolve as a fallback in EVERY room (exactly the old behavior) so
+// live funds are never stranded; a legacy cycle dies naturally when it's
+// drained and reopened, which migrates it to the current room's key. The
+// per-user RPC override stays keyed by ADDRESS — it's a user preference,
+// not a room fact.
+
+function addressOf(ownerKey: string): string {
+  return ownerKey.split("::")[0]!;
+}
+
+function ownerKeyFor(addressRaw: string, slugRaw: string): string {
+  return `${addressRaw.toLowerCase()}::${(slugRaw || "").toLowerCase()}`;
+}
+
+/** Resolve the record key for (address, room): room-scoped record first,
+ *  then the legacy bare-address record, else the room-scoped key (creation). */
+function resolveOwner(addressRaw: string, slugRaw: string): string {
+  const key = ownerKeyFor(addressRaw, slugRaw);
+  if (state.users[key]) return key;
+  const legacy = addressRaw.toLowerCase();
+  if (state.users[legacy]) return legacy;
+  return key;
+}
+
 // Effective RPC for one owner's ops: their validated override, else the box
 // default. The shared pool sync always uses the box default — it serves
 // everyone's commingled data, not one user's.
 function rpcFor(owner: string): string {
-  return state.settings?.[owner]?.rpcUrl || config.kohakuRpcUrl;
+  return state.settings?.[addressOf(owner)]?.rpcUrl || config.kohakuRpcUrl;
 }
 
 // What the UI may show as "the default RPC". NEVER the raw URL: a box
@@ -579,11 +610,13 @@ function newUser(owner: string): KohakuUser {
 
 export type KohakuOpResult = { ok: true; [k: string]: unknown } | { ok: false; error: string };
 
-/** Create (or return) this user's privacy wallet cycle with a fresh deposit
- *  address. Also the "start over" path once a finished cycle is emptied. */
-export async function kohakuOpen(ownerRaw: string): Promise<KohakuOpResult> {
+/** Create (or return) this user's privacy wallet cycle in THIS room, with a
+ *  fresh deposit address. Also the "start over" path once a finished cycle is
+ *  emptied — which is the moment a legacy (pre-room-scoping) record migrates
+ *  to the current room's key. */
+export async function kohakuOpen(ownerRaw: string, roomSlug: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const existing = state.users[owner];
   if (existing) {
     if (existing.phase !== "wallet") return { ok: true, state: publicView(existing) };
@@ -611,18 +644,20 @@ export async function kohakuOpen(ownerRaw: string): Promise<KohakuOpResult> {
   // order, and `shield --from` also accepts the ADDRESS itself. We store
   // the index as null and pass the address to --from. (shield-flow's
   // findAccountWithBalance accepts address-or-index.)
-  const u = newUser(owner);
+  const key = ownerKeyFor(ownerRaw, roomSlug);
+  if (owner !== key) delete state.users[owner]; // drained legacy record → adopt into this room
+  const u = newUser(key);
   u.depositAddress = getAddress(addr);
-  state.users[owner] = u;
+  state.users[key] = u;
   log(u, `privacy wallet opened — deposit address ${u.depositAddress}`);
   persist();
   return { ok: true, state: publicView(u) };
 }
 
 /** Unshield the user's private balance to a fresh, unlinked address. */
-export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> {
+export async function kohakuWithdraw(ownerRaw: string, roomSlug: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet — open one first" };
   if (busyOps.has(owner)) return { ok: false, error: `busy: ${busyOps.get(owner)}` };
@@ -712,9 +747,14 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
 
 /** Send ETH out of the user's (relay-held) withdrawal address. The dangerous
  *  op: capped per-op, simulated by the CLI before broadcast. */
-export async function kohakuSend(ownerRaw: string, toRaw: string, amountWeiRaw: string | "max"): Promise<KohakuOpResult> {
+export async function kohakuSend(
+  ownerRaw: string,
+  roomSlug: string,
+  toRaw: string,
+  amountWeiRaw: string | "max",
+): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet" };
   if (u.phase !== "wallet" || !u.withdrawAddress) return { ok: false, error: "no withdrawn funds to send yet" };
@@ -871,9 +911,9 @@ function chatJson(text: string): { reply?: unknown; proposal?: unknown } | null 
  *  the capped relay endpoints execute, so the model holds no authority.
  *  Wallet phase runs the full intent engine (swaps, ERC-20s, LI.FI) against
  *  the clean address; earlier phases keep the lightweight Q&A below. */
-export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<KohakuOpResult> {
+export async function kohakuChat(ownerRaw: string, roomSlug: string, textRaw: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "open your Shield first" };
   const text = textRaw.trim().slice(0, 500);
@@ -1104,9 +1144,9 @@ async function shieldIntentTurn(owner: string, u: KohakuUser, text: string): Pro
  *  step runs as its own CLI invocation so transact-raw's pre-broadcast
  *  simulation sees the prior step mined (approve → swap). Plain ETH sends
  *  (empty calldata) reuse the proven `transfer` command. */
-export async function kohakuExecuteChatTx(ownerRaw: string, id: string): Promise<KohakuOpResult> {
+export async function kohakuExecuteChatTx(ownerRaw: string, roomSlug: string, id: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet" };
   if (u.phase !== "wallet" || !u.withdrawAddress) return { ok: false, error: "no withdrawn funds yet" };
@@ -1244,14 +1284,17 @@ function publicView(u: KohakuUser) {
 export type KohakuPublicView = ReturnType<typeof publicView>;
 
 /** Full per-user view for GET /v1/kohaku/state (null = no cycle opened). */
-export async function kohakuStateFor(ownerRaw: string): Promise<{
+export async function kohakuStateFor(
+  ownerRaw: string,
+  roomSlug: string,
+): Promise<{
   configured: boolean;
   state: KohakuPublicView | null;
   walletBalanceEth: string | null;
   rpcUrl: string | null;
   defaultRpcUrl: string;
 }> {
-  const owner = ownerRaw.toLowerCase();
+  const owner = resolveOwner(ownerRaw, roomSlug);
   const u = state.users[owner];
   let walletBalanceEth: string | null = null;
   if (u?.phase === "wallet" && u.withdrawAddress && isKohakuConfigured()) {
@@ -1265,15 +1308,18 @@ export async function kohakuStateFor(ownerRaw: string): Promise<{
     configured: isKohakuConfigured(),
     state: u ? publicView(u) : null,
     walletBalanceEth,
-    rpcUrl: state.settings?.[owner]?.rpcUrl ?? null,
+    rpcUrl: state.settings?.[addressOf(owner)]?.rpcUrl ?? null,
     defaultRpcUrl: defaultRpcDisplay(),
   };
 }
 
 /** One-line summary folded into the big /v1/state snapshot. */
-export function kohakuSummaryFor(ownerRaw: string | null): { phase: KohakuPhase; soakProgress: number } | null {
+export function kohakuSummaryFor(
+  ownerRaw: string | null,
+  roomSlug: string,
+): { phase: KohakuPhase; soakProgress: number } | null {
   if (!ownerRaw) return null;
-  const u = state.users[ownerRaw.toLowerCase()];
+  const u = state.users[resolveOwner(ownerRaw, roomSlug)];
   if (!u) return null;
   const v = publicView(u);
   return { phase: v.phase, soakProgress: v.soakProgress };
