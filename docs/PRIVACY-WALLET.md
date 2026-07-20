@@ -125,5 +125,19 @@ local stack when done.
   holdings via the relay proxy, and `POST /v1/kohaku/chat` (Bankr LLM) where
   the model only PROPOSES sends — the UI confirm chip fires the capped
   `/v1/kohaku/send`. Destinations must be user-given (0x or ENS).
+- **Full intent-engine chat shipped 2026-07-20**: in wallet phase the chat
+  runs `runWalletIntent` (the Wallet app's brain — LI.FI swaps, ERC-20
+  sends, wraps, simulation) against the clean address in `walletKind:"eoa"`
+  mode with a SHIELD MODE system override (mainnet-only, per-op ETH cap,
+  known-wallet privacy warning). The engine's transactions become a
+  server-stored proposal (10 min TTL, one per owner); the UI confirm chip
+  fires `POST /v1/kohaku/execute {id}` — calldata never crosses the wire
+  inbound. Execution is per-step kohaku-cli invocations (`transfer` for
+  plain sends, `transact-raw` otherwise) so each step's pre-broadcast
+  simulation sees the prior step mined (approve → swap). Total ETH value
+  per confirmed op stays under `KOHAKU_MAX_SEND_WEI`; ERC-20 amounts ride
+  free (they entered via capped ETH). Earlier phases keep the lightweight
+  Bankr Q&A. NOTE: post-swap the clean address holds ERC-20s — the Send tab
+  is still ETH-only, so tokens leave via chat ("send my USDC to 0x…").
 - The de-risk run (2026-07, ~0.015 ETH end-to-end: shield `0x260ce0d2…`,
   unshield userOp `0x8541c55b…`) validated the whole mechanism on mainnet.

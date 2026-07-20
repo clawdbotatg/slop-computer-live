@@ -1554,6 +1554,9 @@ export type WalletIntentInput = {
   // treats the user's MetaMask address as a contract. Defaults to multisig
   // for back-compat.
   walletKind?: "multisig" | "eoa";
+  // Caller-specific framing appended after the mode override (read last, so
+  // it wins conflicts) — e.g. the Shield wallet's mainnet-only/cap rules.
+  extraSystem?: string;
   recentActivity?: {
     type: string;
     chain: string;
@@ -1632,7 +1635,12 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
       : "";
 
   const loopMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: input.walletKind === "eoa" ? SYSTEM_PROMPT + EOA_MODE_OVERRIDE : SYSTEM_PROMPT },
+    {
+      role: "system",
+      content:
+        (input.walletKind === "eoa" ? SYSTEM_PROMPT + EOA_MODE_OVERRIDE : SYSTEM_PROMPT) +
+        (input.extraSystem ? `\n${input.extraSystem}` : ""),
+    },
     {
       role: "user",
       content: `User's wallet address: ${input.address}\nConnected chain ID: ${userChainId}${signerSummary}${portfolioSummary}${defiSummary}${activitySummary}\n\n[Context injected — ready for conversation]`,

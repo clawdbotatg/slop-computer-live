@@ -28,6 +28,9 @@ import { mainnet } from "viem/chains";
 import { normalize } from "viem/ens";
 import { bankrChat, hasBankrLlm } from "./bankr-llm.js";
 import { getState as getGasState } from "./gas.js";
+import { randomBytes } from "node:crypto";
+import { type IntentStep, runWalletIntent } from "./wallet-intent.js";
+import { fetchActivity, fetchPortfolio } from "./wallet-data.js";
 
 const STATE_FILE = process.env.KOHAKU_STATE_PATH ?? "/var/lib/slop-relay/kohaku-state.json";
 
@@ -864,17 +867,21 @@ function chatJson(text: string): { reply?: unknown; proposal?: unknown } | null 
   }
 }
 
-/** One turn of wallet chat. Stateless server-side; the LLM only ever
- *  PROPOSES a send — the UI confirms and the capped /v1/kohaku/send
- *  executes, so the model holds no authority. */
+/** One turn of wallet chat. The LLM only ever PROPOSES — the UI confirms and
+ *  the capped relay endpoints execute, so the model holds no authority.
+ *  Wallet phase runs the full intent engine (swaps, ERC-20s, LI.FI) against
+ *  the clean address; earlier phases keep the lightweight Q&A below. */
 export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  if (!hasBankrLlm()) return { ok: false, error: "chat isn't configured on this box" };
   const owner = ownerRaw.toLowerCase();
   const u = state.users[owner];
   if (!u) return { ok: false, error: "open your Shield first" };
   const text = textRaw.trim().slice(0, 500);
   if (!text) return { ok: false, error: "say something" };
+  if (u.phase === "wallet" && u.withdrawAddress && config.aiWalletLlmKey) {
+    return shieldIntentTurn(owner, u, text);
+  }
+  if (!hasBankrLlm()) return { ok: false, error: "chat isn't configured on this box" };
 
   let balanceEth: string | null = null;
   if (u.phase === "wallet" && u.withdrawAddress) {
@@ -954,6 +961,224 @@ export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<Koh
   }
 
   return { ok: true, reply, proposal };
+}
+
+// --- Full intent-engine chat (wallet phase) ---------------------------------
+//
+// The same brain as the main Wallet app (runWalletIntent: LI.FI swaps, ERC-20
+// sends, wraps, simulation, ENS) pointed at the Shield clean address. The
+// custody inversion is the danger here — the relay holds this key, so unlike
+// the multisig flow nobody co-signs. Containment: the engine only ever stores
+// a proposal server-side; the client can confirm an id, never submit calldata;
+// total ETH value per confirmed op stays under the send cap; mainnet only;
+// proposals expire before LI.FI quotes go stale.
+
+const CHAT_HISTORY_TURNS = 12;
+const PROPOSAL_TTL_MS = 10 * 60_000;
+const MAX_STEP_DELAY_MS = 120_000;
+
+type ChatProposal = {
+  id: string;
+  steps: IntentStep[];
+  delayMs: number;
+  createdAt: number;
+};
+
+const chatHistories = new Map<string, { role: string; content: string }[]>();
+const chatProposals = new Map<string, ChatProposal>(); // one live proposal per owner
+
+const shieldIntentSystem = (capEth: string) => `
+SHIELD MODE — this session operates the user's Shield clean wallet on slop.computer (read last; this section supersedes every conflicting instruction above):
+- The address is a fresh EOA holding ETH that exited Railgun's private pool. Its unlinkability to the user's public identity IS the product. The relay holds its key custodially; anything you build executes server-side ONLY after the user taps confirm in the Shield UI.
+- ETHEREUM MAINNET ONLY (chainId 1). Never build a transaction on any other chain and never propose bridging away from mainnet.
+- Total ETH value per confirmed operation is capped at ${capEth} ETH. Refuse larger amounts and suggest sending in slices.
+- Never invent a destination: sends and transfers go only to a 0x address or ENS name the user explicitly gave.
+- If the user directs funds at an address or ENS name publicly known as theirs, still build it but WARN in your message that it publicly ties the clean funds back to them — a fresh wallet keeps the anonymity.`;
+
+/** One wallet-phase chat turn through the intent engine. Returns a reply plus
+ *  an optional server-stored txProposal the UI can confirm by id. */
+async function shieldIntentTurn(owner: string, u: KohakuUser, text: string): Promise<KohakuOpResult> {
+  const address = u.withdrawAddress as string;
+  const [pf, act] = await Promise.all([
+    fetchPortfolio(address).catch(() => null),
+    fetchActivity(address).catch(() => null),
+  ]);
+  const history = chatHistories.get(owner) ?? [];
+  const result = await runWalletIntent({
+    message: text,
+    address,
+    chainId: 1,
+    walletKind: "eoa",
+    extraSystem: shieldIntentSystem(formatEther(BigInt(config.kohakuMaxSendWei))),
+    portfolio: (pf?.assets ?? []).map(x => ({
+      tokenSymbol: x.tokenSymbol,
+      balance: x.balance,
+      balanceUsd: x.balanceUsd,
+      blockchain: x.blockchain,
+      contractAddress: x.contractAddress,
+    })),
+    recentActivity: (act?.items ?? []).slice(0, 10).map(x => ({
+      type: x.type,
+      chain: x.chain,
+      minedAt: x.minedAt,
+      out: x.out ? { symbol: x.out.symbol, amount: x.out.amount } : null,
+      in: x.in ? { symbol: x.in.symbol, amount: x.in.amount } : null,
+      valueUsd: x.valueUsd,
+    })),
+    recentMessages: history,
+  });
+  chatHistories.set(
+    owner,
+    [...history, { role: "user", content: text }, { role: "assistant", content: result.message }].slice(
+      -CHAT_HISTORY_TURNS,
+    ),
+  );
+
+  const reply = result.message;
+  let steps: IntentStep[] = [];
+  let delayMs = 0;
+  let changes: { direction: string; symbol: string; amount: string }[] = [];
+  if (result.type === "transaction") {
+    const t = result.transaction;
+    steps = [
+      {
+        to: t.to,
+        data: t.data,
+        value: t.value,
+        chainId: t.chainId,
+        description: t.description ?? "transaction",
+        label: "tx",
+      },
+    ];
+    if (t.simulation?.verified && Array.isArray(t.simulation.changes)) changes = t.simulation.changes;
+  } else if (result.type === "multistep_transaction") {
+    steps = result.steps;
+    delayMs = Math.min(Math.max(result.delay, 0), MAX_STEP_DELAY_MS);
+  }
+
+  if (steps.length === 0) {
+    chatProposals.delete(owner);
+    return { ok: true, reply, txProposal: null };
+  }
+
+  // Validate down to what the executor would sign: mainnet, sane fields,
+  // total ETH under the per-op cap. A violation demotes the turn to chat.
+  const demote = (why: string): KohakuOpResult => ({ ok: true, reply: `${reply}\n(dropped: ${why})`, txProposal: null });
+  let totalWei = 0n;
+  for (const s of steps) {
+    if (s.chainId !== 1) return demote("proposal wasn't mainnet — Shield is mainnet-only");
+    if (!isAddress(s.to)) return demote("bad destination in the built transaction");
+    if (!/^0x[0-9a-fA-F]*$/.test(s.data || "0x")) return demote("malformed calldata");
+    try {
+      const v = BigInt(s.value || "0");
+      if (v < 0n) throw new Error("neg");
+      totalWei += v;
+    } catch {
+      return demote("bad value in the built transaction");
+    }
+  }
+  const cap = BigInt(config.kohakuMaxSendWei);
+  if (totalWei > cap) {
+    return demote(`total ${formatEther(totalWei)} ETH exceeds the ${formatEther(cap)} ETH per-op cap`);
+  }
+
+  const proposal: ChatProposal = { id: randomBytes(8).toString("hex"), steps, delayMs, createdAt: Date.now() };
+  chatProposals.set(owner, proposal);
+  return {
+    ok: true,
+    reply,
+    txProposal: {
+      id: proposal.id,
+      steps: steps.map(s => ({
+        description: s.description || s.label || "transaction",
+        to: getAddress(s.to),
+        valueEth: formatEther(BigInt(s.value || "0")),
+      })),
+      changes,
+      totalValueEth: formatEther(totalWei),
+    },
+  };
+}
+
+/** Execute a chat-built proposal by id — the confirm chip's endpoint. Each
+ *  step runs as its own CLI invocation so transact-raw's pre-broadcast
+ *  simulation sees the prior step mined (approve → swap). Plain ETH sends
+ *  (empty calldata) reuse the proven `transfer` command. */
+export async function kohakuExecuteChatTx(ownerRaw: string, id: string): Promise<KohakuOpResult> {
+  if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
+  const owner = ownerRaw.toLowerCase();
+  const u = state.users[owner];
+  if (!u) return { ok: false, error: "no privacy wallet" };
+  if (u.phase !== "wallet" || !u.withdrawAddress) return { ok: false, error: "no withdrawn funds yet" };
+  if (busyOps.has(owner)) return { ok: false, error: `busy: ${busyOps.get(owner)}` };
+  const p = chatProposals.get(owner);
+  if (!p || p.id !== id) return { ok: false, error: "that proposal is gone — ask the chat again" };
+  if (Date.now() - p.createdAt > PROPOSAL_TTL_MS) {
+    chatProposals.delete(owner);
+    return { ok: false, error: "that proposal expired (quotes go stale) — ask the chat again" };
+  }
+  // Re-check the cap at execution time — the store is trusted, but cheap belt+braces.
+  const totalWei = p.steps.reduce((s, x) => s + BigInt(x.value || "0"), 0n);
+  if (totalWei > BigInt(config.kohakuMaxSendWei)) {
+    chatProposals.delete(owner);
+    return { ok: false, error: "proposal exceeds the per-op cap" };
+  }
+
+  busyOps.set(owner, "executing");
+  chatProposals.delete(owner); // single-shot: confirm consumes it, success or not
+  try {
+    const hashes: string[] = [];
+    for (let i = 0; i < p.steps.length; i++) {
+      const s = p.steps[i]!;
+      if (i > 0 && p.delayMs > 0) await new Promise(r => setTimeout(r, p.delayMs));
+      const stepName = s.description || s.label || `step ${i + 1}`;
+      const plainSend = !s.data || s.data === "0x";
+      const r = await runKohakuRaw(
+        plainSend
+          ? [
+              "transfer",
+              ...walletArgs(),
+              "--from",
+              u.withdrawAddress,
+              "--to",
+              s.to,
+              "--amount-wei",
+              BigInt(s.value || "0").toString(),
+              "--broadcast",
+            ]
+          : [
+              "transact-raw",
+              ...walletArgs(),
+              "--from",
+              u.withdrawAddress,
+              "--targets",
+              s.to,
+              "--payloads",
+              s.data,
+              "--values",
+              BigInt(s.value || "0").toString(),
+              "--broadcast",
+            ],
+        QUICK_TIMEOUT_MS,
+        rpcFor(owner),
+      );
+      if (r.code !== 0) {
+        const landed = hashes.length
+          ? ` — earlier steps already landed: ${hashes.map(h => h.slice(0, 10)).join(", ")}`
+          : "";
+        log(u, `chat op failed at ${stepName}`);
+        return { ok: false, error: `${stepName} failed: ${cliErrorText(r)}${landed}` };
+      }
+      const j = lastJson(r.stdout) as { hash?: string; transactions?: { hash?: string }[] } | null;
+      const hash = j?.hash ?? j?.transactions?.[0]?.hash ?? null;
+      if (hash) hashes.push(hash);
+      log(u, `chat: ${stepName}${hash ? ` (${hash.slice(0, 10)}…)` : ""}`);
+    }
+    persist();
+    return { ok: true, hashes, state: publicView(u) };
+  } finally {
+    busyOps.delete(owner);
+  }
 }
 
 // --- State views ------------------------------------------------------------

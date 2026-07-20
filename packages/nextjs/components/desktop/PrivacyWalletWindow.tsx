@@ -30,8 +30,9 @@ import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 // Wallet mode deliberately does NOT embed WalletAssetsPanel / WalletChatPanel:
 // those panels' send/propose affordances route through wagmi or the passkey —
 // signers the user does not hold here (the relay does). Holdings is a slim
-// read-only Zerion view; chat proposals execute only via the confirm chip →
-// the capped /v1/kohaku/send.
+// read-only Zerion view; chat runs the same intent engine as the Wallet app
+// but proposals execute only via the confirm chip → the capped
+// /v1/kohaku/send (send tab) or /v1/kohaku/execute (chat cards).
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -690,7 +691,7 @@ function WalletPanel({
       </div>
 
       {tab === "holdings" && s.withdrawAddress && <HoldingsTab address={s.withdrawAddress} />}
-      {tab === "chat" && <ChatTab opBusy={opBusy} onSend={onSend} />}
+      {tab === "chat" && <ChatTab opBusy={opBusy} />}
       {tab === "send" && <SendTab s={s} balanceEth={balanceEth} opBusy={opBusy} onSend={onSend} />}
 
       {empty && (
@@ -771,26 +772,31 @@ function HoldingsTab({ address }: { address: string }) {
   );
 }
 
-// "Talk to your funds" — chat over /v1/kohaku/chat. The model only PROPOSES
-// sends; nothing moves until the confirm chip fires the capped send endpoint.
+// "Talk to your funds" — chat over /v1/kohaku/chat, now backed by the same
+// intent engine as the Wallet app (swaps, ERC-20 sends, wraps). The model only
+// PROPOSES: the relay stores the built transaction under an id and nothing
+// moves until the confirm chip fires /v1/kohaku/execute with that id.
+type TxProposal = {
+  id: string;
+  steps: { description: string; to: string; valueEth: string }[];
+  changes: { direction: string; symbol: string; amount: string }[];
+  totalValueEth: string;
+};
+
 type ChatMsg = {
   who: "you" | "shield";
   text: string;
-  proposal?: { to: string; toLabel: string; amountEth: string; max: boolean };
-  proposalDone?: boolean;
+  tx?: TxProposal;
+  txDone?: boolean;
+  txHashes?: string[];
 };
 
-function ChatTab({
-  opBusy,
-  onSend,
-}: {
-  opBusy: boolean;
-  onSend: (to: string, amountWei: string, max: boolean) => Promise<boolean>;
-}) {
+function ChatTab({ opBusy }: { opBusy: boolean }) {
   const slug = useRoomSlug();
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [executing, setExecuting] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -814,12 +820,12 @@ function ChatTab({
         ok?: boolean;
         error?: string;
         reply?: string;
-        proposal?: ChatMsg["proposal"] | null;
+        txProposal?: TxProposal | null;
       };
       if (!res.ok || !j.ok) {
         setMsgs(m => [...m, { who: "shield", text: j.error ?? `relay ${res.status}` }]);
       } else {
-        setMsgs(m => [...m, { who: "shield", text: j.reply ?? "…", proposal: j.proposal ?? undefined }]);
+        setMsgs(m => [...m, { who: "shield", text: j.reply ?? "…", tx: j.txProposal ?? undefined }]);
       }
     } catch (e) {
       setMsgs(m => [...m, { who: "shield", text: `network: ${String(e).slice(0, 80)}` }]);
@@ -828,12 +834,30 @@ function ChatTab({
     }
   };
 
-  const confirm = async (idx: number, p: NonNullable<ChatMsg["proposal"]>) => {
-    const amountWei = p.max ? "0" : parseEther(p.amountEth).toString();
-    const ok = await onSend(p.to, amountWei, p.max);
-    if (ok) {
-      setMsgs(m => m.map((msg, i) => (i === idx ? { ...msg, proposalDone: true } : msg)));
-      setMsgs(m => [...m, { who: "shield", text: "sent ✓ — details in the activity log" }]);
+  const confirm = async (idx: number, p: TxProposal) => {
+    if (executing) return;
+    setExecuting(true);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/kohaku/execute`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: p.id }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; hashes?: string[] };
+      if (!res.ok || !j.ok) {
+        setMsgs(m => [...m, { who: "shield", text: j.error ?? `relay ${res.status}` }]);
+      } else {
+        setMsgs(m => m.map((msg, i) => (i === idx ? { ...msg, txDone: true, txHashes: j.hashes } : msg)));
+        setMsgs(m => [
+          ...m,
+          { who: "shield", text: "executed ✓ — details in the activity log; holdings update in a moment" },
+        ]);
+      }
+    } catch (e) {
+      setMsgs(m => [...m, { who: "shield", text: `network: ${String(e).slice(0, 80)}` }]);
+    } finally {
+      setExecuting(false);
     }
   };
 
@@ -842,7 +866,8 @@ function ChatTab({
       <div style={{ maxHeight: 200, overflow: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
         {msgs.length === 0 && (
           <div style={{ fontSize: 11, color: "var(--slop-text-muted, #999)" }}>
-            ask your funds anything — &quot;how much do I have?&quot;, &quot;send 0.002 to vitalik.eth&quot;…
+            ask your funds anything — &quot;how much do I have?&quot;, &quot;swap 0.005 ETH to USDC&quot;, &quot;send
+            0.002 to vitalik.eth&quot;…
           </div>
         )}
         {msgs.map((m, i) => (
@@ -851,20 +876,57 @@ function ChatTab({
               {m.who === "you" ? "you" : "shield"}:
             </span>{" "}
             <span style={{ color: "var(--slop-text, #ddd)", whiteSpace: "pre-wrap" }}>{m.text}</span>
-            {m.proposal && !m.proposalDone && (
-              <button
-                type="button"
-                onClick={() => void confirm(i, m.proposal!)}
-                disabled={opBusy}
-                style={{ ...pillStyle(true), display: "block", marginTop: 4 }}
+            {m.tx && (
+              <div
+                style={{
+                  marginTop: 4,
+                  padding: "6px 8px",
+                  border: `1px solid ${m.txDone ? "rgba(122,255,122,0.25)" : "rgba(255,62,201,0.3)"}`,
+                  borderRadius: 6,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                }}
               >
-                {opBusy
-                  ? "sending…"
-                  : `confirm: send ${m.proposal.max ? "max" : `${m.proposal.amountEth} ETH`} → ${m.proposal.toLabel}`}
-              </button>
-            )}
-            {m.proposal && m.proposalDone && (
-              <span style={{ marginLeft: 6, fontSize: 10, color: LIME }}>✓ executed</span>
+                {m.tx.steps.map((s, si) => (
+                  <div key={si} style={{ fontSize: 10, color: "var(--slop-text, #ccc)" }}>
+                    {m.tx!.steps.length > 1 ? `${si + 1}. ` : ""}
+                    {s.description}
+                    {Number(s.valueEth) > 0 ? ` · ${Number(s.valueEth).toFixed(5)} ETH` : ""}
+                    <span style={{ marginLeft: 4, color: "var(--slop-text-muted, #888)" }}>
+                      → {s.to.slice(0, 8)}…{s.to.slice(-4)}
+                    </span>
+                  </div>
+                ))}
+                {m.tx.changes.length > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--slop-text-muted, #999)" }}>
+                    simulated:{" "}
+                    {m.tx.changes
+                      .map(
+                        c =>
+                          `${c.direction === "out" ? "−" : "+"}${Number(c.amount).toLocaleString("en-US", { maximumFractionDigits: 5 })} ${c.symbol}`,
+                      )
+                      .join("  ")}
+                  </div>
+                )}
+                {!m.txDone && (
+                  <button
+                    type="button"
+                    onClick={() => void confirm(i, m.tx!)}
+                    disabled={opBusy || executing}
+                    style={{ ...pillStyle(true), marginTop: 2 }}
+                  >
+                    {executing
+                      ? "executing…"
+                      : `confirm${Number(m.tx.totalValueEth) > 0 ? ` (${Number(m.tx.totalValueEth).toFixed(5)} ETH)` : ""}`}
+                  </button>
+                )}
+                {m.txDone && (
+                  <span style={{ fontSize: 10, color: LIME }}>
+                    ✓ executed{m.txHashes?.length ? ` · ${m.txHashes.map(h => `${h.slice(0, 10)}…`).join(", ")}` : ""}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         ))}

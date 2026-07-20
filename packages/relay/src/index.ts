@@ -67,6 +67,7 @@ import {
 import {
   isKohakuConfigured,
   kohakuChat,
+  kohakuExecuteChatTx,
   kohakuOpen,
   kohakuSend,
   kohakuSetRpc,
@@ -2354,8 +2355,9 @@ app.post<{ Body: KohakuSettingsBody }>("/v1/kohaku/settings", async (req, reply)
   return r;
 });
 
-// "Talk to your funds" — LLM chat over the user's Shield state. The model
-// only proposes; execution stays behind the capped /v1/kohaku/send.
+// "Talk to your funds" — LLM chat over the user's Shield state. Wallet phase
+// runs the full intent engine (swaps, ERC-20s); the model only ever proposes.
+// Execution stays behind the capped /v1/kohaku/send + /v1/kohaku/execute.
 // Rate-limited per owner: it's an LLM call.
 const kohakuChatLimiter = new TokenBucket(6, 1 / 20);
 
@@ -2384,6 +2386,26 @@ app.post<{ Body: KohakuSendBody }>("/v1/kohaku/send", async (req, reply) => {
   const amountWei = typeof req.body?.amountWei === "string" ? req.body.amountWei : "";
   if (!to || (!max && !amountWei)) return reply.code(400).send({ ok: false, error: "need to + amountWei (or max:true)" });
   const r = await kohakuSend(owner, to, max ? "max" : amountWei);
+  if (!r.ok) return reply.code(400).send(r);
+  return r;
+});
+
+// Execute a chat-built proposal (swap / ERC-20 send / …) by its server-stored
+// id. The client can only ever confirm what the intent engine proposed —
+// calldata never crosses the wire inbound. Capped + validated in kohaku.ts.
+const kohakuExecLimiter = new TokenBucket(4, 1 / 30);
+
+type KohakuExecuteBody = { id?: unknown };
+
+app.post<{ Body: KohakuExecuteBody }>("/v1/kohaku/execute", async (req, reply) => {
+  const owner = kohakuOwnerFromReq(req, reply);
+  if (!owner) return;
+  if (!kohakuExecLimiter.allow(owner)) {
+    return reply.code(429).send({ ok: false, error: "slow down a sec" });
+  }
+  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  if (!id) return reply.code(400).send({ ok: false, error: "missing proposal id" });
+  const r = await kohakuExecuteChatTx(owner, id);
   if (!r.ok) return reply.code(400).send(r);
   return r;
 });
