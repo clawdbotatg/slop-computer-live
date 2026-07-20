@@ -55,8 +55,12 @@ const SHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_SHIELD_GAS_RESERVE_WEI 
 // (paid out of the pool, on top of the withdrawn amount).
 const UNSHIELD_GAS_RESERVE_WEI = BigInt(process.env.KOHAKU_UNSHIELD_GAS_RESERVE_WEI ?? "500000000000000"); // 0.0005
 // Withdrawals are rounded DOWN to this grid so every exit is a common
-// denomination (0.0085, 0.0090, …) instead of a wei-precision fingerprint.
+// denomination instead of a wei-precision fingerprint (fallback when no
+// 1-2-5 denomination below fits well).
 const WITHDRAW_GRID_WEI = BigInt(process.env.KOHAKU_WITHDRAW_GRID_WEI ?? "500000000000000"); // 0.0005
+// The 1-2-5 exit denominations the Railgun crowd actually uses (largest
+// first), within our cap. See the field study note in kohakuWithdraw.
+const WITHDRAW_DENOMS_WEI = [50n, 20n, 10n, 5n, 2n, 1n].map(m => m * 1_000_000_000_000_000n); // 0.05 … 0.001
 // Railgun shield fee is 25 bps; the credited note = amount − fee.
 const SHIELD_FEE_BPS = 25n;
 // Fallback POI gate: if we can't match the user's note in private_notes,
@@ -642,9 +646,26 @@ export async function kohakuWithdraw(ownerRaw: string): Promise<KohakuOpResult> 
     // so "max" is the whole pool — including other users' notes and legacy
     // change (observed live: max quoted 0.0164 against a 0.0094 note).
     // The crumbs stay in the pool as anonymity-set ballast.
+    //
+    // Denomination choice comes from watching the actual crowd: a week of
+    // mainnet Unshield events (n=559, 2026-07 via the local node) shows the
+    // dominant deliberate pattern is "recipient receives exactly X" on the
+    // 1-2-5 series (0.01 received was the single biggest cluster at our
+    // size; then 0.005 / 0.05 / 0.1 / 0.5 / 1). So: snap to the largest
+    // 1-2-5 denomination when it captures ≥85% of the balance — the
+    // deposit-suggestion UI pads deposits so this is the normal case — and
+    // fall back to the fine grid otherwise so funds are never stranded.
     const expected = BigInt(u.expectedNoteWei || "0");
-    const raw = expected - (expected * 30n) / 10_000n - UNSHIELD_GAS_RESERVE_WEI;
-    const amount = (raw / WITHDRAW_GRID_WEI) * WITHDRAW_GRID_WEI;
+    const available = expected - UNSHIELD_GAS_RESERVE_WEI;
+    // Max receivable after the 25 bps unshield fee (+5 bps safety).
+    const maxRecv = (available * 9_965n) / 10_000n;
+    let amount = (maxRecv / WITHDRAW_GRID_WEI) * WITHDRAW_GRID_WEI;
+    for (const d of WITHDRAW_DENOMS_WEI) {
+      if (d <= maxRecv && d * 100n >= maxRecv * 85n) {
+        amount = d;
+        break;
+      }
+    }
     if (amount <= 0n) throw new Error("balance too small to cover the unshield fee + gas reserve");
     const amountArgs = ["--amount-wei", amount.toString()];
     const r = await runKohakuRaw(
@@ -927,6 +948,24 @@ export async function kohakuChat(ownerRaw: string, textRaw: string): Promise<Koh
 
 // --- State views ------------------------------------------------------------
 
+// Deposits that land a clean 1-2-5 exit, working the fee waterfall
+// backwards: deposit → −shield gas → −25 bps shield fee → note →
+// −unshield gas reserve → −25(+5) bps unshield fee → received. Padded a
+// touch and rounded up to 0.0001 so it's a typeable number.
+function depositSuggestions(): { depositEth: string; exitEth: string }[] {
+  const out: { depositEth: string; exitEth: string }[] = [];
+  const grid = 100_000_000_000_000n; // 0.0001 display grid
+  for (const d of [...WITHDRAW_DENOMS_WEI].reverse()) {
+    const noteNeeded = (d * 10_000n) / 9_965n + UNSHIELD_GAS_RESERVE_WEI;
+    const beforeShieldFee = (noteNeeded * 10_000n) / 9_975n;
+    let dep = beforeShieldFee + SHIELD_GAS_RESERVE_WEI + 200_000_000_000_000n;
+    dep = ((dep + grid - 1n) / grid) * grid;
+    if (dep < MIN_DEPOSIT_WEI || dep > BigInt(config.kohakuMaxDepositWei)) continue;
+    out.push({ depositEth: formatEther(dep), exitEth: formatEther(d) });
+  }
+  return out;
+}
+
 function publicView(u: KohakuUser) {
   const now = Date.now();
   const soakStart = u.shieldedAt ?? now;
@@ -960,6 +999,7 @@ function publicView(u: KohakuUser) {
       maxSendEth: formatEther(BigInt(config.kohakuMaxSendWei)),
       minDepositEth: formatEther(MIN_DEPOSIT_WEI),
     },
+    depositSuggestions: depositSuggestions(),
   };
 }
 

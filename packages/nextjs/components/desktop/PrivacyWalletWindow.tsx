@@ -59,6 +59,7 @@ type KohakuView = {
   poolPendingEth: string | null;
   activity: { at: number; text: string }[];
   caps: { maxDepositEth: string; maxSendEth: string; minDepositEth: string };
+  depositSuggestions?: { depositEth: string; exitEth: string }[];
 };
 
 type StateResponse = {
@@ -293,7 +294,10 @@ function IntroPanel({ onOpen, busy }: { onOpen: () => void; busy: boolean }) {
 
 function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
   const [copied, setCopied] = useState(false);
-  const [amountEth, setAmountEth] = useState("0.01");
+  // Default to the padded deposit that exits as a clean 0.01 — the most
+  // common Railgun exit size at our scale (field-measured, 2026-07).
+  const suggestions = s.depositSuggestions ?? [];
+  const [amountEth, setAmountEth] = useState(() => suggestions.find(x => x.exitEth === "0.01")?.depositEth ?? "0.01");
   const [busyBtn, setBusyBtn] = useState<"wallet" | "bank" | null>(null);
   const [depErr, setDepErr] = useState<string | null>(null);
   const [sentHash, setSentHash] = useState<string | null>(null);
@@ -434,6 +438,22 @@ function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
           </button>
         </div>
       </div>
+      {suggestions.length > 0 && (
+        <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 9, color: "var(--slop-text-muted, #888)" }}>clean exits:</span>
+          {suggestions.slice(-3).map(x => (
+            <button
+              key={x.exitEth}
+              type="button"
+              onClick={() => setAmountEth(x.depositEth)}
+              style={{ ...pillStyle(amountEth === x.depositEth), fontSize: 9, padding: "2px 6px" }}
+              title={`Deposit ${x.depositEth} to withdraw a clean ${x.exitEth} — blends with the most common Railgun exit sizes`}
+            >
+              {x.depositEth} → {x.exitEth} out
+            </button>
+          ))}
+        </div>
+      )}
       {depErr && <div style={{ fontSize: 11, color: "#ff6b6b", wordBreak: "break-word" }}>{depErr}</div>}
       {sentHash && (
         <div style={{ fontSize: 11, color: LIME }}>
