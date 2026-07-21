@@ -1709,6 +1709,11 @@ The first line of a note's text doubles as its title in the sidebar.
 No separate title field — keep the first line short and put body
 underneath.
 
+Ordering: the sidebar renders notes newest-first (most recent
+\`createdTs\` on top) — the reverse of the \`GET /v1/notes\` array,
+which is oldest-first. To lay out a fixed reading order top-to-
+bottom, create the notes in reverse (the one you want on top last).
+
 ### Read
 
 \`\`\`
@@ -1729,6 +1734,10 @@ DELETE ${BASE}/v1/notes/:id?slug=${slugStr(slug)}
 Update replaces the entire note text; there's no append / patch
 endpoint. \`updatedTs\` is bumped server-side. Empty text on create
 is allowed (creates a blank note).
+
+On DELETE, send no request body and no \`Content-Type\` header — a
+bodyless request tagged \`application/json\` is rejected as malformed
+(400).
 `;
 }
 
