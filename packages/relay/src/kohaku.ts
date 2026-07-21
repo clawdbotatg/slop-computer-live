@@ -96,7 +96,7 @@ export type KohakuPhase = "awaiting-deposit" | "shielding" | "soaking" | "withdr
 type ActivityEntry = { at: number; text: string };
 
 type KohakuUser = {
-  owner: string; // lowercased session address — the durable identity
+  owner: string; // `${address}::${roomSlug}` — the durable (user, room) identity
   phase: KohakuPhase;
   depositAddress: string | null;
   depositIndex: number | null;
@@ -161,13 +161,12 @@ const client = (rpcUrl?: string) =>
 // --- Owner keys (per-room shields) -----------------------------------------
 //
 // A shield cycle is scoped to (user, ROOM): the same signed-in user gets an
-// independent wallet in every room. Record keys are `${address}::${slug}`.
-// Records written before room-scoping used the bare address — those LEGACY
-// records resolve as a fallback in EVERY room (exactly the old behavior) so
-// live funds are never stranded; a legacy cycle dies naturally when it's
-// drained and reopened, which migrates it to the current room's key. The
-// per-user RPC override stays keyed by ADDRESS — it's a user preference,
-// not a room fact.
+// independent wallet in every room. Record keys are `${address}::${slug}`
+// (slugs are [a-z0-9-], so "::" can't collide). The per-user RPC override
+// stays keyed by ADDRESS — it's a user preference, not a room fact.
+// (A legacy bare-address fallback for pre-room-scoping records existed
+// briefly; the last such record was drained and the fallback removed
+// 2026-07-21.)
 
 function addressOf(ownerKey: string): string {
   return ownerKey.split("::")[0]!;
@@ -175,16 +174,6 @@ function addressOf(ownerKey: string): string {
 
 function ownerKeyFor(addressRaw: string, slugRaw: string): string {
   return `${addressRaw.toLowerCase()}::${(slugRaw || "").toLowerCase()}`;
-}
-
-/** Resolve the record key for (address, room): room-scoped record first,
- *  then the legacy bare-address record, else the room-scoped key (creation). */
-function resolveOwner(addressRaw: string, slugRaw: string): string {
-  const key = ownerKeyFor(addressRaw, slugRaw);
-  if (state.users[key]) return key;
-  const legacy = addressRaw.toLowerCase();
-  if (state.users[legacy]) return legacy;
-  return key;
 }
 
 // Effective RPC for one owner's ops: their validated override, else the box
@@ -612,11 +601,10 @@ export type KohakuOpResult = { ok: true; [k: string]: unknown } | { ok: false; e
 
 /** Create (or return) this user's privacy wallet cycle in THIS room, with a
  *  fresh deposit address. Also the "start over" path once a finished cycle is
- *  emptied — which is the moment a legacy (pre-room-scoping) record migrates
- *  to the current room's key. */
+ *  emptied. */
 export async function kohakuOpen(ownerRaw: string, roomSlug: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const existing = state.users[owner];
   if (existing) {
     if (existing.phase !== "wallet") return { ok: true, state: publicView(existing) };
@@ -644,11 +632,9 @@ export async function kohakuOpen(ownerRaw: string, roomSlug: string): Promise<Ko
   // order, and `shield --from` also accepts the ADDRESS itself. We store
   // the index as null and pass the address to --from. (shield-flow's
   // findAccountWithBalance accepts address-or-index.)
-  const key = ownerKeyFor(ownerRaw, roomSlug);
-  if (owner !== key) delete state.users[owner]; // drained legacy record → adopt into this room
-  const u = newUser(key);
+  const u = newUser(owner);
   u.depositAddress = getAddress(addr);
-  state.users[key] = u;
+  state.users[owner] = u;
   log(u, `privacy wallet opened — deposit address ${u.depositAddress}`);
   persist();
   return { ok: true, state: publicView(u) };
@@ -657,7 +643,7 @@ export async function kohakuOpen(ownerRaw: string, roomSlug: string): Promise<Ko
 /** Unshield the user's private balance to a fresh, unlinked address. */
 export async function kohakuWithdraw(ownerRaw: string, roomSlug: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet — open one first" };
   if (busyOps.has(owner)) return { ok: false, error: `busy: ${busyOps.get(owner)}` };
@@ -754,7 +740,7 @@ export async function kohakuSend(
   amountWeiRaw: string | "max",
 ): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet" };
   if (u.phase !== "wallet" || !u.withdrawAddress) return { ok: false, error: "no withdrawn funds to send yet" };
@@ -913,7 +899,7 @@ function chatJson(text: string): { reply?: unknown; proposal?: unknown } | null 
  *  the clean address; earlier phases keep the lightweight Q&A below. */
 export async function kohakuChat(ownerRaw: string, roomSlug: string, textRaw: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "open your Shield first" };
   const text = textRaw.trim().slice(0, 500);
@@ -1146,7 +1132,7 @@ async function shieldIntentTurn(owner: string, u: KohakuUser, text: string): Pro
  *  (empty calldata) reuse the proven `transfer` command. */
 export async function kohakuExecuteChatTx(ownerRaw: string, roomSlug: string, id: string): Promise<KohakuOpResult> {
   if (!isKohakuConfigured()) return { ok: false, error: "privacy wallet not configured" };
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const u = state.users[owner];
   if (!u) return { ok: false, error: "no privacy wallet" };
   if (u.phase !== "wallet" || !u.withdrawAddress) return { ok: false, error: "no withdrawn funds yet" };
@@ -1294,7 +1280,7 @@ export async function kohakuStateFor(
   rpcUrl: string | null;
   defaultRpcUrl: string;
 }> {
-  const owner = resolveOwner(ownerRaw, roomSlug);
+  const owner = ownerKeyFor(ownerRaw, roomSlug);
   const u = state.users[owner];
   let walletBalanceEth: string | null = null;
   if (u?.phase === "wallet" && u.withdrawAddress && isKohakuConfigured()) {
@@ -1319,7 +1305,7 @@ export function kohakuSummaryFor(
   roomSlug: string,
 ): { phase: KohakuPhase; soakProgress: number } | null {
   if (!ownerRaw) return null;
-  const u = state.users[resolveOwner(ownerRaw, roomSlug)];
+  const u = state.users[ownerKeyFor(ownerRaw, roomSlug)];
   if (!u) return null;
   const v = publicView(u);
   return { phase: v.phase, soakProgress: v.soakProgress };

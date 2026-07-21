@@ -127,13 +127,12 @@ local stack when done.
   `/v1/kohaku/send`. Destinations must be user-given (0x or ENS).
 - **Per-room shields shipped 2026-07-20**: records are keyed
   `address::roomSlug` — the same user gets an independent cycle (deposit
-  address, soak, clean wallet, chat history) in every room. Legacy
-  bare-address records (pre-room-scoping) resolve as a fallback in EVERY
-  room — old behavior, funds never stranded — until drained; reopening a
-  drained legacy record migrates it to the room where you reopen. The RPC
+  address, soak, clean wallet, chat history) in every room. The RPC
   override stays per-ADDRESS (user preference). Caps are per-cycle, so a
   user's total exposure is now cap × rooms — accounting-trust as before,
   fine at slop scale. Client sends `?slug=` already; no UI change.
+  (A transitional legacy bare-address fallback existed for one day; the
+  last pre-room record was drained and the fallback removed 2026-07-21.)
 - **Full intent-engine chat shipped 2026-07-20**: in wallet phase the chat
   runs `runWalletIntent` (the Wallet app's brain — LI.FI swaps, ERC-20
   sends, wraps, simulation) against the clean address in `walletKind:"eoa"`

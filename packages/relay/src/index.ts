@@ -2299,11 +2299,10 @@ app.get("/v1/wallet", async (req, reply) => {
 // --- Privacy Wallet (Railgun via kohaku-cli) ---------------------------------
 // Per-(user, ROOM): keyed to the authed session's ADDRESS (SIWE or passkey)
 // plus the request's room slug — the same user gets an independent shield in
-// every room (legacy pre-room records still resolve everywhere; see the owner
-// key block in kohaku.ts). An anonymous session has no durable owner for
-// custodial funds, so it's rejected. Auth room gate still skipped like
-// /v1/tip — the slug only scopes the record. All money movement is
-// server-side (see kohaku.ts for the custody caveats).
+// every room (see the owner-key block in kohaku.ts). An anonymous session has
+// no durable owner for custodial funds, so it's rejected. Auth room gate
+// still skipped like /v1/tip — the slug only scopes the record. All money
+// movement is server-side (see kohaku.ts for the custody caveats).
 
 function kohakuOwnerFromReq(req: Parameters<typeof v1AuthFromReq>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }): string | null {
   const a = v1AuthFromReq(req, { skipRoomGate: true });
