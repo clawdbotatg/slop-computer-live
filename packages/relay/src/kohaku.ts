@@ -1029,13 +1029,32 @@ async function shieldIntentTurn(owner: string, u: KohakuUser, text: string): Pro
     fetchPortfolio(address).catch(() => null),
     fetchActivity(address).catch(() => null),
   ]);
+  // "Send it all" must not be model-guesswork: hand the model the exact
+  // spendable max (balance − 21000-gas reserve at 1.2× current max fee,
+  // mirroring the CLI's --amount-max math) and order it to use that figure.
+  // The first live drain proved the failure mode: the model rounded to
+  // 0.0085 and stranded 0.00035 — ~230× the actual fee.
+  let sendMaxSys = "";
+  try {
+    const c = client(rpcFor(owner));
+    const [bal, fees] = await Promise.all([
+      c.getBalance({ address: address as `0x${string}` }),
+      c.estimateFeesPerGas(),
+    ]);
+    const reserve = (21_000n * (fees.maxFeePerGas ?? 0n) * 12n) / 10n;
+    if (reserve > 0n && bal > reserve) {
+      sendMaxSys = `\n- The wallet holds ${formatEther(bal)} ETH; a plain send costs at most ${formatEther(reserve)} ETH in gas (21000 gas at 1.2× the current max fee). If the user asks to send ALL/everything/max of the ETH, build the send for EXACTLY ${formatEther(bal - reserve)} ETH — use that exact figure; NEVER round it down or invent your own gas buffer.`;
+    }
+  } catch {
+    /* fee/balance fetch hiccup — the model falls back to its own caution */
+  }
   const history = chatHistories.get(owner) ?? [];
   const result = await runWalletIntent({
     message: text,
     address,
     chainId: 1,
     walletKind: "eoa",
-    extraSystem: shieldIntentSystem(formatEther(BigInt(config.kohakuMaxSendWei))),
+    extraSystem: shieldIntentSystem(formatEther(BigInt(config.kohakuMaxSendWei))) + sendMaxSys,
     portfolio: (pf?.assets ?? []).map(x => ({
       tokenSymbol: x.tokenSymbol,
       balance: x.balance,

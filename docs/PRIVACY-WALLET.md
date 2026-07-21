@@ -147,5 +147,10 @@ local stack when done.
   free (they entered via capped ETH). Earlier phases keep the lightweight
   Bankr Q&A. NOTE: post-swap the clean address holds ERC-20s — the Send tab
   is still ETH-only, so tokens leave via chat ("send my USDC to 0x…").
+  "Send it all" is server-computed: each turn injects the exact spendable
+  max (balance − 21000-gas reserve at 1.2× current max fee, the CLI's
+  --amount-max math) into the system prompt — the first live drain showed
+  the model otherwise invents a round buffer (stranded 0.00035, ~230× the
+  actual fee).
 - The de-risk run (2026-07, ~0.015 ETH end-to-end: shield `0x260ce0d2…`,
   unshield userOp `0x8541c55b…`) validated the whole mechanism on mainnet.
