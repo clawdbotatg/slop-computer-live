@@ -1,5 +1,14 @@
 # slop-computer-live — Claude notes
 
+## Broadcast audio leveling ("The Equalizer")
+
+If a show's voices vs music sounded off, or you're touching
+`packages/nextjs/utils/audioBus.ts`, read **`docs/AUDIO-LEVELING.md`**
+first — it has the auto-leveler's tuning invariant
+(`AUTO_GAIN_MAX = AUTO_TARGET_RMS / AUTO_NOISE_FLOOR`), the 2026-08-01
+quiet-voices post-mortem, and the ffmpeg recipe for measuring levels
+in the show recordings on the prod box instead of guessing.
+
 ## Deploying to production
 
 **Always use `./ops/deploy.sh` from the repo root.** Do NOT ssh into
