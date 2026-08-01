@@ -28,8 +28,8 @@ export type EqBand = {
 export type AudioBusSource = {
   id: string;
   label: string;
-  /** 0..4 (up to +12dB boost — auto-level needs the headroom to lift
-   *  a quiet mic up to a loud one). */
+  /** 0..AUTO_GAIN_MAX (auto-level needs the headroom to lift a quiet
+   *  mic up to a loud one). */
   gain: number;
   muted: boolean;
 };
@@ -63,14 +63,19 @@ const STORAGE_KEY = "slop-audio-bus-eq-v1";
 // "comfortable speech" — high enough to be clearly audible, low enough
 // that a louder source can headroom past it without clipping.
 const AUTO_TARGET_RMS = 0.3;
-// Hard cap on per-source gain. 4× (+12dB) gives the auto enough
-// headroom to actually balance a quiet mic (0.08 RMS speech) against
-// a loud source (0.5 RMS music). At 2× a 4-stop loudness gap was
-// physically uncloseable — quiet voices stayed quiet next to hot
-// music no matter what the auto did. Noise amplification during
-// pauses is bounded by the silence gate below; this is the right
-// trade.
-const AUTO_GAIN_MAX = 4.0;
+// Hard cap on per-source gain, tied to the silence gate below:
+// AUTO_TARGET_RMS / AUTO_NOISE_FLOOR (0.3 / 0.015 = 20×, +26dB). The
+// invariant is "any source loud enough to engage the auto at all can
+// be lifted all the way to target." History: at 2× and again at 4×
+// there was a dead zone — a voice quiet enough to need more boost
+// than the cap stayed quiet forever (2026-08-01 show: WebRTC voices
+// arrived at ~0.03 RMS, needed ~10×, got nothing because the old
+// 0.05 floor also gated them out — see AUTO_NOISE_FLOOR). Runaway
+// noise amplification is bounded by the silence gate: gain only
+// moves while input is above the floor, and RNNoise upstream keeps
+// mic ambience well under it. Exported for the /eq popup's slider
+// range so manual + auto share one scale.
+export const AUTO_GAIN_MAX = 20;
 // Floor on auto-derived gain. -60dB — practically inaudible, but
 // nonzero so postRms / gain stays well-defined when a source's
 // userTargetScale is set to 0 (e.g. music volume slider all the way
@@ -79,12 +84,15 @@ const AUTO_GAIN_MAX = 4.0;
 // the source can't recover when the user raises volume back up.
 const AUTO_GAIN_MIN = 0.001;
 // Input RMS below this counts as "silence" — we hold the gain in
-// place rather than continuing to lerp toward an absurd target. 0.05
-// catches normal-to-quiet speech (mid 20%+ on the meter bar — the
-// bar uses a sqrt curve so 0.05 RMS shows as ~25% fill). Still well
-// above typical room ambience (0.005-0.02), so pure silence + HVAC
-// hum still freeze the gain.
-const AUTO_NOISE_FLOOR = 0.05;
+// place rather than continuing to lerp toward an absurd target.
+// 0.015: quiet speech arriving over WebRTC really does measure
+// ~0.03 RMS (2026-08-01 show — the old 0.05 floor sat ABOVE the
+// hosts' voices, so the auto classified them as silence all night
+// and broadcast them raw, ~13dB under the music). Published mics
+// run through RNNoise, so their between-words ambience lands near
+// zero; 0.015 keeps margin over that while catching voices ~2×
+// quieter than that show's.
+const AUTO_NOISE_FLOOR = 0.015;
 // Peak decay per tick (10Hz). 0.95 = ~13s settle to half.
 // During audible-but-below-peak the peak slowly relaxes so the auto
 // can track a source that's getting quieter over time. Silence-gate
@@ -379,7 +387,7 @@ class AudioBusImpl {
   private _setSourceGainInternal(id: string, gain: number): void {
     const entry = this.sources.get(id);
     if (!entry) return;
-    const clamped = Math.max(0, Math.min(4, gain));
+    const clamped = Math.max(0, Math.min(AUTO_GAIN_MAX, gain));
     entry.desiredGain = clamped;
     this.applySoloGain(entry);
   }

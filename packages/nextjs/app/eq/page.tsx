@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { StreamMonitor } from "~~/components/StreamMonitor";
 import {
   AUDIO_BUS_CHANNEL,
+  AUTO_GAIN_MAX,
   type AudioBusSnapshot,
   type BusInboundMessage,
   type BusOutboundMessage,
@@ -379,7 +380,7 @@ const SourceRow = ({
         <input
           type="range"
           min={0}
-          max={4}
+          max={AUTO_GAIN_MAX}
           step={0.01}
           value={gain}
           disabled={muted}
