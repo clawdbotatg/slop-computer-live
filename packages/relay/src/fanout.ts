@@ -211,7 +211,7 @@ function destinationUrl(id: FanoutId): string | null {
   if (id === "twitter") {
     const key = process.env.TWITTER_STREAM_KEY;
     if (!key) return null;
-    const base = process.env.TWITTER_RTMP_URL || "rtmps://va.pscp.tv:443/x";
+    const base = process.env.TWITTER_RTMP_URL || "rtmps://or.pscp.tv:443/x";
     return `${base}/${key}`;
   }
   if (id === "kick") {
