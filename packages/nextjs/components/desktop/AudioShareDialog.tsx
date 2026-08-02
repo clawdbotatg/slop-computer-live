@@ -115,6 +115,13 @@ export const AudioShareDialog = ({
     if (typeof window === "undefined") return;
     if (micId) window.localStorage.setItem(MEDIA_PREF_KEYS.micId, micId);
     else window.localStorage.removeItem(MEDIA_PREF_KEYS.micId);
+    // Label rides along with the id: deviceIds rotate per-origin, labels
+    // don't — useLocalMedia re-finds the device by label when the id dies.
+    // (id set but not in the list = stale selection — keep the old label,
+    // it's the only thing left that can re-find the device.)
+    const micLabel = mics.find(d => d.deviceId === micId)?.label;
+    if (micId && micLabel) window.localStorage.setItem(MEDIA_PREF_KEYS.micLabel, micLabel);
+    else if (!micId) window.localStorage.removeItem(MEDIA_PREF_KEYS.micLabel);
     if (denoise) window.localStorage.removeItem(MEDIA_PREF_KEYS.denoise);
     else window.localStorage.setItem(MEDIA_PREF_KEYS.denoise, "0");
     onSubmit(micId);

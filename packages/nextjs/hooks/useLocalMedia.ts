@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import type { LocalStreamHandle, StreamKind } from "~~/components/desktop/MyCamera";
 import { denoiseStream } from "~~/utils/noiseSuppression";
 
@@ -46,6 +47,13 @@ export const MEDIA_PREF_KEYS = {
   micId: "slop-pref-mic-id",
   cameraId: "slop-pref-camera-id",
   cameraRes: "slop-pref-camera-res",
+  // Human-readable device names saved next to the ids. Chrome's per-origin
+  // deviceIds rotate (site-data clear, profile change) while labels stay
+  // stable, so a label match lets us re-adopt the same physical device —
+  // and heal the stored id — instead of silently capturing the OS default
+  // (which on a Mac with an iPhone nearby is the Continuity phone mic).
+  micLabel: "slop-pref-mic-label",
+  cameraLabel: "slop-pref-camera-label",
   // RNNoise denoise: ON unless explicitly opted out. The pref is stored
   // as "0" when off, anything else (incl. missing) is on — matches the
   // "default-on" UX the share dialogs render.
@@ -58,6 +66,15 @@ const readPref = (key: string): string | null => {
     return window.localStorage.getItem(key);
   } catch {
     return null;
+  }
+};
+
+const writePref = (key: string, value: string) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* private mode / quota — pref just won't stick */
   }
 };
 
@@ -97,32 +114,147 @@ export const resolutionConstraints = (res: string | null): MediaTrackConstraints
   }
 };
 
-// getUserMedia with retry: try the strict preferred-device constraint
-// first; if the device is gone (unplugged, switched profile) browser
-// throws OverconstrainedError — drop the deviceId and retry generic.
-const tryGetUserMedia = async (constraints: MediaStreamConstraints): Promise<MediaStream> => {
+// A saved device pref re-anchored against the live device list.
+type ResolvedDevice = { id: string | null; label: string | null; lost: boolean };
+
+// Verify a saved deviceId still exists before capture; if it doesn't but a
+// device with the saved LABEL does, adopt that one (and heal the stored id).
+// `lost: true` means the physical device is really gone — the caller falls
+// back to generic capture and must say so out loud, never silently.
+// Pre-permission Chrome hides real ids/labels from enumerateDevices, so an
+// all-blank list is treated as "can't verify, trust the saved id".
+const resolveSavedDevice = async (
+  kind: "audioinput" | "videoinput",
+  idKey: string,
+  labelKey: string,
+): Promise<ResolvedDevice> => {
+  const savedId = readPref(idKey);
+  const savedLabel = readPref(labelKey);
+  if (!savedId) return { id: null, label: null, lost: false };
+  try {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === kind);
+    if (!devices.some(d => d.deviceId)) return { id: savedId, label: savedLabel, lost: false };
+    if (devices.some(d => d.deviceId === savedId)) return { id: savedId, label: savedLabel, lost: false };
+    const byLabel = savedLabel ? devices.find(d => d.label === savedLabel) : undefined;
+    if (byLabel) {
+      writePref(idKey, byLabel.deviceId);
+      return { id: byLabel.deviceId, label: savedLabel, lost: false };
+    }
+    return { id: null, label: savedLabel, lost: true };
+  } catch {
+    return { id: savedId, label: savedLabel, lost: false };
+  }
+};
+
+// Single visible surface for every "couldn't honor your saved device"
+// case. Deduped by toast id so the resume retry ladder (up to 8 attempts)
+// doesn't stack copies.
+const warnDeviceFallback = (msg: string) => {
+  toast(msg, {
+    id: "media-device-fallback",
+    duration: 8000,
+    position: "top-center",
+    icon: "🎤",
+    style: {
+      background: "var(--slop-bg-panel, #1a0d2e)",
+      border: "1px solid var(--slop-magenta, #ff3ec9)",
+      color: "var(--slop-text, #fff)",
+      fontFamily: "var(--slop-font-display)",
+      fontSize: 12,
+      letterSpacing: "0.04em",
+      maxWidth: 380,
+    },
+  });
+};
+
+const warnLostDevices = (lost: { camera?: ResolvedDevice; mic?: ResolvedDevice }) => {
+  const parts: string[] = [];
+  if (lost.camera?.lost) parts.push(lost.camera.label ? `camera "${lost.camera.label}"` : "saved camera");
+  if (lost.mic?.lost) parts.push(lost.mic.label ? `mic "${lost.mic.label}"` : "saved mic");
+  if (!parts.length) return;
+  warnDeviceFallback(
+    `your ${parts.join(" and ")} wasn't found — using the system default. re-pick it in the Share dialog.`,
+  );
+};
+
+// Backfill saved labels from a live capture: prefs written before labels
+// existed (or by older builds) get their label stored on the next
+// successful pinned acquire, so heal-by-label works without the user ever
+// re-visiting a Share dialog.
+const backfillDeviceLabels = (stream: MediaStream) => {
+  const a = stream.getAudioTracks()[0];
+  if (a?.label && a.getSettings().deviceId === readPref(MEDIA_PREF_KEYS.micId)) {
+    writePref(MEDIA_PREF_KEYS.micLabel, a.label);
+  }
+  const v = stream.getVideoTracks()[0];
+  if (v?.label && v.getSettings().deviceId === readPref(MEDIA_PREF_KEYS.cameraId)) {
+    writePref(MEDIA_PREF_KEYS.cameraLabel, v.label);
+  }
+};
+
+type DroppedPin = "camera" | "mic" | "camera + mic";
+
+const warnDroppedPin = (dropped: DroppedPin) =>
+  warnDeviceFallback(
+    `your saved ${dropped} couldn't be opened — using the system default. re-pick it in the Share dialog.`,
+  );
+
+const isMissingDeviceError = (err: unknown): boolean => {
+  const name = (err as { name?: string })?.name ?? "";
+  return name === "OverconstrainedError" || name === "NotFoundError";
+};
+
+const hasPin = (c: MediaStreamConstraints["audio"]): boolean => !!c && typeof c === "object" && "deviceId" in c;
+
+// Strip only the deviceId pin; keeps resolution / DSP flags intact.
+const stripPin = (c: MediaStreamConstraints["audio"]): MediaStreamConstraints["audio"] => {
+  if (!c || typeof c !== "object") return c;
+  const rest = { ...(c as MediaTrackConstraints) };
+  delete (rest as Record<string, unknown>).deviceId;
+  return Object.keys(rest).length ? rest : true;
+};
+
+// getUserMedia with staged retry: the strict saved-device constraint goes
+// first; when a pinned device is gone (unplugged, id rotated) the browser
+// throws OverconstrainedError/NotFoundError and retries drop the pins ONE
+// KIND AT A TIME. A stale camera id must never cost the user their chosen
+// mic — the old strip-everything fallback is exactly how the OS-default
+// "iPhone Microphone" (Continuity) snuck into broadcasts. Every dropped
+// pin is reported via onFallback so the swap is visible, never silent.
+const tryGetUserMedia = async (
+  constraints: MediaStreamConstraints,
+  onFallback: (dropped: DroppedPin) => void = warnDroppedPin,
+): Promise<MediaStream> => {
   try {
     return await navigator.mediaDevices.getUserMedia(constraints);
   } catch (err) {
-    const name = (err as { name?: string })?.name ?? "";
-    if (name !== "OverconstrainedError" && name !== "NotFoundError") throw err;
-    // Strip deviceId and retry. Keeps resolution / boolean flags.
-    const fallback: MediaStreamConstraints = {};
-    if (constraints.audio && typeof constraints.audio === "object") {
-      const a = { ...(constraints.audio as MediaTrackConstraints) };
-      delete (a as Record<string, unknown>).deviceId;
-      fallback.audio = Object.keys(a).length ? a : true;
-    } else if (constraints.audio) {
-      fallback.audio = constraints.audio;
+    if (!isMissingDeviceError(err)) throw err;
+    const audioPinned = hasPin(constraints.audio);
+    const videoPinned = hasPin(constraints.video);
+    // No pins to blame — the failure is about the device kind itself
+    // (e.g. no camera at all); retrying the same constraints is pointless.
+    if (!audioPinned && !videoPinned) throw err;
+    const stages: { c: MediaStreamConstraints; dropped: DroppedPin }[] = [];
+    if (audioPinned && videoPinned) {
+      stages.push({ c: { audio: constraints.audio, video: stripPin(constraints.video) }, dropped: "camera" });
+      stages.push({ c: { audio: stripPin(constraints.audio), video: constraints.video }, dropped: "mic" });
     }
-    if (constraints.video && typeof constraints.video === "object") {
-      const v = { ...(constraints.video as MediaTrackConstraints) };
-      delete (v as Record<string, unknown>).deviceId;
-      fallback.video = Object.keys(v).length ? v : true;
-    } else if (constraints.video) {
-      fallback.video = constraints.video;
+    stages.push({
+      c: { audio: stripPin(constraints.audio), video: stripPin(constraints.video) },
+      dropped: audioPinned && videoPinned ? "camera + mic" : videoPinned ? "camera" : "mic",
+    });
+    let lastErr: unknown = err;
+    for (const stage of stages) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(stage.c);
+        onFallback(stage.dropped);
+        return stream;
+      } catch (stageErr) {
+        if (!isMissingDeviceError(stageErr)) throw stageErr;
+        lastErr = stageErr;
+      }
     }
-    return await navigator.mediaDevices.getUserMedia(fallback);
+    throw lastErr;
   }
 };
 
@@ -163,6 +295,7 @@ export function useLocalMedia(
       setBusy(kind);
       try {
         const raw = await getStream();
+        if (kind === "camera" || kind === "audio") backfillDeviceLabels(raw);
         // Conditionally wrap mic-bearing kinds (camera + audio, NOT
         // screen — screen audio is system audio, not voice, and RNNoise
         // would mangle music/game audio). Falls back to the raw stream
@@ -221,19 +354,25 @@ export function useLocalMedia(
 
   const startCamera = useCallback(
     () =>
-      acquire("camera", () => {
-        const cameraId = readPref(MEDIA_PREF_KEYS.cameraId);
+      acquire("camera", async () => {
         const res = readPref(MEDIA_PREF_KEYS.cameraRes);
-        const micId = readPref(MEDIA_PREF_KEYS.micId);
+        // Re-anchor the saved ids against the live device list first —
+        // a rotated id gets healed by label match here, so the strict
+        // gUM below almost never has to fall back.
+        const [cam, mic] = await Promise.all([
+          resolveSavedDevice("videoinput", MEDIA_PREF_KEYS.cameraId, MEDIA_PREF_KEYS.cameraLabel),
+          resolveSavedDevice("audioinput", MEDIA_PREF_KEYS.micId, MEDIA_PREF_KEYS.micLabel),
+        ]);
+        warnLostDevices({ camera: cam, mic });
         const video: MediaTrackConstraints = {
           ...resolutionConstraints(res),
-          ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
+          ...(cam.id ? { deviceId: { exact: cam.id } } : {}),
         };
         // Camera bundles audio so peers hear the speaker through the same
         // window they see them in (no separate audio publication needed).
         // Share → Audio kicks off a standalone audio-only pub for the
         // avatar / no-camera flow.
-        return tryGetUserMedia({ video, audio: buildAudioConstraints(micId) });
+        return tryGetUserMedia({ video, audio: buildAudioConstraints(mic.id) });
       }),
     [acquire],
   );
@@ -243,9 +382,10 @@ export function useLocalMedia(
   );
   const startAudio = useCallback(
     () =>
-      acquire("audio", () => {
-        const micId = readPref(MEDIA_PREF_KEYS.micId);
-        return tryGetUserMedia({ video: false, audio: buildAudioConstraints(micId) });
+      acquire("audio", async () => {
+        const mic = await resolveSavedDevice("audioinput", MEDIA_PREF_KEYS.micId, MEDIA_PREF_KEYS.micLabel);
+        warnLostDevices({ mic });
+        return tryGetUserMedia({ video: false, audio: buildAudioConstraints(mic.id) });
       }),
     [acquire],
   );

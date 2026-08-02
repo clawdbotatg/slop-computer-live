@@ -147,6 +147,16 @@ export const VideoShareDialog = ({ mode, onClose, onSubmit }: VideoShareDialogPr
     else window.localStorage.setItem(MEDIA_PREF_KEYS.cameraRes, resolution);
     if (micId) window.localStorage.setItem(MEDIA_PREF_KEYS.micId, micId);
     else window.localStorage.removeItem(MEDIA_PREF_KEYS.micId);
+    // Labels ride along with the ids: deviceIds rotate per-origin, labels
+    // don't — useLocalMedia re-finds the device by label when the id dies.
+    // (id set but not in the list = stale selection — keep the old label,
+    // it's the only thing left that can re-find the device.)
+    const cameraLabel = cameras.find(d => d.deviceId === cameraId)?.label;
+    if (cameraId && cameraLabel) window.localStorage.setItem(MEDIA_PREF_KEYS.cameraLabel, cameraLabel);
+    else if (!cameraId) window.localStorage.removeItem(MEDIA_PREF_KEYS.cameraLabel);
+    const micLabel = mics.find(d => d.deviceId === micId)?.label;
+    if (micId && micLabel) window.localStorage.setItem(MEDIA_PREF_KEYS.micLabel, micLabel);
+    else if (!micId) window.localStorage.removeItem(MEDIA_PREF_KEYS.micLabel);
     if (denoise) window.localStorage.removeItem(MEDIA_PREF_KEYS.denoise);
     else window.localStorage.setItem(MEDIA_PREF_KEYS.denoise, "0");
     onSubmit({ cameraId, resolution, micId });
