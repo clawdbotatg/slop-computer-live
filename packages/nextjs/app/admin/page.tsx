@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import { Address as AddressType } from "viem";
@@ -929,6 +929,14 @@ const AdminPage: NextPage = () => {
     </Bevel>
   );
 
+  const rowBtn: CSSProperties = { fontSize: 12, padding: "3px 10px" };
+  const rowLabel: CSSProperties = {
+    fontFamily: "var(--slop-font-display)",
+    textTransform: "uppercase",
+    color: "var(--slop-text-muted)",
+    fontSize: 11,
+  };
+
   const adminPanel = (
     <>
       <Bevel style={{ padding: 16, maxWidth: 960 }}>
@@ -989,7 +997,7 @@ const AdminPage: NextPage = () => {
         ) : null}
       </Bevel>
 
-      <Bevel style={{ padding: 16, maxWidth: 1280 }}>
+      <Bevel style={{ padding: 16 }}>
         <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", textTransform: "uppercase" }}>Rooms</h2>
         <p style={{ color: "var(--slop-text-muted)", fontSize: 12, margin: "6px 0 12px" }}>
           Every claimed room on disk. The relay only stores scrypt hashes, so <em>Copy link</em> embeds the password
@@ -1007,81 +1015,56 @@ const AdminPage: NextPage = () => {
                 key={r.slug}
                 style={{
                   display: "flex",
-                  gap: 8,
+                  gap: 12,
+                  rowGap: 4,
                   alignItems: "center",
+                  flexWrap: "wrap",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   border: "1px solid var(--slop-bevel-shadow)",
                   background: "rgba(8,4,18,0.35)",
                 }}
               >
-                <span
-                  aria-label={r.hot ? "hot" : "cold"}
-                  title={r.hot ? "hot" : "cold"}
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: r.hot ? "var(--slop-lime, #b4ff3a)" : "var(--slop-text-muted)",
-                    boxShadow: r.hot ? "0 0 6px var(--slop-lime, #b4ff3a)" : "none",
-                    flex: "0 0 auto",
-                  }}
-                />
-                <a
-                  href={`/${r.slug}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ fontFamily: "var(--slop-font-display)", textTransform: "lowercase", minWidth: 0 }}
-                >
-                  /{r.slug}
-                </a>
-                <button
-                  type="button"
-                  onClick={() => void copyGodLink(r.slug)}
-                  className="slop-link"
-                  title={
-                    !godPassword
-                      ? "GOD_MODE_PASSWORD not set on the relay"
-                      : !roomPasswords[r.slug]
-                        ? "regenerate this room's password first so the link can embed it"
-                        : "copy god-mode link (room password + GOD_MODE_PASSWORD inline)"
-                  }
-                  style={{
-                    background: "transparent",
-                    border: 0,
-                    padding: 0,
-                    margin: 0,
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "lowercase",
-                    cursor: "pointer",
-                    opacity: godPassword && roomPasswords[r.slug] ? 1 : 0.5,
-                  }}
-                >
-                  [god]
-                </button>
-                <a
-                  href={`https://slop.computer/admin?liveSlugToSchedule=${encodeURIComponent(r.slug)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="slop-link"
-                  title="open the frontpage scheduler with this slug preloaded"
-                  style={{
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "lowercase",
-                  }}
-                >
-                  [schedule]
-                </a>
-                {r.slug !== DEFAULT_SLUG ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                  <span
+                    aria-label={r.hot ? "hot" : "cold"}
+                    title={r.hot ? "hot" : "cold"}
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: r.hot ? "var(--slop-lime, #b4ff3a)" : "var(--slop-text-muted)",
+                      boxShadow: r.hot ? "0 0 6px var(--slop-lime, #b4ff3a)" : "none",
+                      flex: "0 0 auto",
+                    }}
+                  />
+                  <a
+                    href={`/${r.slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`/${r.slug}`}
+                    style={{
+                      fontFamily: "var(--slop-font-display)",
+                      textTransform: "lowercase",
+                      minWidth: 0,
+                      maxWidth: 220,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    /{r.slug}
+                  </a>
                   <button
                     type="button"
-                    onClick={() =>
-                      void setRoomGate(r.slug, r.gate === "wallet-signers" ? "password" : "wallet-signers")
-                    }
+                    onClick={() => void copyGodLink(r.slug)}
                     className="slop-link"
                     title={
-                      r.gate === "wallet-signers"
-                        ? "wallet-signer access is ON — click to switch back to password"
-                        : "upgrade: only this room's multisig signers can enter (deploy the wallet in-room first)"
+                      !godPassword
+                        ? "GOD_MODE_PASSWORD not set on the relay"
+                        : !roomPasswords[r.slug]
+                          ? "regenerate this room's password first so the link can embed it"
+                          : "copy god-mode link (room password + GOD_MODE_PASSWORD inline)"
                     }
                     style={{
                       background: "transparent",
@@ -1091,163 +1074,171 @@ const AdminPage: NextPage = () => {
                       fontFamily: "var(--slop-font-display)",
                       textTransform: "lowercase",
                       cursor: "pointer",
-                      color: r.gate === "wallet-signers" ? "var(--slop-lime, #b4ff3a)" : undefined,
+                      opacity: godPassword && roomPasswords[r.slug] ? 1 : 0.5,
                     }}
                   >
-                    {r.gate === "wallet-signers" ? "[wallet]" : "[token]"}
+                    [god]
                   </button>
-                ) : null}
-                {r.slug === DEFAULT_SLUG ? (
-                  <button
-                    type="button"
-                    onClick={() => openClearModal(r.slug)}
+                  <a
+                    href={`https://slop.computer/admin?liveSlugToSchedule=${encodeURIComponent(r.slug)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="slop-link"
-                    title="wipe this room's storage and respawn it empty"
+                    title="open the frontpage scheduler with this slug preloaded"
                     style={{
-                      background: "transparent",
-                      border: 0,
-                      padding: 0,
-                      margin: 0,
                       fontFamily: "var(--slop-font-display)",
                       textTransform: "lowercase",
-                      cursor: "pointer",
-                      color: "var(--slop-accent-warn, #c33)",
                     }}
                   >
-                    [clear]
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => openDeleteModal(r.slug)}
-                    className="slop-link"
-                    title="permanently delete this room (in-memory + on-disk)"
-                    style={{
-                      background: "transparent",
-                      border: 0,
-                      padding: 0,
-                      margin: 0,
-                      fontFamily: "var(--slop-font-display)",
-                      textTransform: "lowercase",
-                      cursor: "pointer",
-                      color: "var(--slop-accent-warn, #c33)",
-                    }}
-                  >
-                    [delete]
-                  </button>
-                )}
-                <span style={{ flex: 1 }} />
-                <span
-                  style={{
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "uppercase",
-                    color: "var(--slop-text-muted)",
-                    fontSize: 12,
-                  }}
-                >
-                  STT:
-                </span>
-                <Button
-                  onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
-                  style={
-                    r.sttOn
-                      ? { background: "var(--slop-magenta, #ff3ec9)", color: "var(--slop-bg, #06030d)" }
-                      : undefined
-                  }
-                  title={r.sttOn ? "transcripts ON" : "transcripts OFF"}
-                >
-                  {r.sttOn ? "On" : "Off"}
-                </Button>
-                <Button
-                  onClick={() => void resetRoomTranscript(r.slug)}
-                  style={
-                    transcriptResetArmed === r.slug
-                      ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" }
-                      : undefined
-                  }
-                  title="wipe this room's transcript archive"
-                >
-                  {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
-                </Button>
-                <span
-                  style={{
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "uppercase",
-                    color: "var(--slop-text-muted)",
-                    fontSize: 12,
-                    marginLeft: 6,
-                  }}
-                >
-                  CHAT:
-                </span>
-                <Button
-                  onClick={() => void resetRoomChat(r.slug)}
-                  style={
-                    chatResetArmed === r.slug
-                      ? { background: "var(--slop-accent-warn, #c33)", color: "#fff" }
-                      : undefined
-                  }
-                  title="wipe this room's chat log"
-                >
-                  {chatResetArmed === r.slug ? "Confirm" : "Reset"}
-                </Button>
-                {r.slug === DEFAULT_SLUG ? null : (
-                  <>
-                    <span
+                    [schedule]
+                  </a>
+                  {r.slug !== DEFAULT_SLUG ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void setRoomGate(r.slug, r.gate === "wallet-signers" ? "password" : "wallet-signers")
+                      }
+                      className="slop-link"
+                      title={
+                        r.gate === "wallet-signers"
+                          ? "wallet-signer access is ON — click to switch back to password"
+                          : "upgrade: only this room's multisig signers can enter (deploy the wallet in-room first)"
+                      }
                       style={{
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        margin: 0,
                         fontFamily: "var(--slop-font-display)",
-                        textTransform: "uppercase",
-                        color: "var(--slop-text-muted)",
-                        fontSize: 12,
-                        marginLeft: 6,
+                        textTransform: "lowercase",
+                        cursor: "pointer",
+                        color: r.gate === "wallet-signers" ? "var(--slop-lime, #b4ff3a)" : undefined,
                       }}
                     >
-                      PASS:
-                    </span>
-                    <Button onClick={() => void regenerateRoomPassword(r.slug)}>Regen</Button>
-                    {!roomPasswords[r.slug] ? (
-                      <>
-                        <input
-                          type="text"
-                          value={inviteDraft[r.slug] ?? ""}
-                          onChange={e => setInviteDraft(prev => ({ ...prev, [r.slug]: e.target.value }))}
-                          placeholder="known pw"
-                          title="paste the password this room was created with — recovers it without rotating, so existing links keep working"
-                          style={{
-                            width: 96,
-                            fontSize: 12,
-                            fontFamily: "var(--slop-font-mono, monospace)",
-                            padding: "2px 6px",
-                            background: "rgba(8,4,18,0.5)",
-                            border: "1px solid var(--slop-border, #443)",
-                            borderRadius: 4,
-                            color: "var(--slop-text, #eee)",
-                          }}
-                        />
-                        <Button
-                          onClick={() => void setRoomInvite(r.slug, inviteDraft[r.slug] ?? "")}
-                          title="save this password to the relay so the copy-link works on every device"
-                        >
-                          Set
-                        </Button>
-                      </>
-                    ) : null}
-                  </>
-                )}
-                <span
-                  style={{
-                    fontFamily: "var(--slop-font-display)",
-                    textTransform: "uppercase",
-                    color: "var(--slop-text-muted)",
-                    fontSize: 12,
-                    marginLeft: 6,
-                  }}
-                >
-                  LINK:
-                </span>
-                <Button variant="primary" onClick={() => void copyRoomLink(r.slug)}>
-                  Copy
-                </Button>
+                      {r.gate === "wallet-signers" ? "[wallet]" : "[token]"}
+                    </button>
+                  ) : null}
+                  {r.slug === DEFAULT_SLUG ? (
+                    <button
+                      type="button"
+                      onClick={() => openClearModal(r.slug)}
+                      className="slop-link"
+                      title="wipe this room's storage and respawn it empty"
+                      style={{
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        margin: 0,
+                        fontFamily: "var(--slop-font-display)",
+                        textTransform: "lowercase",
+                        cursor: "pointer",
+                        color: "var(--slop-accent-warn, #c33)",
+                      }}
+                    >
+                      [clear]
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openDeleteModal(r.slug)}
+                      className="slop-link"
+                      title="permanently delete this room (in-memory + on-disk)"
+                      style={{
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        margin: 0,
+                        fontFamily: "var(--slop-font-display)",
+                        textTransform: "lowercase",
+                        cursor: "pointer",
+                        color: "var(--slop-accent-warn, #c33)",
+                      }}
+                    >
+                      [delete]
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 6, rowGap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={rowLabel}>STT:</span>
+                  <Button
+                    onClick={() => void toggleRoomStt(r.slug, !r.sttOn)}
+                    style={
+                      r.sttOn
+                        ? { ...rowBtn, background: "var(--slop-magenta, #ff3ec9)", color: "var(--slop-bg, #06030d)" }
+                        : rowBtn
+                    }
+                    title={r.sttOn ? "transcripts ON" : "transcripts OFF"}
+                  >
+                    {r.sttOn ? "On" : "Off"}
+                  </Button>
+                  <Button
+                    onClick={() => void resetRoomTranscript(r.slug)}
+                    style={
+                      transcriptResetArmed === r.slug
+                        ? { ...rowBtn, background: "var(--slop-accent-warn, #c33)", color: "#fff" }
+                        : rowBtn
+                    }
+                    title="wipe this room's transcript archive"
+                  >
+                    {transcriptResetArmed === r.slug ? "Confirm" : "Reset"}
+                  </Button>
+                  <span style={{ ...rowLabel, marginLeft: 6 }}>CHAT:</span>
+                  <Button
+                    onClick={() => void resetRoomChat(r.slug)}
+                    style={
+                      chatResetArmed === r.slug
+                        ? { ...rowBtn, background: "var(--slop-accent-warn, #c33)", color: "#fff" }
+                        : rowBtn
+                    }
+                    title="wipe this room's chat log"
+                  >
+                    {chatResetArmed === r.slug ? "Confirm" : "Reset"}
+                  </Button>
+                  {r.slug === DEFAULT_SLUG ? null : (
+                    <>
+                      <span style={{ ...rowLabel, marginLeft: 6 }}>PASS:</span>
+                      <Button style={rowBtn} onClick={() => void regenerateRoomPassword(r.slug)}>
+                        Regen
+                      </Button>
+                      {!roomPasswords[r.slug] ? (
+                        <>
+                          <input
+                            type="text"
+                            value={inviteDraft[r.slug] ?? ""}
+                            onChange={e => setInviteDraft(prev => ({ ...prev, [r.slug]: e.target.value }))}
+                            placeholder="known pw"
+                            title="paste the password this room was created with — recovers it without rotating, so existing links keep working"
+                            style={{
+                              width: 88,
+                              fontSize: 12,
+                              fontFamily: "var(--slop-font-mono, monospace)",
+                              padding: "2px 6px",
+                              background: "rgba(8,4,18,0.5)",
+                              border: "1px solid var(--slop-border, #443)",
+                              borderRadius: 4,
+                              color: "var(--slop-text, #eee)",
+                            }}
+                          />
+                          <Button
+                            style={rowBtn}
+                            onClick={() => void setRoomInvite(r.slug, inviteDraft[r.slug] ?? "")}
+                            title="save this password to the relay so the copy-link works on every device"
+                          >
+                            Set
+                          </Button>
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                  <Button
+                    variant="primary"
+                    style={{ ...rowBtn, marginLeft: 6 }}
+                    onClick={() => void copyRoomLink(r.slug)}
+                    title="copy this room's invite link"
+                  >
+                    Copy link
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
