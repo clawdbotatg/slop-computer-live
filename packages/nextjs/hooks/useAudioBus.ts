@@ -120,12 +120,33 @@ export function useAudioBusStream(stream: MediaStream | null, id: string, label:
   useEffect(() => {
     if (!enabled) return;
     if (!stream) return;
-    if (stream.getAudioTracks().length === 0) return;
     const bus = audioBus();
-    const ok = bus.registerStream(stream, id, label);
-    if (!ok) return;
+    let registered = false;
+    const register = () => {
+      if (stream.getAudioTracks().length === 0) return;
+      // registerStream snapshots the stream's audio track at node
+      // construction, so a track that lands after a register needs a
+      // full rebuild — unregister first, sources.has(id) would no-op.
+      if (registered) bus.unregister(id);
+      registered = bus.registerStream(stream, id, label);
+    };
+    register();
+    // WebRTC delivers a pub's tracks as separate ontrack events mutating
+    // the SAME MediaStream object — video often first, and the mesh
+    // deliberately skips the state update for a known stream identity,
+    // so no re-render re-runs this effect. Without this listener a voice
+    // whose audio track arrives after mount never enters the broadcast
+    // mix at all (the 2026-08-05 preshow reload-roulette bug: god mode
+    // heard music but not the host, until a lucky reload reordered
+    // track arrival vs render).
+    const onAddTrack = (ev: MediaStreamTrackEvent) => {
+      if (ev.track.kind !== "audio") return;
+      register();
+    };
+    stream.addEventListener("addtrack", onAddTrack);
     return () => {
-      bus.unregister(id);
+      stream.removeEventListener("addtrack", onAddTrack);
+      if (registered) bus.unregister(id);
     };
   }, [stream, id, enabled]);
 
