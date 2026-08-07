@@ -13,9 +13,26 @@ the recording instead of arguing about a screenshot. `/eq`'s video
 section (composite line first, then per-feed CPU/NET/TURN badges) is the
 live version of the same read.
 
+## A voice missing from the broadcast entirely
+
+If someone was **absent** from the stream (not quiet — absent) while
+music played fine, read **`docs/BROADCAST-AUDIO-ROUTING.md`** before
+touching anything. Membership in the mix depends on the relay's
+`pub.streamId` and the WebRTC MSID being the same string, joined by
+exact match in `Desktop.tsx` `streamFor()` — when they disagree the
+peer's window renders blank, the audio component never mounts, and
+the voice vanishes with no error anywhere. There is a **confirmed**
+MSID-drift bug after a mic/camera hot-swap (`replaceTrack` stores a new
+`MediaStream` under the old key), and a still-**open** question about
+what caused the 2026-08-07 outage. The doc has the one diagnostic
+question to ask first, the repro, and why reloading god mode is not a
+diagnostic. Don't re-derive this from static reading — it already
+produced one confident-but-unproven answer.
+
 ## Broadcast audio leveling ("The Equalizer")
 
-If a show's voices vs music sounded off, or you're touching
+If a show's voices vs music sounded off (present but wrong level — for
+*missing* sources see above), or you're touching
 `packages/nextjs/utils/audioBus.ts`, read **`docs/AUDIO-LEVELING.md`**
 first — it has the auto-leveler's tuning invariant
 (`AUTO_GAIN_MAX = AUTO_TARGET_RMS / AUTO_NOISE_FLOOR`), the 2026-08-01
