@@ -8,6 +8,7 @@ import {
   type AudioBusSnapshot,
   type BusInboundMessage,
   type BusOutboundMessage,
+  type VideoHealthRow,
 } from "~~/utils/audioBus";
 
 // The /eq popup. Opens in a separate OS window from the desktop tab
@@ -35,6 +36,7 @@ const cssVar = (name: string, fallback: string): string => `var(--slop-${name}, 
 const EqPopupPage = () => {
   const [snap, setSnap] = useState<AudioBusSnapshot | null>(null);
   const [levels, setLevels] = useState<Record<string, number>>({});
+  const [videoRows, setVideoRows] = useState<VideoHealthRow[]>([]);
   const [connected, setConnected] = useState(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
 
@@ -56,6 +58,9 @@ const EqPopupPage = () => {
         setLevels(msg.levels);
         // A levels frame is also proof the opener is alive — flips the
         // status pip without needing to wait for a mutation snapshot.
+        setConnected(true);
+      } else if (msg.type === "video-stats") {
+        setVideoRows(msg.rows);
         setConnected(true);
       }
     };
@@ -294,6 +299,36 @@ const EqPopupPage = () => {
             })}
           </div>
         </section>
+
+        {/* Video health — one row per video publication. `out` is the
+            publisher's own encode report (fanned out via the relay);
+            `in` is what the spectator tab is receiving. The qual badge
+            is the money read: CPU = their machine can't keep up, NET =
+            their uplink can't, TURN = the leg detours through the
+            relay box instead of a direct path. */}
+        <section style={panelStyle}>
+          <div style={sectionHeaderStyle}>
+            <span>video</span>
+          </div>
+          {videoRows.length === 0 ? (
+            <div
+              style={{
+                padding: "10px 2px",
+                fontSize: 9,
+                color: cssVar("text-muted", "#7878a0"),
+                textAlign: "center",
+              }}
+            >
+              no video yet
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+              {videoRows.map(row => (
+                <VideoRow key={row.key} row={row} />
+              ))}
+            </div>
+          )}
+        </section>
       </div>
       {/* Stream monitor — pinned to the bottom outside the scrollable
           EQ region. Self-contained: pulls the HLS feed and renders
@@ -397,6 +432,138 @@ const SourceRow = ({
         >
           {Math.round(gain * 100)}
         </span>
+      </div>
+    </div>
+  );
+};
+
+const fmtRes = (w: number | null, h: number | null): string => (w != null && h != null ? `${w}×${h}` : "—");
+const fmtFps = (fps: number | null): string => (fps != null ? `${fps}fps` : "—");
+const fmtKbps = (kbps: number | null): string => (kbps != null ? `${kbps}k` : "—");
+
+// One video publication: label + warning badges on top, then the
+// publisher's encode line (out) and the received line (in). A report
+// that hasn't refreshed in 10s renders dimmed — the publisher likely
+// dropped or stopped sampling.
+const VideoRow = ({ row }: { row: VideoHealthRow }) => {
+  const now = Date.now();
+  const outStale = row.out != null && now - row.out.at > 10_000;
+  const badges: { text: string; color: string; title: string }[] = [];
+  if (row.out?.qual === "cpu") {
+    badges.push({
+      text: "CPU",
+      color: cssVar("red", "#ff5577"),
+      title: "Publisher's encoder is CPU-starved — their machine can't keep up. Expect blur/blockiness.",
+    });
+  } else if (row.out?.qual === "bandwidth") {
+    badges.push({
+      text: "NET",
+      color: cssVar("amber", "#ffae00"),
+      title: "Publisher's uplink can't carry the target bitrate — the encoder is throttling.",
+    });
+  } else if (row.out?.qual === "other") {
+    badges.push({
+      text: "ENC",
+      color: cssVar("amber", "#ffae00"),
+      title: "Encoder degraded for an unspecified reason.",
+    });
+  }
+  if (row.out?.relayed) {
+    badges.push({
+      text: "TURN",
+      color: cssVar("amber", "#ffae00"),
+      title: "This leg runs through the TURN relay instead of a direct path — extra latency + bandwidth cap.",
+    });
+  }
+  const statLine: React.CSSProperties = {
+    display: "flex",
+    gap: 6,
+    fontSize: 8,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "0.03em",
+    color: cssVar("text", "#e8e0ff"),
+    opacity: outStale ? 0.4 : 1,
+    whiteSpace: "nowrap",
+  };
+  const dim: React.CSSProperties = { color: cssVar("text-muted", "#7878a0") };
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        padding: "5px 6px",
+        background: "rgba(255,255,255,0.03)",
+        border: `1px solid ${cssVar("bevel-light", "rgba(255,255,255,0.18)")}`,
+        borderRadius: 4,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 9, flexShrink: 0 }} title={row.kind}>
+          {row.kind === "screen" ? "🖥" : "🎥"}
+        </span>
+        <span
+          style={{
+            fontSize: 9,
+            letterSpacing: "0.04em",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            flex: 1,
+            minWidth: 0,
+          }}
+          title={row.label}
+        >
+          {row.label}
+        </span>
+        {badges.map(b => (
+          <span
+            key={b.text}
+            title={b.title}
+            style={{
+              fontSize: 7,
+              letterSpacing: "0.08em",
+              color: "#000",
+              background: b.color,
+              borderRadius: 2,
+              padding: "1px 3px",
+              flexShrink: 0,
+            }}
+          >
+            {b.text}
+          </span>
+        ))}
+        {row.wsRttMs != null ? (
+          <span style={{ fontSize: 8, ...dim, flexShrink: 0 }} title="Publisher's round-trip to the relay">
+            {row.wsRttMs}ms
+          </span>
+        ) : null}
+      </div>
+      <div style={statLine} title="What the publisher reports encoding (toward the broadcast leg)">
+        <span style={dim}>out</span>
+        {row.out ? (
+          <>
+            <span>{fmtRes(row.out.width, row.out.height)}</span>
+            <span>{fmtFps(row.out.fps)}</span>
+            <span>{fmtKbps(row.out.kbps)}</span>
+            <span style={dim}>{row.out.codec ?? "—"}</span>
+            {outStale ? <span style={dim}>stale</span> : null}
+          </>
+        ) : (
+          <span style={dim}>no report</span>
+        )}
+      </div>
+      <div style={statLine} title="What this (spectator) tab is receiving">
+        <span style={dim}>in</span>
+        {row.in ? (
+          <>
+            <span>{fmtRes(row.in.width, row.in.height)}</span>
+            <span>{fmtFps(row.in.fps)}</span>
+            <span>{fmtKbps(row.in.kbps)}</span>
+          </>
+        ) : (
+          <span style={dim}>not receiving</span>
+        )}
       </div>
     </div>
   );

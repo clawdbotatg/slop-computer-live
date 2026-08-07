@@ -50,6 +50,12 @@ async function fetchIceConfig(): Promise<RTCConfiguration> {
 // 10s gives the guest-list ping meter a usefully-live cadence without
 // flooding the relay (a 20-peer room is ~38 fanout msgs/s — trivial).
 const PING_INTERVAL_MS = 10_000;
+// Video-health sampling cadence. Every peer samples its own outbound
+// encoders (getStats per pc), reports via `video_stats`, and the relay
+// fans out `peer_video_stats` — the /eq popup's video section renders
+// them. 3s is fast enough to catch a degrading encoder mid-show and
+// slow enough to be free.
+const VIDEO_STATS_INTERVAL_MS = 3_000;
 const CURSOR_THROTTLE_MS = 50; // 20Hz — was 30Hz; imperceptible at slop tile sizes
 const CURSOR_MIN_DELTA_PX = 4; // skip the broadcast for sub-jitter movement
 const RECONNECT_DELAY_MS = 2000;
@@ -71,25 +77,41 @@ const STREAM_RECONNECT_BACKOFF_MS = 10_000; // min interval between retries per 
 // so capping bitrate/framerate/resolution here is the single biggest
 // CPU lever on the publisher side.
 //
-// Original numbers were tuned for "tile-sized" playback only (600 kbps
-// camera). That looks fine in a 240px tile but falls apart when a
-// god-mode session re-encodes the captured desktop at 3 Mbps for the
-// RTMP broadcast — two lossy h264 passes back-to-back produce visible
-// compression artifacts in the final stream. Bumped to give the
-// broadcast pass room to breathe; modern laptops + typical home upload
-// (10+ Mbps) handle these comfortably.
-const CAMERA_MAX_BITRATE = 1_500_000; // 1.5 Mbps — clean 480p, decent 720p
+// Caps are TIERED by recipient. The god-mode spectator's tab is what
+// OBS captures for the RTMP broadcast — that leg gets full resolution
+// and generous bitrate (a starved feed there means visible macroblocks
+// on the show, twice-encoded). Every other peer renders us in a
+// ~240–400px tile, so their leg gets a downscaled, cheaper encode.
+// The tiering is what keeps a host publishing camera + screen to N
+// peers from CPU-starving its own encoders (the 2026-08-06 blurry-host
+// episode) — and what stops guests burning decode CPU on full-rate
+// streams they display at thumbnail size.
+type SendTier = "broadcast" | "tile";
 const CAMERA_MAX_FRAMERATE = 30;
-const SCREEN_MAX_BITRATE = 2_500_000; // 2.5 Mbps — sharp text in screen shares
-const SCREEN_MAX_FRAMERATE = 15;
+const CAMERA_BROADCAST_MAX_BITRATE = 2_500_000; // sharp 720p on the stream
+const CAMERA_TILE_MAX_BITRATE = 600_000; // plenty for a ~360p tile
+const CAMERA_TILE_SCALE = 2; // halve capture res for tile viewers
+const SCREEN_BROADCAST_MAX_BITRATE = 2_500_000; // sharp text on the stream
+const SCREEN_BROADCAST_MAX_FRAMERATE = 15;
+const SCREEN_TILE_MAX_BITRATE = 1_500_000; // guests still read shared text
+const SCREEN_TILE_MAX_FRAMERATE = 10;
 
-function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotKind): void {
+function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotKind, tier: SendTier): void {
   // Audio is cheap to encode and voice quality matters — leave it alone.
   if (kind === "audio") return;
   const streamTracks = new Set(stream.getTracks());
   for (const sender of pc.getSenders()) {
     if (!sender.track || sender.track.kind !== "video") continue;
     if (!streamTracks.has(sender.track)) continue;
+    // contentHint steers the encoder's rate/degradation strategy:
+    // "motion" keeps a talking head fluid, "detail" makes Chrome hold
+    // resolution on screen text. Set on the track (shared by all
+    // senders of it) — idempotent, cheap.
+    try {
+      sender.track.contentHint = kind === "screen" ? "detail" : "motion";
+    } catch {
+      /* older browsers — hint is advisory anyway */
+    }
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) {
       params.encodings = [{}];
@@ -97,40 +119,47 @@ function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotK
     if (kind === "camera") {
       params.encodings[0] = {
         ...params.encodings[0],
-        maxBitrate: CAMERA_MAX_BITRATE,
+        maxBitrate: tier === "broadcast" ? CAMERA_BROADCAST_MAX_BITRATE : CAMERA_TILE_MAX_BITRATE,
         maxFramerate: CAMERA_MAX_FRAMERATE,
+        scaleResolutionDownBy: tier === "broadcast" ? 1 : CAMERA_TILE_SCALE,
       };
     } else if (kind === "screen") {
       params.encodings[0] = {
         ...params.encodings[0],
-        maxBitrate: SCREEN_MAX_BITRATE,
-        maxFramerate: SCREEN_MAX_FRAMERATE,
+        maxBitrate: tier === "broadcast" ? SCREEN_BROADCAST_MAX_BITRATE : SCREEN_TILE_MAX_BITRATE,
+        maxFramerate: tier === "broadcast" ? SCREEN_BROADCAST_MAX_FRAMERATE : SCREEN_TILE_MAX_FRAMERATE,
+        // Screens keep full resolution in both tiers — downscaled text
+        // is unreadable at any bitrate.
       };
     }
+    // Blur is what viewers notice; on the broadcast leg (and screen
+    // text everywhere) prefer dropping frames over dropping pixels.
+    params.degradationPreference = kind === "screen" || tier === "broadcast" ? "maintain-resolution" : "balanced";
     sender.setParameters(params).catch(err => console.warn("[mesh] setParameters failed", err));
   }
 }
 
-// macOS / VideoToolbox has no hardware VP8 decoder, so a high-res
-// screenshare delivered as VP8 ends up software-decoded by libvpx on
-// the receiver and chokes its CPU (visible as choppy playback even
-// though the publisher is encoding fine). VP9 and H.264 are both
-// hardware-accelerated on Apple Silicon, so we bias every video
-// transceiver's codec list toward VP9 → H.264 → everything else,
-// dropping VP8 to the back. setCodecPreferences only affects the
-// *next* negotiation, so this must run before createOffer /
-// createAnswer; on the answerer side it must also run after
-// setRemoteDescription so the transceivers created from the remote
-// offer get prefs applied.
+// Codec order matters twice in a full mesh: decode (every peer decodes
+// N streams) and ENCODE (every publisher encodes one copy per peer).
+// H.264 is the only codec with hardware encode + decode essentially
+// everywhere (VideoToolbox, QuickSync, NVENC), so it leads. VP9 stays
+// second — Apple Silicon hardware-decodes it, but nothing consumer
+// hardware-ENCODEs it, and N parallel libvpx software encodes is
+// exactly what CPU-starved the host's video on the 2026-08-06 episode
+// (the old order here was VP9-first). VP8 stays at the back: no
+// hardware decoder on macOS, so high-res VP8 chokes receivers.
+// setCodecPreferences only affects the *next* negotiation, so this
+// must run before createOffer / createAnswer; on the answerer side it
+// must also run after setRemoteDescription so the transceivers created
+// from the remote offer get prefs applied.
 function preferEfficientVideoCodecs(pc: RTCPeerConnection): void {
   if (typeof RTCRtpSender.getCapabilities !== "function") return;
   const caps = RTCRtpSender.getCapabilities("video");
   if (!caps?.codecs?.length) return;
-  const isPreferred = (mimeType: string) => /\/(VP9|H264)$/i.test(mimeType);
-  const preferred = caps.codecs.filter(c => isPreferred(c.mimeType));
-  if (preferred.length === 0) return;
-  const others = caps.codecs.filter(c => !isPreferred(c.mimeType));
-  const ordered = [...preferred, ...others];
+  const rank = (mimeType: string): number => (/\/H264$/i.test(mimeType) ? 0 : /\/VP9$/i.test(mimeType) ? 1 : 2);
+  if (!caps.codecs.some(c => rank(c.mimeType) < 2)) return;
+  // Stable sort — same-rank codecs keep their capability order.
+  const ordered = [...caps.codecs].sort((a, b) => rank(a.mimeType) - rank(b.mimeType));
   for (const transceiver of pc.getTransceivers()) {
     if (transceiver.receiver.track?.kind !== "video") continue;
     if (typeof transceiver.setCodecPreferences !== "function") continue;
@@ -170,6 +199,36 @@ export type Peer = {
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
+
+/** One publisher-side video encode sample for a publication. Sampled
+ *  from the god-mode-spectator-bound sender when a spectator is in the
+ *  room (that's the leg the broadcast captures), else any leg. `qual`
+ *  is the encoder's own excuse when it degrades: "cpu" = the machine
+ *  can't keep up, "bandwidth" = the network can't. `relayed` = the leg
+ *  runs through TURN instead of a direct path. */
+export type VideoStatSample = {
+  sid: string; // publication streamId
+  kind: "camera" | "screen";
+  codec: string | null; // "H264", "VP9", …
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  kbps: number | null; // measured encode rate since the last sample
+  qual: "none" | "cpu" | "bandwidth" | "other" | null;
+  relayed: boolean | null;
+  rttMs: number | null;
+};
+
+export type PeerVideoStats = { at: number; streams: VideoStatSample[] };
+
+/** What THIS tab is receiving for a remote publication (streamId key). */
+export type InboundVideoStats = {
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  kbps: number | null;
+  at: number;
+};
 
 export type Publication = {
   streamId: string;
@@ -1939,6 +1998,14 @@ export type PeerMeshState = {
    *  god-mode resolution readout in the guest list. Absent keys = no
    *  report yet. */
   peerViewports: Record<string, { width: number; height: number }>;
+  /** Publisher-side encode health per peer (their own report of what
+   *  they're sending, spectator leg preferred), keyed by peerId. Our
+   *  own row appears under `myId`. Absent keys = no report yet; check
+   *  `at` for staleness — reports stop when a peer disconnects. */
+  peerVideoStats: Record<string, PeerVideoStats>;
+  /** Receive-side stats for the streams THIS tab renders, keyed by
+   *  publication streamId. */
+  inboundVideoStats: Record<string, InboundVideoStats>;
   /** Set or clear the current user's display name. Pass `null` (or an
    *  empty string) to clear. */
   setCustomName: (name: string | null) => void;
@@ -2091,6 +2158,11 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // (the relay stores each peer's last report) and kept live by the
   // `peer_viewport` broadcast + our own resize reports.
   const [peerViewports, setPeerViewports] = useState<Record<string, { width: number; height: number }>>({});
+  // Publisher-side video encode stats per peer (incl. our own row under
+  // myId), fed by the `peer_video_stats` broadcast + our own sampler.
+  const [peerVideoStats, setPeerVideoStats] = useState<Record<string, PeerVideoStats>>({});
+  // What this tab is receiving per remote publication, keyed by streamId.
+  const [inboundVideoStats, setInboundVideoStats] = useState<Record<string, InboundVideoStats>>({});
 
   // Mirror of `slots` for synchronous reads inside callbacks (so
   // updateSlot's "new windows come to the front" rule can compute the
@@ -2180,6 +2252,14 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  // Which encoder tier a peer's leg of the mesh gets. The god-mode
+  // spectator (the tab OBS captures for the broadcast) gets the
+  // full-quality tier; everyone else views tiles and gets the cheap one.
+  const sendTierFor = useCallback(
+    (peerId: string): SendTier => (peersRef.current.some(p => p.id === peerId && p.spectator) ? "broadcast" : "tile"),
+    [],
+  );
+
   const createPeerConnection = useCallback(
     (peerId: string): RTCPeerConnection => {
       const pc = new RTCPeerConnection(iceConfigRef.current);
@@ -2193,7 +2273,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             /* track already added */
           }
         }
-        applySenderCaps(pc, stream, kind);
+        applySenderCaps(pc, stream, kind, sendTierFor(peerId));
       }
       preferEfficientVideoCodecs(pc);
 
@@ -2242,7 +2322,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       peerConnectionsRef.current.set(peerId, pc);
       return pc;
     },
-    [send, closePeerConnection, initiateOffer],
+    [send, closePeerConnection, initiateOffer, sendTierFor],
   );
 
   const handleOffer = useCallback(
@@ -2303,7 +2383,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       if (localStreamsRef.current.has(stream.id)) return;
       localStreamsRef.current.set(stream.id, { stream, kind });
       // Add tracks to all existing PCs; onnegotiationneeded handles the rest.
-      for (const pc of peerConnectionsRef.current.values()) {
+      for (const [peerId, pc] of peerConnectionsRef.current) {
         for (const track of stream.getTracks()) {
           try {
             pc.addTrack(track, stream);
@@ -2311,12 +2391,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             /* duplicate */
           }
         }
-        applySenderCaps(pc, stream, kind);
+        applySenderCaps(pc, stream, kind, sendTierFor(peerId));
         preferEfficientVideoCodecs(pc);
       }
       send({ type: "publish", streamId: stream.id, kind, label });
     },
-    [send],
+    [send, sendTierFor],
   );
 
   const replaceTrack = useCallback(
@@ -2352,13 +2432,170 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       // the existing sender, and although setParameters values persist
       // through that, the safest path is to re-pin them so a freshly-
       // attached hardware encoder picks up the right bitrate/framerate.
-      for (const pc of peerConnectionsRef.current.values()) {
-        applySenderCaps(pc, fresh, pubKind);
+      for (const [peerId, pc] of peerConnectionsRef.current) {
+        applySenderCaps(pc, fresh, pubKind, sendTierFor(peerId));
       }
       return fresh;
     },
-    [],
+    [sendTierFor],
   );
+
+  // Re-apply sender caps whenever the set of spectators changes. Caps
+  // are normally pinned at addTrack time, but a pc can exist before we
+  // learn its peer is the god-mode spectator (hello/peer_joined racing
+  // signaling) — without this sweep that leg would stay on the cheap
+  // tile tier and the broadcast would capture a downscaled feed.
+  const spectatorKey = peers
+    .filter(p => p.spectator)
+    .map(p => p.id)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    for (const [peerId, pc] of peerConnectionsRef.current) {
+      const tier = sendTierFor(peerId);
+      for (const { stream, kind } of localStreamsRef.current.values()) {
+        applySenderCaps(pc, stream, kind, tier);
+      }
+    }
+  }, [spectatorKey, sendTierFor]);
+
+  // ---- video health sampler ----------------------------------------------
+  // Every VIDEO_STATS_INTERVAL_MS: read getStats() off every pc, derive
+  // (a) our outbound encode samples (reported to the room via
+  // `video_stats` so the broadcaster's /eq popup can see WHY a feed is
+  // degraded — cpu vs bandwidth vs a TURN detour) and (b) inbound
+  // receive stats for the streams this tab renders. WebRTC stats are
+  // spec'd but loosely typed in lib.dom, hence the pile of `Record`
+  // reads below — every field access is guarded.
+  useEffect(() => {
+    if (!connected) return;
+    let cancelled = false;
+    // bytesSent/Received accumulators per `${dir}:${peerId}:${ssrc}` so
+    // each tick can turn the counter into an actual bitrate.
+    const prevBytes = new Map<string, { bytes: number; at: number }>();
+    const tick = async () => {
+      const pcs = [...peerConnectionsRef.current.entries()];
+      if (pcs.length === 0) return;
+      // Our local video tracks → owning publication.
+      const localTrackIndex = new Map<string, { sid: string; kind: "camera" | "screen" }>();
+      for (const [sid, { stream, kind }] of localStreamsRef.current) {
+        if (kind === "audio") continue;
+        for (const t of stream.getVideoTracks()) localTrackIndex.set(t.id, { sid, kind });
+      }
+      // Remote video tracks → publication streamId.
+      const remoteTrackIndex = new Map<string, string>();
+      for (const [sid, stream] of remoteStreamsRef.current) {
+        for (const t of stream.getVideoTracks()) remoteTrackIndex.set(t.id, sid);
+      }
+      const outByPc = new Map<string, Map<string, VideoStatSample>>();
+      const inbound: Record<string, InboundVideoStats> = {};
+      const now = Date.now();
+      const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      const rate = (key: string, bytes: number | null): number | null => {
+        if (bytes == null) return null;
+        const prev = prevBytes.get(key);
+        prevBytes.set(key, { bytes, at: now });
+        if (!prev || now <= prev.at || bytes < prev.bytes) return null;
+        // bytes→bits over ms = kbps, conveniently.
+        return Math.round(((bytes - prev.bytes) * 8) / (now - prev.at));
+      };
+      await Promise.all(
+        pcs.map(async ([peerId, pc]) => {
+          if (pc.connectionState !== "connected") return;
+          let report: RTCStatsReport;
+          try {
+            report = await pc.getStats();
+          } catch {
+            return;
+          }
+          const get = (id: unknown): Record<string, unknown> | null =>
+            typeof id === "string" ? ((report.get(id) as Record<string, unknown>) ?? null) : null;
+          const all: Record<string, unknown>[] = [];
+          report.forEach(s => all.push(s as unknown as Record<string, unknown>));
+          // The active ICE path: transport → selectedCandidatePairId in
+          // Chrome; fall back to the nominated succeeded pair.
+          const transport = all.find(s => s.type === "transport" && s.selectedCandidatePairId);
+          const pair =
+            get(transport?.selectedCandidatePairId) ??
+            all.find(s => s.type === "candidate-pair" && s.state === "succeeded" && s.nominated) ??
+            null;
+          let relayed: boolean | null = null;
+          let rttMs: number | null = null;
+          if (pair) {
+            const rtt = num(pair.currentRoundTripTime);
+            rttMs = rtt == null ? null : Math.round(rtt * 1000);
+            const local = get(pair.localCandidateId);
+            const remote = get(pair.remoteCandidateId);
+            if (local || remote) {
+              relayed = local?.candidateType === "relay" || remote?.candidateType === "relay";
+            }
+          }
+          for (const s of all) {
+            if (s.kind !== "video") continue;
+            if (s.type === "outbound-rtp") {
+              // outbound-rtp → media-source carries the track identity.
+              const source = get(s.mediaSourceId);
+              const pub = source ? localTrackIndex.get(String(source.trackIdentifier)) : undefined;
+              if (!pub) continue;
+              const codec = get(s.codecId);
+              const qual = s.qualityLimitationReason;
+              const sample: VideoStatSample = {
+                sid: pub.sid,
+                kind: pub.kind,
+                codec: typeof codec?.mimeType === "string" ? codec.mimeType.replace(/^video\//i, "") : null,
+                width: num(s.frameWidth),
+                height: num(s.frameHeight),
+                fps: num(s.framesPerSecond) == null ? null : Math.round(num(s.framesPerSecond)!),
+                kbps: rate(`out:${peerId}:${s.ssrc}`, num(s.bytesSent)),
+                qual: qual === "none" || qual === "cpu" || qual === "bandwidth" || qual === "other" ? qual : null,
+                relayed,
+                rttMs,
+              };
+              let bySid = outByPc.get(peerId);
+              if (!bySid) outByPc.set(peerId, (bySid = new Map()));
+              bySid.set(pub.sid, sample);
+            } else if (s.type === "inbound-rtp") {
+              const sid = remoteTrackIndex.get(String(s.trackIdentifier));
+              if (!sid) continue;
+              inbound[sid] = {
+                width: num(s.frameWidth),
+                height: num(s.frameHeight),
+                fps: num(s.framesPerSecond) == null ? null : Math.round(num(s.framesPerSecond)!),
+                kbps: rate(`in:${peerId}:${s.ssrc}`, num(s.bytesReceived)),
+                at: now,
+              };
+            }
+          }
+        }),
+      );
+      if (cancelled) return;
+      // Whole-map replace: streams that stopped reporting fall out.
+      setInboundVideoStats(inbound);
+      // One sample per publication: prefer the spectator-bound leg —
+      // that's the one the broadcast captures, and with tiering it's
+      // the only full-quality encode. (Guest legs are deliberately
+      // cheap; reporting those would cry wolf in the /eq panel.)
+      const spectatorIds = new Set(peersRef.current.filter(p => p.spectator).map(p => p.id));
+      const chosen = new Map<string, VideoStatSample>();
+      for (const [peerId, bySid] of outByPc) {
+        for (const [sid, sample] of bySid) {
+          if (!chosen.has(sid) || spectatorIds.has(peerId)) chosen.set(sid, sample);
+        }
+      }
+      const streams = [...chosen.values()];
+      if (streams.length === 0) return;
+      const meId = myIdRef.current;
+      if (meId) setPeerVideoStats(prev => ({ ...prev, [meId]: { at: now, streams } }));
+      // Spectators publish nothing and are barred from reporting anyway
+      // (relay allow-list) — don't try.
+      if (!selfRef.current?.spectator) send({ type: "video_stats", stats: streams });
+    };
+    const timer = setInterval(() => void tick(), VIDEO_STATS_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connected, send]);
 
   const unpublish = useCallback(
     (streamId: string) => {
@@ -3969,6 +4206,35 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "peer_video_stats" && typeof msg.from === "string" && Array.isArray(msg.stats)) {
+          // Shape is enforced by the relay's sanitizer; keep only the
+          // fields we know and coerce defensively anyway.
+          const from = msg.from;
+          const streams: VideoStatSample[] = [];
+          for (const raw of msg.stats as Record<string, unknown>[]) {
+            if (!raw || typeof raw.sid !== "string") continue;
+            if (raw.kind !== "camera" && raw.kind !== "screen") continue;
+            const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+            streams.push({
+              sid: raw.sid,
+              kind: raw.kind,
+              codec: typeof raw.codec === "string" ? raw.codec : null,
+              width: n(raw.width),
+              height: n(raw.height),
+              fps: n(raw.fps),
+              kbps: n(raw.kbps),
+              qual:
+                raw.qual === "none" || raw.qual === "cpu" || raw.qual === "bandwidth" || raw.qual === "other"
+                  ? raw.qual
+                  : null,
+              relayed: typeof raw.relayed === "boolean" ? raw.relayed : null,
+              rttMs: n(raw.rttMs),
+            });
+          }
+          setPeerVideoStats(prev => ({ ...prev, [from]: { at: Date.now(), streams } }));
+          return;
+        }
+
         if (msg.type === "peer_viewport" && typeof msg.from === "string") {
           const from = msg.from;
           const vp = msg.viewport as { width?: unknown; height?: unknown } | undefined;
@@ -5011,5 +5277,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setCameraOff,
     peerPings,
     peerViewports,
+    peerVideoStats,
+    inboundVideoStats,
   };
 }

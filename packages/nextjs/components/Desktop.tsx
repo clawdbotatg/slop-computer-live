@@ -87,7 +87,7 @@ import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG, withSlug } from "~~/lib/slug";
-import { audioBus } from "~~/utils/audioBus";
+import { AUDIO_BUS_CHANNEL, type BusOutboundMessage, type VideoHealthRow, audioBus } from "~~/utils/audioBus";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 import { prewarmDenoise } from "~~/utils/noiseSuppression";
 import { getStoredPasskeyIdentity } from "~~/utils/passkey";
@@ -746,6 +746,76 @@ function DesktopInner({ slug }: { slug: string }) {
   // be activated once so its AudioContext is built + resumed on the
   // first user gesture (otherwise registers race the context init).
   useAudioBusOwner(isGodMode);
+
+  // Video-health bridge for the /eq popup: compose one row per video
+  // publication — the publisher's own encode report (peer_video_stats)
+  // next to what THIS tab is receiving — and post it on the same
+  // BroadcastChannel the audio EQ rides. God-mode only: the popup is
+  // the broadcaster's off-air surface, and rows built by the spectator
+  // tab describe exactly the legs the stream captures. Inputs read
+  // through a ref so the channel + timer survive stats churn.
+  const videoHealthRef = useRef({
+    publications: mesh.publications,
+    peerVideoStats: mesh.peerVideoStats,
+    inboundVideoStats: mesh.inboundVideoStats,
+    peerPings: mesh.peerPings,
+    peerLabel,
+  });
+  videoHealthRef.current = {
+    publications: mesh.publications,
+    peerVideoStats: mesh.peerVideoStats,
+    inboundVideoStats: mesh.inboundVideoStats,
+    peerPings: mesh.peerPings,
+    peerLabel,
+  };
+  useEffect(() => {
+    if (!isGodMode) return;
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel(AUDIO_BUS_CHANNEL);
+    const timer = setInterval(() => {
+      const { publications, peerVideoStats, inboundVideoStats, peerPings, peerLabel: label } = videoHealthRef.current;
+      const rows: VideoHealthRow[] = [];
+      for (const pub of publications) {
+        if (pub.kind === "audio") continue;
+        const report = peerVideoStats[pub.peerId];
+        const sample = report?.streams.find(s => s.sid === pub.streamId) ?? null;
+        rows.push({
+          key: pub.streamId,
+          label: label(pub.peerId),
+          kind: pub.kind,
+          out: sample
+            ? {
+                codec: sample.codec,
+                width: sample.width,
+                height: sample.height,
+                fps: sample.fps,
+                kbps: sample.kbps,
+                qual: sample.qual,
+                relayed: sample.relayed,
+                rttMs: sample.rttMs,
+                at: report!.at,
+              }
+            : null,
+          in: inboundVideoStats[pub.streamId] ?? null,
+          wsRttMs: peerPings[pub.peerId] ?? null,
+        });
+      }
+      const msg: BusOutboundMessage = { type: "video-stats", rows };
+      try {
+        channel.postMessage(msg);
+      } catch {
+        /* channel closed */
+      }
+    }, 3000);
+    return () => {
+      clearInterval(timer);
+      try {
+        channel.close();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [isGodMode]);
 
   // Green room / standby. God-mode only: the streaming box drops a
   // full-screen preview curtain over the live desktop so the operator can

@@ -686,6 +686,39 @@ export type BusInboundMessage =
   | { type: "set-auto-enabled"; enabled: boolean }
   | { type: "reset-eq" };
 
+/** One row of the /eq popup's video-health section: a video publication
+ *  with the publisher's own encode report (`out`, via the relay's
+ *  `peer_video_stats` fanout) and what the spectator tab is actually
+ *  receiving (`in`). Shapes mirror VideoStatSample / InboundVideoStats
+ *  in usePeerMesh — duplicated structurally so the popup protocol
+ *  doesn't import the mesh. */
+export type VideoHealthRow = {
+  key: string; // publication streamId
+  label: string; // publisher display name
+  kind: "camera" | "screen";
+  out: {
+    codec: string | null;
+    width: number | null;
+    height: number | null;
+    fps: number | null;
+    kbps: number | null;
+    qual: "none" | "cpu" | "bandwidth" | "other" | null;
+    relayed: boolean | null;
+    rttMs: number | null;
+    at: number;
+  } | null;
+  in: {
+    width: number | null;
+    height: number | null;
+    fps: number | null;
+    kbps: number | null;
+    at: number;
+  } | null;
+  /** Publisher's relay WS round-trip (the guest-list ping figure). */
+  wsRttMs: number | null;
+};
+
 export type BusOutboundMessage =
   | { type: "snapshot"; snapshot: AudioBusSnapshot }
-  | { type: "levels"; levels: Record<string, number> };
+  | { type: "levels"; levels: Record<string, number> }
+  | { type: "video-stats"; rows: VideoHealthRow[] };

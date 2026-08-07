@@ -7854,6 +7854,40 @@ app.register(async function signalRoutes(fastify) {
           room.broadcast({ type: "peer_ping", from: peerId, rtt }, peerId);
           return;
         }
+        case "video_stats": {
+          // Per-peer outbound video encode health for the /eq popup's
+          // video section (resolution, bitrate, qualityLimitationReason
+          // etc., sampled by the publisher from its own RTCRtpSenders).
+          // Whitelist + clamp every field so a peer can't use the fanout
+          // as a byte cannon; not stored — publishers re-report every
+          // few seconds, so late joiners are current within one tick.
+          if (!Array.isArray(msg.stats)) return;
+          const clampNum = (v: unknown, max: number): number | null =>
+            typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(max, Math.round(v))) : null;
+          const stats = (msg.stats as Record<string, unknown>[]).slice(0, 8).flatMap(raw => {
+            if (!raw || typeof raw !== "object") return [];
+            if (typeof raw.sid !== "string" || raw.sid.length > 64) return [];
+            if (raw.kind !== "camera" && raw.kind !== "screen") return [];
+            const qual = raw.qual;
+            return [
+              {
+                sid: raw.sid,
+                kind: raw.kind,
+                codec: typeof raw.codec === "string" ? raw.codec.slice(0, 32) : null,
+                width: clampNum(raw.width, 8192),
+                height: clampNum(raw.height, 8192),
+                fps: clampNum(raw.fps, 240),
+                kbps: clampNum(raw.kbps, 100_000),
+                qual: qual === "none" || qual === "cpu" || qual === "bandwidth" || qual === "other" ? qual : null,
+                relayed: typeof raw.relayed === "boolean" ? raw.relayed : null,
+                rttMs: clampNum(raw.rttMs, 60_000),
+              },
+            ];
+          });
+          if (stats.length === 0) return;
+          room.broadcast({ type: "peer_video_stats", from: peerId, stats }, peerId);
+          return;
+        }
         case "viewport_report": {
           // Per-peer browser viewport for the god-mode resolution
           // readout. Stored on the peer entry (so hello carries it to
