@@ -318,6 +318,50 @@ next time this file is open.
 
 ---
 
+## Adjacent: the double-offer race (`ops/probes/negotiation-trace-probe.mjs`)
+
+Not an audio bug, but it surfaced while tracing these and it is the
+thing most likely to produce the *next* "a peer has no media" report, so
+it lives here until it has a better home.
+
+`createPeerConnection` adds our local tracks, and every `addTrack`
+queues a `negotiationneeded`. But every caller that creates a pc
+(`peer_join`, bootstrap, the stream watchdog) *also* calls
+`initiateOffer` immediately after. Both fire, and because `createOffer`
+is async they both observe `signalingState === "stable"` before either
+`setLocalDescription` lands — so Chrome mints a second offer with a
+fresh set of mids and applying it throws:
+
+```
+32129ms pc2 createOffer  mid=[0,1,2]
+32140ms pc2 createOffer  mid=[3,4,5]   <- second caller
+32141ms pc2 setLocal     mid=[0,1,2]  -> have-local-offer
+32145ms pc2 setLocal     mid=[3,4,5]  !! InvalidAccessError: order of m-lines
+```
+
+**It needs 2+ m-lines to bite** — with a single publication both offers
+are identical and Chrome tolerates it. That is why it looks rare in
+testing and is constant on a real show, where the host publishes camera
++ screen + mic.
+
+Fixed with a per-pc `makingOffer` flag (perfect-negotiation style) in
+`initiateOffer`. Measured over 3 runs each: pre-fix `concurrentOffers`
+= 0, 2, 1; post-fix 0, 0, 0.
+
+Mostly self-limiting — the first offer wins, so negotiation completes
+and it reads as noise. **Unproven:** whether it also causes the
+receiver-side variant (`handleOffer failed … setRemoteDescription …
+order of m-lines`), which was seen once alongside a `stream watchdog …
+rebuilding pc` and DOES mean no media arrives. Same error class, no
+trace captured. If a "peer stuck on waiting for stream" report shows
+up, start here.
+
+Also visible in the trace and left alone: a redundant full offer/answer
+round on every connection, because the queued `negotiationneeded` fires
+the moment the answer completes. Wasteful, not broken.
+
+---
+
 ## Related commits
 
 | Commit | Relevance |

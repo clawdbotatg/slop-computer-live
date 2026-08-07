@@ -2277,16 +2277,43 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     });
   }, []);
 
+  // "An offer is already in flight for this pc." Keyed on the connection
+  // rather than the peer id so a rebuilt pc (watchdog, ICE failure)
+  // starts clean and a dead one can't leave a stuck flag behind.
+  const makingOfferRef = useRef(new WeakMap<RTCPeerConnection, boolean>());
+
   const initiateOffer = useCallback(
     async (peerId: string) => {
       const pc = peerConnectionsRef.current.get(peerId);
       if (!pc) return;
+      // Every path that creates a pc (peer_join, bootstrap, the stream
+      // watchdog) calls this straight after createPeerConnection — which
+      // has just added our local tracks, and each addTrack queues a
+      // `negotiationneeded`. So TWO callers routinely race here, and
+      // because createOffer is async both observe signalingState
+      // "stable" before either setLocalDescription lands. Chrome hands
+      // the second offer a fresh set of mids, and applying it throws
+      // "The order of m-lines in subsequent offer doesn't match ...".
+      // Harmless-looking (the first offer wins) but it burns a
+      // negotiation round and buries real failures in the same log line.
+      // Needs 2+ m-lines to bite, i.e. anyone publishing more than one
+      // thing — which is every host on a real show.
+      if (makingOfferRef.current.get(pc)) return;
+      makingOfferRef.current.set(pc, true);
       try {
         const offer = await pc.createOffer();
+        // A remote offer can land while createOffer is awaiting, leaving
+        // us in have-remote-offer; applying a local offer on top is the
+        // same collision wearing a different hat. Dropping ours is safe:
+        // the spec re-fires negotiationneeded once signaling returns to
+        // stable if we still have unnegotiated changes.
+        if (pc.signalingState !== "stable") return;
         await pc.setLocalDescription(offer);
         send({ type: "offer", to: peerId, payload: pc.localDescription!.toJSON() });
       } catch (err) {
         console.warn("[mesh] initiateOffer failed", err);
+      } finally {
+        makingOfferRef.current.set(pc, false);
       }
     },
     [send],
