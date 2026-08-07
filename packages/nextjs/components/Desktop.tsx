@@ -71,7 +71,7 @@ import {
 import Cursor from "~~/components/ui/Cursor";
 import { FlyingTipCard } from "~~/components/ui/FlyingTipCard";
 import { PasskeyWalletProvider } from "~~/components/ui/PasskeyWalletContext";
-import { useAudioBusOwner } from "~~/hooks/useAudioBus";
+import { useAudioBusOwner, useAudioBusReconciler } from "~~/hooks/useAudioBus";
 import { useAutoplayBlocked } from "~~/hooks/useAutoplayBlocked";
 import { useEnsAvatarFromAddress } from "~~/hooks/useEnsAvatarFromAddress";
 import { useEpisodeState } from "~~/hooks/useEpisodeState";
@@ -2383,6 +2383,35 @@ function DesktopInner({ slug }: { slug: string }) {
     },
     [mesh.myId, mesh.remoteStreams, streams],
   );
+
+  // ---- broadcast mix membership (god mode) -------------------------------
+  // The desired contents of the mix, declared from the two authoritative
+  // sources (the relay's publication list + the streams WebRTC actually
+  // handed us) rather than inferred from what happens to be rendered.
+  // VideoView/AudioVisualizer still register on mount — that path is
+  // faster — and this exists to converge on the truth when it doesn't
+  // fire. Labels mirror the window badges so /eq reads the same either
+  // way. See docs/BROADCAST-AUDIO-ROUTING.md.
+  const busPeerSources = useMemo(() => {
+    if (!isGodMode) return [];
+    const out: { id: string; label: string; stream: MediaStream }[] = [];
+    for (const pub of mesh.publications) {
+      // Self-published audio is locally muted to stop feedback, so it is
+      // deliberately never on the bus — same rule the components use.
+      if (pub.peerId === mesh.myId) continue;
+      const stream = mesh.remoteStreams.get(pub.streamId);
+      if (!stream) continue;
+      const peer = mesh.peers.find(p => p.id === pub.peerId);
+      const base = peer
+        ? resolvePeerLabel(peer, mesh.customNames)
+        : (mesh.customNames[pub.ownerKey.toLowerCase()] ?? pub.label ?? pub.ownerKey.slice(0, 8));
+      const suffix = pub.kind === "camera" ? " · cam" : pub.kind === "screen" ? " · screen" : "";
+      out.push({ id: `peer-${pub.streamId}`, label: `${base}${suffix}`, stream });
+    }
+    return out;
+  }, [isGodMode, mesh.publications, mesh.remoteStreams, mesh.peers, mesh.customNames, mesh.myId]);
+
+  useAudioBusReconciler(busPeerSources, "peer-", isGodMode);
 
   // ---- Slot editing — any authenticated peer (collaborative) -------------
   const moveSlot = useCallback(

@@ -130,6 +130,12 @@ type SourceEntry = {
   meterBuf: Uint8Array;
   /** Truly null when registerStream was used (no element exists). */
   el: HTMLMediaElement | null;
+  /** The MediaStream this source's node was built from — null for
+   *  element sources. `createMediaStreamSource` snapshots the stream's
+   *  audio track at construction, so a source whose stream object has
+   *  since been replaced is a DEAD node feeding silence into the mix.
+   *  Recorded so the reconciler can spot that and rebuild. */
+  stream: MediaStream | null;
   muted: boolean;
   /** Cached user-set gain so unmute can restore it instead of snapping to 1. */
   desiredGain: number;
@@ -276,6 +282,7 @@ class AudioBusImpl {
       analyser,
       meterBuf,
       el,
+      stream: null,
       muted: false,
       desiredGain: 1,
       peakRms: 0,
@@ -335,6 +342,7 @@ class AudioBusImpl {
       analyser,
       meterBuf,
       el: null,
+      stream,
       muted: false,
       desiredGain: 1,
       peakRms: 0,
@@ -345,6 +353,25 @@ class AudioBusImpl {
     this.applySoloGain(this.sources.get(id)!);
     this.emit();
     return true;
+  }
+
+  /** True only when `id` is on the bus AND its node was built from
+   *  exactly this MediaStream object. Anything else — absent, or backed
+   *  by a stream object that has since been replaced — is a source that
+   *  is not actually carrying this stream's audio, and the caller should
+   *  unregister + re-register to rebuild the node.
+   *
+   *  Deliberately identity (===), not `.id`: replaceTrack hands out a
+   *  brand-new MediaStream and the old node keeps pointing at the old,
+   *  now-stopped track. */
+  isStreamRegistered(id: string, stream: MediaStream): boolean {
+    const entry = this.sources.get(id);
+    return !!entry && entry.stream === stream;
+  }
+
+  /** Ids currently on the bus. For reconcilers that need to prune. */
+  sourceIds(): string[] {
+    return Array.from(this.sources.keys());
   }
 
   unregister(id: string): void {

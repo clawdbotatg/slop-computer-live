@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { ACTIVATED_EVENT } from "./useUserGesture";
 import { AUDIO_BUS_CHANNEL, type BusInboundMessage, type BusOutboundMessage, audioBus } from "~~/utils/audioBus";
@@ -155,6 +155,78 @@ export function useAudioBusStream(stream: MediaStream | null, id: string, label:
     if (!enabled) return;
     audioBus().setSourceLabel(id, label);
   }, [id, label, enabled]);
+}
+
+/** One source the broadcast mix is SUPPOSED to contain. */
+export type BusStreamEntry = { id: string; label: string; stream: MediaStream };
+
+// How often the reconciler re-checks. Fast enough that nobody notices a
+// gap, cheap enough to be invisible next to the 10Hz levels loop.
+const RECONCILE_INTERVAL_MS = 1000;
+
+// The safety net under `useAudioBusStream`.
+//
+// Per-component registration is fast but fragile: it only ever fires if
+// the component MOUNTS, and mounting requires the relay's `pub.streamId`
+// and the WebRTC MSID to be the same string (Desktop's `streamFor` joins
+// them by exact match). Every link in that chain is one-shot — miss one
+// and a human is silently absent from the broadcast until somebody
+// notices and reloads. That has now happened twice (2026-08-05,
+// 2026-08-07). See docs/BROADCAST-AUDIO-ROUTING.md.
+//
+// So instead of patching links one at a time, this declares the desired
+// state and converges on it: anything in `wanted` that isn't correctly
+// on the bus gets registered, anything on the bus under `ownedPrefix`
+// that isn't wanted gets dropped. Failure modes we haven't thought of
+// yet cost ~1s of audio instead of half a show.
+//
+// Owned by a always-mounted component (Desktop), NOT by the per-peer
+// leaf components — the whole point is to not care about the view tree.
+export function useAudioBusReconciler(wanted: BusStreamEntry[], ownedPrefix: string, enabled: boolean): void {
+  const wantedRef = useRef(wanted);
+  wantedRef.current = wanted;
+  // Registration is keyed on the stream OBJECT, not just the id — a
+  // replaceTrack swap hands out a new object under the same id and the
+  // old source node keeps feeding silence, so the object identity has to
+  // be part of what makes this effect re-run promptly.
+  const key = wanted.map(w => `${w.id}@${w.stream.id}`).join("|");
+
+  useEffect(() => {
+    if (!enabled) return;
+    const bus = audioBus();
+    const tick = () => {
+      const entries = wantedRef.current;
+      const wantedIds = new Set<string>();
+      for (const { id, label, stream } of entries) {
+        if (!id) continue;
+        // Claim the id even when we can't register yet, so the prune
+        // below doesn't rip out a pub whose audio track is still in
+        // flight (WebRTC delivers video and audio as separate ontrack
+        // events on the same stream).
+        wantedIds.add(id);
+        if (stream.getAudioTracks().length === 0) continue;
+        if (bus.isStreamRegistered(id, stream)) continue;
+        // Either absent, or present but built from a stale stream.
+        // unregister first: registerStream no-ops on a known id.
+        bus.unregister(id);
+        // A false return (bus not active yet, createMediaStreamSource
+        // threw) just means we try again next tick — the retry is the
+        // entire point. Registering is idempotent once it succeeds, so
+        // this does not churn the auto-leveler's per-source state.
+        bus.registerStream(stream, id, label);
+      }
+      for (const id of bus.sourceIds()) {
+        // Only prune what we own. "music" / "preview-*" belong to their
+        // own components and must survive.
+        if (!id.startsWith(ownedPrefix)) continue;
+        if (wantedIds.has(id)) continue;
+        bus.unregister(id);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, RECONCILE_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [key, ownedPrefix, enabled]);
 }
 
 // Register an HTMLMediaElement (with an HTTP `src=`, not `srcObject`)

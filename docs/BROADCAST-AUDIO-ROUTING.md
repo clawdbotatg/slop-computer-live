@@ -43,8 +43,10 @@ a human being from the show.
 
 ## Confirmed defect: MSID drift after a device hot-swap
 
-**Status: proven from code. Not yet proven to be the cause of any
-specific incident.** See the next section.
+**Status: reproduced end-to-end and FIXED (2026-08-07).** Verified by
+`ops/probes/audio-membership-probe.mjs` — see "Reproducing it" below for
+the exact before/after numbers. Still *not* proven to be the cause of the
+08-07 outage; see "what is and isn't established".
 
 `replaceTrack()` in `usePeerMesh.ts` deliberately builds a **new**
 `MediaStream` object so React consumers re-bind (a `MediaStreamAudio\
@@ -143,14 +145,16 @@ it uniquely.
 **Was the affected peer's window on the god box blank, or was it showing
 video/avatar normally with no sound?**
 
-- **Blank** → MSID mismatch. Link 3 failed. Fix is the MSID stability
-  change below.
-- **Video fine, no sound** → link 5 failed, not link 3. The MSID fix
-  would be the wrong fix and would not help. Go read the competing
-  hypotheses.
+- **Blank** → MSID mismatch. Link 3 failed. Now **measured**, not
+  inferred: the pre-fix probe run rendered the window with no bound
+  media at all (`mediaEls: []`).
+- **Video fine, no sound** → link 5 failed, not link 3. A different bug.
 
-This was asked and not answered. Ask it first thing next time — before
-writing any code.
+This was asked and never answered, so 08-07 stays formally unattributed.
+It matters less now than it did: both links are covered — link 3 by the
+MSID fix, links 4–5 by the reconciler — so whichever it was, it should
+not recur silently. Ask the question anyway next time; it still tells you
+which half of the system to look at, and there will be a next bug.
 
 ---
 
@@ -160,11 +164,11 @@ Keep this table honest; add rows as you rule things in or out.
 
 | Hypothesis | Signature | Status |
 | --- | --- | --- |
-| MSID drift after device swap (above) | Window **blank**; publisher reload fixes; god reload doesn't | Real bug, unproven as any incident's cause |
-| Late audio track, first-mount-wins | Window shows **video fine**, no sound | Patched by `fbaa689` (`addtrack` listener). Verify the patch actually fires before re-blaming it |
-| `registerStream` returned false, never retried | Window fine, no sound, no `/eq` row | **Unmitigated.** Returns false if `!bus.active` or `createMediaStreamSource` throws. `registered` stays false and *nothing ever retries* |
-| Child-effect-before-parent ordering | Same as above, only on first paint | React runs child effects before parent. `VideoView`'s register can run before Desktop's `useAudioBusOwner` calls `bus.activate()`. Unlikely in practice (WebRTC takes seconds; peer windows can't mount in the first commit) but not impossible |
-| AudioContext suspended (no gesture) | **Everything** silent including music | Ruled out for 08-07 — Slop Tube was audible |
+| MSID drift after device swap (above) | Window **blank** (signature now MEASURED); publisher reload fixes; god reload doesn't | **FIXED** 2026-08-07 (wireStream). Still unproven as 08-07's cause |
+| Late audio track, first-mount-wins | Window shows **video fine**, no sound | Patched by `fbaa689` (`addtrack` listener); now also covered by the reconciler |
+| `registerStream` returned false, never retried | Window fine, no sound, no `/eq` row | **FIXED** by the reconciler — verified by forcing `createMediaStreamSource` to throw on first mount: without the reconciler the voice never returns, with it the next tick rebuilds |
+| Child-effect-before-parent ordering | Same as above, only on first paint | Same class as the row above, so the reconciler covers it. React runs child effects before parent, so `VideoView`'s register can run before Desktop's `useAudioBusOwner` calls `bus.activate()` |
+| AudioContext suspended (no gesture) | **Everything** silent including music | Ruled out for 08-07 — Slop Tube was audible. NOT covered by the reconciler (registration succeeds against a suspended context) |
 
 ### A trap worth knowing
 
@@ -182,45 +186,66 @@ walk straight into it.
 
 ---
 
-## How to settle it empirically
+## Reproducing it — `ops/probes/audio-membership-probe.mjs`
 
-Don't reason about this from static reading again — it produced a
-confident-but-unproven answer once already. Reproduce it.
+Don't reason about this from static reading. It produced a
+confident-but-unproven answer once already; the probe settled it in one
+run. Bring the stack up per the `verify` skill (relay :8180, next :3210)
+and run the probe from a dir with `playwright-core` linked.
 
-Use the headless three-browser probe (the `verify` skill, extended per
-the `headless-webrtc-probe` recipe). The critical bits for this
-repro, which have burned previous runs:
+Four assertions: publish works → a new leg advertises the published
+streamId (the MSID fix) → god mode's mix contains the voice → the
+reconciler heals a registration that failed on first try.
+
+**Measured 2026-08-07**, same probe, toggling each fix off via `git stash`:
+
+| Build | MSID advertised on the new leg | god window | bus sources |
+| --- | --- | --- | --- |
+| Pre-fix | `8000c6d1…` — the **post-swap** id | **blank** (`mediaEls: []`) | `[]` |
+| Fixed | `8c465aa3…` = the **published** id | media bound, 1 audio track | `["peer-8c465aa3…"]` |
+
+The pre-fix run also logged the app noticing and failing to help itself:
+`[mesh] stream watchdog: pub … missing for 8005ms — rebuilding pc`.
+
+**This settles the symptom signature empirically: MSID drift renders the
+peer's window BLANK.** That is now measured, not inferred — which makes
+the diagnostic question below decisive rather than suggestive.
+
+Gotchas that burned runs here (beyond the `headless-webrtc-probe` recipe):
 
 - `--use-fake-device-for-media-capture` is **ignored on this Mac**.
-  Override `navigator.mediaDevices.getUserMedia` via
-  `context.addInitScript` to return `canvas.captureStream(30)` plus an
-  oscillator → `MediaStreamDestination` for audio.
-- God-mode spectator: forge the `slop_room_<slug>` cookie (HMAC, see
-  `room-auth.ts signRoomCookie`) on the **relay** origin, run the relay
-  with `GOD_MODE_PASSWORD`, navigate to `/<slug>?godMode=<pw>`.
-- `page.bringToFront()` on the publisher before asserting anything
-  timing-dependent — background tabs get throttled.
-
-**The assertion that proves or kills the MSID hypothesis:**
-
-1. Publisher joins, publishes audio. Note the announced `streamId`.
-2. Publisher swaps mic via the gear dialog (`swapAudioTrack`).
-3. **A new peer joins** (or god mode reloads) — this is the step that
-   matters; an existing connection won't show the bug.
-4. On the new peer, read `event.streams[0].id` in `ontrack` and diff it
-   against the publication's `streamId`.
-
-If they differ, the bug is real and reproducible. Also assert the
-downstream consequence: `audioBus.snapshot().sources` should be missing
-a `peer-<streamId>` row.
+  Override `navigator.mediaDevices.getUserMedia` in an init script.
+  The chromium binary is under `chrome-mac-arm64/`, not `chrome-mac/`.
+- **`?godMode=` must be the navigation AFTER auth, never before a
+  reload** — the app strips the param the moment it reads it, so a
+  `reload()` silently downgrades the tab to an ordinary guest and you
+  end up testing the wrong thing. Symptom: `isGodMode` false, no
+  BroadcastChannel traffic at all, empty `sources` that look like a bug.
+- `/auth/godmode` 403s with `room-auth-required` unless a valid
+  `slop_room_<slug>` cookie is present — forge it (HMAC, dev secret in
+  `packages/relay/src/config.ts`) on `domain: "localhost"`. `/debug`
+  being passwordless in the UI does **not** exempt it.
+- Desktop icon labels are uppercased by CSS; the DOM text is lowercase,
+  so match case-insensitively. The share button is `Share Audio`, the
+  gear is `aria-label="audio settings"` (matching `/gear|edit/i` hits
+  the menu bar's "Edit ▾" instead), and the edit dialog's submit is
+  `Save`.
+- Submitting the edit dialog with **no device change still swaps the
+  track** — `handleAudioSubmit` calls `swapAudioTrack` unconditionally
+  in edit mode. That is the cheapest way to trigger the bug.
 
 ---
 
-## Proposed fixes
+## Fixes applied (2026-08-07)
 
-None of these are applied yet. Ordered by value.
+**They cover different links and neither subsumes the other — this is the
+one thing to understand before touching either.** The probe proved it:
+with the reconciler in place but the MSID fix reverted, the mix was still
+empty. The reconciler cannot register a stream that never arrived under
+the publication's id in the first place. Link 3 has to be right; the
+reconciler only covers links 4–5.
 
-### 1. Keep the MSID stable (fixes the confirmed defect)
+### 1. Keep the MSID stable — fixes link 3
 
 `addTrack`'s stream argument is only an MSID token — **the track does
 not need to be a member of that stream**. So keep the original
@@ -235,29 +260,36 @@ pc.addTrack(track, wireStream);   // MSID stays === publication streamId
 ```
 
 Contained to `usePeerMesh.ts`. Preserves the reason `fresh` exists.
+`wireStream`'s own tracks are stopped and stale after a swap — only ever
+read its `.id`.
 
-### 2. Reconciliation sweep (fixes the whole class)
+### 2. Reconciliation sweep — fixes links 4–5 as a class
 
-The structural fix. Periodically (or on any pub/stream change) diff the
-set of publications that *should* be on the bus against
-`audioBus.snapshot().sources`, and register anything missing.
+`useAudioBusReconciler` in `useAudioBus.ts`, owned by Desktop (always
+mounted), fed a `busPeerSources` memo derived from the two authoritative
+sources: the relay's publication list and the streams WebRTC actually
+delivered. Once a second it registers anything missing and prunes
+anything under the `peer-` prefix that is no longer wanted.
 
-This converts every failure in this doc — including ones not yet
-discovered — from "silent until a human notices and reloads" into
-"self-heals in about a second." It would have covered both this incident
-and the one `fbaa689` chased. **This is the change that actually makes
-the system not brittle**; #1 only closes one hole.
+This converts *unknown* failures in links 4–5 — including ones nobody has
+thought of — from "silent until a human notices and reloads" into
+"self-heals in about a second". It is what makes the remaining fragility
+survivable rather than show-ending.
 
-Do it at the bus/mesh level, not inside a component. The current design's
-core mistake is that registration is owned by whichever component happens
-to be rendering; the reconciler should not care about the view tree.
+Deliberately owned by an always-mounted component, not the per-peer
+leaves: the original design's mistake was that mix membership was a side
+effect of whatever happened to be rendering. Registration stays
+idempotent (`isStreamRegistered` compares stream identity, not just the
+id), so the sweep does not churn the auto-leveler's per-source state.
 
-### 3. Make `registerStream` honest
+### 3. `registerStream` is still dishonest — NOT fixed
 
-Return a discriminated result (`"registered" | "already" | "failed"`)
-instead of a boolean that says `true` for two very different outcomes,
-and have it rebuild rather than no-op when the stream identity differs
-from the one currently attached to that id.
+It still returns `true` when it no-ops on a known id, so callers cannot
+distinguish "registered" from "skipped". The reconciler routes around
+this by asking `isStreamRegistered` first and unregistering before it
+re-registers. A *new* caller will walk straight into the trap. Worth
+returning a discriminated result (`"registered" | "already" | "failed"`)
+next time this file is open.
 
 ---
 
@@ -276,6 +308,13 @@ from the one currently attached to that id.
 - **Reloading god mode is not a diagnostic.** For MSID drift it
   reproduces the bug rather than clearing it. Reload the *publisher* to
   distinguish.
+- **The reconciler is not a licence to break link 3.** It cannot
+  register a stream that never arrived under the publication's id.
+  Measured, not assumed — see the fixes section.
+- **Run `ops/probes/audio-membership-probe.mjs` after touching
+  `replaceTrack`, `createPeerConnection`, `registerStream`, or the
+  reconciler.** All four assertions should pass; each one has a verified
+  failing control, so a pass means something.
 
 ---
 

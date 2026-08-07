@@ -2220,7 +2220,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // Kind travels with the stream so `createPeerConnection` (which attaches
   // existing local media to newly-formed PCs) can apply the right sender
   // caps without having to sniff track labels.
-  const localStreamsRef = useRef<Map<string, { stream: MediaStream; kind: SlotKind }>>(new Map());
+  //
+  // `wireStream` is the ORIGINAL MediaStream object, kept alive purely as
+  // an identity token: its `.id` is the published streamId, and that is
+  // the MSID every `addTrack` must tag its track with. `stream` is the
+  // CURRENT object and gets replaced wholesale by `replaceTrack` (see the
+  // comment there), so its `.id` drifts away from the publication id after
+  // a device hot-swap — passing it to `addTrack` is what silently dropped
+  // a peer off the broadcast. See docs/BROADCAST-AUDIO-ROUTING.md.
+  // Its tracks are stopped/stale after a swap; only ever read `.id`.
+  const localStreamsRef = useRef<Map<string, { stream: MediaStream; wireStream: MediaStream; kind: SlotKind }>>(
+    new Map(),
+  );
   const selfRef = useRef<SelfHint | null>(self);
   selfRef.current = self;
   // ICE config (STUN+TURN) — refreshed once per session/credential expiry.
@@ -2294,10 +2305,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       const pc = new RTCPeerConnection(iceConfigRef.current);
 
       // Attach existing local streams so newly-formed pcs get our outgoing media.
-      for (const { stream, kind } of localStreamsRef.current.values()) {
+      // Tracks come from the CURRENT stream; the MSID comes from `wireStream`
+      // so this leg advertises the same streamId the relay published. (A
+      // track need not be a member of the stream passed to addTrack — that
+      // argument only sets the msid.) Using the current object here is what
+      // broke god-mode audio after a mic swap.
+      for (const { stream, wireStream, kind } of localStreamsRef.current.values()) {
         for (const track of stream.getTracks()) {
           try {
-            pc.addTrack(track, stream);
+            pc.addTrack(track, wireStream);
           } catch {
             /* track already added */
           }
@@ -2410,7 +2426,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const publish = useCallback(
     (stream: MediaStream, kind: SlotKind, label: string) => {
       if (localStreamsRef.current.has(stream.id)) return;
-      localStreamsRef.current.set(stream.id, { stream, kind });
+      // At publish time the current stream IS the wire identity; only
+      // replaceTrack can make these two diverge.
+      localStreamsRef.current.set(stream.id, { stream, wireStream: stream, kind });
       // Add tracks to all existing PCs; onnegotiationneeded handles the rest.
       for (const [peerId, pc] of peerConnectionsRef.current) {
         for (const track of stream.getTracks()) {
@@ -2432,7 +2450,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     async (streamId: string, kind: "audio" | "video", newTrack: MediaStreamTrack): Promise<MediaStream | null> => {
       const entry = localStreamsRef.current.get(streamId);
       if (!entry) return null;
-      const { stream, kind: pubKind } = entry;
+      const { stream, wireStream, kind: pubKind } = entry;
       // Swap the sender on every PC. Sender lookup is by track.kind on
       // the *current* track — works because we only have one of each
       // kind per pub (audio pubs are audio-only, video pubs are video-only).
@@ -2455,8 +2473,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       const fresh = new MediaStream([...keepTracks, newTrack]);
       for (const t of oldTracks) t.stop();
       // Map key is the ORIGINAL publication streamId, not fresh.id — peers
-      // and the unpublish path both look up by the published id.
-      localStreamsRef.current.set(streamId, { stream: fresh, kind: pubKind });
+      // and the unpublish path both look up by the published id. `wireStream`
+      // carries that same original identity forward so peer connections
+      // formed AFTER this swap still tag their tracks with the published
+      // streamId; existing senders keep their MSID through replaceTrack on
+      // their own, which is why this bug only ever bit late joiners.
+      localStreamsRef.current.set(streamId, { stream: fresh, wireStream, kind: pubKind });
       // Re-apply sender caps — replaceTrack swaps the underlying track on
       // the existing sender, and although setParameters values persist
       // through that, the safest path is to re-pin them so a freshly-
