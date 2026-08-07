@@ -87,10 +87,19 @@ import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
 import { RoomSlugProvider } from "~~/lib/room-slug";
 import { DEFAULT_SLUG, withSlug } from "~~/lib/slug";
-import { AUDIO_BUS_CHANNEL, type BusOutboundMessage, type VideoHealthRow, audioBus } from "~~/utils/audioBus";
+import {
+  AUDIO_BUS_CHANNEL,
+  type BusOutboundMessage,
+  type CompositeHealth,
+  type VideoHealthRow,
+  audioBus,
+} from "~~/utils/audioBus";
 import { bandsFromIdentity } from "~~/utils/blockieBands";
 import { prewarmDenoise } from "~~/utils/noiseSuppression";
 import { getStoredPasskeyIdentity } from "~~/utils/passkey";
+
+// Placeholder so the meter ref has a concrete shape before its first drain.
+const EMPTY_HEALTH: CompositeHealth = { fps: 0, worstFrameMs: 0, hitches: 0, hidden: false, at: 0 };
 
 export const dynamic = "force-dynamic";
 
@@ -747,6 +756,61 @@ function DesktopInner({ slug }: { slug: string }) {
   // first user gesture (otherwise registers race the context init).
   useAudioBusOwner(isGodMode);
 
+  // Composite meter: how well THIS tab is painting, sampled off
+  // requestAnimationFrame. Feeds the /eq "composite" line so a stalled
+  // broadcast machine is distinguishable at a glance from starved
+  // feeds — see CompositeHealth in audioBus for why that distinction is
+  // worth a meter of its own.
+  const compositeMeterRef = useRef({
+    frames: 0,
+    worst: 0,
+    hitches: 0,
+    last: 0,
+    drain: (): CompositeHealth => EMPTY_HEALTH,
+  });
+  compositeMeterRef.current.drain = () => {
+    const m = compositeMeterRef.current;
+    const health: CompositeHealth = {
+      fps: m.frames / 3,
+      worstFrameMs: m.worst,
+      hitches: m.hitches,
+      hidden: typeof document !== "undefined" && document.visibilityState !== "visible",
+      at: Date.now(),
+    };
+    m.frames = 0;
+    m.worst = 0;
+    m.hitches = 0;
+    return health;
+  };
+  useEffect(() => {
+    if (!isGodMode) return;
+    let raf = 0;
+    const tick = (t: number) => {
+      const m = compositeMeterRef.current;
+      // First callback after mount (or after a hidden stretch) has no
+      // meaningful predecessor — start the clock, don't score it.
+      if (m.last) {
+        const gap = t - m.last;
+        m.frames += 1;
+        if (gap > m.worst) m.worst = gap;
+        if (gap > 100) m.hitches += 1;
+      }
+      m.last = t;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    // A hidden tab stops firing rAF entirely; clearing `last` keeps the
+    // re-show from scoring the whole hidden stretch as one giant hitch.
+    const onVisible = () => {
+      compositeMeterRef.current.last = 0;
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [isGodMode]);
+
   // Video-health bridge for the /eq popup: compose one row per video
   // publication — the publisher's own encode report (peer_video_stats)
   // next to what THIS tab is receiving — and post it on the same
@@ -803,6 +867,13 @@ function DesktopInner({ slug }: { slug: string }) {
       const msg: BusOutboundMessage = { type: "video-stats", rows };
       try {
         channel.postMessage(msg);
+      } catch {
+        /* channel closed */
+      }
+      const health = compositeMeterRef.current.drain();
+      const healthMsg: BusOutboundMessage = { type: "composite-health", health };
+      try {
+        channel.postMessage(healthMsg);
       } catch {
         /* channel closed */
       }

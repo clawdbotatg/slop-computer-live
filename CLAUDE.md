@@ -1,5 +1,18 @@
 # slop-computer-live — Claude notes
 
+## Broadcast video quality
+
+If the show looked blocky, smeared or choppy, or you're touching
+`applySenderCaps` / `preferEfficientVideoCodecs` in
+`packages/nextjs/hooks/usePeerMesh.ts` or the capture constraints in
+`useLocalMedia.ts`, read **`docs/VIDEO-QUALITY.md`** first. It has the
+`degradationPreference` trap that has now caused one regression, the
+rule that cameras are never pinned to `maintain-resolution`, and — most
+importantly — the ffmpeg recipe for measuring per-feed framerate out of
+the recording instead of arguing about a screenshot. `/eq`'s video
+section (composite line first, then per-feed CPU/NET/TURN badges) is the
+live version of the same read.
+
 ## Broadcast audio leveling ("The Equalizer")
 
 If a show's voices vs music sounded off, or you're touching
@@ -124,7 +137,7 @@ In `packages/relay/src/index.ts`, add to `DEFAULT_APPS`:
   style ref** unless the user explicitly asks for a style refresh.
 - Shared style hint lives in `packages/icon-gen/icons.json` under
   `styleHint`. Don't override it per-icon — keep prompts focused on
-  *what* the subject is, not the rendering style.
+  _what_ the subject is, not the rendering style.
 - Prompt subjects in the chunky Mac OS 9 / cyberdelic vocabulary:
   isometric 3/4, hot magenta + cyan + lime accents on deep purple, no
   text, no captions.

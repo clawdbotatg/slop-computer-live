@@ -95,6 +95,34 @@ const SCREEN_BROADCAST_MAX_BITRATE = 2_500_000; // sharp text on the stream
 const SCREEN_BROADCAST_MAX_FRAMERATE = 15;
 const SCREEN_TILE_MAX_BITRATE = 1_500_000; // guests still read shared text
 const SCREEN_TILE_MAX_FRAMERATE = 10;
+const SCREEN_TILE_SCALE = 2; // a shared screen in a 240px tile does not need 1080p
+
+// How a constrained encoder is allowed to degrade. This is the single
+// most consequential knob in this file and it has already been set the
+// wrong way once — see the 2026-08-07 measurement below before touching
+// it.
+//
+// `maintain-resolution` leaves Chrome exactly ONE lever when it runs out
+// of CPU or bandwidth: framerate. It will happily walk a camera down to
+// 2 fps rather than give up a single pixel. On the 2026-08-07 episode
+// (the first show after the tiering commit set maintain-resolution on
+// every broadcast leg) the guest's camera on the broadcast spent most of
+// the hour oscillating between 2 and 20 fps — measured frame-by-frame
+// out of the recording — while the same guest's feed had held a steady
+// 27–30 fps on 2026-08-04 under the old `balanced` default.
+//
+// For a CAMERA that trade is always wrong. The god-mode composite draws
+// a camera window ~660px wide in a 1920px frame, so 640x360@30 is both
+// visually indistinguishable from 720p at that size AND fluid, whereas
+// 720p@2 is a slideshow with smeared hands. Cameras therefore stay on
+// `balanced` in both tiers.
+//
+// A SCREEN SHARE is the genuine exception — downscaled text is
+// unreadable at any framerate — but only on the leg that feeds the
+// broadcast. Guests read a shared screen in a tile, so their leg would
+// rather stay fluid than pin pixels it is about to scale away.
+const degradationFor = (kind: SlotKind, tier: SendTier): RTCDegradationPreference =>
+  kind === "screen" && tier === "broadcast" ? "maintain-resolution" : "balanced";
 
 function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotKind, tier: SendTier): void {
   // Audio is cheap to encode and voice quality matters — leave it alone.
@@ -128,13 +156,14 @@ function applySenderCaps(pc: RTCPeerConnection, stream: MediaStream, kind: SlotK
         ...params.encodings[0],
         maxBitrate: tier === "broadcast" ? SCREEN_BROADCAST_MAX_BITRATE : SCREEN_TILE_MAX_BITRATE,
         maxFramerate: tier === "broadcast" ? SCREEN_BROADCAST_MAX_FRAMERATE : SCREEN_TILE_MAX_FRAMERATE,
-        // Screens keep full resolution in both tiers — downscaled text
-        // is unreadable at any bitrate.
+        // Full resolution only on the leg the broadcast captures —
+        // that's the one where text has to stay readable. Guests read a
+        // shared screen in a tile, and encoding a separate full-res copy
+        // per guest is most of what starves the publisher's camera.
+        scaleResolutionDownBy: tier === "broadcast" ? 1 : SCREEN_TILE_SCALE,
       };
     }
-    // Blur is what viewers notice; on the broadcast leg (and screen
-    // text everywhere) prefer dropping frames over dropping pixels.
-    params.degradationPreference = kind === "screen" || tier === "broadcast" ? "maintain-resolution" : "balanced";
+    params.degradationPreference = degradationFor(kind, tier);
     sender.setParameters(params).catch(err => console.warn("[mesh] setParameters failed", err));
   }
 }

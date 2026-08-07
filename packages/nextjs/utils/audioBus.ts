@@ -718,7 +718,33 @@ export type VideoHealthRow = {
   wsRttMs: number | null;
 };
 
+/** How well the god-mode tab itself is painting. Every row in
+ *  VideoHealthRow describes a feed ARRIVING; this describes whether the
+ *  machine OBS is capturing can actually draw what arrived.
+ *
+ *  Worth its own readout because the two failure modes look identical on
+ *  the broadcast and have opposite fixes. On 2026-08-07 both guests'
+ *  cameras dropped to ~2 fps at t=3652 while the locally-rendered news
+ *  ticker — pure DOM, no network — dropped from 30 fps to 21 at the same
+ *  instant. Feeds starving independently cannot do that in lockstep; a
+ *  stalled compositor can. Without this row that took an hour of
+ *  frame-by-frame forensics on the recording to establish. */
+export type CompositeHealth = {
+  /** requestAnimationFrame callbacks per second over the last window. */
+  fps: number;
+  /** Longest gap between consecutive frames in the window, ms. */
+  worstFrameMs: number;
+  /** Frames that took >100ms — visible hitches, not jitter. */
+  hitches: number;
+  /** rAF is throttled to ~0 when the tab is hidden or fully occluded, so
+   *  a window covering the captured Chrome window reads as a dead
+   *  composite rather than a mystery. */
+  hidden: boolean;
+  at: number;
+};
+
 export type BusOutboundMessage =
   | { type: "snapshot"; snapshot: AudioBusSnapshot }
   | { type: "levels"; levels: Record<string, number> }
-  | { type: "video-stats"; rows: VideoHealthRow[] };
+  | { type: "video-stats"; rows: VideoHealthRow[] }
+  | { type: "composite-health"; health: CompositeHealth };

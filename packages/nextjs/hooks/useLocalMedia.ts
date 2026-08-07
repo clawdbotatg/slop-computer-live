@@ -98,19 +98,42 @@ const buildAudioConstraints = (micId: string | null): MediaTrackConstraints => {
   };
 };
 
+// Screen capture, capped at the source. `getDisplayMedia({video:true})`
+// hands Chrome the display's NATIVE frame — on a Retina Mac that is a
+// 3456x2234 (or larger) surface at up to 60 fps — and a full mesh then
+// encodes one copy of it PER PEER. That is the dominant CPU cost on a
+// publisher's machine and it starves every other encoder it owns,
+// including its own camera. Capping here is worth more than any
+// per-sender cap because it applies once, upstream of all N encoders.
+//
+// 1080p is already above what the broadcast composite draws a screen
+// window at, and 15 fps matches SCREEN_BROADCAST_MAX_FRAMERATE in
+// usePeerMesh — there is no point capturing frames every sender is
+// about to throw away. `max` (not `ideal`) so a display that cannot go
+// lower still gets downscaled rather than silently ignoring us.
+export const SCREEN_CONSTRAINTS: DisplayMediaStreamOptions = {
+  video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 15 } },
+  audio: true,
+};
+
+// Capture framerate cap. Plenty of webcams happily hand back 60 fps,
+// which doubles the encode cost of every leg in the mesh for frames no
+// sender will ever transmit (CAMERA_MAX_FRAMERATE is 30).
+const CAMERA_CAPTURE_FRAMERATE = { max: 30 };
+
 export const resolutionConstraints = (res: string | null): MediaTrackConstraints => {
   switch (res) {
     case "1080p":
-      return { width: { ideal: 1920 }, height: { ideal: 1080 } };
+      return { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
     case "720p":
-      return { width: { ideal: 1280 }, height: { ideal: 720 } };
+      return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
     case "480p":
-      return { width: { ideal: 640 }, height: { ideal: 480 } };
+      return { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
     default:
       // No explicit preference → capture at 480p so first-time users
       // don't burn capture CPU on a 1080p source the encoder is going
       // to scale down anyway. Anyone can pick higher from VideoShareDialog.
-      return { width: { ideal: 854 }, height: { ideal: 480 } };
+      return { width: { ideal: 854 }, height: { ideal: 480 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
   }
 };
 
@@ -377,7 +400,7 @@ export function useLocalMedia(
     [acquire],
   );
   const startScreen = useCallback(
-    () => acquire("screen", () => navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })),
+    () => acquire("screen", () => navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS)),
     [acquire],
   );
   const startAudio = useCallback(

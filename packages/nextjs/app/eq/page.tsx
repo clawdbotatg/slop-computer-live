@@ -8,6 +8,7 @@ import {
   type AudioBusSnapshot,
   type BusInboundMessage,
   type BusOutboundMessage,
+  type CompositeHealth,
   type VideoHealthRow,
 } from "~~/utils/audioBus";
 
@@ -37,6 +38,7 @@ const EqPopupPage = () => {
   const [snap, setSnap] = useState<AudioBusSnapshot | null>(null);
   const [levels, setLevels] = useState<Record<string, number>>({});
   const [videoRows, setVideoRows] = useState<VideoHealthRow[]>([]);
+  const [health, setHealth] = useState<CompositeHealth | null>(null);
   const [connected, setConnected] = useState(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
 
@@ -61,6 +63,9 @@ const EqPopupPage = () => {
         setConnected(true);
       } else if (msg.type === "video-stats") {
         setVideoRows(msg.rows);
+        setConnected(true);
+      } else if (msg.type === "composite-health") {
+        setHealth(msg.health);
         setConnected(true);
       }
     };
@@ -310,6 +315,7 @@ const EqPopupPage = () => {
           <div style={sectionHeaderStyle}>
             <span>video</span>
           </div>
+          <CompositeLine health={health} />
           {videoRows.length === 0 ? (
             <div
               style={{
@@ -440,6 +446,53 @@ const SourceRow = ({
 const fmtRes = (w: number | null, h: number | null): string => (w != null && h != null ? `${w}×${h}` : "—");
 const fmtFps = (fps: number | null): string => (fps != null ? `${fps}fps` : "—");
 const fmtKbps = (kbps: number | null): string => (kbps != null ? `${kbps}k` : "—");
+
+// The broadcast machine's own paint rate, above the per-feed rows.
+// Read this FIRST: if it has dipped, every feed below will look starved
+// whether or not it actually is, because the tab OBS captures never drew
+// the frames that arrived. Feeds starve one at a time; the composite
+// takes them all down together.
+const CompositeLine = ({ health }: { health: CompositeHealth | null }) => {
+  const stale = health != null && Date.now() - health.at > 10_000;
+  // 24 fps is where a 30 fps capture starts reading as judder on the
+  // broadcast rather than as a soft frame here and there.
+  const bad = health != null && (health.hidden || health.fps < 24 || health.hitches > 0);
+  const color = bad ? cssVar("red", "#ff5577") : cssVar("text-muted", "#7878a0");
+  const label = health?.hidden
+    ? "TAB HIDDEN — Chrome throttles rendering; un-occlude the captured window"
+    : health == null
+      ? "waiting"
+      : `${health.fps.toFixed(0)} fps · worst ${health.worstFrameMs.toFixed(0)}ms${
+          health.hitches > 0 ? ` · ${health.hitches} hitch${health.hitches === 1 ? "" : "es"}` : ""
+        }`;
+  return (
+    <div
+      title="How fast this god-mode tab is painting — the ceiling on everything OBS captures. Dips here mean the broadcast machine stalled, not that a guest's feed degraded."
+      style={{
+        display: "flex",
+        gap: 6,
+        alignItems: "center",
+        marginTop: 6,
+        padding: "4px 6px",
+        fontSize: 8,
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "0.03em",
+        color,
+        opacity: stale ? 0.4 : 1,
+        background: "rgba(255,255,255,0.03)",
+        border: `1px solid ${cssVar("bevel-light", "rgba(255,255,255,0.18)")}`,
+        borderRadius: 4,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      <span style={{ fontSize: 9, flexShrink: 0 }}>🖼</span>
+      <span style={{ flexShrink: 0 }}>composite</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+    </div>
+  );
+};
 
 // One video publication: label + warning badges on top, then the
 // publisher's encode line (out) and the received line (in). A report
