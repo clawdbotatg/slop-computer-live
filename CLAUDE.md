@@ -1,5 +1,23 @@
 # slop-computer-live — Claude notes
 
+## "The stream looks like shit" — read this first
+
+**`docs/STREAM-LOOKS-BAD.md`** is the symptom-keyed runbook and the entry
+point for any complaint about how the show looks. It carries the whole
+capture→broadcast chain (camera menu → Cam Link → OBS canvas → Virtual
+Camera → getUserMedia → mesh → composite), the `/eq` reading table, the
+**theories already ruled out with evidence** — prod load, clawd-gut, the
+publish path, upscaling, low light — and the OBS-websocket recipe for
+reading and changing the rig from here.
+
+Two facts from that doc that get missed every single time: **the local
+preview always looks perfect and proves nothing** (it never goes through
+the mesh), and **the god-mode machine can only show what the interface
+machine sends it** — so a bad-looking stream is almost never fixable on
+the OBS box.
+
+The sections below are the deep dives it links to.
+
 ## Broadcast video quality
 
 If the show looked blocky, smeared or choppy, or you're touching

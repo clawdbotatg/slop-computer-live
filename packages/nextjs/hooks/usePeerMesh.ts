@@ -89,13 +89,24 @@ const STREAM_RECONNECT_BACKOFF_MS = 10_000; // min interval between retries per 
 type SendTier = "broadcast" | "tile";
 const CAMERA_MAX_FRAMERATE = 30;
 const CAMERA_BROADCAST_MAX_BITRATE = 2_500_000; // sharp 720p on the stream
-const CAMERA_TILE_MAX_BITRATE = 600_000; // plenty for a ~360p tile
+const CAMERA_TILE_MAX_BITRATE = 350_000; // a ~360px tile, not a second broadcast
 const CAMERA_TILE_SCALE = 2; // halve capture res for tile viewers
 const SCREEN_BROADCAST_MAX_BITRATE = 2_500_000; // sharp text on the stream
 const SCREEN_BROADCAST_MAX_FRAMERATE = 15;
-const SCREEN_TILE_MAX_BITRATE = 1_500_000; // guests still read shared text
-const SCREEN_TILE_MAX_FRAMERATE = 10;
-const SCREEN_TILE_SCALE = 2; // a shared screen in a 240px tile does not need 1080p
+// The tile tier is deliberately austere. Measured live on 2026-08-10
+// with three people in the room: the host publishing camera + screen was
+// paying ~2.1 Mbps PER GUEST on top of the broadcast leg, saturated the
+// building's uplink (which also carries OBS's RTMP push), and Chrome
+// collapsed BOTH his feeds to ~67k — a 318x180 slideshow on the show.
+// Stopping the screen share alone recovered his camera 11x, from 67k to
+// 737k. That is the whole bug: full mesh gives every guest a private,
+// nearly-broadcast-quality encode of a window they are rendering at
+// thumbnail size, and the publisher pays for all of them.
+// Guests read a shared screen in a tile to follow along, not to read
+// 8pt text — that is what the god-mode leg is for, and it is untouched.
+const SCREEN_TILE_MAX_BITRATE = 400_000;
+const SCREEN_TILE_MAX_FRAMERATE = 5; // a shared screen is near-static
+const SCREEN_TILE_SCALE = 3; // 1080p -> 640 wide, ample for a 240px tile
 
 // How a constrained encoder is allowed to degrade. This is the single
 // most consequential knob in this file and it has already been set the

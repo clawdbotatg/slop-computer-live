@@ -130,10 +130,21 @@ export const resolutionConstraints = (res: string | null): MediaTrackConstraints
     case "480p":
       return { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
     default:
-      // No explicit preference → capture at 480p so first-time users
-      // don't burn capture CPU on a 1080p source the encoder is going
-      // to scale down anyway. Anyone can pick higher from VideoShareDialog.
-      return { width: { ideal: 854 }, height: { ideal: 480 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
+      // No explicit preference → 720p. This used to be 854x480 to save
+      // capture CPU, on the theory that the encoder scales it down
+      // anyway. It doesn't, for the one viewer that matters: the god-mode
+      // composite paints every feed into a 1920x1080 canvas and ships it
+      // to the broadcast, so a 480p source gets stretched 2.25x — five
+      // times the pixel area invented out of nothing. That upscale IS the
+      // "why does the stream look like mush" complaint, and it happened
+      // even on a perfectly healthy connection with bandwidth to spare.
+      // 854x480 is also not a native mode on most capture devices (Cam
+      // Link, OBS Virtual Camera), so asking for it forces a needless
+      // resize — 1280x720 is native on both.
+      // Not 1080p: full mesh encodes one copy PER RECIPIENT, so the cost
+      // of the default is multiplied by the room size. 720p is the point
+      // where a full room still fits; 1080p stays available explicitly.
+      return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: CAMERA_CAPTURE_FRAMERATE };
   }
 };
 
