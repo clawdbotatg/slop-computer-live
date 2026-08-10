@@ -3053,8 +3053,24 @@ app.post(
   async (req, reply) => {
     const a = v1AuthFromReq(req);
     if (!a) return reply.code(401).send({ error: "unauthenticated" });
-    const key = ownerKeyFromSession(a.session);
+    let key = ownerKeyFromSession(a.session);
+    // ?for=<ownerKey> — god-mode (spectator) sessions act as ops and may
+    // set another user's avatar, e.g. dropping a PFP onto an audio-only
+    // guest's window mid-show. The key becomes a filename, so it's
+    // validated hard: lowercased, no separators, no leading dot.
+    const forRaw = (req.query as Record<string, unknown> | undefined)?.for;
+    if (typeof forRaw === "string" && forRaw) {
+      const target = forRaw.toLowerCase();
+      if (target !== key) {
+        if (!a.session.spectator) return reply.code(403).send({ error: "godmode-only" });
+        if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(target)) {
+          return reply.code(400).send({ error: "bad-owner-key" });
+        }
+        key = target;
+      }
+    }
     if (!key) return reply.code(400).send({ error: "no-identity-on-session" });
+    const onBehalf = key !== ownerKeyFromSession(a.session);
 
     const body = req.body;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -3087,7 +3103,12 @@ app.post(
     // room so a user changing their avatar in ep0 immediately reflects
     // for spectators sitting in ep1.
     broadcastToAllRooms({ type: "avatar", ownerKey: key, url });
-    noteAction(roomFromReq(req), a, "avatar", `🖼️ ${actorName(a.session)} set a new avatar`);
+    noteAction(
+      roomFromReq(req),
+      a,
+      "avatar",
+      onBehalf ? `🖼️ ops set a new avatar for ${key}` : `🖼️ ${actorName(a.session)} set a new avatar`,
+    );
     return { ok: true, url, key };
   },
 );

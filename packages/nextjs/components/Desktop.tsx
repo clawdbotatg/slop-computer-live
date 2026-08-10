@@ -3875,9 +3875,16 @@ function DesktopInner({ slug }: { slug: string }) {
                         // wallet open in multiple tabs / devices can drag a
                         // new PFP onto ANY of their audio windows — relay
                         // auth keys avatars on the session's owner, not the
-                        // publishing peer.
-                        isMine={!!myOwnerKey && pub.ownerKey === myOwnerKey}
-                        onFile={file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))}
+                        // publishing peer. God-mode acts as ops and can
+                        // drop a PFP onto anyone's window (relay enforces
+                        // the same gate on ?for=).
+                        canEdit={(!!myOwnerKey && pub.ownerKey === myOwnerKey) || (isGodMode && !!pub.ownerKey)}
+                        onFile={file =>
+                          uploadAvatar(
+                            file,
+                            !!myOwnerKey && pub.ownerKey === myOwnerKey ? undefined : pub.ownerKey,
+                          ).catch(err => console.warn("avatar upload failed", err))
+                        }
                       >
                         <AudioVisualizer
                           stream={stream}
@@ -3920,11 +3927,17 @@ function DesktopInner({ slug }: { slug: string }) {
                         // Audio-only backdrop drop target — owner-key match
                         // (not peer-id) so a user with the wallet open in
                         // multiple tabs/devices can drag a new PFP onto any
-                        // of their camera windows. Mirrors the audio window.
+                        // of their camera windows. Mirrors the audio window,
+                        // including the god-mode ops override.
                         onAvatarFile={
                           !!myOwnerKey && pub.ownerKey === myOwnerKey
                             ? file => uploadAvatar(file).catch(err => console.warn("avatar upload failed", err))
-                            : undefined
+                            : isGodMode && !!pub.ownerKey
+                              ? file =>
+                                  uploadAvatar(file, pub.ownerKey).catch(err =>
+                                    console.warn("avatar upload failed", err),
+                                  )
+                              : undefined
                         }
                         // God-mode only: camera publications bundle the
                         // publisher's mic on the same stream, so the

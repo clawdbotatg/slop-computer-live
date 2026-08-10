@@ -38,10 +38,13 @@ async function downscaleToJpeg(file: File): Promise<Blob> {
   }
 }
 
-export async function uploadAvatar(file: File): Promise<{ url: string; key: string }> {
+// `forKey` — god-mode only: set the avatar for another user's ownerKey
+// (dropping a PFP onto a guest's audio window). Omit for your own.
+export async function uploadAvatar(file: File, forKey?: string): Promise<{ url: string; key: string }> {
   if (!file.type.startsWith("image/")) throw new Error("not-an-image");
   const blob = await downscaleToJpeg(file);
-  const res = await fetch(`${RELAY_HTTP}/v1/avatars`, {
+  const qs = forKey ? `?for=${encodeURIComponent(forKey)}` : "";
+  const res = await fetch(`${RELAY_HTTP}/v1/avatars${qs}`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "image/jpeg" },
@@ -52,18 +55,20 @@ export async function uploadAvatar(file: File): Promise<{ url: string; key: stri
 }
 
 export type AudioDropZoneProps = {
-  isMine: boolean;
+  canEdit: boolean;
   onFile: (file: File) => void;
   children: ReactNode;
 };
 
-// Drop target that wraps the AudioVisualizer for self-publications. Other
-// peers' audio windows still render the visualizer (passed in as children)
-// but don't accept drops — only the publisher controls their avatar.
-export const AudioDropZone = ({ isMine, onFile, children }: AudioDropZoneProps) => {
+// Drop target that wraps the AudioVisualizer. `canEdit` is true for the
+// publication's owner (any of their tabs/devices) and for god-mode, which
+// acts as ops and can drop a PFP onto any guest's audio window. Everyone
+// else still renders the visualizer (passed in as children) but doesn't
+// accept drops.
+export const AudioDropZone = ({ canEdit, onFile, children }: AudioDropZoneProps) => {
   const [hover, setHover] = useState(false);
 
-  if (!isMine) {
+  if (!canEdit) {
     return <>{children}</>;
   }
 

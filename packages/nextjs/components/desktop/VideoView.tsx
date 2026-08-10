@@ -242,12 +242,12 @@ export const VideoView = ({
           so it doesn't double-register. */}
       {cameraOff && bands ? (
         <div style={{ position: "absolute", inset: 0 }}>
-          {/* Drop target so the publisher can drag in a custom avatar
-              while in audio-only mode — identical affordance to the
-              audio share window. AudioDropZone with isMine=false just
-              renders the children untouched, so viewers see the avatar
-              with no drop behavior. */}
-          <AudioDropZone isMine={!!onAvatarFile} onFile={file => onAvatarFile?.(file)}>
+          {/* Drop target so the publisher (or god-mode ops) can drag in
+              a custom avatar while in audio-only mode — identical
+              affordance to the audio share window. AudioDropZone with
+              canEdit=false just renders the children untouched, so
+              viewers see the avatar with no drop behavior. */}
+          <AudioDropZone canEdit={!!onAvatarFile} onFile={file => onAvatarFile?.(file)}>
             <AudioVisualizer
               stream={stream}
               bands={bands}
