@@ -137,45 +137,60 @@ Stopping the screen share was the single largest recovery of the night.
 Guest tiles are cosmetic — only the god-mode leg feeds the broadcast —
 so guest tiers should be far cheaper than they are.
 
-### 4. The router isolates its own clients, so heart↔gut media relays via AWS
+### 4. macOS Local Network permission — the `TURN` badge, and the single biggest quality cliff
 
-**This is the big one, and it is not a code bug.** `/eq` showed a `TURN`
-badge on the host's feed: the two machines sitting next to each other
-were sending video to a TURN server in AWS and back, at `960x540 @ 19fps
-/ 226k` outbound and **4 fps** inbound.
+`/eq` showed a **`TURN`** badge on the host's feed: two machines sitting
+next to each other were relaying video through a TURN server in AWS and
+back — `960x540 @ 19fps / 226k` out, **4 fps** in, 46 ms RTT to a box
+three feet away. That relay is a hard ceiling no encoder tuning can lift.
 
-Measured from heart (`192.168.10.134`):
+**The cause is a macOS privacy toggle, not the network.** macOS attributes
+TCC permissions to the **responsible process** — the app that *launched*
+the app. `slop-setup.sh` runs inside **iTerm** and starts Chrome with
+`open -ga`, so **Chrome inherits iTerm's grants**. Chrome's own Local
+Network toggle being ON is irrelevant; if iTerm is denied, that whole
+Chrome instance is denied.
+
+Denied Local Network means Chrome can reach the gateway and the entire
+internet, but **not one other device on the LAN**. Every ICE host and
+srflx pair fails, and relay is all that is left. Silent — no error, no
+log, nothing in `chrome://webrtc-internals` that names the cause.
+
+**iTerm therefore needs every permission the Chrome it spawns will use:**
+Local Network, **Camera**, **Microphone**, and Screen Recording (that
+last one was already required — `slop-obs-patch.py` uses
+`CGWindowListCopyWindowInfo`, which is why the launcher uses iTerm and
+not Terminal.app in the first place).
+
+**Diagnosis in one move: ping a LAN peer as a normal user, then under
+`sudo`.** Root bypasses TCC. Different results = TCC, full stop.
+
+The giveaway that cost hours here: `tcpdump` showed the ICMP echo
+request AND the reply both on the wire, while `ping` in the same shell
+reported 100% loss. Packets arrive; the *process* is not allowed to see
+them.
 
 ```
-192.168.10.1    ethernet gateway    0% loss     reachable
-1.1.1.1         the whole internet  0% loss     reachable
-192.168.10.133  gut, ethernet       100% loss   UNREACHABLE
-192.168.68.55   gut, wifi           100% loss   UNREACHABLE
-192.168.68.1    wifi gateway        100% loss   UNREACHABLE
+20:44:55.923042 IP 192.168.10.134 > 192.168.10.133: ICMP echo request
+20:44:55.923395 IP 192.168.10.133 > 192.168.10.134: ICMP echo reply
+--- 100.0% packet loss          <- same host, same moment, unprivileged
 ```
 
-Every device can reach the gateway and the internet; **no device can
-reach any other device**, on either network. From gut the failure is
-`No route to host` — its ARP for heart never resolves. The router is a
-**Bell GPON Home Gateway** with client isolation on.
+After granting iTerm Local Network, the same ping returned **0% loss at
+1.3 ms**, on plain ethernet, with no other change.
 
-So WebRTC is behaving correctly. It tries every direct candidate pair,
-they all fail, and relay is the only thing left. **No encoder tuning can
-fix this** — while it holds, every frame between two machines in the same
-room pays a round trip to AWS, and the "mesh tax" applies even to the
-one peer that should have been free.
+**Ruled out along the way — do not re-investigate:** client isolation on
+the Bell GPON gateway (no such setting exists on it; IP Filter disabled
+with zero rules; firewall default policy Accept; all four LAN ports in
+Route Mode), different subnets (both machines are on `192.168.10.0/24`),
+macOS application firewall (disabled on both), and `pf` (Status:
+Disabled, only the stock `com.apple` anchors). A Thunderbolt cable
+between the two minis was tried and **failed identically**, which is
+what finally proved it could not be the network: a point-to-point cable
+has nothing in between to drop a packet.
 
-Both machines are Mac minis and both already have **Thunderbolt Bridge**
-(`bridge0`, members `en2/en3/en4`) configured and `inactive` — no cable.
-**A single Thunderbolt/USB-C cable between them** creates a private
-10 Gb link that the router never sees, WebRTC gathers host candidates on
-it, and the direct pair wins. Cheapest alternative: put both machines on
-one dumb unmanaged switch, so their traffic is switched locally and
-never reaches the isolating gateway.
-
-Diagnostic shortcut for next time: **ping the gateway, then ping the
-other machine.** Gateway-yes / peer-no is client isolation, and the
-`TURN` badge on `/eq` is the same finding from the other end.
+**After any permission change, Chrome must be fully quit (⌘Q) and
+relaunched** — a running process keeps the grants it started with.
 
 ### 5. OBS's RTMP push competes with the mesh on the same uplink
 
@@ -194,10 +209,9 @@ one pipe.
   mediasoup): send one copy, the server fans out. Everything else is
   buying time.
 - **~~RTT between two machines in the same room was 48–191 ms.~~**
-  **Answered 2026-08-10: client isolation on the Bell gateway — see
-  confirmed cause 4.** Media really was round-tripping to AWS to reach a
-  box three feet away. Waiting on a Thunderbolt cable (or a dumb switch)
-  between heart and gut.
+  **Answered 2026-08-10: macOS Local Network permission, inherited from
+  iTerm — see confirmed cause 4.** Fixed; plain ethernet now measures
+  1.3 ms heart↔gut. No cable or switch needed.
 - **The god-mode composite stall at 08-07 `t=3652`** — both cameras *and*
   the locally-rendered news ticker dipped together, which rules out the
   network. Instrumented by the `composite` line; never root-caused.
