@@ -189,11 +189,30 @@ Useful requests: `GetVideoSettings`, `SetVideoSettings`,
    the Virtual Camera first, resize, then start it again. The Virtual
    Camera also negotiates its size with Chrome at start, so it must be
    restarted for a resolution change to reach the browser at all.
-2. **Changing the canvas does not move scene items.** Their transforms
-   are in canvas pixels, so a 720p→1080p resize leaves everything
-   bunched in the top-left. Scale `positionX/Y`, `scaleX/Y` and
-   `boundsWidth/Height` by the same factor (1.5 for 720p→1080p). Do
-   **not** scale crop values — those are in source pixels.
+2. **Changing the canvas does not move scene items**, and rescaling them
+   is not uniform. Transforms are in canvas pixels, so a 720p→1080p
+   resize leaves everything bunched in the top-left. The correct per-item
+   math, which cost one round of "the scenes look all fucked up":
+
+   - `positionX/Y` — **always** scale (×1.5 for 720p→1080p).
+   - `boundsType != OBS_BOUNDS_NONE` — OBS sizes the item from the bounds
+     box and treats `scale` as derived. Scale **`boundsWidth/Height`
+     only** and leave `scaleX/Y` alone. Scaling both applies the factor
+     twice — on the Rig2 collection 9 of 11 items are bounded, so
+     "uniformly scale everything" visibly wrecks nearly the whole layout.
+   - `boundsType == OBS_BOUNDS_NONE` — scale `scaleX/Y`.
+   - `crop*` — **never** scale. Crop is in source pixels, not canvas
+     pixels.
+
+   Rebuild from a pristine backup rather than scaling in place, so the
+   operation is idempotent if it has to be re-run.
+
+3. **The checked-in template has drifted from the live collection.**
+   `Rig2.json.template` records `bounds_type: 0` for items that are
+   bounded live — scenes have been edited by hand since the last
+   install. Treat the live collection as the source of truth and
+   regenerate the template from it (re-substituting `__HOME__`) rather
+   than hand-patching, the next time the layout is known-good.
 
 ### The rig is generated from a template — patch both
 
