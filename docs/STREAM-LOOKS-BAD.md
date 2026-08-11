@@ -137,7 +137,47 @@ Stopping the screen share was the single largest recovery of the night.
 Guest tiles are cosmetic — only the god-mode leg feeds the broadcast —
 so guest tiers should be far cheaper than they are.
 
-### 4. OBS's RTMP push competes with the mesh on the same uplink
+### 4. The router isolates its own clients, so heart↔gut media relays via AWS
+
+**This is the big one, and it is not a code bug.** `/eq` showed a `TURN`
+badge on the host's feed: the two machines sitting next to each other
+were sending video to a TURN server in AWS and back, at `960x540 @ 19fps
+/ 226k` outbound and **4 fps** inbound.
+
+Measured from heart (`192.168.10.134`):
+
+```
+192.168.10.1    ethernet gateway    0% loss     reachable
+1.1.1.1         the whole internet  0% loss     reachable
+192.168.10.133  gut, ethernet       100% loss   UNREACHABLE
+192.168.68.55   gut, wifi           100% loss   UNREACHABLE
+192.168.68.1    wifi gateway        100% loss   UNREACHABLE
+```
+
+Every device can reach the gateway and the internet; **no device can
+reach any other device**, on either network. From gut the failure is
+`No route to host` — its ARP for heart never resolves. The router is a
+**Bell GPON Home Gateway** with client isolation on.
+
+So WebRTC is behaving correctly. It tries every direct candidate pair,
+they all fail, and relay is the only thing left. **No encoder tuning can
+fix this** — while it holds, every frame between two machines in the same
+room pays a round trip to AWS, and the "mesh tax" applies even to the
+one peer that should have been free.
+
+Both machines are Mac minis and both already have **Thunderbolt Bridge**
+(`bridge0`, members `en2/en3/en4`) configured and `inactive` — no cable.
+**A single Thunderbolt/USB-C cable between them** creates a private
+10 Gb link that the router never sees, WebRTC gathers host candidates on
+it, and the direct pair wins. Cheapest alternative: put both machines on
+one dumb unmanaged switch, so their traffic is switched locally and
+never reaches the isolating gateway.
+
+Diagnostic shortcut for next time: **ping the gateway, then ping the
+other machine.** Gateway-yes / peer-no is client isolation, and the
+`TURN` badge on `/eq` is the same finding from the other end.
+
+### 5. OBS's RTMP push competes with the mesh on the same uplink
 
 The OBS box was pushing **8.1 Mbps** out of the same building. Dropping
 it to 3500 produced an immediate **4× jump** in every WebRTC feed
@@ -153,11 +193,11 @@ one pipe.
   how the caps are tuned. **The real fix is an SFU** (LiveKit or
   mediasoup): send one copy, the server fans out. Everything else is
   buying time.
-- **RTT between two machines in the same room was 48–191 ms.** A LAN hop
-  is under 5 ms. The interface machine's media may be round-tripping to
-  the internet to reach a box three feet away. If true, fixing it makes
-  most of this problem disappear. **Not yet investigated — highest-value
-  open lead.**
+- **~~RTT between two machines in the same room was 48–191 ms.~~**
+  **Answered 2026-08-10: client isolation on the Bell gateway — see
+  confirmed cause 4.** Media really was round-tripping to AWS to reach a
+  box three feet away. Waiting on a Thunderbolt cable (or a dumb switch)
+  between heart and gut.
 - **The god-mode composite stall at 08-07 `t=3652`** — both cameras *and*
   the locally-rendered news ticker dipped together, which rules out the
   network. Instrumented by the `composite` line; never root-caused.
