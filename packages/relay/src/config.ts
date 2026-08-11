@@ -69,6 +69,13 @@ export const config = {
   // or click broadcasts, can't publish or chat. Intended for the
   // streaming machine that captures the live show.
   godPassword: env("GOD_MODE_PASSWORD", ""),
+  // Optional static bearer for UNATTENDED show automation (the showtime-arm
+  // launchd job that flips fanouts on/off around a broadcast). Session tokens
+  // all expire (7 days), which is exactly wrong for a cron job — the 2026-08-10
+  // show armed with an expired-scope token and the fanouts 401'd at T-3min.
+  // Deliberately NARROW: accepted ONLY by the /admin/fanouts/* routes (see
+  // requireHostOrAutomation), never by wallet/room/session admin surfaces.
+  automationToken: env("AUTOMATION_TOKEN", ""),
   sessionSecret,
   // 7 days — matches AGENT_TOKEN_TTL_MS in sessions.ts so a host's login
   // session always outlives the skill/agent tokens it mints. A 1-day default

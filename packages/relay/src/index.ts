@@ -4,7 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { encodeAbiParameters, keccak256, parseAbiParameters } from "viem";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
@@ -7518,35 +7518,60 @@ app.post("/admin/wallet/reset", async (req, reply) => {
 type KickBody = { id?: unknown };
 
 // --- Fanout (server-side restream to YouTube/Twitch/X/Kick) -----------------
+// Fanout control accepts requireHost OR the static AUTOMATION_TOKEN env — and
+// ONLY fanout control does. The showtime cron job needs to flip these around
+// every broadcast, and every session-minted token expires within 7 days (the
+// 2026-08-10 show armed with a non-admin token and the fanouts 401'd at
+// T-3min). The static token is scoped to exactly these four routes so a
+// leaked automation credential can restream, not touch wallets or rooms.
+function requireHostOrAutomation(req: { cookies: Record<string, string | undefined>; headers?: Record<string, unknown> }):
+  | { ok: true; address: string }
+  | { ok: false; error: string } {
+  const want = config.automationToken;
+  if (want && req.headers) {
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+      const got = authHeader.slice("Bearer ".length).trim();
+      const a = Buffer.from(got), b = Buffer.from(want);
+      if (a.length === b.length && timingSafeEqual(a, b)) {
+        return { ok: true, address: "automation" };
+      }
+    }
+  }
+  return requireHost(req);
+}
+
 app.get("/admin/fanouts", async (req, reply) => {
-  const auth = requireHost(req);
+  const auth = requireHostOrAutomation(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return { fanouts: listFanouts() };
 });
 
 app.post<{ Params: { id: string } }>("/admin/fanouts/:id/start", async (req, reply) => {
-  const auth = requireHost(req);
+  const auth = requireHostOrAutomation(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   const id = req.params.id;
   if (!isKnownFanoutId(id)) return reply.code(400).send({ error: "Unknown destination" });
   const result = startFanout(id);
   if (!result.ok) return reply.code(400).send({ error: result.error });
+  app.log.info({ id, by: auth.address }, "fanout started");
   return { ok: true, fanouts: listFanouts() };
 });
 
 app.get("/admin/fanouts/history", async (req, reply) => {
-  const auth = requireHost(req);
+  const auth = requireHostOrAutomation(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   return { events: fanoutEvents(200) };
 });
 
 app.post<{ Params: { id: string } }>("/admin/fanouts/:id/stop", async (req, reply) => {
-  const auth = requireHost(req);
+  const auth = requireHostOrAutomation(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
   const id = req.params.id;
   if (!isKnownFanoutId(id)) return reply.code(400).send({ error: "Unknown destination" });
   const result = stopFanout(id);
   if (!result.ok) return reply.code(400).send({ error: result.error });
+  app.log.info({ id, by: auth.address }, "fanout stopped");
   return { ok: true, fanouts: listFanouts() };
 });
 
