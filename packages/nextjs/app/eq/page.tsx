@@ -316,6 +316,7 @@ const EqPopupPage = () => {
             <span>video</span>
           </div>
           <CompositeLine health={health} />
+          <ConnectionLine rows={videoRows} />
           {videoRows.length === 0 ? (
             <div
               style={{
@@ -490,6 +491,95 @@ const CompositeLine = ({ health }: { health: CompositeHealth | null }) => {
       <span style={{ fontSize: 9, flexShrink: 0 }}>🖼</span>
       <span style={{ flexShrink: 0 }}>composite</span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+    </div>
+  );
+};
+
+// The one-glance answer to "is my connection good right now?".
+// Everything else in this panel is a number you have to know how to
+// read; this is the verdict. It grades the WORST camera feed on two
+// independent axes and reports the worse of the two:
+//
+//   picture — resolution and framerate actually being encoded
+//   path    — LAN (never left the wire) / WAN (hairpins via the ISP,
+//             spending uplink) / TURN (relayed through AWS)
+//
+// Both matter and they fail independently: on 2026-08-10 the picture
+// was a perfect 720p30 while the path was still WAN, which looks fine
+// and quietly spends the uplink budget that the screen share and OBS
+// are competing for.
+const ConnectionLine = ({ rows }: { rows: VideoHealthRow[] }) => {
+  const cams = rows.filter(r => r.kind === "camera" && r.out);
+  const rank = { good: 0, fair: 1, poor: 2 } as const;
+  type Grade = keyof typeof rank;
+
+  let grade: Grade = "good";
+  let detail = "waiting";
+
+  if (cams.length > 0) {
+    let worst: Grade = "good";
+    let worstRow = cams[0];
+    for (const r of cams) {
+      const o = r.out!;
+      const w = o.width ?? 0;
+      const fps = o.fps ?? 0;
+      const picture: Grade =
+        fps < 15 || w < 640 ? "poor" : fps < 25 || w < 1280 || (o.qual && o.qual !== "none") ? "fair" : "good";
+      const path: Grade = o.path === "turn" ? "poor" : o.path === "wan" ? "fair" : "good";
+      const g: Grade = rank[picture] >= rank[path] ? picture : path;
+      if (rank[g] >= rank[worst]) {
+        worst = g;
+        worstRow = r;
+      }
+    }
+    grade = worst;
+    const o = worstRow.out!;
+    const size = o.height ? `${o.height}p` : "?";
+    const fps = o.fps == null ? "?" : String(o.fps);
+    const kbps = o.kbps == null ? "?" : `${Math.round(o.kbps)}k`;
+    const via = o.path ? o.path.toUpperCase() : "?";
+    const rtt = o.rttMs == null ? "" : ` ${o.rttMs}ms`;
+    detail = `${size}${fps} · ${kbps} · ${via}${rtt}`;
+  }
+
+  const color =
+    grade === "poor"
+      ? cssVar("red", "#ff5577")
+      : grade === "fair"
+        ? cssVar("amber", "#ffae00")
+        : cssVar("lime", "#7CFF6B");
+
+  return (
+    <div
+      title={
+        "Overall verdict for the worst camera feed. Picture = resolution/framerate being encoded. " +
+        "Path: LAN never leaves the local wire and costs no uplink; WAN is direct but hairpins out " +
+        "through your ISP and back, spending upload on what may be a three-foot hop; TURN is relayed " +
+        "through the server. A perfect picture on a WAN path still eats the budget the screen share needs."
+      }
+      style={{
+        display: "flex",
+        gap: 6,
+        alignItems: "center",
+        marginTop: 4,
+        padding: "4px 6px",
+        fontSize: 8,
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "0.03em",
+        color,
+        background: "rgba(255,255,255,0.03)",
+        border: `1px solid ${cssVar("bevel-light", "rgba(255,255,255,0.18)")}`,
+        borderRadius: 4,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      <span style={{ fontSize: 9, flexShrink: 0 }}>{grade === "good" ? "🟢" : grade === "fair" ? "🟡" : "🔴"}</span>
+      <span style={{ flexShrink: 0, fontWeight: 700 }}>
+        {cams.length === 0 ? "CONNECTION" : grade === "good" ? "GOOD" : grade === "fair" ? "FAIR" : "POOR"}
+      </span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{detail}</span>
     </div>
   );
 };
