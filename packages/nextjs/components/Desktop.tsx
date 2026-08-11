@@ -856,6 +856,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 kbps: sample.kbps,
                 qual: sample.qual,
                 relayed: sample.relayed,
+                path: sample.path,
                 rttMs: sample.rttMs,
                 at: report!.at,
               }

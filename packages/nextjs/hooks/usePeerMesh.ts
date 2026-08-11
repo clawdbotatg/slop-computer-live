@@ -245,7 +245,15 @@ export type SlotKind = "camera" | "screen" | "audio";
  *  room (that's the leg the broadcast captures), else any leg. `qual`
  *  is the encoder's own excuse when it degrades: "cpu" = the machine
  *  can't keep up, "bandwidth" = the network can't. `relayed` = the leg
- *  runs through TURN instead of a direct path. */
+ *  runs through TURN instead of a direct path.
+ *
+ *  `path` is the finer-grained version of `relayed`, and it exists
+ *  because "not relayed" is not the same as "on the LAN". On 2026-08-10
+ *  the two machines in the same room lost the TURN badge but still read
+ *  46ms RTT — a `srflx` pair, hairpinning out to the ISP and back. That
+ *  still spends the building's uplink on a three-foot hop, which is the
+ *  budget every other quality problem competes for. "lan" means both
+ *  ends nominated `host` candidates and the bytes never left the wire. */
 export type VideoStatSample = {
   sid: string; // publication streamId
   kind: "camera" | "screen";
@@ -256,6 +264,7 @@ export type VideoStatSample = {
   kbps: number | null; // measured encode rate since the last sample
   qual: "none" | "cpu" | "bandwidth" | "other" | null;
   relayed: boolean | null;
+  path: "lan" | "wan" | "turn" | null;
   rttMs: number | null;
 };
 
@@ -2609,6 +2618,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             all.find(s => s.type === "candidate-pair" && s.state === "succeeded" && s.nominated) ??
             null;
           let relayed: boolean | null = null;
+          let path: VideoStatSample["path"] = null;
           let rttMs: number | null = null;
           if (pair) {
             const rtt = num(pair.currentRoundTripTime);
@@ -2617,6 +2627,16 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             const remote = get(pair.remoteCandidateId);
             if (local || remote) {
               relayed = local?.candidateType === "relay" || remote?.candidateType === "relay";
+              // Only a host↔host pair is genuinely on the wire. `srflx`
+              // means we nominated a server-reflexive (public) address,
+              // so the bytes leave the building and hairpin back even
+              // though nothing is relayed — a three-foot hop billed to
+              // the uplink.
+              path = relayed
+                ? "turn"
+                : local?.candidateType === "host" && remote?.candidateType === "host"
+                  ? "lan"
+                  : "wan";
             }
           }
           for (const s of all) {
@@ -2638,6 +2658,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
                 kbps: rate(`out:${peerId}:${s.ssrc}`, num(s.bytesSent)),
                 qual: qual === "none" || qual === "cpu" || qual === "bandwidth" || qual === "other" ? qual : null,
                 relayed,
+                path,
                 rttMs,
               };
               let bySid = outByPc.get(peerId);
@@ -4317,6 +4338,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
                   ? raw.qual
                   : null,
               relayed: typeof raw.relayed === "boolean" ? raw.relayed : null,
+              path: raw.path === "lan" || raw.path === "wan" || raw.path === "turn" ? raw.path : null,
               rttMs: n(raw.rttMs),
             });
           }

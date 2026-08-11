@@ -731,6 +731,7 @@ export type VideoHealthRow = {
     kbps: number | null;
     qual: "none" | "cpu" | "bandwidth" | "other" | null;
     relayed: boolean | null;
+    path: "lan" | "wan" | "turn" | null;
     rttMs: number | null;
     at: number;
   } | null;

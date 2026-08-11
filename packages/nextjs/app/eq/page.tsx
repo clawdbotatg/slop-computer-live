@@ -527,6 +527,22 @@ const VideoRow = ({ row }: { row: VideoHealthRow }) => {
       color: cssVar("amber", "#ffae00"),
       title: "This leg runs through the TURN relay instead of a direct path — extra latency + bandwidth cap.",
     });
+  } else if (row.out?.path === "wan") {
+    // Not relayed, but not on the wire either: a srflx pair leaves the
+    // building and hairpins back, spending the uplink on what may be a
+    // three-foot hop. Worth seeing even though nothing is "wrong".
+    badges.push({
+      text: "WAN",
+      color: cssVar("amber", "#ffae00"),
+      title:
+        "Direct, but via public addresses — the bytes leave the building and come back, spending uplink. A host-to-host (LAN) pair would not.",
+    });
+  } else if (row.out?.path === "lan") {
+    badges.push({
+      text: "LAN",
+      color: cssVar("lime", "#7CFF6B"),
+      title: "Host-to-host: this leg never leaves the local wire and costs no uplink.",
+    });
   }
   const statLine: React.CSSProperties = {
     display: "flex",
