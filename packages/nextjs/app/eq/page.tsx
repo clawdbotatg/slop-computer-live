@@ -692,9 +692,18 @@ const VideoRow = ({ row }: { row: VideoHealthRow }) => {
             {b.text}
           </span>
         ))}
+        {/* Labelled "relay" deliberately. Unlabelled, this reads as the
+            media path RTT and is not -- it is the signalling round-trip
+            to the relay box in AWS, so it stays ~40-120ms even when the
+            media is a 1ms hop across the room. That ambiguity cost an
+            hour of chasing a LAN connection that was already working;
+            the media RTT lives in the CONNECTION line above. */}
         {row.wsRttMs != null ? (
-          <span style={{ fontSize: 8, ...dim, flexShrink: 0 }} title="Publisher's round-trip to the relay">
-            {row.wsRttMs}ms
+          <span
+            style={{ fontSize: 8, ...dim, flexShrink: 0 }}
+            title="Publisher's round-trip to the RELAY (signalling), not the media path. Media RTT is in the CONNECTION line above."
+          >
+            relay {row.wsRttMs}ms
           </span>
         ) : null}
       </div>
