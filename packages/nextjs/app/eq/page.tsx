@@ -539,7 +539,13 @@ const ConnectionLine = ({ rows }: { rows: VideoHealthRow[] }) => {
     const kbps = o.kbps == null ? "?" : `${Math.round(o.kbps)}k`;
     const via = o.path ? o.path.toUpperCase() : "?";
     const rtt = o.rttMs == null ? "" : ` ${o.rttMs}ms`;
-    detail = `${size}${fps} · ${kbps} · ${via}${rtt}`;
+    // Name the feed being graded. Without it the verdict is unactionable
+    // in the one case that matters most -- a room where YOUR feed is
+    // perfect and someone else's is dragging the grade down. "FAIR" then
+    // reads as "something is wrong with the show" when it means "call
+    // w1nt3r". Only worth printing when more than one camera is up.
+    const who = cams.length > 1 ? `${worstRow.label} ` : "";
+    detail = `${who}${size}${fps} · ${kbps} · ${via}${rtt}`;
   }
 
   const color =
