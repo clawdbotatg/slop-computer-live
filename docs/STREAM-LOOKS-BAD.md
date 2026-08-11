@@ -33,6 +33,28 @@ tuning opportunity.
 
 ---
 
+## 60-second triage
+
+Do these in order. Most of a six-hour night in 2026-08-10 would have been
+four minutes if this list had existed.
+
+1. **Tap the ⓘ on the bad feed's window** (next to mute, on every video
+   window, on every machine). It gives a verdict and names whose fault it
+   is. If the complaint came from a guest, have *them* tap it — they can
+   read their own feed now.
+2. **`/eq` on the god-mode machine → the `CONNECTION` line.** One line,
+   green/amber/red, names the worst feed.
+3. **`composite` line ≥ 24 fps and not `TAB HIDDEN`?** If it dipped, the
+   broadcast machine stalled and *every* feed below will look starved
+   whether it is or not.
+4. **Is a screen share running?** It is the most expensive thing in the
+   room. Stopping it is the single biggest recovery lever.
+5. **Permission check, if anything says `TURN`:** ping a LAN peer as a
+   normal user, then under `sudo` (see cause 4). Different results = a
+   macOS permission, not the network.
+
+---
+
 ## The chain (this is the whole map)
 
 Every arrow is a place quality can be lost. Most bad-looking shows are
@@ -42,9 +64,10 @@ lost in the **first three**, not on the network.
 Sony a6400
    └─ HDMI, fixed frame rate set in the CAMERA menu (24p/30p/60p)
         └─ Cam Link 4K (USB 3.0 — a USB 2 port or hub drops frames)
-             └─ OBS "Rig2" profile, canvas resolution  ← was 1280x720
+             └─ OBS "Rig2" profile, canvas resolution  ← 1920x1080 (was 1280x720)
                   └─ OBS Virtual Camera  (outputs the CANVAS size)
-                       └─ Chrome getUserMedia, app camera-res pref  ← default was 854x480
+                       └─ Chrome getUserMedia, app camera-res pref  ← default 1280x720 (was 854x480)
+                            └─ macOS Local Network permission  ← denies the LAN entirely, silently
                             └─ WebRTC encoder, per-peer caps (usePeerMesh.ts)
                                  └─ FULL MESH: one encode per recipient
                                       └─ building uplink (shared with OBS's RTMP push)
@@ -70,19 +93,88 @@ Ask for a paste of the whole video section. It answers everything.
 
 | Line | Healthy | What it means if not |
 |---|---|---|
+| `CONNECTION` | 🟢 `GOOD` | the verdict, and the **only** line you must read. Grades the worst camera on picture *and* path, and names it when more than one camera is up. |
 | `composite` | ~30 fps, worst < 50ms, no `TAB HIDDEN` | god-mode machine is stalling — **not** a feed problem. Chrome throttles a hidden/occluded tab to ~0. |
 | per-feed `in` resolution | 1280×720 or better | this is literally what the broadcast has to work with |
 | per-feed `in` fps | ~30 | below 30 with no badge → **source** framerate (camera menu), not network |
 | `CPU` badge | absent | encoder starved — usually the screen share, one encode per peer |
-| `NET` badge | absent | bandwidth/loss limited — uplink, or the mesh tax |
-| `TURN` badge | absent | media is being relayed instead of peer-to-peer |
+| `NET` badge | absent | bandwidth/loss limited — uplink, the mesh tax, **or our own cap** (see cause 6) |
+| `LAN` badge | **present, green** | media never left the local wire and costs zero uplink |
+| `WAN` badge | absent | direct, but hairpinning out through the ISP and back — still spends uplink on what may be a three-foot hop |
+| `TURN` badge | absent | relayed through the server. Almost always a **permission**, see cause 4 |
+| `relay Xms` | 40–120ms is NORMAL | this is the **signalling** ping to the relay in AWS. **It is not the media path.** See the trap below. |
 | `stream` row | 1920×1080, 30fps, `drop` not climbing | `drop` climbing = clawd-gut's uplink to prod is congested |
+
+> ### The `relay Xms` trap
+>
+> The per-row `ms` is `wsRttMs`, the WebSocket round-trip to the relay box
+> in AWS. It stays 40–120ms **even when the media is a 1ms hop across the
+> room**, because it measures signalling, not media.
+>
+> On 2026-08-10 this cost an hour: after the real fix landed, the `TURN`
+> badge cleared and this number stayed at 46ms, which got read as "still
+> not on the LAN". That sent the session into Chrome mDNS flags and a
+> Thunderbolt cable, chasing a connection that was **already direct**.
+>
+> **The media RTT is in the `CONNECTION` line** (and on each ⓘ panel). It
+> read 1ms the moment it was rendered. The column is now labelled `relay`
+> so it cannot do this again.
 
 **The single most diagnostic comparison:** put Austin's row next to a
 remote guest's row. On 2026-08-10 they were at *identical bitrate* —
 `731k` vs `737k` — and the guest turned it into `854×480 @ 30fps` while
 Austin got `318×180 @ 13fps`. Same bits, 7× the pixels. That instantly
 ruled out bandwidth and pointed at the source chain.
+
+---
+
+## The ⓘ button (every video window, every machine)
+
+Next to the mute button on each video window. Tap it for that feed's
+numbers; tap the panel to close. It exists because before it, **the only
+machine that could see why a feed looked bad was the god-mode box** — so
+diagnosing a guest meant the host stopping mid-show to read stats aloud,
+which the expectations above specifically forbid.
+
+```
+🟢 GOOD              H264
+sent       1280×720 @ 30fps
+received   1280×720 @ 30fps
+bitrate    2.4 Mbps
+path       LAN · 1ms
+```
+
+**`sent` vs `received` is the money read.** `sent` is what the publisher
+reports encoding; `received` is what this machine actually decoded. They
+match on a healthy path and diverge when the network is dropping between
+the two — that gap *is* the loss, visible without any other tool.
+
+The panel also translates the encoder's excuse into whose problem it is:
+`cpu` → "publisher's machine can't encode fast enough, usually a screen
+share"; `bandwidth` → "their connection, not yours".
+
+Costs nothing: it reads state the mesh already keeps (every publisher
+samples its own encoders and the relay fans the report out to the whole
+room), not a fresh `getStats()`.
+
+---
+
+## Known-good numbers (2026-08-10, after everything below)
+
+Compare against these before theorising. This is a healthy show with the
+host publishing camera + screen and one remote guest.
+
+```
+CONNECTION   🟢 GOOD
+composite    30 fps · worst 34ms
+host cam     1280×720  30fps  ~2.2-2.4 Mbps   LAN · 1ms    no badges
+guest cam    1280×720  30fps  ~1.1-1.3 Mbps   (remote)     no badges
+host screen  1920×1060  5-7fps  ~50k          (static content compresses to nothing)
+stream       1920×1080  30fps  ~7.6 Mbps  drop not climbing
+```
+
+For contrast, the same rig at its worst earlier the same day:
+`318×180 @ 7fps @ 67k`, `TURN`, everything relaying through Virginia.
 
 ---
 
@@ -98,6 +190,11 @@ Each of these cost real time. They are settled.
 | Composite is upscaled from a smaller canvas | **No** | FFT of horizontal scanlines shows energy smooth to Nyquist — natively 1920 wide |
 | Low light is capping camera framerate | **No** (for this rig) | true of cheap UVC webcams, **false** for a DSLR — HDMI output rate is fixed by a camera menu setting. 23 fps was 23.976 = 24p. |
 | RAM / the 24 GB machine | **No** | never the constraint; `NET`, not `CPU` |
+| Client isolation on the Bell GPON router | **No** | no such setting exists on it; IP Filter disabled with zero rules; firewall default policy Accept; all four LAN ports in Route Mode; both machines listed as connected devices |
+| heart and gut on different subnets | **No** | both hold `192.168.10.0/24` on `en0` from the same DHCP pool |
+| macOS application firewall / `pf` | **No** | firewall disabled and stealth off on both; `pfctl -si` Status: Disabled, only stock `com.apple` anchors |
+| Ethernet itself is broken | **No** | `tcpdump` showed echo request AND reply on the wire while `ping` reported 100% loss. It was a permission (cause 4). Ethernet measures **1.3ms** heart↔gut. |
+| Chrome mDNS obfuscation | **No** | flag was flipped to Disabled on both machines; changed nothing. The 46ms being chased was the relay ping, not the media path. |
 
 ---
 
@@ -199,6 +296,46 @@ it to 3500 produced an immediate **4× jump** in every WebRTC feed
 (218k → 911k for a guest, 290k → 1207k for Austin). Both machines share
 one pipe.
 
+### 6. Caps sized for a constraint that had gone away (fixed `c4bff10`)
+
+Every cap in `usePeerMesh.ts` was set earlier the same day, **while the
+uplink was collapsing** and the broadcast leg, the guest tiles and OBS's
+RTMP push were all fighting for it. Once cause 4 was fixed the broadcast
+leg became a 1ms LAN hop costing **zero uplink**, and those numbers were
+suddenly rationing against a constraint that no longer existed.
+
+Two symptoms, both of which read as network problems and were not:
+
+- `NET` at `960×540` while sitting at `2334k`. Chrome had the bitrate and
+  was bumping into **our own 2.5 Mbps ceiling** on a gigabit hop. A cap
+  is not a target — raised to **4 Mbps**.
+- *"Why does my video suck on clawd's computer?"* Non-spectator peers get
+  the **tile tier**, which had been cut to `350k` at half resolution to
+  stop the screen share starving the host's camera. Correct at the time;
+  wrong the moment the uplink freed up, because people **do** enlarge a
+  window to look at whoever is talking. Raised to `900k` / scale `1.5`.
+
+**Screen tiles were deliberately left cheap** (`400k`, 5fps, scale 3).
+The screen share was the actual starver — measured at ~2.1 Mbps per guest
+during the collapse — and nothing about it got cheaper.
+
+**Current values** (`usePeerMesh.ts`) — the broadcast tier is the leg the
+god-mode spectator receives and OBS captures; every other peer is a tile:
+
+| | broadcast | tile |
+|---|---|---|
+| camera bitrate | 4 Mbps | 900 kbps |
+| camera scale | 1× | 1.5× down |
+| camera framerate | 30 | 30 |
+| screen bitrate | 2.5 Mbps | 400 kbps |
+| screen framerate | 15 | 5 |
+| screen scale | 1× | 3× down |
+| degradation | `balanced` (camera) / `maintain-resolution` (screen only) | `balanced` |
+
+Tier is assigned by `peer.spectator` — **only** the god-mode spectator
+gets `broadcast`. If nobody is flagged spectator, everyone lands on the
+tile tier and the broadcast silently gets thumbnail quality.
+
 ---
 
 ## Open — the things that will bite next
@@ -217,6 +354,62 @@ one pipe.
   network. Instrumented by the `composite` line; never root-caused.
 - **The audio chop** was never independently confirmed. Suspected same
   cause as the composite stall.
+
+---
+
+## The network (heart ↔ gut)
+
+```
+heart  clawds-Mac-mini    M4, 24 GB   en0 192.168.10.134   en1 wifi 192.168.68.70
+gut    clawdguts-Mac-mini             en0 192.168.10.133   en1 wifi 192.168.68.55
+                          Bell GPON gateway  192.168.10.1
+                          TP-Link Deco       192.168.68.1  (double-NAT, wifi only)
+```
+
+Both machines are **dual-homed** — wired on `192.168.10.0/24` and also on
+the Deco's wifi. Service order on both puts Ethernet first, which is
+correct; don't "fix" it.
+
+**Ethernet is the working path: heart↔gut measures ~1.3ms.** Nothing else
+is needed. Do not turn wifi off to "force" it — that was tried and broke
+other things on the box.
+
+### Thunderbolt Bridge — built, verified, then removed
+
+Both are Mac minis with `bridge0` (members `en2/en3/en4`) already
+configured. A Thunderbolt cable between them brings up a **40 Gb/s
+point-to-point link** that no router, switch or DHCP touches. It was
+built during the session and **failed exactly like ethernet did**, which
+is what finally proved the fault could not be the network — a direct
+cable has nothing in between to drop a packet.
+
+The cable was pulled once ethernet was working. If you ever want it back:
+
+```
+# heart
+sudo networksetup -setmanual "Thunderbolt Bridge" 10.99.0.1 255.255.255.0 ""
+# gut
+sudo networksetup -setmanual "Thunderbolt Bridge" 10.99.0.2 255.255.255.0 ""
+```
+
+Those static IPs are **still configured** on both machines, so the link is
+plug-and-play. Three gotchas, all hit live:
+
+1. **The BACK ports only.** On an M4 Mac mini the front USB-C ports are
+   USB 3, not Thunderbolt. A charge-only cable in the right port fails
+   the same as a good cable in the wrong one.
+2. **A plain USB cable does nothing.** Thunderbolt Bridge needs an actual
+   Thunderbolt/USB4 link. Verify with
+   `system_profiler SPThunderboltDataType` — you want `Status: Device
+   connected` and the other machine's model name.
+3. **Don't leave it on link-local.** Both ends self-assign `169.254.x.x`,
+   and `169.254/16` is routed on *three* interfaces on each machine, so
+   replies leave by the wrong one. Static IPs on a subnet that exists
+   nowhere else remove the ambiguity.
+
+It is genuinely faster and never shares the NIC with OBS's RTMP push, but
+at these bitrates ethernet is not the constraint. Reach for it only if
+ethernet is unavailable.
 
 ---
 
@@ -298,3 +491,19 @@ Things that look like improvements and are not:
   solo and expensive with guests, because it is encoded once per person.
 - **Trusting a local preview, a screenshot, or a `uiprobe` render.**
   Measure the `in` line on `/eq`, or the recording with ffmpeg.
+- **Reading `relay Xms` as the media path.** It is signalling to AWS and
+  is *supposed* to be 40–120ms. The media RTT is in `CONNECTION` and the
+  ⓘ panels.
+- **Tuning caps during a bad show and never revisiting them.** Every
+  number in `usePeerMesh.ts` was correct for the conditions it was set
+  in. Two of them were actively harmful an hour later (cause 6). When the
+  bottleneck moves, re-read the caps.
+- **Assuming a permission is granted because the app's toggle is on.**
+  macOS attributes TCC to the *launching* process. Anything Chrome does
+  when started from `slop-setup.sh` is judged as **iTerm**.
+- **Debugging the network before ruling out TCC.** Two independent
+  physical links failed identically here. Ping as user vs under `sudo`
+  first; it takes 30 seconds.
+- **Cutting guest tiles to protect the broadcast.** Tiles are what every
+  other human in the room sees of you, and people enlarge windows. Cheap
+  is right only while the uplink is actually scarce.
