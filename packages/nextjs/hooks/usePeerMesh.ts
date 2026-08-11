@@ -88,9 +88,22 @@ const STREAM_RECONNECT_BACKOFF_MS = 10_000; // min interval between retries per 
 // streams they display at thumbnail size.
 type SendTier = "broadcast" | "tile";
 const CAMERA_MAX_FRAMERATE = 30;
-const CAMERA_BROADCAST_MAX_BITRATE = 2_500_000; // sharp 720p on the stream
-const CAMERA_TILE_MAX_BITRATE = 350_000; // a ~360px tile, not a second broadcast
-const CAMERA_TILE_SCALE = 2; // halve capture res for tile viewers
+// Sized for a LAN broadcast leg. When the god-mode spectator is on the
+// same wire (the 2026-08-10 setup: heart -> gut, 1ms, host candidates),
+// these bytes never touch the uplink, so the old 2.5 Mbps ceiling was
+// rationing against a constraint that no longer exists -- Chrome sat at
+// 960x540 reporting `bandwidth` while bumping into OUR cap. If the
+// spectator is remote instead, `balanced` degradation walks it back
+// down; a ceiling is not a target.
+const CAMERA_BROADCAST_MAX_BITRATE = 4_000_000;
+// Tiles are what every OTHER human in the room sees of you, and people
+// do enlarge a window to look at whoever is talking. 350k at half
+// resolution was set while the host's uplink was collapsing and every
+// leg competed for it; with the broadcast leg now free, that budget is
+// available and starving the guests' view of each other buys nothing.
+// Screen tiles stay cheap -- the screen share was the actual starver.
+const CAMERA_TILE_MAX_BITRATE = 900_000;
+const CAMERA_TILE_SCALE = 1.5; // 1280x720 -> 853x480, still cheap, no longer mush
 const SCREEN_BROADCAST_MAX_BITRATE = 2_500_000; // sharp text on the stream
 const SCREEN_BROADCAST_MAX_FRAMERATE = 15;
 // The tile tier is deliberately austere. Measured live on 2026-08-10
