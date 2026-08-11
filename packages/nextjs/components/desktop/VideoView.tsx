@@ -26,11 +26,35 @@ export const cameraMicMutedKey = (slug: string) => `${CAMERA_MIC_MUTED_KEY_BASE}
 const CAMERA_MIRRORED_KEY_BASE = "slop-camera-mirrored-v1";
 const cameraMirroredKey = (slug: string) => `${CAMERA_MIRRORED_KEY_BASE}:${slug}`;
 
+/** What the ⓘ overlay shows for one feed. `out` is what the PUBLISHER
+ *  reports encoding toward us; `in` is what we are actually decoding.
+ *  They disagree when the network is dropping between the two, which is
+ *  the single most useful thing this panel can tell you. */
+export type FeedStats = {
+  outWidth: number | null;
+  outHeight: number | null;
+  outFps: number | null;
+  outKbps: number | null;
+  codec: string | null;
+  /** "lan" = never left the local wire, "wan" = direct but via public
+   *  addresses (spends uplink), "turn" = relayed through the server. */
+  path: "lan" | "wan" | "turn" | null;
+  rttMs: number | null;
+  /** The encoder's own excuse when it degrades. */
+  qual: "none" | "cpu" | "bandwidth" | "other" | null;
+  inWidth: number | null;
+  inHeight: number | null;
+  inFps: number | null;
+};
+
 export type VideoViewProps = {
   stream: MediaStream;
   /** Mute local playback on self streams (echo prevention — a camera
    *  publication bundles the publisher's own mic). */
   muted?: boolean;
+  /** Live encode/decode numbers for this feed. Drives the ⓘ button;
+   *  omit and the button is not rendered. */
+  stats?: FeedStats | null;
   /** When true, render the publisher controls (mic mute, audio-only
    *  toggle, settings). Only the publisher controls their own camera. */
   isMine?: boolean;
@@ -87,6 +111,7 @@ export type VideoViewProps = {
 export const VideoView = ({
   stream,
   muted = false,
+  stats = null,
   isMine = false,
   onSettings,
   cameraOff = false,
@@ -103,6 +128,7 @@ export const VideoView = ({
   const slug = useRoomSlug();
   const storageKey = cameraMicMutedKey(slug);
   const mirroredKey = cameraMirroredKey(slug);
+  const [showStats, setShowStats] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Lazy init from localStorage when this is my own publication, so the
   // initial track.enabled effect below sees the resumed micMuted=true
@@ -261,6 +287,7 @@ export const VideoView = ({
           </AudioDropZone>
         </div>
       ) : null}
+      {stats && showStats ? <StatsPanel stats={stats} onClose={() => setShowStats(false)} /> : null}
       {!isMine ? (
         <div
           style={{
@@ -281,6 +308,17 @@ export const VideoView = ({
           >
             {selfMuted ? <SpeakerOffIcon /> : <SpeakerIcon />}
           </button>
+          {stats ? (
+            <button
+              type="button"
+              onClick={() => setShowStats(v => !v)}
+              aria-label={showStats ? "hide connection info" : "show connection info"}
+              title="Connection info for this feed"
+              style={overlayBtnStyle(showStats)}
+            >
+              <InfoIcon />
+            </button>
+          ) : null}
         </div>
       ) : null}
       {isMine ? (
@@ -294,6 +332,17 @@ export const VideoView = ({
             zIndex: 5,
           }}
         >
+          {stats ? (
+            <button
+              type="button"
+              onClick={() => setShowStats(v => !v)}
+              aria-label={showStats ? "hide connection info" : "show connection info"}
+              title="Connection info for this feed"
+              style={overlayBtnStyle(showStats)}
+            >
+              <InfoIcon />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setMicMuted(m => !m)}
@@ -345,6 +394,124 @@ export const VideoView = ({
     </div>
   );
 };
+
+// Per-feed connection readout, opened by the ⓘ on the window. Exists so
+// a guest can answer "is it me?" without anyone reading /eq to them --
+// during the 2026-08-10 show the only machine that could see why a feed
+// looked bad was the god-mode box, so diagnosing a guest meant the host
+// stopping to play support mid-broadcast.
+//
+// `out` vs `in` is the money read and why both are shown: `out` is what
+// the publisher says it encoded, `in` is what this machine decoded. They
+// agree when the path is healthy and diverge when it is dropping.
+const StatsPanel = ({ stats, onClose }: { stats: FeedStats; onClose: () => void }) => {
+  const w = stats.outWidth ?? 0;
+  const fps = stats.outFps ?? 0;
+  const degraded = stats.qual === "cpu" || stats.qual === "bandwidth";
+  const grade: "good" | "fair" | "poor" =
+    fps < 15 || w < 640 || stats.path === "turn"
+      ? "poor"
+      : fps < 25 || w < 1280 || degraded || stats.path === "wan"
+        ? "fair"
+        : "good";
+  const dot = grade === "good" ? "🟢" : grade === "fair" ? "🟡" : "🔴";
+  const word = grade === "good" ? "GOOD" : grade === "fair" ? "FAIR" : "POOR";
+
+  const size = (a: number | null, b: number | null) => (a && b ? `${a}×${b}` : "—");
+  const mbps =
+    stats.outKbps == null
+      ? "—"
+      : stats.outKbps >= 1000
+        ? `${(stats.outKbps / 1000).toFixed(1)} Mbps`
+        : `${Math.round(stats.outKbps)} kbps`;
+
+  // Plain-language cause, because "bandwidth" is the encoder's word, not
+  // an instruction. Each line says whose problem it is.
+  const why = degraded
+    ? stats.qual === "cpu"
+      ? "Publisher's machine can't encode fast enough — usually a screen share."
+      : "Publisher's uplink can't carry it — their connection, not yours."
+    : stats.path === "turn"
+      ? "Relayed through the server instead of a direct path — extra latency and a hard bandwidth cap."
+      : stats.path === "wan"
+        ? "Direct, but routed out through the internet and back rather than staying on the local network."
+        : null;
+
+  const row: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 10 };
+  const dim: React.CSSProperties = { opacity: 0.6 };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "absolute",
+        top: 46,
+        right: 8,
+        zIndex: 6,
+        minWidth: 172,
+        maxWidth: "calc(100% - 16px)",
+        padding: "8px 10px",
+        background: "rgba(6,3,13,0.92)",
+        border: "1px solid var(--slop-bevel-light, #4a4a4a)",
+        color: "#fff",
+        fontSize: 10,
+        lineHeight: 1.5,
+        fontVariantNumeric: "tabular-nums",
+        backdropFilter: "blur(4px)",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ ...row, fontWeight: 700, marginBottom: 4 }}>
+        <span>
+          {dot} {word}
+        </span>
+        <span style={dim}>{stats.codec ?? ""}</span>
+      </div>
+      <div style={row}>
+        <span style={dim}>sent</span>
+        <span>
+          {size(stats.outWidth, stats.outHeight)} @ {stats.outFps ?? "—"}fps
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>received</span>
+        <span>
+          {size(stats.inWidth, stats.inHeight)} @ {stats.inFps ?? "—"}fps
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>bitrate</span>
+        <span>{mbps}</span>
+      </div>
+      <div style={row}>
+        <span style={dim}>path</span>
+        <span>
+          {(stats.path ?? "?").toUpperCase()}
+          {stats.rttMs == null ? "" : ` · ${stats.rttMs}ms`}
+        </span>
+      </div>
+      {why ? <div style={{ marginTop: 6, opacity: 0.85, whiteSpace: "normal" }}>{why}</div> : null}
+      <div style={{ marginTop: 6, ...dim, fontSize: 9 }}>tap to close</div>
+    </div>
+  );
+};
+
+const InfoIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    aria-hidden
+  >
+    <circle cx="8" cy="8" r="6.2" />
+    <path d="M8 7.2 V 11.2" />
+    <path d="M8 4.8 V 5.2" />
+  </svg>
+);
 
 const overlayBtnStyle = (active: boolean): React.CSSProperties => ({
   width: 32,

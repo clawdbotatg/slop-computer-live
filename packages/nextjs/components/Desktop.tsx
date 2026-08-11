@@ -51,7 +51,7 @@ import { TodoWindow } from "~~/components/desktop/TodoWindow";
 import { TranscriptWindow } from "~~/components/desktop/TranscriptWindow";
 import { TrashCan } from "~~/components/desktop/TrashCan";
 import { VideoShareDialog, type VideoShareSubmit } from "~~/components/desktop/VideoShareDialog";
-import { VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
+import { type FeedStats, VideoView, cameraMicMutedKey } from "~~/components/desktop/VideoView";
 import { VotingWindow } from "~~/components/desktop/VotingWindow";
 import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
@@ -2371,6 +2371,33 @@ function DesktopInner({ slug }: { slug: string }) {
   }, [mesh.publications, mesh.slots, defaultSlot]);
 
   // Resolve the live MediaStream for a publication.
+  // Per-feed numbers for the ⓘ overlay on each video window. Same data
+  // the /eq panel renders, but available on EVERY machine — the point is
+  // that a guest can diagnose their own feed instead of the host reading
+  // stats to them mid-show. Cheap: it is a lookup in state we already
+  // keep, not a getStats() call.
+  const statsFor = useCallback(
+    (pub: { peerId: string; streamId: string }): FeedStats | null => {
+      const out = mesh.peerVideoStats[pub.peerId]?.streams.find(x => x.sid === pub.streamId) ?? null;
+      const inb = mesh.inboundVideoStats[pub.streamId] ?? null;
+      if (!out && !inb) return null;
+      return {
+        outWidth: out?.width ?? null,
+        outHeight: out?.height ?? null,
+        outFps: out?.fps ?? null,
+        outKbps: out?.kbps ?? null,
+        codec: out?.codec ?? null,
+        path: out?.path ?? null,
+        rttMs: out?.rttMs ?? null,
+        qual: out?.qual ?? null,
+        inWidth: inb?.width ?? null,
+        inHeight: inb?.height ?? null,
+        inFps: inb?.fps ?? null,
+      };
+    },
+    [mesh.peerVideoStats, mesh.inboundVideoStats],
+  );
+
   const streamFor = useCallback(
     (pub: Publication): MediaStream | null => {
       if (pub.peerId === mesh.myId) {
@@ -3909,6 +3936,7 @@ function DesktopInner({ slug }: { slug: string }) {
                       <VideoView
                         stream={stream}
                         muted={pub.peerId === mesh.myId}
+                        stats={statsFor(pub)}
                         isMine={pub.peerId === mesh.myId}
                         onSettings={pub.peerId === mesh.myId ? () => setVideoDialog("edit") : undefined}
                         // Audio-only toggle. State is the relay-broadcast
