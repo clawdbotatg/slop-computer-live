@@ -392,9 +392,22 @@ runs 84 MB/s. Small-survives/bulk-dies is exactly grey images and
 dying page loads. It is not an MTU blackhole (big pings pass);
 sustained v6 flows are just destroyed inside/behind the Bell hub.
 
-The fix is **disable IPv6 in the Bell admin** (`192.168.10.1`, access
-code on the hub's sticker) — one toggle covering every device — not
-re-inserting a NAT router, which is what caused cause 7. heart's
+**The Bell gateway will not let you disable IPv6 — do not try again**
+(attempted 2026-08-12, logged in, via the real admin UI): the WAN
+connection is carrier-provisioned (TR-069) and silently reverts
+`IP mode: IPv4` back to `IPv4&IPv6` on save; the `LAN_IPv6` page's
+Save/Apply button is `disabled` in the page markup. Subscriber-level
+login has no IPv6 control anywhere.
+
+The remaining fix is the **Deco back in Router mode, plugged in
+correctly**: only the Deco's WAN port touches Bell's LAN, and the
+Macs' switch uplinks into a Deco LAN port. One landlord (the Deco),
+one subnet, Bell's broken v6 hidden behind its NAT — and the stream
+fix survives because the two Macs talk switch-locally either way.
+This is deliberately NOT cause 7 again: cause 7 was two routers
+bridged onto one wire, not the Deco routing per se. (As of the
+2026-08-12 session this flip was agreed but **not yet executed** —
+phones still see broken v6 until it happens.) heart's
 Ethernet keeps **IPv6 deliberately Off** regardless (verified 08-12;
 75/75 v4 requests through Bell clean, 677/516 Mbps down/up). Test
 harness for re-measuring: `test-bell-ipv6.sh` pattern — enable v6,
