@@ -44,10 +44,13 @@ four minutes if this list had existed.
    read their own feed now.
 2. **`/eq` on the god-mode machine → the `CONNECTION` line.** One line,
    green/amber/red, names the worst feed.
-3. **Both machines actually on `192.168.10.x`?** `ifconfig en0` on each.
-   A `192.168.68.x` address on either means a rogue DHCP server is back
-   on the wire and the media is detouring through the Deco — see cause 7.
-   This painted as a quiet `? 4ms` path badge on 08-12, not an error.
+3. **Both machines on the Deco subnet via their WIRED port, <1ms apart?**
+   `ifconfig en0` on each (2026-08-12 evening: heart `192.168.68.61`,
+   gut `192.168.68.66`), then ping one from the other — want ~0.6ms.
+   Tens of ms with jitter = the media is riding a wifi interface. A
+   wired NIC clinging to a dead lease from an old topology does this
+   silently — renew its DHCP lease. See cause 7; on /eq it painted as
+   a quiet `? 4ms` path badge, not an error.
 4. **`composite` line ≥ 24 fps and not `TAB HIDDEN`?** If it dipped, the
    broadcast machine stalled and *every* feed below will look starved
    whether it is or not.
@@ -405,9 +408,14 @@ Macs' switch uplinks into a Deco LAN port. One landlord (the Deco),
 one subnet, Bell's broken v6 hidden behind its NAT — and the stream
 fix survives because the two Macs talk switch-locally either way.
 This is deliberately NOT cause 7 again: cause 7 was two routers
-bridged onto one wire, not the Deco routing per se. (As of the
-2026-08-12 session this flip was agreed but **not yet executed** —
-phones still see broken v6 until it happens.) heart's
+bridged onto one wire, not the Deco routing per se. **Executed the
+same evening** — final chain `Bell fiber modem → Deco (router) →
+switch A → switch B`, everything on `192.168.68.0/22`, heart↔gut
+re-measured at 0.6ms wired. One gotcha to remember: after the
+re-wire, gut's ethernet kept its dead `10.133` lease and silently
+fell back to wifi (45ms avg, 200ms spikes) until the lease was
+renewed on the OBS box — after ANY topology change, renew DHCP on
+every wired box and re-verify the <1ms ping. heart's
 Ethernet keeps **IPv6 deliberately Off** regardless (verified 08-12;
 75/75 v4 requests through Bell clean, 677/516 Mbps down/up). Test
 harness for re-measuring: `test-bell-ipv6.sh` pattern — enable v6,
@@ -437,19 +445,22 @@ compare a small fetch against a 1MB fetch, restore v6 off via trap.
 ## The network (heart ↔ gut)
 
 ```
-heart  clawds-Mac-mini    M4, 24 GB   en0 192.168.10.134  (IPv6 Off — deliberate)
-gut    clawdguts-Mac-mini             en0 192.168.10.133   wifi 192.168.10.68
-                          Bell GPON gateway  192.168.10.1  (the ONLY router + DHCP)
-                          TP-Link Deco       — ACCESS POINT mode since 2026-08-12:
-                                               bridges wifi onto the same subnet,
-                                               no NAT, no DHCP (see cause 7)
+Bell fiber gateway (192.168.10.1 — carrier-locked, broken IPv6, feeds ONLY the Deco)
+  └─ TP-Link Deco, ROUTER mode  (192.168.68.1 — the one router + DHCP for everything)
+       └─ switch A ── switch B
+            heart  clawds-Mac-mini  M4, 24GB  en0 192.168.68.61  (IPv6 Off — deliberate)
+            gut    clawdguts-Mac-mini         en0 192.168.68.66   wifi 192.168.68.53
 ```
 
-Since 2026-08-12 the whole house is **one subnet** (`192.168.10.0/24`).
-gut is still dual-homed (wire + wifi), but both interfaces land on the
-same network now; Chrome prefers the ethernet adapter when both pair.
-Service order on both machines puts Ethernet first, which is correct;
-don't "fix" it.
+Final topology since 2026-08-12 evening: **everything lives behind the
+Deco** on `192.168.68.0/22`; nothing but the Deco's WAN touches the
+Bell gateway, which both kills the two-DHCP race (cause 7) and hides
+Bell's broken IPv6 (the grey-images / 1-in-10 dead loads defect) from
+every device. heart↔gut over the wire: **0.6ms**. gut is dual-homed
+(wire + wifi on the same subnet); Chrome prefers the ethernet adapter
+when both pair. Service order on both machines puts Ethernet first,
+which is correct; don't "fix" it. Internet through the double NAT
+measured 97 MB/s down / 32 MB/s up, 0% loss — not the constraint.
 
 **Ethernet is the working path: heart↔gut measures ~1.3ms.** Nothing else
 is needed. Do not turn wifi off to "force" it — that was tried and broke
