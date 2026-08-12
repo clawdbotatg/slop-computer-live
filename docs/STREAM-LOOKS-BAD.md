@@ -379,16 +379,26 @@ prepared as armor but became unnecessary once the second DHCP server
 was gone. If a `192.168.68.x` address ever reappears on either machine,
 something has put the Deco back in router mode.
 
-**Watch-item (why the Deco was a router in the first place):** moving
-devices behind the Deco had *fixed* an older intermittent
-"1-in-10 page loads hang and die" problem on the Bell network, believed
-IPv6-related — the Deco was shielding clients from Bell's IPv6. heart's
-Ethernet has **IPv6 deliberately Off** (verified still set on 08-12;
-25/25 HTTPS loads + 10/10 DNS lookups through Bell clean after the
-change — don't re-enable it). If other devices see hanging loads now
-that Bell's router advertisements reach the whole house again, the fix
-is **disable IPv6/RA in the Bell admin** (`192.168.10.1`) — one toggle
-covering every device — not re-inserting a NAT router.
+**Bell's IPv6 is measurably broken — this is why the Deco existed
+(measured 2026-08-12, same evening).** Moving devices behind the Deco
+had "fixed" an older intermittent "1-in-10 page loads hang and die"
+problem — the Deco was simply not passing Bell's IPv6 through. Within
+the hour of AP mode going live, the phone showed X with every image a
+grey box (text loads, images don't). Measured on heart with v6
+temporarily enabled: **small v6 fetches 25ms, ping6 clean even at
+1480-byte packets — but bulk v6 transfers collapse to 6–19 KB/s** (three
+1MB downloads, none finished in 10s) while the identical v4 download
+runs 84 MB/s. Small-survives/bulk-dies is exactly grey images and
+dying page loads. It is not an MTU blackhole (big pings pass);
+sustained v6 flows are just destroyed inside/behind the Bell hub.
+
+The fix is **disable IPv6 in the Bell admin** (`192.168.10.1`, access
+code on the hub's sticker) — one toggle covering every device — not
+re-inserting a NAT router, which is what caused cause 7. heart's
+Ethernet keeps **IPv6 deliberately Off** regardless (verified 08-12;
+75/75 v4 requests through Bell clean, 677/516 Mbps down/up). Test
+harness for re-measuring: `test-bell-ipv6.sh` pattern — enable v6,
+compare a small fetch against a 1MB fetch, restore v6 off via trap.
 
 ---
 
