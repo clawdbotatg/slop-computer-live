@@ -44,12 +44,16 @@ four minutes if this list had existed.
    read their own feed now.
 2. **`/eq` on the god-mode machine → the `CONNECTION` line.** One line,
    green/amber/red, names the worst feed.
-3. **`composite` line ≥ 24 fps and not `TAB HIDDEN`?** If it dipped, the
+3. **Both machines actually on `192.168.10.x`?** `ifconfig en0` on each.
+   A `192.168.68.x` address on either means a rogue DHCP server is back
+   on the wire and the media is detouring through the Deco — see cause 7.
+   This painted as a quiet `? 4ms` path badge on 08-12, not an error.
+4. **`composite` line ≥ 24 fps and not `TAB HIDDEN`?** If it dipped, the
    broadcast machine stalled and *every* feed below will look starved
    whether it is or not.
-4. **Is a screen share running?** It is the most expensive thing in the
+5. **Is a screen share running?** It is the most expensive thing in the
    room. Stopping it is the single biggest recovery lever.
-5. **Permission check, if anything says `TURN`:** ping a LAN peer as a
+6. **Permission check, if anything says `TURN`:** ping a LAN peer as a
    normal user, then under `sudo` (see cause 4). Different results = a
    macOS permission, not the network.
 
@@ -191,7 +195,7 @@ Each of these cost real time. They are settled.
 | Low light is capping camera framerate | **No** (for this rig) | true of cheap UVC webcams, **false** for a DSLR — HDMI output rate is fixed by a camera menu setting. 23 fps was 23.976 = 24p. |
 | RAM / the 24 GB machine | **No** | never the constraint; `NET`, not `CPU` |
 | Client isolation on the Bell GPON router | **No** | no such setting exists on it; IP Filter disabled with zero rules; firewall default policy Accept; all four LAN ports in Route Mode; both machines listed as connected devices |
-| heart and gut on different subnets | **No** | both hold `192.168.10.0/24` on `en0` from the same DHCP pool |
+| heart and gut on different subnets | **No** on 08-10 — then **YES** on 08-12 (cause 7) | the 30-second check (`ifconfig en0` on both) is worth re-running before ruling this out; it flipped once already |
 | macOS application firewall / `pf` | **No** | firewall disabled and stealth off on both; `pfctl -si` Status: Disabled, only stock `com.apple` anchors |
 | Ethernet itself is broken | **No** | `tcpdump` showed echo request AND reply on the wire while `ping` reported 100% loss. It was a permission (cause 4). Ethernet measures **1.3ms** heart↔gut. |
 | Chrome mDNS obfuscation | **No** | flag was flipped to Disabled on both machines; changed nothing. The 46ms being chased was the relay ping, not the media path. |
@@ -336,6 +340,56 @@ Tier is assigned by `peer.spectator` — **only** the god-mode spectator
 gets `broadcast`. If nobody is flagged spectator, everyone lands on the
 tile tier and the broadcast silently gets thumbnail quality.
 
+### 7. Two DHCP servers on one wire — the Deco bridge (fixed 2026-08-12, Deco → AP mode)
+
+The 08-12 show ran with the host's cam at `480×270 @ 14fps @ 411k`, `NET`
+badge, `CONNECTION 🔴 POOR … ? 4ms`, while the other two cams were a
+pristine 720p30 and the composite painted 49 fps. It pattern-matched
+cause 3 (screen share starvation) — but the depth was new: the
+**broadcast leg to gut itself** was collapsed, which a wired LAN hop
+cannot do.
+
+What actually happened:
+
+- The TP-Link Deco (router mode) had its network **bridged onto the
+  wired switch**, so one L2 segment carried two DHCP servers: Bell
+  (`192.168.10.1`) and Deco (`192.168.68.1`). Every lease renewal on
+  every device was a race between two landlords.
+- heart lost a renewal race and re-homed to `192.168.68.53` — same
+  wire, different subnet. **No cable moved.** It had probably "worked
+  for months" only because Bell kept winning.
+- The only same-subnet ICE pair left was heart `68.53` ↔ gut's **wifi**
+  `68.55` — so the "wired" video rode the Deco wifi on its last hop.
+  That leg measured **22–205ms (avg 142ms)** against the wire's ~1ms,
+  and folded the moment the screen share loaded it.
+- The cross-checks that nailed it, in order: `traceroute` heart→gut
+  showed a hop through `192.168.68.1`; gut's **link-local IPv6 answered
+  on heart's `en0`** (link-local cannot cross a router → same wire,
+  proving no cable moved); `ipconfig getpacket en0` named the Deco as
+  the DHCP server.
+
+`/eq`'s tell was quiet: a `?` path badge (no clean host↔host pair to
+classify) and `4ms` where the wire reads ~1ms. That check is now triage
+step 3.
+
+**Fix: the Deco was switched to Access Point mode** — no NAT, no DHCP,
+just wifi bridged onto the Bell network. One subnet, one DHCP server;
+heart↔gut measured **0.6ms** immediately after. Static IPs were
+prepared as armor but became unnecessary once the second DHCP server
+was gone. If a `192.168.68.x` address ever reappears on either machine,
+something has put the Deco back in router mode.
+
+**Watch-item (why the Deco was a router in the first place):** moving
+devices behind the Deco had *fixed* an older intermittent
+"1-in-10 page loads hang and die" problem on the Bell network, believed
+IPv6-related — the Deco was shielding clients from Bell's IPv6. heart's
+Ethernet has **IPv6 deliberately Off** (verified still set on 08-12;
+25/25 HTTPS loads + 10/10 DNS lookups through Bell clean after the
+change — don't re-enable it). If other devices see hanging loads now
+that Bell's router advertisements reach the whole house again, the fix
+is **disable IPv6/RA in the Bell admin** (`192.168.10.1`) — one toggle
+covering every device — not re-inserting a NAT router.
+
 ---
 
 ## Open — the things that will bite next
@@ -360,15 +414,19 @@ tile tier and the broadcast silently gets thumbnail quality.
 ## The network (heart ↔ gut)
 
 ```
-heart  clawds-Mac-mini    M4, 24 GB   en0 192.168.10.134   en1 wifi 192.168.68.70
-gut    clawdguts-Mac-mini             en0 192.168.10.133   en1 wifi 192.168.68.55
-                          Bell GPON gateway  192.168.10.1
-                          TP-Link Deco       192.168.68.1  (double-NAT, wifi only)
+heart  clawds-Mac-mini    M4, 24 GB   en0 192.168.10.134  (IPv6 Off — deliberate)
+gut    clawdguts-Mac-mini             en0 192.168.10.133   wifi 192.168.10.68
+                          Bell GPON gateway  192.168.10.1  (the ONLY router + DHCP)
+                          TP-Link Deco       — ACCESS POINT mode since 2026-08-12:
+                                               bridges wifi onto the same subnet,
+                                               no NAT, no DHCP (see cause 7)
 ```
 
-Both machines are **dual-homed** — wired on `192.168.10.0/24` and also on
-the Deco's wifi. Service order on both puts Ethernet first, which is
-correct; don't "fix" it.
+Since 2026-08-12 the whole house is **one subnet** (`192.168.10.0/24`).
+gut is still dual-homed (wire + wifi), but both interfaces land on the
+same network now; Chrome prefers the ethernet adapter when both pair.
+Service order on both machines puts Ethernet first, which is correct;
+don't "fix" it.
 
 **Ethernet is the working path: heart↔gut measures ~1.3ms.** Nothing else
 is needed. Do not turn wifi off to "force" it — that was tried and broke
