@@ -2728,9 +2728,12 @@ app.get("/admin/transcript", async (req, reply) => {
   return { segments: roomFromReq(req).transcript.recent() };
 });
 
-// Manual wipe — for blowing away pre-show test segments. Finalize also
-// clears automatically once the manifest pins, so this is mainly for the
-// "I dinked around and want a clean slate before going live" case.
+// Manual wipe — the "new episode on this slug" boundary. Finalize does NOT
+// clear anything (a re-finalize must see the same files), so this is the one
+// button that resets the append-only per-slug state: pre-show test segments,
+// and — for a reused room (repeat guest via liveSlug) — the prior episode's
+// transcript, which would otherwise be pinned wholesale into the next
+// episode's manifest.
 app.delete("/admin/transcript", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -2740,7 +2743,18 @@ app.delete("/admin/transcript", async (req, reply) => {
   // leaving the clipper's replay-by-timestamp consumer with stale rects from
   // prior sessions. Re-seeds with currently-live windows. (See geometry-log.ts.)
   room.desktop.resetGeometry();
-  return room.transcript.clear();
+  // Same boundary applies to the participants roster (append-only JSONL,
+  // snapshotted whole into the manifest at finalize) — without this a reused
+  // room lists the prior episode's guests. Re-seed with whoever is in the
+  // room right now, mirroring addPeer's filter (no spectators).
+  const participants = room.participants.clear();
+  for (const p of room.listPeers()) {
+    if (!p.spectator && (p.role === "host" || p.role === "guest")) {
+      room.participants.record({ address: p.address, anonId: p.anonId, handle: p.handle, role: p.role });
+    }
+  }
+  const cleared = room.transcript.clear();
+  return { ...cleared, participantsCleared: participants.clearedCount };
 });
 
 // Host-only chat wipe — same "clean slate before going live" use as the
@@ -7096,6 +7110,18 @@ const clipJobStream = (job: ClipJob): Readable => {
 // relay restart) a publish.json on disk less than a day old — and 404s when
 // there's nothing to resume, so /admin can probe on page load without
 // accidentally kicking off a 20-minute clipper run.
+// The clipper is keyed by the EPISODE slug (`?slug=` — resolved onchain, and
+// the out/<slug>/ cache dir), but the research dossier lives in the studio
+// ROOM, whose slug can differ (repeat guest: slug "fucory-2", liveSlug
+// "fucory"). `?room=` names that room; without it we fall back to `?slug=`,
+// which is also the pre-liveSlug behavior — so old callers are unaffected.
+const clipResearchRoom = (req: { query?: unknown }) => {
+  const q = (req.query ?? {}) as { room?: unknown };
+  const raw = typeof q.room === "string" ? q.room.trim() : "";
+  if (raw && isValidSlug(raw)) return getOrCreateRoom(raw);
+  return roomFromReq(req);
+};
+
 app.post("/admin/generate-clips", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -7110,7 +7136,7 @@ app.post("/admin/generate-clips", async (req, reply) => {
   let job = clipJobs.get(slug);
   if (!job || job.status !== "running") {
     if (!attachOnly) {
-      job = startClipJob(slug, researchContextForRoom(roomFromReq(req)), force, regenTweets);
+      job = startClipJob(slug, researchContextForRoom(clipResearchRoom(req)), force, regenTweets);
     } else if (!job) {
       try {
         const { readFile } = await import("node:fs/promises");
@@ -7286,7 +7312,7 @@ app.post("/admin/clip-at", async (req, reply) => {
   // to it (the UI disables the button meanwhile, so params won't differ).
   let job = customClipJobs.get(slug);
   if (!job || job.status !== "running") {
-    job = startCustomClipJob(slug, startSec, endSec, title, researchContextForRoom(roomFromReq(req)));
+    job = startCustomClipJob(slug, startSec, endSec, title, researchContextForRoom(clipResearchRoom(req)));
   }
 
   reply.header("Content-Type", "application/x-ndjson");
