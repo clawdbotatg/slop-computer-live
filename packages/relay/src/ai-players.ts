@@ -112,6 +112,12 @@ const AI_PLAYERS: AIPlayerConfig[] = [
     avgMs: 2000,
     costPerHandUsd: 0.00037,
   },
+  // Gemini 3.1 Flash Lite — the CHESS pick of the ⚡ tier, not just a cheap
+  // seat. Benchmarked 2026-08-18 against 20 cheap-tier gateway models: only
+  // model to sweep all 4 tactics puzzles (incl. a mate-in-2) AND play a full
+  // validated game with ZERO illegal-move attempts (mated a random-mover in
+  // 10 moves; gemma-4-31b needed retries on ~1/3 of its moves, gpt-5.6-luna
+  // attempted 8 illegal moves at 126× the cost). ~0.7s/move, ~$0.0003/game.
   {
     id: "bankr-gemini-3.1-flash-lite",
     label: "Gemini 3.1 Flash Lite (Bankr) ⚡",
