@@ -102,9 +102,10 @@ export type VotePoll = {
   question: string;
   options: string[];
   status: "open" | "closed" | "revealed";
-  /** "sepolia" = settled through a real Interfold E3 by the public
-   *  testnet committee; absent/"room" = legacy in-browser committee. */
-  mode?: "room" | "sepolia";
+  /** "sepolia"/"mainnet" = settled through a real Interfold E3 by the
+   *  public committee on that chain; absent/"room" = legacy in-browser
+   *  committee. */
+  mode?: "room" | "sepolia" | "mainnet";
   e3?: E3Telemetry;
   creatorKey: string;
   address: string | null;
@@ -124,6 +125,12 @@ export type VotePoll = {
 };
 
 /** Broadcast-safe poll view: ballots without their ciphertext payloads. */
+/** True for polls settled through a real on-chain Interfold E3 (any
+ *  chain) — the discriminator every close/reveal/purge rule keys on. */
+export function isE3Poll(p: { mode?: string }): boolean {
+  return p.mode === "sepolia" || p.mode === "mainnet";
+}
+
 export type VotePollPublic = Omit<VotePoll, "ballots" | "pubKey"> & {
   ballots: Omit<VoteBallot, "ct">[];
   pubKeyLen: number;
@@ -166,11 +173,11 @@ export class VotingBooth {
       if (Array.isArray(parsed.polls)) {
         let polls = parsed.polls as VotePoll[];
         // Purge pre-onchain polls once the room runs real E3s — "everything
-        // onchain from here on out". An in-flight Sepolia poll (has an e3
+        // onchain from here on out". An in-flight E3 poll (has an e3
         // block) is always kept regardless of its transient status.
         if (this.onChainOnly) {
           const before = polls.length;
-          polls = polls.filter(p => p.mode === "sepolia");
+          polls = polls.filter(p => isE3Poll(p));
           if (polls.length !== before) {
             this.polls = polls.slice(-MAX_POLLS);
             this.persist();
@@ -313,8 +320,8 @@ export class VotingBooth {
   close(pollId: string, byKey: string): boolean {
     const poll = this.find(pollId);
     if (!poll || poll.status !== "open" || poll.creatorKey !== byKey) return false;
-    // Sepolia polls close by the on-chain input deadline, not by hand.
-    if (poll.mode === "sepolia") return false;
+    // E3 polls close by the on-chain input deadline, not by hand.
+    if (isE3Poll(poll)) return false;
     poll.status = "closed";
     this.persist();
     this.emit();
@@ -324,8 +331,8 @@ export class VotingBooth {
   reveal(pollId: string, byKey: string, tally: unknown): VotePoll | null {
     const poll = this.find(pollId);
     if (!poll || poll.status !== "closed" || poll.creatorKey !== byKey) return null;
-    // Sepolia polls are revealed by the committee's decryption, never a client.
-    if (poll.mode === "sepolia") return null;
+    // E3 polls are revealed by the committee's decryption, never a client.
+    if (isE3Poll(poll)) return null;
     if (!Array.isArray(tally) || tally.length !== poll.options.length) return null;
     const counts = tally.map(n => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.round(n)) : -1));
     if (counts.some(n => n < 0)) return null;
@@ -373,7 +380,7 @@ export class VotingBooth {
     this.emit();
   }
 
-  /** Sepolia-mode poll creation: starts in "requesting" state with no
+  /** On-chain (E3) poll creation: starts in "requesting" state with no
    *  key yet (the committee will produce it). */
   createE3(input: {
     creatorKey: string;
@@ -401,7 +408,7 @@ export class VotingBooth {
       question,
       options,
       status: "closed", // not yet open — flips to open when the committee key lands
-      mode: "sepolia",
+      mode: input.chain === "mainnet" ? "mainnet" : "sepolia",
       e3: newE3Telemetry(input.chain, input.interfold, input.program),
       creatorKey: input.creatorKey,
       address: input.address ? input.address.toLowerCase() : null,

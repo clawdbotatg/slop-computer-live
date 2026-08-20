@@ -577,10 +577,17 @@ export type VotePoll = {
    *  anchoring configured. `anchoring` = tx in flight. */
   anchoring?: boolean;
   anchor?: { chain: string; txHash: string; explorerUrl: string | null } | null;
-  /** "sepolia" = a real Interfold E3 settled by the public committee. */
-  mode?: "room" | "sepolia";
+  /** "sepolia"/"mainnet" = a real Interfold E3 settled by the public
+   *  committee on that chain. */
+  mode?: "room" | "sepolia" | "mainnet";
   e3?: VoteE3Telemetry;
 };
+
+/** True for polls settled through a real on-chain Interfold E3 (any
+ *  chain) — mirrors the helper in packages/relay/src/voting.ts. */
+export function isE3Poll(p: { mode?: string }): boolean {
+  return p.mode === "sepolia" || p.mode === "mainnet";
+}
 
 /** Full ciphertext payload for one poll, fetched on demand (reveal
  *  ceremony / attacker panel) — too heavy for broadcast snapshots. */
@@ -1622,6 +1629,8 @@ export type PeerMeshState = {
   votingPolls: VotePoll[];
   /** True when the relay settles polls through real Sepolia E3s. */
   votingE3: boolean;
+  /** Which chain on-chain polls settle on ("sepolia" | "mainnet"), when votingE3. */
+  votingE3Chain: string | null;
   /** Create a poll. In E3 mode omit `pubKey` — the public Sepolia
    *  committee generates the key. Legacy mode passes the key from the
    *  in-browser ceremony. */
@@ -2126,6 +2135,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [votingPolls, setVotingPolls] = useState<VotePoll[]>([]);
   const [votingE3, setVotingE3] = useState(false);
+  const [votingE3Chain, setVotingE3Chain] = useState<string | null>(null);
   // Pending request/response resolvers for the two voting messages that
   // reply directly to the requester instead of broadcasting.
   const voteBallotsWaitersRef = useRef<Map<string, (payload: VoteBallotsPayload) => void>>(new Map());
@@ -4103,6 +4113,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
           if (typeof msg.votingE3 === "boolean") {
             setVotingE3(msg.votingE3);
+            setVotingE3Chain(typeof msg.votingE3Chain === "string" ? msg.votingE3Chain : null);
           }
           if (Array.isArray(msg.notes)) {
             setNotes(msg.notes as Note[]);
@@ -5272,6 +5283,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     todoReorder,
     votingPolls,
     votingE3,
+    votingE3Chain,
     voteCreate,
     voteCast,
     voteClose,

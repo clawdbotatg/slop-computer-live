@@ -5,7 +5,7 @@ import type { CSSProperties } from "react";
 import { LoadingBar } from "~~/components/ui";
 import type { VoteE3Telemetry } from "~~/hooks/usePeerMesh";
 
-// The nerdy protocol panel for a Sepolia E3 poll — shows exactly what's
+// The nerdy protocol panel for an on-chain E3 poll — shows exactly what's
 // happening on-chain: the committee, the threshold key, every tx as an
 // Etherscan link, an animated progress bar through the E3 lifecycle,
 // and a live scrolling log. We are NOT hiding the tech; the waiting is
@@ -26,17 +26,17 @@ const STAGES: { key: VoteE3Telemetry["stage"]; label: string }[] = [
   { key: "revealed", label: "Revealed" },
 ];
 
-function etherscanTx(hash: string): string {
-  return `https://sepolia.etherscan.io/tx/${hash}`;
-}
-function etherscanAddr(addr: string): string {
-  return `https://sepolia.etherscan.io/address/${addr}`;
+function explorerBase(chain: string): string {
+  return chain === "mainnet" ? "https://etherscan.io" : "https://sepolia.etherscan.io";
 }
 function short(s: string): string {
   return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
 }
 
 export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
+  const etherscanTx = (hash: string) => `${explorerBase(e3.chain)}/tx/${hash}`;
+  const etherscanAddr = (addr: string) => `${explorerBase(e3.chain)}/address/${addr}`;
+  const chainLabel = e3.chain === "mainnet" ? "Ethereum Mainnet" : "Sepolia";
   // Re-render each second so the voting-window countdown + bar animate.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -102,7 +102,7 @@ export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
             color: "#06030d",
           }}
         >
-          ⛓ The Interfold · Sepolia E3
+          ⛓ The Interfold · {chainLabel} E3
         </span>
         {e3.e3Id ? chip(`E3 #${e3.e3Id}`, e3.requestTx ? etherscanTx(e3.requestTx) : undefined) : null}
       </div>

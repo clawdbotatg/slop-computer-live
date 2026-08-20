@@ -100,6 +100,7 @@ import {
 import { INVITE_COOKIE, getInvitePassword, isInvited, regenerateInvitePassword } from "./invites.js";
 import { anchorPoll, anchoringEnabled } from "./vote-anchor.js";
 import { VoteE3Coordinator, votingE3Enabled, votingE3Info } from "./vote-e3.js";
+import { isE3Poll } from "./voting.js";
 
 // One Sepolia E3 coordinator per room, created lazily on the first
 // on-chain poll. Holds the facilitator tx queue + ballot buffers.
@@ -7816,7 +7817,7 @@ app.register(async function signalRoutes(fastify) {
     // Someone opened this room — spin up its E3 coordinator so any
     // Sepolia poll the committee already decrypted (while the relay was
     // away, or after a read hiccup) gets recovered from chain.
-    if (votingE3Enabled() && room.voting.list().some(p => p.mode === "sepolia" && p.status !== "revealed")) {
+    if (votingE3Enabled() && room.voting.list().some(p => isE3Poll(p) && p.status !== "revealed")) {
       e3CoordinatorFor(room);
     }
     send(socket, {
@@ -7841,6 +7842,7 @@ app.register(async function signalRoutes(fastify) {
       todos: room.todos.list(),
       voting: room.voting.list(),
       votingE3: votingE3Enabled(),
+      votingE3Chain: votingE3Enabled() ? votingE3Info().chain : null,
       notes: room.notes.list(),
       glossary: glossaryList(),
       gasState: getGasState(),
@@ -8295,7 +8297,7 @@ app.register(async function signalRoutes(fastify) {
           });
           if (result === "ok") {
             const poll = room.voting.list().find(p => p.id === msg.pollId);
-            if (poll?.mode === "sepolia") {
+            if (poll && isE3Poll(poll)) {
               // Publish the ciphertext on-chain too — the voter pays no
               // gas; the facilitator's tx queue handles it.
               e3CoordinatorFor(room).castBallot(msg.pollId, voterKey, msg.ct);
