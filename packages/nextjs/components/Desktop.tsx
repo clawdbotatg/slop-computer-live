@@ -70,6 +70,7 @@ import {
 } from "~~/components/ui";
 import Cursor from "~~/components/ui/Cursor";
 import { FlyingTipCard } from "~~/components/ui/FlyingTipCard";
+import { GestureLayer } from "~~/components/ui/GestureLayer";
 import { PasskeyWalletProvider } from "~~/components/ui/PasskeyWalletContext";
 import { useAudioBusOwner, useAudioBusReconciler } from "~~/hooks/useAudioBus";
 import { useAutoplayBlocked } from "~~/hooks/useAutoplayBlocked";
@@ -4811,6 +4812,10 @@ function DesktopInner({ slug }: { slug: string }) {
       {mesh.tips.map(tip => (
         <FlyingTipCard key={tip.id} tip={tip} customNames={mesh.customNames} />
       ))}
+
+      {/* Hand-gesture effects (claws / eth from the rig) fly across the top
+          of everything. Self-prune from mesh.gestures. */}
+      <GestureLayer gestures={mesh.gestures} />
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +

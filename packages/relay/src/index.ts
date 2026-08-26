@@ -2286,6 +2286,41 @@ app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
   return { ok: true };
 });
 
+// --- Gesture effects (hand-gesture rig → shared overlay) ---------------------
+// One broadcast per classified hand gesture from the streaming rig (or any
+// authed agent). Carries only the classification + normalized spawn params —
+// never landmarks or video. Every client renders the effect locally on the
+// GestureLayer canvas overlay; god-mode renders it too, which is what puts it
+// on the stream. Same ephemeral shape as `tip` above; rate-limited via the
+// chat bucket. Roll back = revert this commit.
+type GestureBody = { kind?: unknown; x?: unknown; y?: unknown; s?: unknown; spin?: unknown; angle?: unknown; open?: unknown };
+const GESTURE_KINDS = new Set(["eth", "claw"]);
+app.post<{ Body: GestureBody }>("/v1/gesture", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ ok: false, error: "unauthenticated" });
+  const kind = typeof req.body?.kind === "string" ? req.body.kind : "";
+  if (!GESTURE_KINDS.has(kind)) return reply.code(400).send({ ok: false, error: "kind must be one of: eth, claw" });
+  const num = (v: unknown, fallback: number, lo: number, hi: number) => {
+    const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
+    return Math.min(hi, Math.max(lo, n));
+  };
+  const room = roomFromReq(req);
+  if (!room.chat.allow(a.session.token)) return reply.code(429).send({ ok: false, error: "rate-limited" });
+  room.broadcast({
+    type: "gesture",
+    from: { address: a.session.address, handle: a.session.handle, anonId: a.session.anonId ?? null },
+    kind,
+    x: num(req.body?.x, 0.5, 0, 1),
+    y: num(req.body?.y, 0.5, 0, 1),
+    s: num(req.body?.s, 0.12, 0.02, 0.5),
+    spin: num(req.body?.spin, 0, -10, 10),
+    angle: num(req.body?.angle, 0, -Math.PI * 2, Math.PI * 2),
+    open: num(req.body?.open, 0.25, 0, 1.2),
+    seed: Math.floor(Math.random() * 0xffffffff),
+  });
+  return { ok: true };
+});
+
 // Just the room multisig address — what a `/tip` needs to know where to send.
 // slop.computer spectators can't read /v1/state (room-gated), so expose the
 // address (public on-chain data, shown on the live stream anyway) on its own
@@ -7690,6 +7725,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "tx_forward", from, fromAddress, fromHandle, id, browserId, method, params, chainId }
 //                                                                    // directed: only the targeted
 //                                                                    // peer sees this
+//   { type: "gesture", from, kind, x, y, s, spin, angle, open, seed } // hand-gesture effect (POST /v1/gesture)
 //   { type: "pong" }
 //   { type: "error", error }
 

@@ -351,6 +351,24 @@ export type TipCard = {
 
 export type TipParseResult = { ok: true; amountEth: string; chainId: number } | { ok: false; error: string };
 
+/** A hand-gesture effect broadcast to every peer (relay POST /v1/gesture) —
+ *  drives the GestureLayer canvas overlay. Deterministic per (seed, receivedAt),
+ *  so every screen renders the same flight. */
+export type GestureEvent = {
+  id: number;
+  kind: "eth" | "claw";
+  /** Normalized spawn position (0..1 of viewport). */
+  x: number;
+  y: number;
+  /** Normalized size — fraction of viewport height. */
+  s: number;
+  spin: number;
+  angle: number;
+  open: number;
+  seed: number;
+  receivedAt: number;
+};
+
 export type Browser = {
   id: string;
   url: string;
@@ -1504,6 +1522,8 @@ export type PeerMeshState = {
   sendClick: (x: number, y: number) => void;
   /** In-flight tip cards (0.001+ ETH) — auto-prune after the fly animation. */
   tips: TipCard[];
+  /** In-flight hand-gesture effects — die off-screen, hard-pruned as backstop. */
+  gestures: GestureEvent[];
   /** AI fallback parse for fuzzy /tip phrasing (rate-limited server-side). */
   tipParse: (text: string) => Promise<TipParseResult>;
   /** Tell the room a tip just sent — relay formats + broadcasts the card. */
@@ -2125,6 +2145,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const clickIdRef = useRef(0);
   const [tips, setTips] = useState<TipCard[]>([]);
   const tipIdRef = useRef(0);
+  const [gestures, setGestures] = useState<GestureEvent[]>([]);
+  const gestureIdRef = useRef(0);
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [incomingForwards, setIncomingForwards] = useState<ForwardedTx[]>([]);
@@ -4498,6 +4520,30 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "gesture" && (msg.kind === "eth" || msg.kind === "claw")) {
+          gestureIdRef.current += 1;
+          const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+          const g: GestureEvent = {
+            id: gestureIdRef.current,
+            kind: msg.kind as "eth" | "claw",
+            x: num(msg.x, 0.5),
+            y: num(msg.y, 0.5),
+            s: num(msg.s, 0.12),
+            spin: num(msg.spin, 0),
+            angle: num(msg.angle, 0),
+            open: num(msg.open, 0.25),
+            seed: num(msg.seed, 1) >>> 0,
+            receivedAt: Date.now(),
+          };
+          // Cap in flight so a burst can't blow up the canvas loop. Effects
+          // die when they drift off-screen; the 15s prune is the backstop.
+          setGestures(prev => (prev.length >= 16 ? [...prev.slice(-15), g] : [...prev, g]));
+          setTimeout(() => {
+            setGestures(prev => prev.filter(e => e.id !== g.id));
+          }, 15000);
+          return;
+        }
+
         if (msg.type === "published" && msg.publication) {
           const pub = msg.publication as Publication;
           setPublications(prev => {
@@ -5383,6 +5429,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletChatTxSent,
     walletChatFor,
     tips,
+    gestures,
     tipParse,
     tipAnnounce,
     broadcastTxRequest,
