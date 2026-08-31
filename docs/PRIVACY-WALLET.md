@@ -68,7 +68,7 @@ signature verified live 2026-07: ~85 shields/day baseline).
 ## Config (relay env)
 
 ```
-KOHAKU_CLI_DIR=/home/ubuntu/kohaku-cli        # checkout the relay spawns via `npx tsx`
+KOHAKU_CLI_DIR=/home/ubuntu/kohaku-cli-next   # checkout the relay spawns via `npx tsx` (see "Upgrading")
 KOHAKU_RPC_URL=https://...                    # mainnet RPC (must serve getLogs spans of 499)
 KOHAKU_WALLET_PASSWORD=...                    # keystore master pw (written to a 0600 file, not argv)
 KOHAKU_WALLET=slop                            # wallet name (default)
@@ -77,6 +77,7 @@ KOHAKU_MAX_DEPOSIT_WEI=50000000000000000      # 0.05 ETH
 KOHAKU_MAX_SEND_WEI=50000000000000000         # 0.05 ETH
 KOHAKU_SOAK_HOURS=4
 KOHAKU_STATE_PATH=/var/lib/slop-relay/kohaku-state.json
+KOHAKU_WITHOUT_TOR=1                          # kohaku ≥0.0.2 routes non-RPC HTTP over Tor by default
 ```
 
 Unset `KOHAKU_CLI_DIR`/`KOHAKU_RPC_URL`/`KOHAKU_WALLET_PASSWORD` → the
@@ -97,6 +98,82 @@ starts.
 4. Set the env above in the relay's env file; restart `slop-relay`.
 5. Watch `journalctl -u slop-relay | grep kohaku` — the watcher logs every
    lifecycle transition.
+
+## Upgrading kohaku-cli (pinned version + rollback)
+
+**Prod runs kohaku-cli `v0.0.5` (`ad9c036`), upgraded 2026-08-31** from the
+July `54d0ecc` (`v0.0.1`-era) build it shipped on — 41 commits.
+
+The cutover is deliberately a **one-line env flip**, not a `git pull` in the
+live checkout: the new version lives in its own directory and
+`KOHAKU_CLI_DIR` chooses which one the relay spawns. The old checkout stays
+on disk, so rollback is that same line plus a relay restart.
+
+### The recipe (used for the 0.0.5 upgrade)
+
+```bash
+# 1. staging checkout — never touch the live one
+ssh slopcomputer
+git clone https://github.com/kassandraoftroy/kohaku-cli ~/kohaku-cli-next
+cd ~/kohaku-cli-next && npm install
+
+# 2. prove it against a COPY of the synced data dir (see the compat gate below)
+cp -a ~/.kohaku-cli ~/.kohaku-cli-test
+cd ~/kohaku-cli-next && RPC_URL=<mainnet> KOHAKU_WITHOUT_TOR=1 \
+  npx tsx src/index.ts balances --wallet slop \
+  --password /var/lib/slop-relay/kohaku.pw \
+  --include railgun --verbose --non-interactive --dataDir ~/.kohaku-cli-test
+
+# 3. flip + restart, then rm -rf ~/.kohaku-cli-test
+sed -i 's|^KOHAKU_CLI_DIR=.*|KOHAKU_CLI_DIR=/home/ubuntu/kohaku-cli-next|' \
+  ~/slop-computer-live/packages/relay/.env
+sudo systemctl restart slop-relay
+```
+
+Rollback: point `KOHAKU_CLI_DIR` back at the old checkout, restart. Verified
+2026-08-31 — the old CLI reads an `rg-storage.json` that 0.0.5 has written
+and returns identical balances, so **the store is compatible in both
+directions** and a rollback costs no re-sync.
+
+### The compat gate — what an upgrade must clear
+
+The dangerous failure is not a broken flag, it's a **cold Railgun re-sync**:
+the pre-seeded `rg-storage.json` is ~450 MB and rebuilding it needs an
+archive RPC and hours. So before flipping, run step 2 above and confirm it
+returns in minutes, not hours. Checked for 0.0.5 (all passed):
+
+| Check | Result |
+|---|---|
+| `rg-storage.json` written by alpha.28 readable by alpha.30 | ✅ incremental, ~4 min |
+| Old CLI still reads the store 0.0.5 wrote (rollback) | ✅ ~2 min, identical output |
+| Flags we spawn (`--wallet/--password <file>/--dataDir/--non-interactive`, `shield --protocol`, `unshield --amount-max/--to/--broadcast`, `transfer`, `transact-raw`, `next-fresh-address`) | ✅ all still present |
+| JSON keys we parse (`private_balances.railgun[].raw_token_holdings/status`, `private_notes[].balance_raw/status`, `transactions[].type/hash`, `amountWei`, `explorerHash`) | ✅ unchanged |
+| Status vocabulary (`spendable` on balance rows, `Valid` on notes) | ✅ unchanged — see `userNoteStatus()` |
+| `next-fresh-address --non-interactive` still prints the bare address | ✅ |
+
+### ⚠️ Tor is on by default from 0.0.2 — we turn it off
+
+Upstream now routes **all non-RPC HTTP** (Pimlico bundler, proving-artifact
+downloads, sync-cache snapshots) through Tor via `tor-js`/Arti. RPC stays
+clearnet. That is a real privacy win and a bad thing to discover mid-show:
+it adds an Arti bootstrap that can fail (`Bootstrap failed: tor: …`, fixed
+with `clear-tor-cache`) and makes unshields slower.
+
+We set **`KOHAKU_WITHOUT_TOR=1`** in the relay env. The relay spawns the CLI
+with `{...process.env}` and config loads `dotenv/config`, so the env var
+reaches the child with **no code change** — and dropping the line (plus a
+relay restart) is all it takes to run the whole lifecycle over Tor.
+
+### What 0.0.5 buys us
+
+Faster protocol syncs and a `fetch-sync-cache` prefetch command (0.0.4);
+`--amount-max` and `--skip-sim` on `shield`; unshield to a custom/ephemeral
+recipient no longer mis-routes (0.0.4); `--tail-calls` on ERC-20 unshields;
+ERC-5564 stealth addresses; ENS/`.gwei`/`.wei` name resolution; Tornado Cash
+and Privacy Pools alongside Railgun; `reveal-seed-phrase`; pinned deps and
+CI. The relay uses none of the new surface yet — the upgrade was taken for
+sync speed, the unshield-recipient fix, and to stop running a four-releases-
+old build of a CLI whose author comes on the show.
 
 ## ⚠️ Dev/prod share ONE seed — never run a kohaku-configured dev relay
 
