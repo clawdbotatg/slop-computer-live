@@ -7,6 +7,7 @@ import type { Address as AddressType } from "viem";
 import { type CommandAction, CommandPalette } from "~~/components/CommandPalette";
 import { EntryGate } from "~~/components/EntryGate";
 import { JoinCard } from "~~/components/JoinCard";
+import { type LobbyChoice, MediaLobby } from "~~/components/MediaLobby";
 import { PasswordGate } from "~~/components/PasswordGate";
 import { AudioDropZone, uploadAvatar } from "~~/components/desktop/AudioDropZone";
 import { AudioShareDialog } from "~~/components/desktop/AudioShareDialog";
@@ -463,6 +464,16 @@ const clearKindPersistedState = (slug: string, kind: StreamKind) => {
 // slug) because the goal is "user has been to slop.computer once" — a
 // repeat visitor jumping between rooms shouldn't get the tutorial again.
 const HAS_BEEN_HERE_KEY = "slop-has-been-here-v1";
+
+// First-EVER-visit A/V lobby: until the user has successfully shared
+// audio or video once (from this browser), the desktop is covered by
+// the MediaLobby — a single-purpose "audio or video?" setup page with
+// live previews and permission hand-holding. Written only on a
+// successful share from the lobby; after that, the NEXT visit gets the
+// lightweight hint arrow above (HAS_BEEN_HERE stays unset through the
+// lobby visit on purpose), and the lobby never returns. Existing
+// visitors (HAS_BEEN_HERE already set) never see the lobby at all.
+const AV_LOBBY_DONE_KEY = "slop-av-lobby-done-v1";
 
 // Per-browser (NOT per-room) flag: the user clicked the menubar 🎙️ to
 // park local Web Speech STT — e.g. so another Chrome on this machine can
@@ -1265,12 +1276,21 @@ function DesktopInner({ slug }: { slug: string }) {
   // through the normal slot system so every peer sees the same layout.
   const [hintActive, setHintActive] = useState(false);
   const [hintDismissedAt, setHintDismissedAt] = useState<number | null>(null);
+  // A/V lobby (see AV_LOBBY_DONE_KEY): the very first visit gets the
+  // full-screen lobby INSTEAD of the hint — the hint's job (point at the
+  // share icons) is pointless when the lobby just walked them through
+  // sharing. HAS_BEEN_HERE stays unwritten through the lobby visit, so
+  // the SECOND visit runs the normal hint flow, then never again.
+  const [lobbyActive, setLobbyActive] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      if (!window.localStorage.getItem(HAS_BEEN_HERE_KEY)) setHintActive(true);
+      const beenHere = !!window.localStorage.getItem(HAS_BEEN_HERE_KEY);
+      const lobbyDone = !!window.localStorage.getItem(AV_LOBBY_DONE_KEY);
+      if (!beenHere && !lobbyDone) setLobbyActive(true);
+      else if (!beenHere) setHintActive(true);
     } catch {
-      /* private mode → leave hint off, no biggie */
+      /* private mode → leave hint + lobby off, no biggie */
     }
   }, []);
 
@@ -1286,6 +1306,43 @@ function DesktopInner({ slug }: { slug: string }) {
       return false;
     });
   }, []);
+
+  // Lobby is only actually shown once the user is past auth + the room
+  // password — before that the sign-in gates (z 10000) sit on top of it
+  // anyway. God-mode/spectator sessions never lobby.
+  const lobbyVisible = lobbyActive && !loading && session.authenticated && roomAuthed === true && !isGodMode;
+
+  // Tell the room (guest list badge) that we're in the lobby working on
+  // A/V. reportLobby dedupes + re-announces across reconnects, so this
+  // effect can fire freely; the unmount cleanup clears the flag if the
+  // user navigates away mid-setup.
+  const reportLobby = mesh.reportLobby;
+  useEffect(() => {
+    reportLobby(lobbyVisible);
+    return () => reportLobby(false);
+  }, [lobbyVisible, reportLobby]);
+
+  const handleLobbyCommit = useCallback(
+    async (choice: LobbyChoice): Promise<boolean> => {
+      // Prefs were written by the lobby; start the same publication the
+      // share icons would. Success = the lobby's job is done forever.
+      const ok = choice === "video" ? await media.startCamera() : await media.startAudio();
+      if (ok) {
+        try {
+          window.localStorage.setItem(AV_LOBBY_DONE_KEY, "1");
+        } catch {
+          /* quota / private mode — they'll see the lobby again, oh well */
+        }
+        setLobbyActive(false);
+      }
+      return ok;
+    },
+    [media],
+  );
+
+  // "Just watching" — enter without sharing, session-only: the done
+  // flag is NOT written, so the next visit offers the lobby again.
+  const handleLobbySkip = useCallback(() => setLobbyActive(false), []);
 
   // Fetch the apps catalog from the relay, scoped to this room: the
   // global layers (DEFAULT_APPS + hot-apps) PLUS any apps added just to
@@ -4618,6 +4675,7 @@ function DesktopInner({ slug }: { slug: string }) {
               onSetBalanceHidden={mesh.setBalanceHidden}
               peerPings={mesh.peerPings}
               peerViewports={mesh.peerViewports}
+              peerLobby={mesh.peerLobby}
               showResolutions={session.role === "host" || isGodMode}
               slug={slug}
             />
@@ -4796,6 +4854,13 @@ function DesktopInner({ slug }: { slug: string }) {
           <EntryGate onEnter={tripGesture} />
         </div>
       ) : null}
+
+      {/* First-EVER-visit A/V lobby. Sits below the auth gates (z 10000
+          vs 9990) so sign-in still happens first; once authed, this is
+          the only thing on screen until the user shares audio or video
+          (or skips). The room sees them in the guest list with an
+          "in lobby" badge while they're here. */}
+      {lobbyVisible ? <MediaLobby onCommit={handleLobbyCommit} onSkip={handleLobbySkip} /> : null}
 
       {audioDialog ? (
         <AudioShareDialog

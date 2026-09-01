@@ -249,6 +249,10 @@ export type Peer = {
    *  updates arrive via `peer_viewport` and land in `peerViewports`,
    *  which is the map renderers should read. */
   viewport?: { width: number; height: number };
+  /** True while the peer is in the first-visit A/V setup lobby. Only
+   *  present in the relay's `hello` peers list; live flips arrive via
+   *  `peer_lobby` and land in `peerLobby`, the map renderers read. */
+  lobby?: boolean;
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
@@ -2119,6 +2123,16 @@ export type PeerMeshState = {
    *  god-mode resolution readout in the guest list. Absent keys = no
    *  report yet. */
   peerViewports: Record<string, { width: number; height: number }>;
+  /** Peers currently in the first-visit A/V setup lobby, keyed by
+   *  peerId. Seeded from the hello peers list, live-updated via
+   *  `peer_lobby`. Drives the "in lobby" badge in the guest list so the
+   *  room can see someone is here working on their audio/video. */
+  peerLobby: Record<string, boolean>;
+  /** Announce that THIS peer entered (true) / left (false) the A/V
+   *  setup lobby. Relay stores it on the peer entry (hello carries it
+   *  to late joiners) and fans out `peer_lobby`. Re-announced
+   *  automatically after a reconnect. No-op on repeat values. */
+  reportLobby: (inLobby: boolean) => void;
   /** Publisher-side encode health per peer (their own report of what
    *  they're sending, spectator leg preferred), keyed by peerId. Our
    *  own row appears under `myId`. Absent keys = no report yet; check
@@ -2283,6 +2297,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // (the relay stores each peer's last report) and kept live by the
   // `peer_viewport` broadcast + our own resize reports.
   const [peerViewports, setPeerViewports] = useState<Record<string, { width: number; height: number }>>({});
+  // Peers currently in the first-visit A/V setup lobby, keyed by peerId.
+  // Seeded from the hello peers list, kept live by `peer_lobby`. Our own
+  // announced state also lives in lobbyRef so a reconnect's hello handler
+  // can re-announce it (the relay's copy died with the old socket).
+  const [peerLobby, setPeerLobby] = useState<Record<string, boolean>>({});
+  const lobbyRef = useRef(false);
   // Publisher-side video encode stats per peer (incl. our own row under
   // myId), fed by the `peer_video_stats` broadcast + our own sampler.
   const [peerVideoStats, setPeerVideoStats] = useState<Record<string, PeerVideoStats>>({});
@@ -3994,6 +4014,32 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const reportLobby = useCallback(
+    (inLobby: boolean) => {
+      // A/V-setup-lobby presence. Deduped on the ref so callers can drive
+      // it from an effect without spamming the relay; the ref also lets
+      // the hello handler re-announce after a reconnect. Our own row is
+      // written locally because the relay broadcast excludes the sender.
+      if (lobbyRef.current === inLobby) return;
+      lobbyRef.current = inLobby;
+      const meId = myIdRef.current;
+      if (meId) {
+        setPeerLobby(prev => {
+          if (!!prev[meId] === inLobby) return prev;
+          if (!inLobby) {
+            const next = { ...prev };
+            delete next[meId];
+            return next;
+          }
+          return { ...prev, [meId]: true };
+        });
+      }
+      if (selfRef.current?.spectator) return;
+      send({ type: "lobby_report", lobby: inLobby });
+    },
+    [send],
+  );
+
   const setCameraOff = useCallback(
     (streamId: string, off: boolean) => {
       // Server is source of truth — the relay rebroadcasts the updated
@@ -4155,6 +4201,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           for (const p of others) if (p.viewport) seededViewports[p.id] = p.viewport;
           setPeerViewports(seededViewports);
           reportViewport();
+
+          // Same contract for lobby presence: seed the map from the
+          // relay's stored per-peer flags, then re-announce our own if
+          // we're (still) in the lobby — a reconnect's fresh peer entry
+          // starts with no lobby flag on the relay.
+          const seededLobby: Record<string, boolean> = {};
+          for (const p of others) if (p.lobby) seededLobby[p.id] = true;
+          if (lobbyRef.current) seededLobby[meId] = true;
+          setPeerLobby(seededLobby);
+          if (lobbyRef.current && !selfRef.current?.spectator) {
+            ws.send(JSON.stringify({ type: "lobby_report", lobby: true }));
+          }
 
           if (Array.isArray(msg.publications)) setPublications(msg.publications as Publication[]);
           if (Array.isArray(msg.slots)) {
@@ -4405,6 +4463,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             delete next[peer.id];
             return next;
           });
+          setPeerLobby(prev => {
+            if (!(peer.id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer.id];
+            return next;
+          });
           closePeerConnection(peer.id);
           return;
         }
@@ -4476,6 +4540,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
               ? prev
               : { ...prev, [from]: { width, height } },
           );
+          return;
+        }
+
+        if (msg.type === "peer_lobby" && typeof msg.from === "string") {
+          const from = msg.from;
+          const lobby = msg.lobby === true;
+          setPeerLobby(prev => {
+            if (!!prev[from] === lobby) return prev;
+            if (!lobby) {
+              const next = { ...prev };
+              delete next[from];
+              return next;
+            }
+            return { ...prev, [from]: true };
+          });
           return;
         }
 
@@ -5560,6 +5639,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     setCameraOff,
     peerPings,
     peerViewports,
+    peerLobby,
+    reportLobby,
     peerVideoStats,
     inboundVideoStats,
   };

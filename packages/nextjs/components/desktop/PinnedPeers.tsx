@@ -39,6 +39,10 @@ export type PinnedPeersProps = {
    *  Rendered as a "1440×900" readout next to each guest when
    *  `showResolutions` is on; updates live as peers resize. */
   peerViewports: Record<string, { width: number; height: number }>;
+  /** Peers currently in the first-visit A/V setup lobby, from
+   *  `usePeerMesh().peerLobby`. Rendered as a pulsing "in lobby" badge
+   *  so the room knows this person is here, working on their setup. */
+  peerLobby: Record<string, boolean>;
   /** God-mode resolution readout gate — true for the host / god-mode
    *  viewer only, so regular guests don't get the extra clutter. */
   showResolutions: boolean;
@@ -150,6 +154,7 @@ export const PinnedPeers = ({
   onSetBalanceHidden,
   peerPings,
   peerViewports,
+  peerLobby,
   showResolutions,
   slug,
 }: PinnedPeersProps) => {
@@ -453,6 +458,27 @@ export const PinnedPeers = ({
                       }}
                     >
                       {peerViewports[p.id]!.width}×{peerViewports[p.id]!.height}
+                    </span>
+                  ) : null}
+                  {peerLobby[p.id] ? (
+                    // In the first-visit A/V lobby — here, but still
+                    // getting their audio/video working. slop-pulse is
+                    // the shared "something live" keyframe from
+                    // globals.css.
+                    <span
+                      title={isMe ? "you're in the A/V lobby" : "in the lobby — getting their audio/video set up"}
+                      style={{
+                        color: "#ffae00",
+                        fontSize: 10,
+                        fontFamily: "var(--slop-font-display)",
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        animation: "slop-pulse 1.8s ease-in-out infinite",
+                        cursor: "help",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      🚪 lobby
                     </span>
                   ) : null}
                   <PingMeter rtt={peerPings[p.id]} />

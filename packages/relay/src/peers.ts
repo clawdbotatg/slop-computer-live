@@ -40,6 +40,11 @@ export type PeerInfo = {
   // late joiners get it in the hello peers list; live updates fan out
   // as `peer_viewport`. Undefined until the first report lands.
   viewport?: { width: number; height: number };
+  // True while this peer is in the first-visit A/V setup lobby
+  // (`lobby_report`). Kept on the entry so the hello peers list tells
+  // everyone "this person is here, getting their audio/video working";
+  // live flips fan out as `peer_lobby`.
+  lobby?: boolean;
 };
 
 export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };

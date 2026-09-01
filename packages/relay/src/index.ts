@@ -7761,9 +7761,11 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //                                                                    //   to a specific peer (whose
 //                                                                    //   wallet is being impersonated)
 //                                                                    //   so they can sign+broadcast
+//   { type: "lobby_report", lobby }                             // I'm in / out of the A/V setup lobby
 //   { type: "ping" }
 // Server → client:
 //   { type: "hello", id, peers, publications, slots, browsers }
+//   { type: "peer_lobby", from, lobby }                          // peer entered/left the A/V lobby
 //   { type: "peer_join" | "peer_leave", peer }
 //   { type: "signal", from, kind, payload }
 //   { type: "cursor", from, x, y }
@@ -8063,6 +8065,17 @@ app.register(async function signalRoutes(fastify) {
           const me = room.getPeer(peerId);
           if (me) me.viewport = viewport;
           room.broadcast({ type: "peer_viewport", from: peerId, viewport }, peerId);
+          return;
+        }
+        case "lobby_report": {
+          // First-visit A/V setup lobby presence. Stored on the peer entry
+          // (so hello carries it to everyone already in the room) and fanned
+          // out live as `peer_lobby` — the guest list shows "in the lobby"
+          // so the host knows someone is here and working on their setup.
+          const lobby = msg.lobby === true;
+          const me = room.getPeer(peerId);
+          if (me) me.lobby = lobby;
+          room.broadcast({ type: "peer_lobby", from: peerId, lobby }, peerId);
           return;
         }
         case "offer":
