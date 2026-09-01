@@ -3535,6 +3535,20 @@ function DesktopInner({ slug }: { slug: string }) {
               }
             : null
         }
+        // God-mode only: pop the gesture "eye" — the effects-free room view
+        // (?fx=0) the hand detector watches. Same session, so god auth
+        // carries over; the always-running detector on this box latches onto
+        // the window by its SLOP-EYE title. Big on purpose: the capture IS
+        // the detection input, so more pixels = better hand tracking.
+        onEyeClick={
+          isGodMode && !isEye
+            ? () => {
+                const target = `/${encodeURIComponent(slug)}?fx=0`;
+                const features = "popup=yes,width=1280,height=760,menubar=no,toolbar=no,location=no,status=no";
+                window.open(target, "slop-eye", features);
+              }
+            : null
+        }
         slug={slug}
       />
       {session.authenticated ? <CommandPalette actions={paletteActions} /> : null}

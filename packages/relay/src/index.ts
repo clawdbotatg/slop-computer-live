@@ -2343,7 +2343,26 @@ app.post<{ Body: HandsBody }>("/v1/hands", async (req, reply) => {
   const hands = Array.isArray(req.body?.hands) ? (req.body.hands as { chirality?: string; lm?: number[][] }[]) : [];
   const w = typeof req.body?.w === "number" ? req.body.w : 0;
   const h = typeof req.body?.h === "number" ? req.body.h : 0;
-  const engine = gestureEngineFor(roomFromReq(req));
+  // With ?slug= the hands go to that room. Without, they follow the eye:
+  // whichever room has the freshest eye_geometry right now. There's exactly
+  // one eye (the 👁 window on the god machine), so the detector can run as a
+  // dumb always-on agent with no per-show config — open the eye in a room
+  // and the hands route themselves.
+  const q = (req.query ?? {}) as { slug?: unknown };
+  let engine: GestureEngine | null = null;
+  if (typeof q.slug === "string" && q.slug) {
+    engine = gestureEngineFor(roomFromReq(req));
+  } else {
+    let bestAge = Infinity;
+    for (const e of gestureEngines.values()) {
+      const s = e.geometrySummary();
+      if (e.hasGeometry() && s && s.ageMs < bestAge) {
+        bestAge = s.ageMs;
+        engine = e;
+      }
+    }
+    if (!engine) return { ok: true, note: "no eye open anywhere" };
+  }
   if (!engine.hasGeometry()) return { ok: true, note: "no eye geometry yet" };
   engine.handleHands(hands.slice(0, 8), w, h);
   // Echo the geometry the engine is mapping against — the caller is already

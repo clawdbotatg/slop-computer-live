@@ -110,6 +110,10 @@ interface MenuBarProps {
    *  right that pops the audio-mixer / EQ panel in a separate window.
    *  null/undefined hides it. */
   onEqClick?: (() => void) | null;
+  /** God-mode only: 👁 button that pops the gesture "eye" — the
+   *  effects-free room view the hand detector watches — in a separate
+   *  window. null/undefined hides it. */
+  onEyeClick?: (() => void) | null;
   /** Room slug — surfaced in the SlopMenu dropdown as a clickable
    *  link to slop.computer/<slug> (not live.slop.computer). */
   slug?: string;
@@ -135,6 +139,7 @@ export const MenuBar = ({
   walletBalanceUsd,
   onWalletClick,
   onEqClick = null,
+  onEyeClick = null,
   slug,
 }: MenuBarProps) => {
   const { session, signOut } = useSession();
@@ -277,6 +282,32 @@ export const MenuBar = ({
               }}
             >
               🔊
+            </button>
+          ) : null}
+          {onEyeClick ? (
+            <button
+              type="button"
+              onClick={onEyeClick}
+              className="slop-menubar__item"
+              title="Open the gesture eye — the effects-free view the hand detector watches — in a new window"
+              aria-label="gesture eye"
+              style={{
+                cursor: "pointer",
+                fontSize: 14,
+                padding: "0 6px",
+                background: "transparent",
+                border: 0,
+                color: "inherit",
+                font: "inherit",
+                letterSpacing: "inherit",
+                textTransform: "inherit",
+                margin: 0,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              👁
             </button>
           ) : null}
           {godActive ? (
