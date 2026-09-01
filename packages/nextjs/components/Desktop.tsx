@@ -764,7 +764,16 @@ function DesktopInner({ slug }: { slug: string }) {
   }, []);
   const isEye = isGodMode && fxOff;
   useEffect(() => {
-    if (isEye) document.title = "SLOP-EYE";
+    if (!isEye) return;
+    // The detector finds the eye window BY THIS TITLE. The room page sets its
+    // own title after mount (and again on room events), so reassert on a
+    // timer — one string compare a second.
+    const assertTitle = () => {
+      if (document.title !== "SLOP-EYE") document.title = "SLOP-EYE";
+    };
+    assertTitle();
+    const iv = setInterval(assertTitle, 1000);
+    return () => clearInterval(iv);
   }, [isEye]);
 
   // Wake the shared AudioBus on the spectator/streaming box. Every
