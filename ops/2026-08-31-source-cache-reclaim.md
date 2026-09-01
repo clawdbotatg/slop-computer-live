@@ -171,3 +171,26 @@ round-trip identical to the file at the time of deletion.
 | z0r0zzz | 5.1 | `QmeHfLxMkWnBjaXJt11JxBqj2tw62waaXR1v21PhmZiKSx` |
 
 Total: 49 files, 172 GB.
+
+## Outcome — ran 2026-09-01 00:09-00:20 UTC
+
+`49 deleted, 0 skipped, 172 GB freed.` Log on the box:
+`/home/ubuntu/reclaim-20260901-000942.log`, one line per file carrying its
+recovery command (`ipfs get <cid>`).
+
+Disk went **86% -> 66%** (126 GB free -> 298 GB free). At the observed
+~150-200 GB/month burn that is roughly two months of runway, up from three
+weeks.
+
+Confirmed untouched afterwards: 48 `clips/` dirs, 49 transcripts, and all
+120 raw recordings (211 GB). Zero `source.mp4` remain.
+
+The deletion script (`/home/ubuntu/reclaim.sh`) re-checked the pin and the
+DAG for every CID immediately before removing its file, refused any slug
+containing a slash or a leading dot, refused any CID not starting with
+`Qm`, and aborted outright if a clip job or an active recording appeared.
+No file was removed on the strength of the earlier verification alone.
+
+A drift check before the run confirmed no `source.mp4` had been modified
+since verification began, so the round-trip proofs still described the
+bytes actually on disk.
