@@ -123,6 +123,19 @@ this by building **locally**, then rsyncing the artifact.
   persisted via `/etc/fstab`)
 - Caddy fronts everything; HTTPS via Let's Encrypt
 
+## Hand gestures ("the eye")
+
+If gestures aren't drawing, someone says "the claw doesn't work", or you're
+touching `packages/relay/src/gestures.ts`, `GestureLayer.tsx`, the 👁
+button, or `/v1/hands` — read **`docs/GESTURES.md`** first. It has the full
+pipeline (one detector on the god machine watches an effects-free ?fx=0
+view of the room; the relay attributes hands to camera windows — guests
+included, zero setup), the debugging handles (`/v1/hands` echoes eye
+geometry; synthetic-hands recipe), and **three failed architectures with
+the reasons they failed** — do not reintroduce per-room tokens, page→
+localhost bridges, or per-user gesture senders without reading that
+history. Show ritual: click 👁 in god mode. Kill switch: close that window.
+
 ## Making icons for new apps
 
 **When you add a new app to the desktop, generate its icon BEFORE wiring
