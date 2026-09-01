@@ -22,6 +22,7 @@ import {
   stopFanout,
 } from "./fanout.js";
 import { broadcastAction, getBroadcastStatus, getBroadcastUrl, setBroadcastUrl } from "./broadcast.js";
+import { type EyeCam, GestureEngine } from "./gestures.js";
 import {
   finalizeRecording,
   findRecordingSession,
@@ -2308,6 +2309,43 @@ app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
       chainId,
     });
   }
+  return { ok: true };
+});
+
+// --- Hand-gesture detection (the "eye") --------------------------------------
+// One native detector on the rig watches an effects-free view of the whole
+// room and POSTs raw hand landmarks here; the per-room GestureEngine maps
+// them to camera windows (via eye_geometry from the eye page), classifies,
+// and broadcasts gesture_hold/gesture_release — so ANYONE whose hands are
+// visible on the show triggers effects, guests included, zero setup.
+// Auth: the god-mode password in a header — the same secret the streaming
+// box already holds; landmarks are scene observations, not user actions.
+const gestureEngines = new Map<string, GestureEngine>();
+const gestureEngineFor = (room: { id: string; broadcast: (msg: Record<string, unknown>) => void }): GestureEngine => {
+  let e = gestureEngines.get(room.id);
+  if (!e) {
+    e = new GestureEngine(msg => room.broadcast(msg as unknown as Record<string, unknown>));
+    gestureEngines.set(room.id, e);
+  }
+  return e;
+};
+// Detector-gone sweep: release held effects when the hands stream stops.
+setInterval(() => {
+  for (const e of gestureEngines.values()) e.tick();
+}, 400).unref();
+
+type HandsBody = { hands?: unknown; w?: unknown; h?: unknown };
+app.post<{ Body: HandsBody }>("/v1/hands", async (req, reply) => {
+  const key = req.headers["x-gesture-key"];
+  if (!config.godPassword || typeof key !== "string" || key !== config.godPassword) {
+    return reply.code(401).send({ ok: false, error: "bad gesture key" });
+  }
+  const hands = Array.isArray(req.body?.hands) ? (req.body.hands as { chirality?: string; lm?: number[][] }[]) : [];
+  const w = typeof req.body?.w === "number" ? req.body.w : 0;
+  const h = typeof req.body?.h === "number" ? req.body.h : 0;
+  const engine = gestureEngineFor(roomFromReq(req));
+  if (!engine.hasGeometry()) return { ok: true, note: "no eye geometry yet" };
+  engine.handleHands(hands.slice(0, 8), w, h);
   return { ok: true };
 });
 
@@ -7940,6 +7978,7 @@ app.register(async function signalRoutes(fastify) {
           t === "ice" ||
           t === "god_viewport" ||
           t === "god_geometry" ||
+          t === "eye_geometry" ||
           t === "green_room";
         if (!allowed) return;
       }
@@ -8111,6 +8150,37 @@ app.register(async function signalRoutes(fastify) {
           // off-air / standby / on-air sign every viewer sees.
           if (!isSpectator) return;
           room.setGreenRoom(msg.on === true);
+          return;
+        }
+        case "eye_geometry": {
+          // The "eye" — an effects-free spectator view of the room (?fx=0)
+          // captured by the native hand detector. It reports its viewport +
+          // every camera window's rect and video dims so the GestureEngine
+          // can attribute detected hands to the right peer. Spectator-only,
+          // like god_geometry.
+          if (!isSpectator) return;
+          const vw = Number((msg as { vw?: unknown }).vw);
+          const vh = Number((msg as { vh?: unknown }).vh);
+          if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw <= 0 || vh <= 0 || vw > 8192 || vh > 8192) return;
+          const rawCams = (msg as { cams?: unknown }).cams;
+          if (!Array.isArray(rawCams)) return;
+          const cams: EyeCam[] = [];
+          for (const item of rawCams.slice(0, 32)) {
+            if (!item || typeof item !== "object") continue;
+            const o = item as Record<string, unknown>;
+            const rect = (o.rect ?? {}) as Record<string, unknown>;
+            const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
+            const cam: EyeCam = {
+              peerId: typeof o.peerId === "string" ? o.peerId.slice(0, 64) : "",
+              rect: { x: n(rect.x), y: n(rect.y), w: n(rect.w), h: n(rect.h) },
+              videoW: n(o.videoW),
+              videoH: n(o.videoH),
+            };
+            if (!cam.peerId || [cam.rect.x, cam.rect.y, cam.rect.w, cam.rect.h, cam.videoW, cam.videoH].some(Number.isNaN))
+              continue;
+            cams.push(cam);
+          }
+          gestureEngineFor(room).setGeometry({ vw, vh, cams, at: Date.now() });
           return;
         }
         case "click": {

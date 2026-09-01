@@ -1736,6 +1736,11 @@ export type PeerMeshState = {
    *  (px, viewport-relative) + its viewport, so the clipper can crop 9:16 clips
    *  from the true recorded-frame geometry. No-op for non-spectators (the relay
    *  drops it). Fire-and-forget. */
+  sendEyeGeometry: (payload: {
+    vw: number;
+    vh: number;
+    cams: { peerId: string; rect: { x: number; y: number; w: number; h: number }; videoW: number; videoH: number }[];
+  }) => void;
   sendGodGeometry: (payload: {
     vw: number;
     vh: number;
@@ -3463,6 +3468,21 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       windows: { id: string; x: number; y: number; w: number; h: number; z: number }[];
     }) => {
       send({ type: "god_geometry", ...payload });
+    },
+    [send],
+  );
+
+  // The "eye" (?fx=0 spectator view captured by the hand detector) reports
+  // its viewport + every camera window's video rect/dims so the relay's
+  // GestureEngine can attribute detected hands to peers. Relay drops it for
+  // non-spectators; fire-and-forget like god_geometry.
+  const sendEyeGeometry = useCallback(
+    (payload: {
+      vw: number;
+      vh: number;
+      cams: { peerId: string; rect: { x: number; y: number; w: number; h: number }; videoW: number; videoH: number }[];
+    }) => {
+      send({ type: "eye_geometry", ...payload });
     },
     [send],
   );
@@ -5430,6 +5450,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     godViewport,
     setGodViewport,
     sendGodGeometry,
+    sendEyeGeometry,
     airState,
     greenRoom,
     setGreenRoom,

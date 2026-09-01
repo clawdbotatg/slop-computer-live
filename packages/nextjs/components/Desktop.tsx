@@ -83,7 +83,6 @@ import type { UseLocalMedia } from "~~/hooks/useLocalMedia";
 import { readDenoisePref, resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { useLocalWindows } from "~~/hooks/useLocalWindows";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
-import { useRigGestures } from "~~/hooks/useRigGestures";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
@@ -752,18 +751,21 @@ function DesktopInner({ slug }: { slug: string }) {
   // the public stream-output bounds (the dashed god-viewport rectangle).
   const isGodMode = session.authenticated && session.spectator === true;
 
-  // Rig gesture bridge: on the OBS box, the native hand detector publishes
-  // landmarks on localhost — this classifies them and streams gesture
-  // hold/release over our own WS. Only the session actually publishing its
-  // camera sends (that's whose window the effects anchor to); every other
-  // machine's EventSource just never connects. See useRigGestures.
-  useRigGestures({
-    enabled: !isGodMode && mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "camera"),
-    sendGestureHold: mesh.sendGestureHold,
-    sendGestureRelease: mesh.sendGestureRelease,
-    publications: mesh.publications,
-    myId: mesh.myId,
-  });
+  // The "eye": an effects-free spectator view (?fx=0) that the native hand
+  // detector captures. It renders no gesture layer (so effects can never
+  // feed back into detection), does NOT act as the OBS-capture god window
+  // (no viewport/geometry broadcasts — those would fight the real one), and
+  // instead reports camera-window geometry so the relay's GestureEngine can
+  // attribute detected hands to peers. Set post-mount to avoid any SSR
+  // hydration mismatch.
+  const [fxOff, setFxOff] = useState(false);
+  useEffect(() => {
+    setFxOff(new URLSearchParams(window.location.search).get("fx") === "0");
+  }, []);
+  const isEye = isGodMode && fxOff;
+  useEffect(() => {
+    if (isEye) document.title = "SLOP-EYE";
+  }, [isEye]);
 
   // Wake the shared AudioBus on the spectator/streaming box. Every
   // audio element on the page that registers via useAudioBusElement
@@ -2042,7 +2044,7 @@ function DesktopInner({ slug }: { slug: string }) {
   const meshSetGodViewport = mesh.setGodViewport;
   const meshConnectedForGodViewport = mesh.connected;
   useEffect(() => {
-    if (!isGodMode) return;
+    if (!isGodMode || isEye) return;
     if (!meshConnectedForGodViewport) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const send = () => {
@@ -2073,7 +2075,7 @@ function DesktopInner({ slug }: { slug: string }) {
   // compare per tick — cheap.
   const meshSendGodGeometry = mesh.sendGodGeometry;
   useEffect(() => {
-    if (!isGodMode) return;
+    if (!isGodMode || isEye) return;
     if (!meshConnectedForGodViewport) return;
     let lastSig = "";
     let debounce: ReturnType<typeof setTimeout> | null = null;
@@ -2120,6 +2122,46 @@ function DesktopInner({ slug }: { slug: string }) {
       window.removeEventListener("resize", scheduled);
     };
   }, [isGodMode, meshConnectedForGodViewport, meshSendGodGeometry]);
+
+  // Eye geometry: the ?fx=0 spectator view reports its viewport + every live
+  // camera window's video rect and intrinsic dims (the relay's GestureEngine
+  // needs both to invert the object-fit:cover crop). Light 500ms poll — a
+  // few getBoundingClientRects; relay keeps only the latest.
+  const meshSendEyeGeometry = mesh.sendEyeGeometry;
+  const eyePubsRef = useRef(mesh.publications);
+  eyePubsRef.current = mesh.publications;
+  useEffect(() => {
+    if (!isEye) return;
+    if (!meshConnectedForGodViewport) return;
+    const measure = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (vw <= 0 || vh <= 0) return;
+      const cams: {
+        peerId: string;
+        rect: { x: number; y: number; w: number; h: number };
+        videoW: number;
+        videoH: number;
+      }[] = [];
+      for (const pub of eyePubsRef.current) {
+        if (pub.kind !== "camera" || pub.cameraOff) continue;
+        const video = document.querySelector(`[data-slot-id="${CSS.escape(`owner-${pub.ownerKey}-camera`)}"] video`);
+        if (!(video instanceof HTMLVideoElement) || !video.videoWidth || !video.videoHeight) continue;
+        const r = video.getBoundingClientRect();
+        if (r.width < 60 || r.height < 45) continue;
+        cams.push({
+          peerId: pub.peerId,
+          rect: { x: r.left, y: r.top, w: r.width, h: r.height },
+          videoW: video.videoWidth,
+          videoH: video.videoHeight,
+        });
+      }
+      meshSendEyeGeometry({ vw, vh, cams });
+    };
+    measure();
+    const iv = setInterval(measure, 500);
+    return () => clearInterval(iv);
+  }, [isEye, meshConnectedForGodViewport, meshSendEyeGeometry]);
 
   // Prewarm the RNNoise pipeline BEFORE the gesture, while the entry
   // gate is still up. On a cold UpgradeModal reload the first camera
@@ -4831,8 +4873,11 @@ function DesktopInner({ slug }: { slug: string }) {
       {/* The room's shared foreground: held gestures render live at the
           sender's hand on their camera window; releases fly away (the slop
           computer logo zooms at the screen). Nothing renders for a sender
-          whose camera window isn't up and visible. */}
-      <GestureLayer gestures={mesh.gestures} liveGestures={mesh.liveGestures} publications={mesh.publications} />
+          whose camera window isn't up and visible. Suppressed on the ?fx=0
+          eye view so effects can't feed back into hand detection. */}
+      {!fxOff && (
+        <GestureLayer gestures={mesh.gestures} liveGestures={mesh.liveGestures} publications={mesh.publications} />
+      )}
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +
