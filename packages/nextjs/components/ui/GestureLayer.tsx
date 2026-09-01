@@ -1,15 +1,18 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { GestureEvent } from "~~/hooks/usePeerMesh";
+import type { GestureEvent, Peer, Publication } from "~~/hooks/usePeerMesh";
 
 // Full-viewport canvas that renders hand-gesture effects (relay `gesture`
 // broadcasts) flying across the top of everything — desktop, windows, chat.
-// Every client (god-mode included, which is what puts it on the stream) runs
-// the same deterministic flight from (seed, receivedAt), so all screens agree
-// without streaming any animation state. An effect dies when it drifts
-// off-screen; the mesh's 15s prune is the backstop. pointer-events: none, so
-// it can never eat a click.
+// Each effect spawns AT THE GESTURING HAND: the event's x/y are normalized
+// coords inside the anchor identity's camera frame, mapped through that
+// camera window's rect + object-fit:cover crop on this viewer's screen. If
+// that camera isn't up and visible, the effect is not rendered at all. Every
+// client (god-mode included, which is what puts it on the stream) runs the
+// same seeded flight, so screens agree without streaming animation state. An
+// effect dies when it drifts off-screen; the mesh's 15s prune is the
+// backstop. pointer-events: none, so it can never eat a click.
 //
 // The eth / claw draw functions are ported from slop-computer-background's
 // slop-shapes.js (the OBS rig) so the shared effects match the show's look.
@@ -194,6 +197,9 @@ function mulberry32(seed: number) {
 }
 
 type Flight = {
+  // Spawn point in viewport px, resolved once from the anchor camera window.
+  sx: number;
+  sy: number;
   vx: number; // viewport-widths per second
   vy: number; // viewport-heights per second
   wobbleAmp: number;
@@ -201,12 +207,18 @@ type Flight = {
   wobblePhase: number;
 };
 
-const flightFor = (g: GestureEvent): Flight => {
+// How long after arrival we keep trying to resolve the anchor window before
+// declaring the gesture dead (covers a slot/publication landing a beat late).
+const ANCHOR_GRACE_MS = 1000;
+
+const flightFor = (g: GestureEvent, sx: number, sy: number, W: number): Flight => {
   const rnd = mulberry32(g.seed);
   // Drift toward the far side of the screen from the spawn point, with a
   // seeded vertical component — reads as "released and floating away".
-  const dir = g.x < 0.5 ? 1 : -1;
+  const dir = sx < W / 2 ? 1 : -1;
   return {
+    sx,
+    sy,
     vx: dir * (0.1 + rnd() * 0.12),
     vy: (rnd() - 0.5) * 0.1,
     wobbleAmp: 0.015 + rnd() * 0.02,
@@ -215,11 +227,60 @@ const flightFor = (g: GestureEvent): Flight => {
   };
 };
 
-export const GestureLayer = ({ gestures }: { gestures: GestureEvent[] }) => {
+// Where the gesturing hand is on THIS viewer's screen: find the anchor
+// identity's camera window and map the normalized in-frame hand position
+// through the video's object-fit:cover crop. Null when that camera isn't up
+// and visible — in which case the effect is simply not rendered (per Austin:
+// no full-screen fallback). Note the point can land slightly outside the
+// window when cover-cropping cut the band the hand was in; that still reads
+// correctly ("just off the edge of their window").
+function anchorPoint(g: GestureEvent, pubs: Publication[], peers: Peer[]): { x: number; y: number } | null {
+  if (!g.anchor) return null;
+  const pub = pubs.find(
+    p =>
+      p.kind === "camera" &&
+      !p.cameraOff &&
+      (p.ownerKey.toLowerCase() === g.anchor ||
+        peers.some(
+          pe => pe.id === p.peerId && (pe.address?.toLowerCase() === g.anchor || pe.handle?.toLowerCase() === g.anchor),
+        )),
+  );
+  if (!pub) return null;
+  // Same deterministic slot id the relay's desktop.ts mints for camera pubs.
+  const slotId = `owner-${pub.ownerKey}-camera`;
+  const video = document.querySelector(`[data-slot-id="${CSS.escape(slotId)}"] video`);
+  if (!(video instanceof HTMLVideoElement) || !video.videoWidth || !video.videoHeight) return null;
+  const r = video.getBoundingClientRect();
+  // A docked/minimized pill (or an off-screen window) doesn't count as
+  // "camera up and visible".
+  if (r.width < 80 || r.height < 60) return null;
+  const scale = Math.max(r.width / video.videoWidth, r.height / video.videoHeight);
+  const dw = video.videoWidth * scale;
+  const dh = video.videoHeight * scale;
+  return {
+    x: r.left + g.x * dw - (dw - r.width) / 2,
+    y: r.top + g.y * dh - (dh - r.height) / 2,
+  };
+}
+
+export const GestureLayer = ({
+  gestures,
+  publications,
+  peers,
+}: {
+  gestures: GestureEvent[];
+  publications: Publication[];
+  peers: Peer[];
+}) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const gesturesRef = useRef<GestureEvent[]>(gestures);
   gesturesRef.current = gestures;
+  const pubsRef = useRef<Publication[]>(publications);
+  pubsRef.current = publications;
+  const peersRef = useRef<Peer[]>(peers);
+  peersRef.current = peers;
   const flightsRef = useRef<Map<number, Flight>>(new Map());
+  const deadRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -242,15 +303,26 @@ export const GestureLayer = ({ gestures }: { gestures: GestureEvent[] }) => {
       const now = Date.now();
       const live = gesturesRef.current;
       const flights = flightsRef.current;
+      const dead = deadRef.current;
       for (const g of live) {
+        if (dead.has(g.id)) continue;
         let fl = flights.get(g.id);
         if (!fl) {
-          fl = flightFor(g);
+          // Resolve the spawn point from the anchor's camera window on this
+          // viewer's screen. Not resolvable → retry briefly (a pub/slot can
+          // land a beat after the broadcast), then give up: camera not up
+          // and visible means the effect is not shown at all.
+          const p = anchorPoint(g, pubsRef.current, peersRef.current);
+          if (!p) {
+            if (now - g.receivedAt > ANCHOR_GRACE_MS) dead.add(g.id);
+            continue;
+          }
+          fl = flightFor(g, p.x, p.y, W);
           flights.set(g.id, fl);
         }
         const t = (now - g.receivedAt) / 1000;
-        const x = (g.x + fl.vx * t) * W;
-        const y = (g.y + fl.vy * t + fl.wobbleAmp * Math.sin(fl.wobblePhase + t * fl.wobbleHz * Math.PI * 2)) * H;
+        const x = fl.sx + fl.vx * W * t;
+        const y = fl.sy + fl.vy * H * t + fl.wobbleAmp * H * Math.sin(fl.wobblePhase + t * fl.wobbleHz * Math.PI * 2);
         const size = g.s * H;
         // Dead once fully off-screen — skip drawing, mesh prune collects it.
         if (x < -size * 2 || x > W + size * 2 || y < -size * 2 || y > H + size * 2) continue;
@@ -261,8 +333,9 @@ export const GestureLayer = ({ gestures }: { gestures: GestureEvent[] }) => {
           drawClaw(ctx, x, y, size, g.angle + Math.sin(t * 1.1) * 0.15, g.open + 0.12 + 0.12 * Math.sin(t * 3), alpha);
         }
       }
-      // Drop flight params for pruned gestures so the map can't grow forever.
+      // Drop bookkeeping for pruned gestures so the maps can't grow forever.
       for (const id of flights.keys()) if (!live.some(g => g.id === id)) flights.delete(id);
+      for (const id of dead) if (!live.some(g => g.id === id)) dead.delete(id);
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);

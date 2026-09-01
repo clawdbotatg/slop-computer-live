@@ -4813,9 +4813,11 @@ function DesktopInner({ slug }: { slug: string }) {
         <FlyingTipCard key={tip.id} tip={tip} customNames={mesh.customNames} />
       ))}
 
-      {/* Hand-gesture effects (claws / eth from the rig) fly across the top
-          of everything. Self-prune from mesh.gestures. */}
-      <GestureLayer gestures={mesh.gestures} />
+      {/* Hand-gesture effects (claws / eth from the rig) spawn at the
+          gesturing hand's position on the anchor's camera window and fly
+          across the top of everything; not rendered at all when that camera
+          isn't up and visible. Self-prune from mesh.gestures. */}
+      <GestureLayer gestures={mesh.gestures} publications={mesh.publications} peers={mesh.peers} />
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +
