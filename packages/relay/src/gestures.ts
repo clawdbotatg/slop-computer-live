@@ -145,6 +145,12 @@ export class GestureEngine {
     return !!this.geometry && Date.now() - this.geometry.at < 5000;
   }
 
+  geometrySummary() {
+    const g = this.geometry;
+    if (!g) return null;
+    return { vw: g.vw, vh: g.vh, ageMs: Date.now() - g.at, cams: g.cams };
+  }
+
   /** Call periodically — releases everything if the detector went quiet. */
   tick(now = Date.now()) {
     if (this.lastHandsAt && now - this.lastHandsAt > HANDS_STALE_MS) {

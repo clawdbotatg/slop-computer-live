@@ -2346,7 +2346,9 @@ app.post<{ Body: HandsBody }>("/v1/hands", async (req, reply) => {
   const engine = gestureEngineFor(roomFromReq(req));
   if (!engine.hasGeometry()) return { ok: true, note: "no eye geometry yet" };
   engine.handleHands(hands.slice(0, 8), w, h);
-  return { ok: true };
+  // Echo the geometry the engine is mapping against — the caller is already
+  // god-authed and this is the debugging handle for "hands don't land".
+  return { ok: true, geom: engine.geometrySummary() };
 });
 
 // Just the room multisig address — what a `/tip` needs to know where to send.
