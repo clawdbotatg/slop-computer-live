@@ -355,7 +355,7 @@ export type TipCard = {
 
 export type TipParseResult = { ok: true; amountEth: string; chainId: number } | { ok: false; error: string };
 
-export type GestureKind = "eth" | "claw" | "computer";
+export type GestureKind = "eth" | "claw" | "computer" | "heart";
 
 /** A gesture being HELD right now — streamed at cursor rate by the gesturing
  *  peer's own page. Rendered live at the hand's position on that peer's
@@ -4674,7 +4674,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
 
         if (
           (msg.type === "gesture_hold" || msg.type === "gesture_release") &&
-          (msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer") &&
+          (msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer" || msg.kind === "heart") &&
           typeof msg.from === "string"
         ) {
           const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);

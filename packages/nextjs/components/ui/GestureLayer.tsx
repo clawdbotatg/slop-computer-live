@@ -28,6 +28,8 @@ const Z = 2147483646;
 const FADE_IN_MS = 200;
 // The slop computer logo flies "at" the screen: grows and fades over this long.
 const COMPUTER_LIFE_MS = 900;
+// Released hearts float up and fade over this long.
+const HEART_LIFE_MS = 3200;
 // A live gesture with no update for this long is stale — hidden here, swept
 // from state by the mesh shortly after.
 const LIVE_STALE_MS = 700;
@@ -208,6 +210,33 @@ function drawClaw(
   ctx.restore();
 }
 
+/* ---- heart (two-hand heart gesture) ---- */
+// Unit heart: lobes at the top, point at the bottom; ~1.9 wide x ~1.2 tall
+// at scale s, centered on (cx, cy).
+function heartPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + 0.45 * s);
+  ctx.bezierCurveTo(cx - 0.95 * s, cy - 0.25 * s, cx - 0.45 * s, cy - 0.75 * s, cx, cy - 0.25 * s);
+  ctx.bezierCurveTo(cx + 0.45 * s, cy - 0.75 * s, cx + 0.95 * s, cy - 0.25 * s, cx, cy + 0.45 * s);
+  ctx.closePath();
+}
+
+function drawHeart(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, alpha: number, pulse: number) {
+  const s = size * 0.55 * (1 + 0.06 * Math.sin(pulse));
+  ctx.save();
+  ctx.shadowColor = "#ff4d8d";
+  ctx.shadowBlur = 18;
+  heartPath(ctx, cx, cy, s);
+  ctx.fillStyle = `rgba(255,60,130,${0.2 * alpha})`;
+  ctx.fill();
+  ctx.strokeStyle = `rgba(255,120,170,${0.95 * alpha})`;
+  ctx.lineWidth = 2.4;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
 // Tiny seeded PRNG so every client derives the same flight from the same
 // broadcast. Never Math.random() at render time — that's what would make
 // screens diverge.
@@ -265,6 +294,20 @@ type Flight = {
 
 const flightFor = (g: GestureEvent, sx: number, sy: number, size: number, W: number, H: number): Flight => {
   const rnd = mulberry32(g.seed);
+  if (g.kind === "heart") {
+    // Hearts don't launch outward — they rise: gentle upward drift with a
+    // sideways sway (wobble applies to X for hearts, not Y).
+    return {
+      sx,
+      sy,
+      size,
+      vx: (rnd() - 0.5) * 0.05,
+      vy: -(0.09 + rnd() * 0.08),
+      wobbleAmp: 0.01 + rnd() * 0.015,
+      wobbleHz: 0.5 + rnd() * 0.5,
+      wobblePhase: rnd() * Math.PI * 2,
+    };
+  }
   // Fly outward: away from the center of the screen, along the line from
   // center through the launch point (seeded direction when launched dead
   // center).
@@ -356,6 +399,8 @@ export const GestureLayer = ({
           drawEth(ctx, sm.x, sm.y, size * 0.5, sm.spin, 1);
         } else if (g.kind === "claw") {
           drawClaw(ctx, sm.x, sm.y, size, sm.angle, sm.open, 1);
+        } else if (g.kind === "heart") {
+          drawHeart(ctx, sm.x, sm.y, size, 1, now / 160);
         } else {
           const img = getComputerImg();
           if (img) {
@@ -405,6 +450,26 @@ export const GestureLayer = ({
           ctx.shadowBlur = 24;
           ctx.drawImage(img, fl.sx - size / 2, fl.sy - size / 2, size, size);
           ctx.restore();
+          continue;
+        }
+
+        if (g.kind === "heart") {
+          // Rise, sway, grow a touch, fade out — then gone.
+          const lifeT = (now - g.receivedAt) / HEART_LIFE_MS;
+          if (lifeT >= 1) {
+            dead.add(g.id);
+            continue;
+          }
+          const hx =
+            fl.sx + fl.vx * W * t + fl.wobbleAmp * W * Math.sin(fl.wobblePhase + t * fl.wobbleHz * Math.PI * 2);
+          const hy = fl.sy + fl.vy * H * t;
+          const hsize = fl.size * (1 + lifeT * 0.25);
+          if (hy < -hsize * 2) {
+            dead.add(g.id);
+            continue;
+          }
+          const fadeIn = Math.min(1, (now - g.receivedAt) / FADE_IN_MS);
+          drawHeart(ctx, hx, hy, hsize, fadeIn * (1 - lifeT * lifeT), t * 6);
           continue;
         }
 

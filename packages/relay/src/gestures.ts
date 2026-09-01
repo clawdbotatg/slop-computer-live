@@ -32,7 +32,7 @@ export type GestureBroadcast = {
   type: "gesture_hold" | "gesture_release";
   from: string;
   hand: string;
-  kind: "eth" | "claw" | "computer";
+  kind: "eth" | "claw" | "computer" | "heart";
   x: number;
   y: number;
   s: number;
@@ -51,6 +51,7 @@ const CLAW_INWARD = (40 * Math.PI) / 180;
 const HOLD_MS = 150;
 const EMIT_INTERVAL = 150;
 const FRAME_HOLD_MS = 200;
+const HEART_MINI_INTERVAL = 240; // little hearts stream out of a held heart at this rate
 export const HANDS_STALE_MS = 700; // detector quiet this long -> release all
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -132,6 +133,11 @@ export class GestureEngine {
   private lastEmit = new Map<string, number>();
   // Two-L computer frame, per peer window.
   private comp = new Map<string, { active: boolean; last: { cx: number; cy: number; size: number } | null; holdUntil: number }>();
+  // Two-hand heart, per peer window.
+  private heart = new Map<
+    string,
+    { active: boolean; since: number; last: { cx: number; cy: number; size: number } | null; holdUntil: number; lastMini: number }
+  >();
   private lastHandsAt = 0;
   private lastMsgAt = 0;
 
@@ -187,6 +193,10 @@ export class GestureEngine {
     for (const [peerId, c] of this.comp) {
       if (c.active && c.last) this.out("gesture_release", peerId, "frame", "computer", c.last.cx, c.last.cy, c.last.size, {});
       this.comp.delete(peerId);
+    }
+    for (const [peerId, h] of this.heart) {
+      if (h.active && h.last) this.out("gesture_release", peerId, "heart", "heart", h.last.cx, h.last.cy, h.last.size, {});
+      this.heart.delete(peerId);
     }
     this.poseState.clear();
   }
@@ -276,8 +286,71 @@ export class GestureEngine {
     const ethSeen = new Set<string>();
     const clawSeen = new Set<string>();
     const compSeen = new Set<string>();
+    const heartSeen = new Set<string>();
 
     for (const [peerId, peerHands] of byPeer) {
+      // Two-hand heart — index tips meet at the top dip, thumb tips at the
+      // bottom point, palms bulged apart as the lobes. Purely geometric:
+      // curled fingers make per-hand pose classification unreliable here,
+      // the tip geometry IS the signature. The palm-separation check is what
+      // rejects prayer-hands/clapping (palms together, tips also touching).
+      let heart: { cx: number; cy: number; size: number } | null = null;
+      if (peerHands.length >= 2) {
+        const a = peerHands[0]!,
+          b = peerHands[1]!;
+        const avg = (a.span + b.span) / 2;
+        const iA = at(a.lm, 8),
+          iB = at(b.lm, 8),
+          tA = at(a.lm, 4),
+          tB = at(b.lm, 4);
+        const iy = (iA.y + iB.y) / 2;
+        const ty = (tA.y + tB.y) / 2;
+        if (
+          dist(iA, iB) < avg * 1.1 &&
+          dist(tA, tB) < avg * 1.1 &&
+          ty - iy > avg * 0.6 &&
+          Math.abs(a.sx - b.sx) > avg * 0.45
+        ) {
+          heart = {
+            cx: (iA.x + iB.x + tA.x + tB.x) / 4,
+            cy: (iy + ty) / 2,
+            size: Math.min(Math.max((ty - iy) * 2.0, 60), VH * 0.85),
+          };
+        }
+      }
+      let hs = this.heart.get(peerId);
+      if (!hs) {
+        hs = { active: false, since: 0, last: null, holdUntil: 0, lastMini: 0 };
+        this.heart.set(peerId, hs);
+      }
+      if (heart) {
+        if (!hs.since) hs.since = now;
+        if (now - hs.since >= HOLD_MS) {
+          hs.holdUntil = now + FRAME_HOLD_MS;
+          hs.last = heart;
+        }
+      } else if (now >= hs.holdUntil) {
+        hs.since = 0;
+      }
+      if (now < hs.holdUntil && hs.last) {
+        hs.active = true;
+        heartSeen.add(peerId);
+        this.out("gesture_hold", peerId, "heart", "heart", hs.last.cx, hs.last.cy, hs.last.size, {});
+        // Little hearts stream out of the top while held (hand key "mini" so
+        // their releases can't evict the live "heart" hold on clients).
+        if (now - hs.lastMini >= HEART_MINI_INTERVAL) {
+          hs.lastMini = now;
+          const jx = (Math.random() - 0.5) * hs.last.size * 0.5;
+          this.out("gesture_release", peerId, "mini", "heart", hs.last.cx + jx, hs.last.cy - hs.last.size * 0.35, hs.last.size * 0.32, {});
+        }
+        continue; // heart active: suppress the frame + single-hand gestures
+      }
+      if (hs.active && hs.last) {
+        // Shape broke — the big heart itself floats away.
+        this.out("gesture_release", peerId, "heart", "heart", hs.last.cx, hs.last.cy, hs.last.size, {});
+        hs.active = false;
+      }
+
       let frame: { cx: number; cy: number; size: number } | null = null;
       if (peerHands.length >= 2) {
         const a = peerHands[0]!,
@@ -378,6 +451,11 @@ export class GestureEngine {
       if (!compSeen.has(peerId) && c.active && c.last && now >= c.holdUntil) {
         this.out("gesture_release", peerId, "frame", "computer", c.last.cx, c.last.cy, c.last.size, {});
         c.active = false;
+      }
+    for (const [peerId, h] of this.heart)
+      if (!heartSeen.has(peerId) && h.active && h.last && now >= h.holdUntil) {
+        this.out("gesture_release", peerId, "heart", "heart", h.last.cx, h.last.cy, h.last.size, {});
+        h.active = false;
       }
   }
 }

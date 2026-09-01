@@ -52,6 +52,11 @@ show.
        claw 🦞 (thumb+index+middle, signed thumb-out > 0.10) → held claw,
          jaw opens with thumb-index pinch
        two Ls 📐 in the SAME camera window → the slop computer logo
+       heart 🫶 (two hands, SAME window: index tips together on top, thumb
+         tips together below, palms apart — geometric test on the tips, not
+         per-hand poses; palm-apart check rejects prayer hands) → held
+         heart + little hearts stream out the top; on release the big
+         heart floats away. Relay-only — no OBS-foreground original.
        everything else → nothing; non-fist poses need 150ms stability
        (hold-to-activate) before firing
    · broadcasts gesture_hold (~10Hz while held) / gesture_release (+seed)
@@ -63,7 +68,8 @@ show.
      (position smoothed between updates; sized to the window)
    · release → eth/claw fly outward from screen center through the launch
      point (seeded, deterministic per client); computer logo zooms "at"
-     the screen (grows ~4.5x, fades, <1s)
+     the screen (grows ~4.5x, fades, <1s); hearts rise with a sideways
+     sway and fade (~3.2s)
    · sender's camera window closed/docked/camera-off → nothing renders
    · canvas sits just under the cursor layer, pointer-events:none
    · god mode renders it too → that's what puts effects on the stream

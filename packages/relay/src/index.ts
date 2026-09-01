@@ -8109,7 +8109,8 @@ app.register(async function signalRoutes(fastify) {
           // so no identity or room ever needs configuring. Broadcast
           // includes the sender (they see their own effect from the same
           // path as everyone else).
-          const kind = msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer" ? msg.kind : null;
+          const kind =
+            msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer" || msg.kind === "heart" ? msg.kind : null;
           if (!kind) return;
           const hand = typeof msg.hand === "string" ? msg.hand.slice(0, 16) : "h";
           const num = (v: unknown, fallback: number, lo: number, hi: number) => {
