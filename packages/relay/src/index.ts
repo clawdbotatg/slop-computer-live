@@ -2328,12 +2328,12 @@ type GestureBody = {
   open?: unknown;
   anchor?: unknown;
 };
-const GESTURE_KINDS = new Set(["eth", "claw"]);
+const GESTURE_KINDS = new Set(["eth", "claw", "computer"]);
 app.post<{ Body: GestureBody }>("/v1/gesture", async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ ok: false, error: "unauthenticated" });
   const kind = typeof req.body?.kind === "string" ? req.body.kind : "";
-  if (!GESTURE_KINDS.has(kind)) return reply.code(400).send({ ok: false, error: "kind must be one of: eth, claw" });
+  if (!GESTURE_KINDS.has(kind)) return reply.code(400).send({ ok: false, error: "kind must be one of: eth, claw, computer" });
   const num = (v: unknown, fallback: number, lo: number, hi: number) => {
     const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
     return Math.min(hi, Math.max(lo, n));

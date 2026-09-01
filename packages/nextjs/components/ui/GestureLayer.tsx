@@ -20,6 +20,21 @@ import type { GestureEvent, Peer, Publication } from "~~/hooks/usePeerMesh";
 // Just under the cursor layer (2^31-1) — above every window and modal.
 const Z = 2147483646;
 const FADE_IN_MS = 300;
+// The slop computer logo flies "at" the screen: grows and fades over this long.
+const COMPUTER_LIFE_MS = 900;
+
+// The slop computer logo (copied from the rig's computer.png). Loaded lazily
+// on the client only — this module is imported during SSR where Image doesn't
+// exist.
+let computerImg: HTMLImageElement | null = null;
+function getComputerImg(): HTMLImageElement | null {
+  if (typeof window === "undefined") return null;
+  if (!computerImg) {
+    computerImg = new Image();
+    computerImg.src = "/gesture-computer.png";
+  }
+  return computerImg.complete && computerImg.naturalWidth > 0 ? computerImg : null;
+}
 
 /* ---- Ethereum octahedron (ported from slop-shapes.js) ---- */
 const ETH = { r: 0.95, hTop: 1.75, hBot: 1.45, gap: 0.18, tilt: -0.3 };
@@ -211,16 +226,21 @@ type Flight = {
 // declaring the gesture dead (covers a slot/publication landing a beat late).
 const ANCHOR_GRACE_MS = 1000;
 
-const flightFor = (g: GestureEvent, sx: number, sy: number, W: number): Flight => {
+const flightFor = (g: GestureEvent, sx: number, sy: number, W: number, H: number): Flight => {
   const rnd = mulberry32(g.seed);
-  // Drift toward the far side of the screen from the spawn point, with a
-  // seeded vertical component — reads as "released and floating away".
-  const dir = sx < W / 2 ? 1 : -1;
+  // Fly outward: away from the center of the screen, along the line from
+  // center through the spawn point (seeded direction when spawned dead
+  // center). Speed stays in viewport-widths/heights per second.
+  const dx = sx - W / 2;
+  const dy = sy - H / 2;
+  const len = Math.hypot(dx, dy);
+  const a = len < 1 ? rnd() * Math.PI * 2 : Math.atan2(dy, dx);
+  const speed = 0.1 + rnd() * 0.12;
   return {
     sx,
     sy,
-    vx: dir * (0.1 + rnd() * 0.12),
-    vy: (rnd() - 0.5) * 0.1,
+    vx: Math.cos(a) * speed,
+    vy: Math.sin(a) * speed,
     wobbleAmp: 0.015 + rnd() * 0.02,
     wobbleHz: 0.4 + rnd() * 0.5,
     wobblePhase: rnd() * Math.PI * 2,
@@ -317,13 +337,38 @@ export const GestureLayer = ({
             if (now - g.receivedAt > ANCHOR_GRACE_MS) dead.add(g.id);
             continue;
           }
-          fl = flightFor(g, p.x, p.y, W);
+          fl = flightFor(g, p.x, p.y, W, H);
           flights.set(g.id, fl);
         }
         const t = (now - g.receivedAt) / 1000;
+
+        if (g.kind === "computer") {
+          // The slop computer logo flies "at" the screen: stays put, grows
+          // fast, fades to nothing, gone in under a second.
+          const lifeT = (now - g.receivedAt) / COMPUTER_LIFE_MS;
+          if (lifeT >= 1) {
+            dead.add(g.id);
+            continue;
+          }
+          const img = getComputerImg();
+          if (!img) continue; // still loading — it'll pop in next frame
+          const grow = 1 + lifeT * 3.5;
+          const size = g.s * H * grow;
+          const alpha = 1 - lifeT;
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.shadowColor = "#ff3ec9";
+          ctx.shadowBlur = 24;
+          ctx.drawImage(img, fl.sx - size / 2, fl.sy - size / 2, size, size);
+          ctx.restore();
+          continue;
+        }
+
         const x = fl.sx + fl.vx * W * t;
         const y = fl.sy + fl.vy * H * t + fl.wobbleAmp * H * Math.sin(fl.wobblePhase + t * fl.wobbleHz * Math.PI * 2);
-        const size = g.s * H;
+        // Half the raw broadcast size — full-size read as too big on the
+        // shared desktop.
+        const size = g.s * H * 0.5;
         // Dead once fully off-screen — skip drawing, mesh prune collects it.
         if (x < -size * 2 || x > W + size * 2 || y < -size * 2 || y > H + size * 2) continue;
         const alpha = Math.min(1, (now - g.receivedAt) / FADE_IN_MS);

@@ -356,7 +356,7 @@ export type TipParseResult = { ok: true; amountEth: string; chainId: number } | 
  *  so every screen renders the same flight. */
 export type GestureEvent = {
   id: number;
-  kind: "eth" | "claw";
+  kind: "eth" | "claw" | "computer";
   /** Whose camera window the effect anchors to — lowercased ownerKey /
    *  address / handle. Rendered only while that camera is up and visible. */
   anchor: string;
@@ -4523,12 +4523,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
-        if (msg.type === "gesture" && (msg.kind === "eth" || msg.kind === "claw")) {
+        if (msg.type === "gesture" && (msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer")) {
           gestureIdRef.current += 1;
           const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
           const g: GestureEvent = {
             id: gestureIdRef.current,
-            kind: msg.kind as "eth" | "claw",
+            kind: msg.kind as "eth" | "claw" | "computer",
             anchor: typeof msg.anchor === "string" ? msg.anchor.toLowerCase() : "",
             x: num(msg.x, 0.5),
             y: num(msg.y, 0.5),
