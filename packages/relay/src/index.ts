@@ -1032,12 +1032,37 @@ const PASSWORD_RATE_LIMIT = {
   config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
 };
 
-app.get("/health", async () => ({
+const healthPayload = () => ({
   ok: true,
   service: "slop-relay",
   peers: [...listRooms()].reduce((n, r) => n + r.peerCount(), 0),
   viewers: [...listRooms()].reduce((n, r) => n + r.viewerCount(), 0),
-}));
+});
+
+app.get("/health", async () => healthPayload());
+
+// Same payload under /v1/ so it reaches the relay through Caddy on
+// live.slop.computer, which proxies `/v1/*` but NOT `/health`.
+//
+// Why this exists: UpgradeModal polls `${RELAY_HTTP}/health` once a second
+// as its relay-recovery detector, and RELAY_HTTP is https://live.slop.computer.
+// With no /health route there, Caddy fell through to Next.js, which matched
+// the `[slug]` room page with slug="health" — so every poll server-rendered a
+// full room page and fired three more relay calls (two card HEAD probes that
+// 404'd, plus a room auth). That was ~45% of all syslog volume (634 MB in two
+// days) and, worse, the detector was reading a Next.js page instead of relay
+// health, so it reported "up" whenever Next.js was up regardless of the relay.
+//
+// Deliberately NOT added to Caddy's @relay matcher as a bare `/health`: room
+// URLs are `live.slop.computer/<slug>`, so that would shadow a room named
+// "health". `/v1/` is already the reserved relay namespace.
+//
+// Request logging is suppressed for this route — it is polled once a second
+// per non-mesh client and its own payload is the diagnostic. Fastify 5 emits
+// the "incoming request"/"request completed" pair at `info`, and
+// `disableRequestLogging` is a server-wide option only, so the per-route lever
+// is `logLevel` — "warn" drops the pair while still logging real errors.
+app.get("/v1/health", { logLevel: "warn" }, async () => healthPayload());
 
 // --- Apps registry ----------------------------------------------------------
 // Two layers, single resolved list:
@@ -2293,7 +2318,16 @@ app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
 // GestureLayer canvas overlay; god-mode renders it too, which is what puts it
 // on the stream. Same ephemeral shape as `tip` above; rate-limited via the
 // chat bucket. Roll back = revert this commit.
-type GestureBody = { kind?: unknown; x?: unknown; y?: unknown; s?: unknown; spin?: unknown; angle?: unknown; open?: unknown };
+type GestureBody = {
+  kind?: unknown;
+  x?: unknown;
+  y?: unknown;
+  s?: unknown;
+  spin?: unknown;
+  angle?: unknown;
+  open?: unknown;
+  anchor?: unknown;
+};
 const GESTURE_KINDS = new Set(["eth", "claw"]);
 app.post<{ Body: GestureBody }>("/v1/gesture", async (req, reply) => {
   const a = v1AuthFromReq(req);
@@ -2306,9 +2340,18 @@ app.post<{ Body: GestureBody }>("/v1/gesture", async (req, reply) => {
   };
   const room = roomFromReq(req);
   if (!room.chat.allow(a.session.token)) return reply.code(429).send({ ok: false, error: "rate-limited" });
+  // Whose camera window the effect anchors to — x/y are hand coords inside
+  // that camera's frame, and clients render nothing when that camera isn't
+  // up and visible. Defaults to the caller's own identity (right for
+  // in-browser senders); the OBS rig (an anon agent session) passes the
+  // host's identity explicitly. Anchor names a window to draw ON, not an
+  // identity to act as, so it needs no extra authority.
+  const rawAnchor = typeof req.body?.anchor === "string" ? req.body.anchor : "";
+  const anchor = (rawAnchor || a.session.address || a.session.handle || "").toLowerCase().slice(0, 64);
   room.broadcast({
     type: "gesture",
     from: { address: a.session.address, handle: a.session.handle, anonId: a.session.anonId ?? null },
+    anchor,
     kind,
     x: num(req.body?.x, 0.5, 0, 1),
     y: num(req.body?.y, 0.5, 0, 1),
@@ -7725,7 +7768,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "tx_forward", from, fromAddress, fromHandle, id, browserId, method, params, chainId }
 //                                                                    // directed: only the targeted
 //                                                                    // peer sees this
-//   { type: "gesture", from, kind, x, y, s, spin, angle, open, seed } // hand-gesture effect (POST /v1/gesture)
+//   { type: "gesture", from, anchor, kind, x, y, s, spin, angle, open, seed } // hand-gesture effect (POST /v1/gesture)
 //   { type: "pong" }
 //   { type: "error", error }
 

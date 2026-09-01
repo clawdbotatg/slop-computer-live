@@ -6,6 +6,13 @@ import { getRelayHealthSnapshot, subscribeRelayHealth } from "~~/lib/relayHealth
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
+// NOTE: the relay health path is `/v1/health`, not `/health`. RELAY_HTTP is
+// https://live.slop.computer, where Caddy proxies `/v1/*` to the relay but
+// leaves `/health` to Next.js — which matches the `[slug]` room page for
+// slug="health". Polling bare `/health` therefore SSR'd a whole room page
+// once a second and always looked "up" as long as Next.js was up, which is
+// exactly the failure this detector exists to catch. Don't shorten it back.
+//
 // /health polling fallback — covers surfaces without a mesh WS (front
 // page, unauthed spectators). The primary signal is the mesh WS state
 // via the relayHealth pub/sub, which trips within milliseconds of the
@@ -135,7 +142,7 @@ export function UpgradeModal() {
       try {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-        const res = await fetch(`${RELAY_HTTP}/health`, {
+        const res = await fetch(`${RELAY_HTTP}/v1/health`, {
           signal: ctl.signal,
           cache: "no-store",
         });
@@ -268,7 +275,7 @@ export function UpgradeModal() {
       try {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), RECOVERY_TIMEOUT_MS);
-        const res = await fetch(`${RELAY_HTTP}/health`, {
+        const res = await fetch(`${RELAY_HTTP}/v1/health`, {
           signal: ctl.signal,
           cache: "no-store",
         });
