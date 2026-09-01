@@ -123,6 +123,17 @@ this by building **locally**, then rsyncing the artifact.
   persisted via `/etc/fstab`)
 - Caddy fronts everything; HTTPS via Let's Encrypt
 
+## First-visit A/V lobby
+
+If you're touching `MediaLobby.tsx`, the hint arrow, the
+`slop-has-been-here-v1` / `slop-av-lobby-done-v1` flags, or the
+`lobby_report` WS message — read **`docs/AV-LOBBY.md`** first. The flag
+choreography is deliberate (the lobby visit intentionally does NOT
+write has-been-here, so the hint arrow fires on visit 2) and "fixing"
+it is the obvious regression. The doc has the full journey, the wire
+contract, the traps, and the two headless probes in `ops/probes/`
+that verify the whole flow.
+
 ## Hand gestures ("the eye")
 
 If gestures aren't drawing, someone says "the claw doesn't work", or you're
