@@ -351,19 +351,36 @@ export type TipCard = {
 
 export type TipParseResult = { ok: true; amountEth: string; chainId: number } | { ok: false; error: string };
 
-/** A hand-gesture effect broadcast to every peer (relay POST /v1/gesture) —
- *  drives the GestureLayer canvas overlay. Deterministic per (seed, receivedAt),
- *  so every screen renders the same flight. */
-export type GestureEvent = {
-  id: number;
-  kind: "eth" | "claw" | "computer";
-  /** Whose camera window the effect anchors to — lowercased ownerKey /
-   *  address / handle. Rendered only while that camera is up and visible. */
-  anchor: string;
-  /** Normalized hand position (0..1) inside the anchor camera's frame. */
+export type GestureKind = "eth" | "claw" | "computer";
+
+/** A gesture being HELD right now — streamed at cursor rate by the gesturing
+ *  peer's own page. Rendered live at the hand's position on that peer's
+ *  camera window; goes stale (and is dropped) if updates stop. */
+export type LiveGesture = {
+  /** `${from}:${hand}` — one live entry per hand per peer. */
+  key: string;
+  from: string; // sender's peerId — anchors to their camera window
+  hand: string;
+  kind: GestureKind;
+  /** Normalized hand position (0..1) inside the sender's camera frame. */
   x: number;
   y: number;
-  /** Normalized size — fraction of viewport height. */
+  /** Normalized size — fraction of the sender's camera-frame height. */
+  s: number;
+  spin: number;
+  angle: number;
+  open: number;
+  updatedAt: number;
+};
+
+/** A released gesture — drives the fly-away (or, for the slop computer logo,
+ *  the zoom-at-the-screen) on the GestureLayer canvas overlay. */
+export type GestureEvent = {
+  id: number;
+  kind: GestureKind;
+  from: string; // sender's peerId — launch point anchors to their camera window
+  x: number;
+  y: number;
   s: number;
   spin: number;
   angle: number;
@@ -1525,8 +1542,13 @@ export type PeerMeshState = {
   sendClick: (x: number, y: number) => void;
   /** In-flight tip cards (0.001+ ETH) — auto-prune after the fly animation. */
   tips: TipCard[];
-  /** In-flight hand-gesture effects — die off-screen, hard-pruned as backstop. */
+  /** In-flight released gesture effects — die off-screen, hard-pruned as backstop. */
   gestures: GestureEvent[];
+  /** Gestures being held right now, keyed `${peerId}:${hand}` — live-rendered. */
+  liveGestures: Record<string, LiveGesture>;
+  /** Stream a held gesture (~10Hz per hand) / end it. Sent as this session. */
+  sendGestureHold: (g: Omit<LiveGesture, "key" | "from" | "updatedAt">) => void;
+  sendGestureRelease: (g: Omit<LiveGesture, "key" | "from" | "updatedAt">) => void;
   /** AI fallback parse for fuzzy /tip phrasing (rate-limited server-side). */
   tipParse: (text: string) => Promise<TipParseResult>;
   /** Tell the room a tip just sent — relay formats + broadcasts the card. */
@@ -2150,6 +2172,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const tipIdRef = useRef(0);
   const [gestures, setGestures] = useState<GestureEvent[]>([]);
   const gestureIdRef = useRef(0);
+  const [liveGestures, setLiveGestures] = useState<Record<string, LiveGesture>>({});
   const [browsers, setBrowsers] = useState<Record<string, Browser>>({});
   const [txRequests, setTxRequests] = useState<TxRequest[]>([]);
   const [incomingForwards, setIncomingForwards] = useState<ForwardedTx[]>([]);
@@ -3090,6 +3113,33 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     },
     [send],
   );
+
+  const sendGestureHold = useCallback(
+    (g: Omit<LiveGesture, "key" | "from" | "updatedAt">) => {
+      send({ type: "gesture_hold", ...g });
+    },
+    [send],
+  );
+  const sendGestureRelease = useCallback(
+    (g: Omit<LiveGesture, "key" | "from" | "updatedAt">) => {
+      send({ type: "gesture_release", ...g });
+    },
+    [send],
+  );
+
+  // Sweep live gestures whose hold stream stopped without a release (sender's
+  // hand lost, tab closed, WS dropped) so nothing lingers frozen on screen.
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setLiveGestures(prev => {
+        const cutoff = Date.now() - 900;
+        const stale = Object.values(prev).some(g => g.updatedAt < cutoff);
+        if (!stale) return prev;
+        return Object.fromEntries(Object.entries(prev).filter(([, g]) => g.updatedAt >= cutoff));
+      });
+    }, 500);
+    return () => clearInterval(iv);
+  }, []);
 
   const sendChat = useCallback(
     (text: string) => {
@@ -4523,19 +4573,41 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
-        if (msg.type === "gesture" && (msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer")) {
-          gestureIdRef.current += 1;
+        if (
+          (msg.type === "gesture_hold" || msg.type === "gesture_release") &&
+          (msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer") &&
+          typeof msg.from === "string"
+        ) {
           const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
-          const g: GestureEvent = {
-            id: gestureIdRef.current,
-            kind: msg.kind as "eth" | "claw" | "computer",
-            anchor: typeof msg.anchor === "string" ? msg.anchor.toLowerCase() : "",
+          const from = msg.from as string;
+          const hand = typeof msg.hand === "string" ? msg.hand : "h";
+          const key = `${from}:${hand}`;
+          const kind = msg.kind as GestureKind;
+          const base = {
+            kind,
             x: num(msg.x, 0.5),
             y: num(msg.y, 0.5),
             s: num(msg.s, 0.12),
             spin: num(msg.spin, 0),
             angle: num(msg.angle, 0),
             open: num(msg.open, 0.25),
+          };
+          if (msg.type === "gesture_hold") {
+            setLiveGestures(prev => ({ ...prev, [key]: { ...base, key, from, hand, updatedAt: Date.now() } }));
+            return;
+          }
+          // Release: drop the live entry, launch the fly-away.
+          setLiveGestures(prev => {
+            if (!(key in prev)) return prev;
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+          gestureIdRef.current += 1;
+          const g: GestureEvent = {
+            id: gestureIdRef.current,
+            from,
+            ...base,
             seed: num(msg.seed, 1) >>> 0,
             receivedAt: Date.now(),
           };
@@ -5434,6 +5506,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     walletChatFor,
     tips,
     gestures,
+    liveGestures,
+    sendGestureHold,
+    sendGestureRelease,
     tipParse,
     tipAnnounce,
     broadcastTxRequest,

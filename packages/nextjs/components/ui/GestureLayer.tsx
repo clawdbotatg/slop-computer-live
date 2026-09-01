@@ -1,27 +1,38 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { GestureEvent, Peer, Publication } from "~~/hooks/usePeerMesh";
+import type { GestureEvent, LiveGesture, Publication } from "~~/hooks/usePeerMesh";
 
-// Full-viewport canvas that renders hand-gesture effects (relay `gesture`
-// broadcasts) flying across the top of everything — desktop, windows, chat.
-// Each effect spawns AT THE GESTURING HAND: the event's x/y are normalized
-// coords inside the anchor identity's camera frame, mapped through that
-// camera window's rect + object-fit:cover crop on this viewer's screen. If
-// that camera isn't up and visible, the effect is not rendered at all. Every
-// client (god-mode included, which is what puts it on the stream) runs the
-// same seeded flight, so screens agree without streaming animation state. An
-// effect dies when it drifts off-screen; the mesh's 15s prune is the
-// backstop. pointer-events: none, so it can never eat a click.
+// The room's shared FOREGROUND: a full-viewport canvas rendering hand-gesture
+// effects on top of everything — desktop, windows, chat. Two phases:
+//
+//   HOLD    — while a peer holds a gesture, their page streams position
+//             updates at cursor rate and the symbol renders LIVE at their
+//             hand, sized to and anchored on their camera window.
+//   RELEASE — the symbol launches: eth/claw fly outward from screen center
+//             through the launch point; the slop computer logo zooms "at"
+//             the screen (grows + fades, gone in under a second).
+//
+// x/y/s in the events are normalized to the SENDER's camera frame; each
+// viewer maps them through that peer's camera window rect + the video's
+// object-fit:cover crop, so the effect sits on the hand on every screen —
+// god mode included, which is what puts it on the stream. If the sender's
+// camera window isn't up and visible, their effects simply don't render.
+// pointer-events: none — this layer can never eat a click.
 //
 // The eth / claw draw functions are ported from slop-computer-background's
-// slop-shapes.js (the OBS rig) so the shared effects match the show's look.
+// slop-shapes.js so the look matches the original OBS rig.
 
 // Just under the cursor layer (2^31-1) — above every window and modal.
 const Z = 2147483646;
-const FADE_IN_MS = 300;
+const FADE_IN_MS = 200;
 // The slop computer logo flies "at" the screen: grows and fades over this long.
 const COMPUTER_LIFE_MS = 900;
+// A live gesture with no update for this long is stale — hidden here, swept
+// from state by the mesh shortly after.
+const LIVE_STALE_MS = 700;
+// How hard live symbols chase their latest broadcast position (per second).
+const SMOOTH_RATE = 14;
 
 // The slop computer logo (copied from the rig's computer.png). Loaded lazily
 // on the client only — this module is imported during SSR where Image doesn't
@@ -211,62 +222,19 @@ function mulberry32(seed: number) {
   };
 }
 
-type Flight = {
-  // Spawn point in viewport px, resolved once from the anchor camera window.
-  sx: number;
-  sy: number;
-  vx: number; // viewport-widths per second
-  vy: number; // viewport-heights per second
-  wobbleAmp: number;
-  wobbleHz: number;
-  wobblePhase: number;
-};
-
-// How long after arrival we keep trying to resolve the anchor window before
-// declaring the gesture dead (covers a slot/publication landing a beat late).
-const ANCHOR_GRACE_MS = 1000;
-
-const flightFor = (g: GestureEvent, sx: number, sy: number, W: number, H: number): Flight => {
-  const rnd = mulberry32(g.seed);
-  // Fly outward: away from the center of the screen, along the line from
-  // center through the spawn point (seeded direction when spawned dead
-  // center). Speed stays in viewport-widths/heights per second.
-  const dx = sx - W / 2;
-  const dy = sy - H / 2;
-  const len = Math.hypot(dx, dy);
-  const a = len < 1 ? rnd() * Math.PI * 2 : Math.atan2(dy, dx);
-  const speed = 0.1 + rnd() * 0.12;
-  return {
-    sx,
-    sy,
-    vx: Math.cos(a) * speed,
-    vy: Math.sin(a) * speed,
-    wobbleAmp: 0.015 + rnd() * 0.02,
-    wobbleHz: 0.4 + rnd() * 0.5,
-    wobblePhase: rnd() * Math.PI * 2,
-  };
-};
-
-// Where the gesturing hand is on THIS viewer's screen: find the anchor
-// identity's camera window and map the normalized in-frame hand position
-// through the video's object-fit:cover crop. Null when that camera isn't up
-// and visible — in which case the effect is simply not rendered (per Austin:
-// no full-screen fallback). Note the point can land slightly outside the
-// window when cover-cropping cut the band the hand was in; that still reads
-// correctly ("just off the edge of their window").
-function anchorPoint(g: GestureEvent, pubs: Publication[], peers: Peer[]): { x: number; y: number } | null {
-  if (!g.anchor) return null;
-  const pub = pubs.find(
-    p =>
-      p.kind === "camera" &&
-      !p.cameraOff &&
-      (p.ownerKey.toLowerCase() === g.anchor ||
-        peers.some(
-          pe => pe.id === p.peerId && (pe.address?.toLowerCase() === g.anchor || pe.handle?.toLowerCase() === g.anchor),
-        )),
-  );
+// Where a peer's normalized camera-frame point lands on THIS viewer's screen:
+// their camera window's <video>, mapped through object-fit:cover. Returns the
+// point plus the displayed video height (the size basis, so symbols scale
+// with the window). Null when that camera isn't up and visible — effect is
+// simply not rendered.
+function frameToScreen(
+  from: string,
+  nx: number,
+  ny: number,
+  pubs: Publication[],
+): { x: number; y: number; dh: number } | null {
+  const pub = pubs.find(p => p.kind === "camera" && !p.cameraOff && p.peerId === from);
   if (!pub) return null;
-  // Same deterministic slot id the relay's desktop.ts mints for camera pubs.
   const slotId = `owner-${pub.ownerKey}-camera`;
   const video = document.querySelector(`[data-slot-id="${CSS.escape(slotId)}"] video`);
   if (!(video instanceof HTMLVideoElement) || !video.videoWidth || !video.videoHeight) return null;
@@ -278,33 +246,74 @@ function anchorPoint(g: GestureEvent, pubs: Publication[], peers: Peer[]): { x: 
   const dw = video.videoWidth * scale;
   const dh = video.videoHeight * scale;
   return {
-    x: r.left + g.x * dw - (dw - r.width) / 2,
-    y: r.top + g.y * dh - (dh - r.height) / 2,
+    x: r.left + nx * dw - (dw - r.width) / 2,
+    y: r.top + ny * dh - (dh - r.height) / 2,
+    dh,
   };
 }
 
+type Flight = {
+  sx: number; // launch point in viewport px, frozen at release
+  sy: number;
+  size: number; // px size basis, frozen at release
+  vx: number; // viewport-widths per second
+  vy: number; // viewport-heights per second
+  wobbleAmp: number;
+  wobbleHz: number;
+  wobblePhase: number;
+};
+
+const flightFor = (g: GestureEvent, sx: number, sy: number, size: number, W: number, H: number): Flight => {
+  const rnd = mulberry32(g.seed);
+  // Fly outward: away from the center of the screen, along the line from
+  // center through the launch point (seeded direction when launched dead
+  // center).
+  const dx = sx - W / 2;
+  const dy = sy - H / 2;
+  const len = Math.hypot(dx, dy);
+  const a = len < 1 ? rnd() * Math.PI * 2 : Math.atan2(dy, dx);
+  const speed = 0.1 + rnd() * 0.12;
+  return {
+    sx,
+    sy,
+    size,
+    vx: Math.cos(a) * speed,
+    vy: Math.sin(a) * speed,
+    wobbleAmp: 0.015 + rnd() * 0.02,
+    wobbleHz: 0.4 + rnd() * 0.5,
+    wobblePhase: rnd() * Math.PI * 2,
+  };
+};
+
+// Locally-smoothed screen position for a live (held) gesture, so 10Hz
+// broadcasts render as continuous motion.
+type Smooth = { x: number; y: number; angle: number; open: number; spin: number; lastT: number };
+
 export const GestureLayer = ({
   gestures,
+  liveGestures,
   publications,
-  peers,
 }: {
   gestures: GestureEvent[];
+  liveGestures: Record<string, LiveGesture>;
   publications: Publication[];
-  peers: Peer[];
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const gesturesRef = useRef<GestureEvent[]>(gestures);
   gesturesRef.current = gestures;
+  const liveRef = useRef<Record<string, LiveGesture>>(liveGestures);
+  liveRef.current = liveGestures;
   const pubsRef = useRef<Publication[]>(publications);
   pubsRef.current = publications;
-  const peersRef = useRef<Peer[]>(peers);
-  peersRef.current = peers;
   const flightsRef = useRef<Map<number, Flight>>(new Map());
   const deadRef = useRef<Set<number>>(new Set());
+  const smoothRef = useRef<Map<string, Smooth>>(new Map());
+
+  const active = gestures.length > 0 || Object.keys(liveGestures).length > 0;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || gestures.length === 0) return;
+    if (!canvas || !active) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -321,6 +330,46 @@ export const GestureLayer = ({
       ctx.clearRect(0, 0, W, H);
 
       const now = Date.now();
+      const pubs = pubsRef.current;
+
+      // ---- live (held) gestures: track the hand on the sender's window ----
+      const smooth = smoothRef.current;
+      for (const g of Object.values(liveRef.current)) {
+        if (now - g.updatedAt > LIVE_STALE_MS) continue;
+        const p = frameToScreen(g.from, g.x, g.y, pubs);
+        if (!p) continue;
+        let sm = smooth.get(g.key);
+        if (!sm) {
+          sm = { x: p.x, y: p.y, angle: g.angle, open: g.open, spin: g.spin, lastT: now };
+          smooth.set(g.key, sm);
+        }
+        const dt = Math.min(0.1, (now - sm.lastT) / 1000);
+        sm.lastT = now;
+        const k = Math.min(1, dt * SMOOTH_RATE);
+        sm.x += (p.x - sm.x) * k;
+        sm.y += (p.y - sm.y) * k;
+        sm.angle += (g.angle - sm.angle) * k;
+        sm.open += (g.open - sm.open) * k;
+        sm.spin = g.spin;
+        const size = g.s * p.dh;
+        if (g.kind === "eth") {
+          drawEth(ctx, sm.x, sm.y, size * 0.5, sm.spin, 1);
+        } else if (g.kind === "claw") {
+          drawClaw(ctx, sm.x, sm.y, size, sm.angle, sm.open, 1);
+        } else {
+          const img = getComputerImg();
+          if (img) {
+            ctx.save();
+            ctx.shadowColor = "#ff3ec9";
+            ctx.shadowBlur = 24;
+            ctx.drawImage(img, sm.x - size / 2, sm.y - size / 2, size, size);
+            ctx.restore();
+          }
+        }
+      }
+      for (const key of smooth.keys()) if (!(key in liveRef.current)) smooth.delete(key);
+
+      // ---- released gestures: launch from the hand and fly ----
       const live = gesturesRef.current;
       const flights = flightsRef.current;
       const dead = deadRef.current;
@@ -328,16 +377,13 @@ export const GestureLayer = ({
         if (dead.has(g.id)) continue;
         let fl = flights.get(g.id);
         if (!fl) {
-          // Resolve the spawn point from the anchor's camera window on this
-          // viewer's screen. Not resolvable → retry briefly (a pub/slot can
-          // land a beat after the broadcast), then give up: camera not up
-          // and visible means the effect is not shown at all.
-          const p = anchorPoint(g, pubsRef.current, peersRef.current);
+          const p = frameToScreen(g.from, g.x, g.y, pubs);
           if (!p) {
-            if (now - g.receivedAt > ANCHOR_GRACE_MS) dead.add(g.id);
+            // Sender's camera vanished between hold and release — drop it.
+            dead.add(g.id);
             continue;
           }
-          fl = flightFor(g, p.x, p.y, W, H);
+          fl = flightFor(g, p.x, p.y, g.s * p.dh, W, H);
           flights.set(g.id, fl);
         }
         const t = (now - g.receivedAt) / 1000;
@@ -351,12 +397,10 @@ export const GestureLayer = ({
             continue;
           }
           const img = getComputerImg();
-          if (!img) continue; // still loading — it'll pop in next frame
-          const grow = 1 + lifeT * 3.5;
-          const size = g.s * H * grow;
-          const alpha = 1 - lifeT;
+          if (!img) continue;
+          const size = fl.size * (1 + lifeT * 3.5);
           ctx.save();
-          ctx.globalAlpha = alpha;
+          ctx.globalAlpha = 1 - lifeT;
           ctx.shadowColor = "#ff3ec9";
           ctx.shadowBlur = 24;
           ctx.drawImage(img, fl.sx - size / 2, fl.sy - size / 2, size, size);
@@ -366,9 +410,7 @@ export const GestureLayer = ({
 
         const x = fl.sx + fl.vx * W * t;
         const y = fl.sy + fl.vy * H * t + fl.wobbleAmp * H * Math.sin(fl.wobblePhase + t * fl.wobbleHz * Math.PI * 2);
-        // Half the raw broadcast size — full-size read as too big on the
-        // shared desktop.
-        const size = g.s * H * 0.5;
+        const size = fl.size;
         // Dead once fully off-screen — skip drawing, mesh prune collects it.
         if (x < -size * 2 || x > W + size * 2 || y < -size * 2 || y > H + size * 2) continue;
         const alpha = Math.min(1, (now - g.receivedAt) / FADE_IN_MS);
@@ -381,6 +423,14 @@ export const GestureLayer = ({
       // Drop bookkeeping for pruned gestures so the maps can't grow forever.
       for (const id of flights.keys()) if (!live.some(g => g.id === id)) flights.delete(id);
       for (const id of dead) if (!live.some(g => g.id === id)) dead.delete(id);
+
+      // Debug hook — lets a console (or an agent) confirm events are flowing
+      // without reading pixels. Cheap: three numbers.
+      (window as unknown as Record<string, unknown>).__slopGestures = {
+        live: Object.keys(liveRef.current).length,
+        flights: flights.size,
+        drawnAt: now,
+      };
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
@@ -389,9 +439,9 @@ export const GestureLayer = ({
       const c = canvasRef.current;
       c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
     };
-  }, [gestures.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active]);
 
-  if (gestures.length === 0) return null;
+  if (!active) return null;
   return (
     <canvas
       ref={canvasRef}

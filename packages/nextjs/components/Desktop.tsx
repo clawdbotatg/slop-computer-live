@@ -83,6 +83,7 @@ import type { UseLocalMedia } from "~~/hooks/useLocalMedia";
 import { readDenoisePref, resolutionConstraints, useLocalMedia } from "~~/hooks/useLocalMedia";
 import { useLocalWindows } from "~~/hooks/useLocalWindows";
 import { type Publication, type SlotPosition, peerLabel as resolvePeerLabel, usePeerMesh } from "~~/hooks/usePeerMesh";
+import { useRigGestures } from "~~/hooks/useRigGestures";
 import { shortAddress, useSession } from "~~/hooks/useSession";
 import { useUserGesture } from "~~/hooks/useUserGesture";
 import { reportMeshBootstrapped, reportRelayWsConnected } from "~~/lib/relayHealth";
@@ -750,6 +751,20 @@ function DesktopInner({ slug }: { slug: string }) {
   // God-mode (streaming box): owns the audio bus, runs god-STT, and sets
   // the public stream-output bounds (the dashed god-viewport rectangle).
   const isGodMode = session.authenticated && session.spectator === true;
+
+  // Rig gesture bridge: on the OBS box, the native hand detector publishes
+  // landmarks on localhost — this classifies them and streams gesture
+  // hold/release over our own WS. Only the session actually publishing its
+  // camera sends (that's whose window the effects anchor to); every other
+  // machine's EventSource just never connects. See useRigGestures.
+  useRigGestures({
+    enabled: !isGodMode && mesh.publications.some(p => p.peerId === mesh.myId && p.kind === "camera"),
+    sendGestureHold: mesh.sendGestureHold,
+    sendGestureRelease: mesh.sendGestureRelease,
+    publications: mesh.publications,
+    myId: mesh.myId,
+  });
+
   // Wake the shared AudioBus on the spectator/streaming box. Every
   // audio element on the page that registers via useAudioBusElement
   // gates on its own god-mode flag too, but the bus itself needs to
@@ -4813,11 +4828,11 @@ function DesktopInner({ slug }: { slug: string }) {
         <FlyingTipCard key={tip.id} tip={tip} customNames={mesh.customNames} />
       ))}
 
-      {/* Hand-gesture effects (claws / eth from the rig) spawn at the
-          gesturing hand's position on the anchor's camera window and fly
-          across the top of everything; not rendered at all when that camera
-          isn't up and visible. Self-prune from mesh.gestures. */}
-      <GestureLayer gestures={mesh.gestures} publications={mesh.publications} peers={mesh.peers} />
+      {/* The room's shared foreground: held gestures render live at the
+          sender's hand on their camera window; releases fly away (the slop
+          computer logo zooms at the screen). Nothing renders for a sender
+          whose camera window isn't up and visible. */}
+      <GestureLayer gestures={mesh.gestures} liveGestures={mesh.liveGestures} publications={mesh.publications} />
 
       {/* Cursors render OUTSIDE the desktop wrapper so they aren't clipped
           by its overflow:hidden when over the menubar. Position: fixed +

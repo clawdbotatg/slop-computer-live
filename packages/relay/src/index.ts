@@ -2311,59 +2311,6 @@ app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
   return { ok: true };
 });
 
-// --- Gesture effects (hand-gesture rig → shared overlay) ---------------------
-// One broadcast per classified hand gesture from the streaming rig (or any
-// authed agent). Carries only the classification + normalized spawn params —
-// never landmarks or video. Every client renders the effect locally on the
-// GestureLayer canvas overlay; god-mode renders it too, which is what puts it
-// on the stream. Same ephemeral shape as `tip` above; rate-limited via the
-// chat bucket. Roll back = revert this commit.
-type GestureBody = {
-  kind?: unknown;
-  x?: unknown;
-  y?: unknown;
-  s?: unknown;
-  spin?: unknown;
-  angle?: unknown;
-  open?: unknown;
-  anchor?: unknown;
-};
-const GESTURE_KINDS = new Set(["eth", "claw", "computer"]);
-app.post<{ Body: GestureBody }>("/v1/gesture", async (req, reply) => {
-  const a = v1AuthFromReq(req);
-  if (!a) return reply.code(401).send({ ok: false, error: "unauthenticated" });
-  const kind = typeof req.body?.kind === "string" ? req.body.kind : "";
-  if (!GESTURE_KINDS.has(kind)) return reply.code(400).send({ ok: false, error: "kind must be one of: eth, claw, computer" });
-  const num = (v: unknown, fallback: number, lo: number, hi: number) => {
-    const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
-    return Math.min(hi, Math.max(lo, n));
-  };
-  const room = roomFromReq(req);
-  if (!room.chat.allow(a.session.token)) return reply.code(429).send({ ok: false, error: "rate-limited" });
-  // Whose camera window the effect anchors to — x/y are hand coords inside
-  // that camera's frame, and clients render nothing when that camera isn't
-  // up and visible. Defaults to the caller's own identity (right for
-  // in-browser senders); the OBS rig (an anon agent session) passes the
-  // host's identity explicitly. Anchor names a window to draw ON, not an
-  // identity to act as, so it needs no extra authority.
-  const rawAnchor = typeof req.body?.anchor === "string" ? req.body.anchor : "";
-  const anchor = (rawAnchor || a.session.address || a.session.handle || "").toLowerCase().slice(0, 64);
-  room.broadcast({
-    type: "gesture",
-    from: { address: a.session.address, handle: a.session.handle, anonId: a.session.anonId ?? null },
-    anchor,
-    kind,
-    x: num(req.body?.x, 0.5, 0, 1),
-    y: num(req.body?.y, 0.5, 0, 1),
-    s: num(req.body?.s, 0.12, 0.02, 0.5),
-    spin: num(req.body?.spin, 0, -10, 10),
-    angle: num(req.body?.angle, 0, -Math.PI * 2, Math.PI * 2),
-    open: num(req.body?.open, 0.25, 0, 1.2),
-    seed: Math.floor(Math.random() * 0xffffffff),
-  });
-  return { ok: true };
-});
-
 // Just the room multisig address — what a `/tip` needs to know where to send.
 // slop.computer spectators can't read /v1/state (room-gated), so expose the
 // address (public on-chain data, shown on the live stream anyway) on its own
@@ -7742,6 +7689,8 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "offer"|"answer"|"ice", to: <peerId>, payload }
 //   { type: "cursor", x, y }                                  // broadcast
 //   { type: "click", x, y }                                    // ripple broadcast (incl. sender)
+//   { type: "gesture_hold", hand, kind, x, y, s, spin, angle, open }  // live hand gesture (cursor-rate)
+//   { type: "gesture_release", hand, kind, x, y, s, spin, angle, open } // gesture ended -> fly-away
 //   { type: "publish", streamId, kind, label }                // I'm publishing this stream
 //   { type: "unpublish", streamId }                            // I stopped publishing
 //   { type: "slot_update", id, x, y, width, height, z }        // any auth'd peer; last write wins
@@ -7768,7 +7717,8 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "tx_forward", from, fromAddress, fromHandle, id, browserId, method, params, chainId }
 //                                                                    // directed: only the targeted
 //                                                                    // peer sees this
-//   { type: "gesture", from, anchor, kind, x, y, s, spin, angle, open, seed } // hand-gesture effect (POST /v1/gesture)
+//   { type: "gesture_hold", from, hand, kind, x, y, s, spin, angle, open }        // incl. sender
+//   { type: "gesture_release", from, hand, kind, x, y, s, spin, angle, open, seed } // incl. sender
 //   { type: "pong" }
 //   { type: "error", error }
 
@@ -8073,6 +8023,39 @@ app.register(async function signalRoutes(fastify) {
         case "cursor": {
           if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
           room.broadcast({ type: "cursor", from: peerId, x: msg.x, y: msg.y }, peerId);
+          return;
+        }
+        case "gesture_hold":
+        case "gesture_release": {
+          // Live hand-gesture effects (the room's shared "foreground").
+          // The sender's own page classifies its hand input — the OBS rig's
+          // native detector via localhost, guests via in-browser MediaPipe —
+          // and streams holds at cursor rate plus one release when the
+          // gesture ends. x/y are normalized coords in the SENDER's camera
+          // frame; every client anchors them to the sender's camera window,
+          // so no identity or room ever needs configuring. Broadcast
+          // includes the sender (they see their own effect from the same
+          // path as everyone else).
+          const kind = msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer" ? msg.kind : null;
+          if (!kind) return;
+          const hand = typeof msg.hand === "string" ? msg.hand.slice(0, 16) : "h";
+          const num = (v: unknown, fallback: number, lo: number, hi: number) => {
+            const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
+            return Math.min(hi, Math.max(lo, n));
+          };
+          room.broadcast({
+            type: msg.type,
+            from: peerId,
+            hand,
+            kind,
+            x: num(msg.x, 0.5, -0.5, 1.5),
+            y: num(msg.y, 0.5, -0.5, 1.5),
+            s: num(msg.s, 0.12, 0.02, 1),
+            spin: num(msg.spin, 0, -10, 10),
+            angle: num(msg.angle, 0, -Math.PI * 2, Math.PI * 2),
+            open: num(msg.open, 0.25, 0, 1.2),
+            ...(msg.type === "gesture_release" ? { seed: Math.floor(Math.random() * 0xffffffff) } : {}),
+          });
           return;
         }
         case "god_viewport": {
