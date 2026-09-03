@@ -20,6 +20,7 @@ import { ClockWindow } from "~~/components/desktop/ClockWindow";
 import { DesktopFile } from "~~/components/desktop/DesktopFile";
 import { DesktopIcon } from "~~/components/desktop/DesktopIcon";
 import { EnsWindow } from "~~/components/desktop/EnsWindow";
+import { EyeStage } from "~~/components/desktop/EyeStage";
 import { FilePreviewWindow } from "~~/components/desktop/FilePreviewWindow";
 import { GasWindow } from "~~/components/desktop/GasWindow";
 import { GlossaryWindow } from "~~/components/desktop/GlossaryWindow";
@@ -2058,6 +2059,11 @@ function DesktopInner({ slug }: { slug: string }) {
   slotsRef.current = mesh.slots;
   const meshBootstrapped = mesh.bootstrapped;
   useEffect(() => {
+    // The eye (?fx=0) never clamps. Its viewport is the detector's concern
+    // only, and a clamp broadcast from there would rewrite the shared layout
+    // — i.e. shove windows around on the live stream — every time the eye
+    // opened smaller than the god window.
+    if (isEye) return;
     const MENUBAR = 38;
     // Smallest viewport a real spectator plausibly has (half-screen
     // laptop window). Anything under this is an automation/emulation
@@ -2100,7 +2106,7 @@ function DesktopInner({ slug }: { slug: string }) {
       if (timer) clearTimeout(timer);
       window.removeEventListener("resize", scheduled);
     };
-  }, [meshUpdateSlot, meshBootstrapped]);
+  }, [meshUpdateSlot, meshBootstrapped, isEye]);
 
   // Spectator (god-mode / OBS capture) broadcasts its own window inner
   // size to the room so every other client can render a dashed rectangle
@@ -2211,7 +2217,11 @@ function DesktopInner({ slug }: { slug: string }) {
       }[] = [];
       for (const pub of eyePubsRef.current) {
         if (pub.kind !== "camera" || pub.cameraOff) continue;
-        const video = document.querySelector(`[data-slot-id="${CSS.escape(`owner-${pub.ownerKey}-camera`)}"] video`);
+        // The eye stage's own uncropped tile wins; the desktop window (still
+        // mounted underneath) is the fallback only until the stage is up.
+        const video =
+          document.querySelector(`[data-eye-cam="${CSS.escape(pub.ownerKey)}"] video`) ??
+          document.querySelector(`[data-slot-id="${CSS.escape(`owner-${pub.ownerKey}-camera`)}"] video`);
         if (!(video instanceof HTMLVideoElement) || !video.videoWidth || !video.videoHeight) continue;
         const r = video.getBoundingClientRect();
         if (r.width < 60 || r.height < 45) continue;
@@ -3604,13 +3614,16 @@ function DesktopInner({ slug }: { slug: string }) {
         // God-mode only: pop the gesture "eye" — the effects-free room view
         // (?fx=0) the hand detector watches. Same session, so god auth
         // carries over; the always-running detector on this box latches onto
-        // the window by its SLOP-EYE title. Big on purpose: the capture IS
-        // the detection input, so more pixels = better hand tracking.
+        // the window by its SLOP-EYE title. Sized to this window's viewport:
+        // the capture IS the detection input, so more pixels = better hand
+        // tracking (the eye lays cameras out itself — see EyeStage).
         onEyeClick={
           isGodMode && !isEye
             ? () => {
                 const target = `/${encodeURIComponent(slug)}?fx=0`;
-                const features = "popup=yes,width=1280,height=760,menubar=no,toolbar=no,location=no,status=no";
+                const w = Math.max(640, window.innerWidth);
+                const h = Math.max(480, window.innerHeight);
+                const features = `popup=yes,width=${w},height=${h},menubar=no,toolbar=no,location=no,status=no`;
                 window.open(target, "slop-eye", features);
               }
             : null
@@ -4957,6 +4970,25 @@ function DesktopInner({ slug }: { slug: string }) {
       {mesh.tips.map(tip => (
         <FlyingTipCard key={tip.id} tip={tip} customNames={mesh.customNames} />
       ))}
+
+      {/* The eye's stage: every live camera, uncropped, viewport-sized, on
+          top of the (still mounted) desktop. This is what the hand detector
+          captures — see EyeStage for why its layout is independent of the
+          stream's. Only once the mesh is up, so any gate the eye must pass
+          on load stays clickable. */}
+      {isEye && meshConnectedForGodViewport && (
+        <EyeStage
+          slug={slug}
+          cams={mesh.publications.filter(p => p.kind === "camera" && !p.cameraOff)}
+          streamFor={streamFor}
+          labelFor={pub => {
+            const peer = mesh.peers.find(p => p.id === pub.peerId);
+            return peer
+              ? resolvePeerLabel(peer, mesh.customNames)
+              : (mesh.customNames[pub.ownerKey.toLowerCase()] ?? pub.label ?? pub.ownerKey.slice(0, 8));
+          }}
+        />
+      )}
 
       {/* The room's shared foreground: held gestures render live at the
           sender's hand on their camera window; releases fly away (the slop

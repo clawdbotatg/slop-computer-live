@@ -22,12 +22,19 @@ show.
  guests' + host's cameras (WebRTC, normal room windows)
         │
         ▼
- 👁 "eye" window — god machine, opened by the 👁 menu-bar button
-   live.slop.computer/<slug>?fx=0  (god-mode session, popup)
-   · renders the room WITHOUT the gesture layer (no feedback loop)
+ 👁 "eye" window — god machine; run-show.sh opens it (same URL + &fx=0,
+   same bounds as the god window, behind it), or the 👁 menu-bar button
+   live.slop.computer/<slug>?fx=0  (god-mode session)
+   · renders NO gesture layer (no feedback loop)
+   · renders its OWN stage (EyeStage.tsx): every live camera, uncropped,
+     as large as the viewport allows, on top of the desktop. The stream's
+     layout is irrelevant to detection — see "Why the eye has its own
+     layout" below
+   · never runs the viewport-resize slot clamp (a smaller eye used to
+     shove windows around on the stream)
    · titles itself SLOP-EYE (reasserted 1/s — page rewrites titles)
    · reports eye_geometry over its WS every 500ms:
-       viewport + each camera window's <video> rect + videoWidth/Height
+       viewport + each eye tile's <video> rect + videoWidth/Height
         │ (captured as pixels)
         ▼
  slop-detector — native Swift, launchd agent on the god machine
@@ -75,6 +82,28 @@ show.
    · god mode renders it too → that's what puts effects on the stream
 ```
 
+## Why the eye has its own layout (2026-09-03)
+
+Before EyeStage the eye rendered the shared desktop at a fixed 1280×760
+popup while the god window ran ~1706×958. Same absolute-px layout, smaller
+viewport: the camera tile hung off the eye's right/bottom edge and hands
+there simply didn't exist to the detector. Worse, the eye also ran the
+slot clamp on load, which pulled off-screen windows back in — and broadcast
+that to everyone, moving windows on the live stream.
+
+None of that was necessary. The relay normalizes every hand to the
+sender's *video frame* (inverting object-fit:cover on the rect the eye
+reports), and every viewer re-projects frame coords onto *its own* camera
+window. So the eye's layout only has to be good for detection: each tile
+sized to the video's aspect (cover crops nothing), as big as fits. A hand
+now gets a viewport-sized tile instead of a 440px window, nothing can be
+off-screen, and stream layout changes can't affect detection. One
+trade-off: a hand in a region the stream's tile crops out renders its
+effect just outside that tile.
+
+Don't "zoom out" the eye instead: browser zoom shrinks its CSS viewport,
+and the relay assumes capture-px / CSS-px is only the display DPR.
+
 ## Operations
 
 **One-time install (god machine, in its own Terminal — never plain ssh):**
@@ -89,10 +118,13 @@ human, which is why ssh won't do), installs
 `/tmp/slop-eye-detector.log`). The detector then idles forever printing
 "no match yet" until an eye window exists.
 
-**Per show (god machine):** click **👁** in the god-mode menu bar (next to
-🔊). Keep the eye window at least partially visible — a fully occluded
-Chrome window can stop painting and the capture goes stale. That's the
-whole ritual; the relay follows the eye to whatever room it's open in.
+**Per show (god machine):** `run-show.sh '<show url>'` in clawd-slop-obs
+opens the eye itself (same Chrome, same bounds as the god window, stacked
+behind it, Chrome launched with occlusion flags so it keeps painting) and
+ends by POSTing an empty hands frame to `/v1/hands` and logging the eye
+viewport + camera rects the relay sees. Fallback: click **👁** in the
+god-mode menu bar (opens the eye at the god window's viewport size).
+The relay follows the eye to whatever room it's open in.
 
 **Kill switch (mid-show, zero stream impact):** close the 👁 window.
 Detector loses its target, engine's stale sweep (700ms) releases any held
