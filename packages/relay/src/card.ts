@@ -81,57 +81,70 @@ const PROMPT = [
   "subject from the second image. No text overlays, no watermarks, no captions.",
 ].join(" ");
 
-// Prompt for the "custom vibe" path. Instead of compositing a dropped PFP, the
-// model INVENTS artwork for the green-dot spot from a free-text vibe the user
-// typed (e.g. "poker night", "a bird-watching meetup"). Optionally the user
-// also drops REFERENCE images (style examples, a mascot, a logo, a mood board)
-// — those ride along as extra reference images after the template, and the
-// prompt tells the model to take its style + subject cues from them instead
-// of defaulting to the house cyberdelic look. Everything else about the card
-// stays pixel-identical — same as the PFP path.
-function buildVibePrompt(vibe: string, refCount: number): string {
-  const styleBlock =
+// Prompt for the "custom" path. The user's text is treated as INSTRUCTIONS,
+// not a theme to illustrate — the first version of this wrapper framed it as a
+// "vibe", forbade real people, and locked every element but the green dot,
+// which fought the very first real use ("put Carlos in the middle window,
+// keep the left one, arena on the green screen, borrow the vibe of these two
+// screenshots"). So the wrapper now: describes the card's layout so the user
+// can name windows; numbers the user's reference images the way the user
+// numbers them (their "first image" is the second image the model receives);
+// lets instructions override any element; and applies the house defaults
+// (keep everything else identical, no green left, no captions, invent art in
+// the cyberdelic style) only where the user is silent.
+function buildCustomPrompt(instructions: string, refCount: number): string {
+  const refIntro =
     refCount > 0
       ? [
-          `The ${refCount === 1 ? "second image is" : `${refCount} images after the first one are`} REFERENCE`,
-          "EXAMPLES supplied by the user. They define what the artwork should look",
-          "like: take your visual STYLE (rendering technique, line weight, palette,",
-          "texture, mood) and your SUBJECT cues (characters, mascots, logos, motifs)",
-          "from them. Reinterpret them into one new piece of artwork for the",
-          "green-dot spot — do not paste a reference in verbatim, but if a reference",
-          "shows a specific logo, mascot, or character, keep it clearly recognizable.",
-          "Do not include any real photograph or person from the references.",
-          "Let the reference style win over the card's own style, then blend the",
-          "edges into the card's dark background so it sits in the scene.",
+          `After the template come ${refCount} REFERENCE IMAGE${refCount === 1 ? "" : "S"} supplied by the user,`,
+          "in the order the user numbered them: when the instructions say \"the first",
+          "image\" or \"image 1\" they mean the first reference image (the SECOND image",
+          "you received), \"the second image\" means the second reference, and so on.",
+          "The template itself is never one of the user's numbered images.",
         ]
-      : [
-          "Render the theme in the card's chunky cyberdelic Mac-OS-9 style — hot",
-          "magenta, cyan, and lime accents on deep purple, isometric 3/4 lighting.",
-        ];
+      : ["No reference images were supplied — work from the template and the instructions alone."];
   return [
-    "The bright green circular dot on the right side of the FIRST image is a",
-    "POSITION MARKER — it is NOT a mask, NOT a window, NOT a shape to fill.",
-    "It only marks WHERE to place a piece of artwork that you will INVENT.",
+    "You are editing a podcast title card. The FIRST image is the card TEMPLATE.",
+    "Its layout, left to right: a large SLOP.COMPUTER wordmark across the top; a",
+    "left window titled CAMERA containing the host's photo (the LEFT pfp); a",
+    "middle window titled CLAUDE containing a pyramid-headed robot avatar (the",
+    "MIDDLE pfp); and on the right a bright green circular disc. The green disc",
+    "is a POSITION MARKER — not a mask, not a window, not a shape to fill — it",
+    "marks the default spot for new artwork (the RIGHT pfp / green screen).",
+    "Around these sit a guest list, chat, music player, ticker bars and balances.",
     "",
-    "INVENT original artwork illustrating the following theme, then place it at",
-    "the green-dot location as a free-floating element composited into the card.",
-    "Do not borrow or paste any real photograph or person — generate the art:",
+    ...refIntro,
     "",
-    `THEME: ${vibe}`,
+    "Follow the user's INSTRUCTIONS below literally. They take priority over",
+    "every default rule that follows them.",
     "",
-    ...styleBlock,
-    "Size the artwork so it fills the green-dot area nicely, with details",
-    "extending naturally around that spot, like a sticker dropped into the scene.",
+    "=== USER INSTRUCTIONS ===",
+    instructions,
+    "=== END USER INSTRUCTIONS ===",
     "",
-    "The green color must be ENTIRELY REMOVED — no green ring, no green halo,",
-    "no green pixels anywhere — replaced with your invented artwork blended into",
-    "the card's dark/cyberdelic background tones and matching the magenta/cyan",
-    "lighting of the rest of the card.",
-    "DO NOT change any other element: keep the SLOP.COMPUTER wordmark, the guest",
-    "list, the camera/claude/chat windows, the ticker bars, balances, and every",
-    "label pixel-for-pixel identical. Only the green dot area changes — into the",
-    "artwork you invented. No text overlays, no watermarks, no captions.",
-  ].join(" ");
+    "Interpretation rules:",
+    "- If told to put a person from a reference into a window or onto the card,",
+    "  cut that person out cleanly (remove their background) and composite them",
+    "  there at a natural size, preserving their real likeness — a photographic",
+    "  cutout, not a robot, cartoon or restyled portrait, unless asked for one.",
+    "- If told to keep something exactly / as it is, do not alter a single pixel",
+    "  of it.",
+    "- If told to use a reference for the vibe, style or feel of the card, borrow",
+    "  its palette, glow, typography feel and motifs across the card's",
+    "  decorative surfaces — backgrounds, window chrome, accents — WITHOUT",
+    "  changing any text content, layout, or the contents of windows the",
+    "  instructions did not mention.",
+    "- Whatever the instructions send to the green screen / right pfp replaces",
+    "  the green disc completely: no green ring, halo or pixels remain. If the",
+    "  instructions never say what goes there, invent artwork illustrating",
+    "  their theme in the card's chunky cyberdelic Mac-OS-9 style (hot magenta,",
+    "  cyan and lime accents on deep purple, isometric 3/4 lighting), sized to",
+    "  fill that spot like a sticker dropped into the scene.",
+    "- Everything the instructions do not mention stays pixel-for-pixel",
+    "  identical: the SLOP.COMPUTER wordmark, guest list, chat, player, ticker",
+    "  bars, balances, labels, and both the CAMERA and CLAUDE windows.",
+    "- Add no new text, captions or watermarks anywhere.",
+  ].join("\n");
 }
 
 let cachedClient: OpenAI | null = null;
@@ -230,9 +243,9 @@ function refToFile(ref: CardRefImage, i: number): Promise<Awaited<ReturnType<typ
   return toFile(ref.bytes, `ref${i + 1}.${ext}`, { type });
 }
 
-// Custom-vibe path: no PFP to composite. We pass the template plus any
-// user-dropped reference images and let the model invent artwork for the
-// green-dot spot from the free-text vibe, styled after the references.
+// Custom path: the user's text is the instruction set. We pass the template
+// plus any user-dropped reference images (numbered the user's way) and let
+// the instructions decide what changes — see buildCustomPrompt.
 export async function generateCardFromPrompt(
   vibe: string,
   refs: CardRefImage[] = [],
@@ -242,10 +255,10 @@ export async function generateCardFromPrompt(
   const used = refs.slice(0, CARD_MAX_REF_IMAGES);
   log.info(
     { vibeLen: vibe.length, refs: used.length, refBytes: used.reduce((n, r) => n + r.bytes.length, 0) },
-    "card gen: start (vibe)",
+    "card gen: start (custom)",
   );
 
   const templateFile = await loadTemplateFile(log);
   const refFiles = await Promise.all(used.map(refToFile));
-  return runCardEdit([templateFile, ...refFiles], buildVibePrompt(vibe, used.length), log, t0);
+  return runCardEdit([templateFile, ...refFiles], buildCustomPrompt(vibe, used.length), log, t0);
 }

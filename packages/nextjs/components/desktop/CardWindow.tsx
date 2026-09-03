@@ -917,7 +917,8 @@ export const CardWindow = ({ mesh }: Props) => {
                 color: "#b79fd6",
               }}
             >
-              describe the vibe — art gets generated where the pfp goes. drop example images to set the style.
+              tell it what to change — your text is the instructions. drop reference images below; they are numbered in
+              the order you add them.
             </div>
             <textarea
               autoFocus
