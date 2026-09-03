@@ -81,14 +81,35 @@ const PROMPT = [
   "subject from the second image. No text overlays, no watermarks, no captions.",
 ].join(" ");
 
-// Prompt for the "custom vibe" path: no PFP is dropped, so there is only the
-// template (one reference image). Instead of compositing a subject, the model
-// INVENTS artwork for the green-dot spot from a free-text vibe the user typed
-// (e.g. "poker night", "a bird-watching meetup"). Everything else about the
-// card stays pixel-identical — same as the PFP path.
-function buildVibePrompt(vibe: string): string {
+// Prompt for the "custom vibe" path. Instead of compositing a dropped PFP, the
+// model INVENTS artwork for the green-dot spot from a free-text vibe the user
+// typed (e.g. "poker night", "a bird-watching meetup"). Optionally the user
+// also drops REFERENCE images (style examples, a mascot, a logo, a mood board)
+// — those ride along as extra reference images after the template, and the
+// prompt tells the model to take its style + subject cues from them instead
+// of defaulting to the house cyberdelic look. Everything else about the card
+// stays pixel-identical — same as the PFP path.
+function buildVibePrompt(vibe: string, refCount: number): string {
+  const styleBlock =
+    refCount > 0
+      ? [
+          `The ${refCount === 1 ? "second image is" : `${refCount} images after the first one are`} REFERENCE`,
+          "EXAMPLES supplied by the user. They define what the artwork should look",
+          "like: take your visual STYLE (rendering technique, line weight, palette,",
+          "texture, mood) and your SUBJECT cues (characters, mascots, logos, motifs)",
+          "from them. Reinterpret them into one new piece of artwork for the",
+          "green-dot spot — do not paste a reference in verbatim, but if a reference",
+          "shows a specific logo, mascot, or character, keep it clearly recognizable.",
+          "Do not include any real photograph or person from the references.",
+          "Let the reference style win over the card's own style, then blend the",
+          "edges into the card's dark background so it sits in the scene.",
+        ]
+      : [
+          "Render the theme in the card's chunky cyberdelic Mac-OS-9 style — hot",
+          "magenta, cyan, and lime accents on deep purple, isometric 3/4 lighting.",
+        ];
   return [
-    "The bright green circular dot on the right side of the image is a",
+    "The bright green circular dot on the right side of the FIRST image is a",
     "POSITION MARKER — it is NOT a mask, NOT a window, NOT a shape to fill.",
     "It only marks WHERE to place a piece of artwork that you will INVENT.",
     "",
@@ -98,8 +119,7 @@ function buildVibePrompt(vibe: string): string {
     "",
     `THEME: ${vibe}`,
     "",
-    "Render the theme in the card's chunky cyberdelic Mac-OS-9 style — hot",
-    "magenta, cyan, and lime accents on deep purple, isometric 3/4 lighting.",
+    ...styleBlock,
     "Size the artwork so it fills the green-dot area nicely, with details",
     "extending naturally around that spot, like a sticker dropped into the scene.",
     "",
@@ -196,15 +216,36 @@ export async function generateCard(
   return runCardEdit([templateFile, pfpFile], PROMPT, log, t0);
 }
 
-// Custom-vibe path: no PFP. We pass only the template and let the model invent
-// artwork for the green-dot spot from the user's free-text vibe.
+/** A user-supplied reference image for the custom-vibe path. */
+export type CardRefImage = { bytes: Buffer; mime: string };
+
+// Hard cap on reference images per generation. gpt-image-2 edit accepts many
+// more, but each one is more bytes to upload and more for the model to weigh;
+// four is plenty for "here's the style, here's the mascot".
+export const CARD_MAX_REF_IMAGES = 4;
+
+function refToFile(ref: CardRefImage, i: number): Promise<Awaited<ReturnType<typeof toFile>>> {
+  const ext = ref.mime.includes("png") ? "png" : ref.mime.includes("webp") ? "webp" : "jpg";
+  const type = ref.mime.includes("png") ? "image/png" : ref.mime.includes("webp") ? "image/webp" : "image/jpeg";
+  return toFile(ref.bytes, `ref${i + 1}.${ext}`, { type });
+}
+
+// Custom-vibe path: no PFP to composite. We pass the template plus any
+// user-dropped reference images and let the model invent artwork for the
+// green-dot spot from the free-text vibe, styled after the references.
 export async function generateCardFromPrompt(
   vibe: string,
+  refs: CardRefImage[] = [],
   log: CardLogger = noopLog,
 ): Promise<CardGenerateResult> {
   const t0 = Date.now();
-  log.info({ vibeLen: vibe.length }, "card gen: start (vibe)");
+  const used = refs.slice(0, CARD_MAX_REF_IMAGES);
+  log.info(
+    { vibeLen: vibe.length, refs: used.length, refBytes: used.reduce((n, r) => n + r.bytes.length, 0) },
+    "card gen: start (vibe)",
+  );
 
   const templateFile = await loadTemplateFile(log);
-  return runCardEdit([templateFile], buildVibePrompt(vibe), log, t0);
+  const refFiles = await Promise.all(used.map(refToFile));
+  return runCardEdit([templateFile, ...refFiles], buildVibePrompt(vibe, used.length), log, t0);
 }

@@ -2937,12 +2937,18 @@ is cached 1h.
 POST ${BASE}/v1/card/prompt?slug=${slugStr(slug)}   { "prompt": "poker night, neon felt, ETH chips" }
 # → { ok: true, job: { startedAt, startedBy } }
 # 400 empty-prompt · 413 prompt-too-long (>500 chars) · 409 already-generating
+
+# Optional style / subject references (≤4, jpeg|png|webp, ≤10 MB each):
+POST ${BASE}/v1/card/prompt?slug=${slugStr(slug)}   { "prompt": "poker night", "images": [{ "mime": "image/png", "data": "<base64>" }] }
+# 400 too-many-images · bad-image-type · bad-image-data · image-too-large
 \`\`\`
 
 Easiest path for an agent: pass a one-line vibe and the relay generates
 the title-card image in the house style — no image bytes to source or
-upload. Fire-and-forget, same job/broadcast lifecycle as the image path
-below (\`card_job\` → \`card_state\`, image lands at
+upload. Add \`images\` when you want the art styled after specific
+examples (a mascot, a logo, a mood board) instead of the default
+cyberdelic look. Fire-and-forget, same job/broadcast lifecycle as the
+image path below (\`card_job\` → \`card_state\`, image lands at
 \`/v1/cards/${slugStr(slug)}/card.png\`).
 
 ### Generate a card from a PFP / reference

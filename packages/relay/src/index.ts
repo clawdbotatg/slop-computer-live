@@ -53,7 +53,7 @@ import {
   type Room,
 } from "./room.js";
 import { hasAnyValidRoomCookie, roomCookieName, signRoomCookie, verifyRoomCookie } from "./room-auth.js";
-import { generateCard, generateCardFromPrompt } from "./card.js";
+import { CARD_MAX_REF_IMAGES, type CardRefImage, generateCard, generateCardFromPrompt } from "./card.js";
 import { MAX_TEXT_LEN as CHAT_MAX_TEXT, type ChatMessage } from "./chat.js";
 import { handleChatCommand } from "./chat-commands.js";
 import { TokenBucket } from "./rate-limit.js";
@@ -3446,18 +3446,50 @@ app.post(
 
 // Custom-vibe card: same per-room job + broadcast machinery as POST /v1/card,
 // but driven by a free-text prompt instead of a dropped PFP. The model invents
-// artwork for the green-dot spot from the vibe (e.g. "poker night"). One job at
-// a time per room, shared with the PFP path via the same `cardJobs` map.
-app.post("/v1/card/prompt", async (req, reply) => {
+// artwork for the green-dot spot from the vibe (e.g. "poker night"). Optional
+// `images: [{ mime, data }]` (base64, ≤4, jpeg/png/webp, ≤10 MB each decoded)
+// ride along as style/subject references the artwork is modelled after. One
+// job at a time per room, shared with the PFP path via the same `cardJobs` map.
+//
+// Body limit: 4 refs × 10 MB × 4/3 base64 overhead + prompt/JSON slack.
+const CARD_PROMPT_BODY_LIMIT = Math.ceil((CARD_MAX_REF_IMAGES * CARD_PFP_MAX_BYTES * 4) / 3) + 64 * 1024;
+const CARD_REF_MIME = /^image\/(jpeg|png|webp)$/;
+
+function parseCardRefImages(raw: unknown): CardRefImage[] | { error: string; note?: string } {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return { error: "bad-images", note: "images must be an array of { mime, data }" };
+  if (raw.length > CARD_MAX_REF_IMAGES) return { error: "too-many-images", note: `max ${CARD_MAX_REF_IMAGES}` };
+  const out: CardRefImage[] = [];
+  for (const item of raw) {
+    const mime = String((item as { mime?: unknown })?.mime ?? "").toLowerCase();
+    const data = (item as { data?: unknown })?.data;
+    if (!CARD_REF_MIME.test(mime)) return { error: "bad-image-type", note: "jpeg, png, or webp only" };
+    if (typeof data !== "string" || !data) return { error: "bad-image-data", note: "data must be base64" };
+    // Tolerate a data: URL prefix — a `FileReader.readAsDataURL` result
+    // pasted straight in is the obvious client mistake.
+    const b64 = data.replace(/^data:[^,]*,/, "");
+    const bytes = Buffer.from(b64, "base64");
+    if (bytes.length === 0) return { error: "bad-image-data", note: "base64 decoded to nothing" };
+    if (bytes.length > CARD_PFP_MAX_BYTES) return { error: "image-too-large", note: "10 MB per image" };
+    out.push({ bytes, mime });
+  }
+  return out;
+}
+
+app.post("/v1/card/prompt", { bodyLimit: CARD_PROMPT_BODY_LIMIT }, async (req, reply) => {
   const a = v1AuthFromReq(req);
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
 
-  const raw = (req.body as { prompt?: unknown } | undefined)?.prompt;
+  const body = req.body as { prompt?: unknown; images?: unknown } | undefined;
+  const raw = body?.prompt;
   const vibe = typeof raw === "string" ? raw.trim() : "";
   if (!vibe) {
     return reply.code(400).send({ error: "empty-prompt", note: 'POST {"prompt":"poker night"}' });
   }
   if (vibe.length > 500) return reply.code(413).send({ error: "prompt-too-long" });
+
+  const refs = parseCardRefImages(body?.images);
+  if (!Array.isArray(refs)) return reply.code(400).send(refs);
 
   const room = roomFromReq(req);
   const slug = room.id;
@@ -3473,10 +3505,10 @@ app.post("/v1/card/prompt", async (req, reply) => {
   room.broadcast({ type: "card_job", job });
   noteAction(room, a, "card", `🖼️ ${actorName(a.session)} is generating a custom title card`);
 
-  req.log.info({ slug, startedBy, vibeLen: vibe.length }, "card prompt job: accepted");
+  req.log.info({ slug, startedBy, vibeLen: vibe.length, refs: refs.length }, "card prompt job: accepted");
   void (async () => {
     try {
-      const { png } = await generateCardFromPrompt(vibe, req.log);
+      const { png } = await generateCardFromPrompt(vibe, refs, req.log);
       await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
       await _writeFile(cardFilePath(slug), png);
       const snap = readCardSnapshot(slug);

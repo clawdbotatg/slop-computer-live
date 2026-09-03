@@ -213,10 +213,63 @@ export const CardWindow = ({ mesh }: Props) => {
   };
 
   // Custom-vibe modal: type a theme like "poker night" and gpt-image-2
-  // invents artwork for the green-dot spot — no image dropped. Shares the
-  // exact job/broadcast pipeline as a PFP drop (same shared progress bar).
+  // invents artwork for the green-dot spot — no PFP composited. Optionally
+  // drop up to PROMPT_MAX_REFS example images (style refs, a mascot, a mood
+  // board) — they ride along as reference images and the model styles the
+  // invented art after them instead of the default cyberdelic look. Shares
+  // the exact job/broadcast pipeline as a PFP drop (same shared progress bar).
   const [promptOpen, setPromptOpen] = useState(false);
   const [promptText, setPromptText] = useState("");
+  const [promptRefs, setPromptRefs] = useState<{ file: File; url: string }[]>([]);
+  const [promptRefHover, setPromptRefHover] = useState(false);
+  const promptFileInputRef = useRef<HTMLInputElement | null>(null);
+  const addPromptRefs = (files: Iterable<File>) => {
+    const images = Array.from(files).filter(f => f.type.startsWith("image/"));
+    if (!images.length) {
+      setError("drop image files");
+      return;
+    }
+    setError(null);
+    setPromptRefs(prev => {
+      const room = PROMPT_MAX_REFS - prev.length;
+      if (room <= 0) return prev;
+      return [...prev, ...images.slice(0, room).map(file => ({ file, url: URL.createObjectURL(file) }))];
+    });
+  };
+  const removePromptRef = (i: number) => {
+    setPromptRefs(prev => {
+      const gone = prev[i];
+      if (gone) URL.revokeObjectURL(gone.url);
+      return prev.filter((_, j) => j !== i);
+    });
+  };
+  const clearPromptRefs = () => {
+    setPromptRefs(prev => {
+      prev.forEach(r => URL.revokeObjectURL(r.url));
+      return [];
+    });
+  };
+  // Reference drops land on the modal panel — stop them bubbling to the
+  // window's own drop handlers, which would treat the file as a PFP and
+  // kick off the *other* generation path.
+  const onPromptRefDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    setPromptRefHover(true);
+  };
+  const onPromptRefDragLeave = (e: React.DragEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    setPromptRefHover(false);
+  };
+  const onPromptRefDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setPromptRefHover(false);
+    if (e.dataTransfer.files?.length) addPromptRefs(e.dataTransfer.files);
+  };
   const handlePrompt = async (vibe: string) => {
     const trimmed = vibe.trim();
     if (!trimmed) return;
@@ -228,11 +281,14 @@ export const CardWindow = ({ mesh }: Props) => {
     setPromptOpen(false);
     setUploading(true);
     try {
+      const images = await Promise.all(
+        promptRefs.map(async ({ file }) => ({ mime: file.type, data: await fileToBase64(file) })),
+      );
       const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card/prompt`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed }),
+        body: JSON.stringify(images.length ? { prompt: trimmed, images } : { prompt: trimmed }),
       });
       if (!res.ok && res.status !== 409) {
         let detail = `HTTP ${res.status}`;
@@ -245,6 +301,7 @@ export const CardWindow = ({ mesh }: Props) => {
         throw new Error(detail);
       }
       setPromptText("");
+      clearPromptRefs();
     } catch (e) {
       setError((e as Error).message || "generation failed");
     } finally {
@@ -826,6 +883,10 @@ export const CardWindow = ({ mesh }: Props) => {
           }}
         >
           <div
+            onDragEnter={onPromptRefDragOver}
+            onDragOver={onPromptRefDragOver}
+            onDragLeave={onPromptRefDragLeave}
+            onDrop={onPromptRefDrop}
             style={{
               width: "min(420px, 100%)",
               display: "flex",
@@ -856,7 +917,7 @@ export const CardWindow = ({ mesh }: Props) => {
                 color: "#b79fd6",
               }}
             >
-              describe the vibe — art gets generated where the pfp goes
+              describe the vibe — art gets generated where the pfp goes. drop example images to set the style.
             </div>
             <textarea
               autoFocus
@@ -886,6 +947,100 @@ export const CardWindow = ({ mesh }: Props) => {
                 outline: "none",
               }}
             />
+            {/* Reference-image tray: drop zone + thumbnails. Click opens a
+                file picker for touch / no-drag setups. */}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-label="add reference images"
+              onClick={() => promptFileInputRef.current?.click()}
+              onKeyDown={e => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  promptFileInputRef.current?.click();
+                }
+              }}
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 8,
+                minHeight: 56,
+                padding: 8,
+                background: promptRefHover ? "rgba(255,62,201,0.12)" : "rgba(0,0,0,0.3)",
+                border: `1px dashed ${promptRefHover ? "var(--slop-magenta, #ff3ec9)" : "var(--slop-bevel-light, #4a4a4a)"}`,
+                cursor: "pointer",
+              }}
+            >
+              {promptRefs.map((r, i) => (
+                <div key={r.url} style={{ position: "relative", width: 48, height: 48, flex: "0 0 auto" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={r.url}
+                    alt=""
+                    style={{
+                      width: 48,
+                      height: 48,
+                      objectFit: "cover",
+                      display: "block",
+                      border: "1px solid var(--slop-magenta, #ff3ec9)",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    aria-label="remove reference image"
+                    onClick={e => {
+                      e.stopPropagation();
+                      removePromptRef(i);
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      width: 16,
+                      height: 16,
+                      lineHeight: "14px",
+                      padding: 0,
+                      fontSize: 11,
+                      background: "#0a041e",
+                      color: "#fff",
+                      border: "1px solid var(--slop-magenta, #ff3ec9)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {promptRefs.length < PROMPT_MAX_REFS ? (
+                <div
+                  style={{
+                    flex: "1 1 auto",
+                    fontFamily: "var(--slop-font-display)",
+                    fontSize: 10,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: promptRefHover ? "#fff" : "#7d67a3",
+                    textAlign: "center",
+                  }}
+                >
+                  {promptRefs.length
+                    ? `+ more (${promptRefs.length}/${PROMPT_MAX_REFS})`
+                    : "drop example images here — style / subject refs (optional)"}
+                </div>
+              ) : null}
+              <input
+                ref={promptFileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                hidden
+                onChange={e => {
+                  if (e.target.files?.length) addPromptRefs(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button type="button" onClick={() => setPromptOpen(false)} style={modalBtnStyle(false)}>
                 cancel
@@ -905,6 +1060,20 @@ export const CardWindow = ({ mesh }: Props) => {
     </div>
   );
 };
+
+// Cap on reference images per custom-card generation — mirrors the relay's
+// CARD_MAX_REF_IMAGES (it rejects more with 400 too-many-images).
+const PROMPT_MAX_REFS = 4;
+
+// File → bare base64 (no data: prefix) for the JSON body of /v1/card/prompt.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(fr.error ?? new Error("read failed"));
+    fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ""));
+    fr.readAsDataURL(file);
+  });
+}
 
 // Modal action button — text variant of the overlay button, magenta fill
 // on the primary action.
