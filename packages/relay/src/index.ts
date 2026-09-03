@@ -8,7 +8,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { writeFileAtomic } from "./fs-atomic.js";
-import { bakeCardPreview, bakeCardPublished } from "./card-bake.js";
+import { bakeCardPreview, bakeCardPublished, normalizeUploadedCard } from "./card-bake.js";
 import { appIconGenAvailable, generateAppIcon } from "./app-icon-gen.js";
 import type { Publication, SlotKind, SlotPosition } from "./desktop.js";
 import {
@@ -3523,6 +3523,47 @@ app.post("/v1/card/prompt", { bodyLimit: CARD_PROMPT_BODY_LIMIT }, async (req, r
   })();
 
   return reply.code(202).send({ ok: true, job });
+});
+
+// Fully custom card: upload a FINISHED card made elsewhere — no model call.
+// Raw image bytes (png or jpeg; webp is rejected because the pure-JS
+// normaliser can't decode it) land directly as the room's card.png after
+// normalizeUploadedCard letterboxes anything off the 3:2 canvas. Same
+// "anyone in the room" rule as generate/reset. Refused while a generation
+// job is in flight — its completion would silently overwrite the upload.
+app.post("/v1/card/upload", { bodyLimit: CARD_PFP_MAX_BYTES }, async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+
+  const body = req.body;
+  if (!Buffer.isBuffer(body) || body.length === 0) {
+    return reply.code(400).send({ error: "empty-body", note: "POST raw image bytes with image/png or image/jpeg" });
+  }
+  if (body.length > CARD_PFP_MAX_BYTES) return reply.code(413).send({ error: "too-large" });
+  const ct = String(req.headers["content-type"] ?? "").toLowerCase();
+  if (!/^image\/(png|jpeg)/.test(ct)) {
+    return reply.code(415).send({ error: "unsupported-type", note: "png or jpeg only" });
+  }
+
+  const room = roomFromReq(req);
+  const slug = room.id;
+  const existing = cardJobs.get(slug);
+  if (existing) return reply.code(409).send({ error: "already-generating", job: existing });
+
+  let png: Buffer;
+  try {
+    png = await normalizeUploadedCard(body, ct);
+  } catch (err) {
+    req.log.error({ err, slug, bytes: body.length, ct }, "card upload: decode failed");
+    return reply.code(400).send({ error: "bad-image", note: "could not decode the image" });
+  }
+  await _mkdir(`./.slop-data/rooms/${slug}`, { recursive: true });
+  await _writeFile(cardFilePath(slug), png);
+  const snap = readCardSnapshot(slug);
+  room.broadcast({ type: "card_state", state: snap });
+  noteAction(room, a, "card", `🖼️ ${actorName(a.session)} uploaded a custom title card`);
+  req.log.info({ slug, inBytes: body.length, outBytes: png.length, ct }, "card upload: stored");
+  return { ok: true, state: snap };
 });
 
 // Clear the current card — anyone in the room may reset, mirroring the

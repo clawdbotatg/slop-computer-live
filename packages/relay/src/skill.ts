@@ -2951,6 +2951,19 @@ cyberdelic look. Fire-and-forget, same job/broadcast lifecycle as the
 image path below (\`card_job\` → \`card_state\`, image lands at
 \`/v1/cards/${slugStr(slug)}/card.png\`).
 
+### Upload a finished card (fully custom — no model call)
+
+\`\`\`
+POST ${BASE}/v1/card/upload?slug=${slugStr(slug)}   content-type: image/png   <raw bytes>
+# → { ok: true, state: { version } }   (card_state broadcast to the room)
+# 415 unsupported-type (png|jpeg only) · 413 too-large (>10 MB) · 409 already-generating · 400 bad-image
+\`\`\`
+
+Made the card somewhere else? Post the bytes and it becomes the room's
+card as-is. Off-aspect or JPEG inputs are letterboxed onto the 1536×1024
+canvas; PNGs already ~3:2 are stored untouched. Title overlay + publish
+work on it exactly like a generated card.
+
 ### Generate a card from a PFP / reference
 
 \`\`\`

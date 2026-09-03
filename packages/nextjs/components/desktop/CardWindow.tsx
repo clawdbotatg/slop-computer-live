@@ -309,6 +309,45 @@ export const CardWindow = ({ mesh }: Props) => {
     }
   };
 
+  // Fully custom: upload a FINISHED card made elsewhere. No model call —
+  // the relay stores the bytes as the room's card (letterboxing anything
+  // off the 3:2 canvas) and broadcasts card_state like a completed job.
+  const uploadCardInputRef = useRef<HTMLInputElement | null>(null);
+  const handleUploadCard = async (file: File) => {
+    if (!/^image\/(png|jpeg)$/.test(file.type)) {
+      setError("upload a png or jpeg");
+      return;
+    }
+    if (cardJob) {
+      setError("already generating — wait for this one to finish");
+      return;
+    }
+    setError(null);
+    setUploading(true);
+    try {
+      const res = await fetch(withSlug(`${RELAY_HTTP}/v1/card/upload`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": file.type },
+        body: file,
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j?.error) detail = String(j.error);
+        } catch {
+          /* not json */
+        }
+        throw new Error(detail);
+      }
+    } catch (e) {
+      setError((e as Error).message || "upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleDragEnter = (e: React.DragEvent) => {
     if (!Array.from(e.dataTransfer.types).includes("Files")) return;
     e.preventDefault();
@@ -830,6 +869,29 @@ export const CardWindow = ({ mesh }: Props) => {
           >
             <CustomIcon />
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              uploadCardInputRef.current?.click();
+            }}
+            aria-label="upload finished card"
+            title="upload a finished card — use your own image as-is"
+            style={overlayBtnStyle(false)}
+          >
+            <UploadIcon />
+          </button>
+          <input
+            ref={uploadCardInputRef}
+            type="file"
+            accept="image/png,image/jpeg"
+            hidden
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) void handleUploadCard(f);
+              e.target.value = "";
+            }}
+          />
           {resultUrl ? (
             <>
               <button
@@ -1125,6 +1187,25 @@ const CustomIcon = () => (
     <path d="M7 2.5 C7 5 7.5 5.5 10 5.5 C7.5 5.5 7 6 7 8.5 C7 6 6.5 5.5 4 5.5 C6.5 5.5 7 5 7 2.5 Z" />
     <path d="M12 9 C12 10.2 12.2 10.4 13.4 10.4 C12.2 10.4 12 10.6 12 11.8 C12 10.6 11.8 10.4 10.6 10.4 C11.8 10.4 12 10.2 12 9 Z" />
     <path d="M4 11 C4 11.9 4.1 12 5 12 C4.1 12 4 12.1 4 13 C4 12.1 3.9 12 3 12 C3.9 12 4 11.9 4 11 Z" />
+  </svg>
+);
+
+// Tray with an up-arrow — "upload a finished card as-is".
+const UploadIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M8 10.5 V3" />
+    <path d="M5 6 L8 3 L11 6" />
+    <path d="M2.5 10.5 V13 H13.5 V10.5" />
   </svg>
 );
 

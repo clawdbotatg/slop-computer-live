@@ -9,6 +9,7 @@ import * as PImageNS from "pureimage";
 import { createReadStream, createWriteStream, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { PassThrough, Readable } from "node:stream";
 
 // pureimage ships as CJS; tolerate either interop shape.
 const PImage: any = (PImageNS as any).default ?? PImageNS;
@@ -106,4 +107,48 @@ export async function bakeCardPreview(
   out.getContext("2d").drawImage(src, 0, 0, src.width, src.height, 0, 0, w, h);
   await PImage.encodeJPEGToStream(out, createWriteStream(outPath), quality);
   return statSync(outPath).size;
+}
+
+// "Fully custom" card: the host made a finished card somewhere else and
+// uploads it, skipping the model. The rest of the pipeline (client render,
+// title bake, published unfurl, preview tier) assumes card.png is a PNG at
+// roughly the generator's 3:2 output (1536×1024), so normalise here:
+// PNGs already within 2% of that aspect are stored byte-for-byte (no
+// re-encode, no quality loss); anything else — JPEGs, odd aspects — is
+// letterboxed onto a 1536×1024 canvas in the card's deep-purple ground.
+// Letterbox rather than crop: a finished card's edges carry its content.
+export const CARD_CANVAS_W = 1536;
+export const CARD_CANVAS_H = 1024;
+const CARD_ASPECT_TOLERANCE = 0.02;
+const CARD_GROUND = "#0a041e";
+
+export async function normalizeUploadedCard(bytes: Buffer, mime: string): Promise<Buffer> {
+  const isPng = /png/i.test(mime);
+  const src = isPng
+    ? await PImage.decodePNGFromStream(Readable.from(bytes))
+    : await PImage.decodeJPEGFromStream(Readable.from(bytes));
+  const sw: number = src.width;
+  const sh: number = src.height;
+  if (!sw || !sh) throw new Error("uploaded card has no pixels");
+
+  const want = CARD_CANVAS_W / CARD_CANVAS_H;
+  const aspectOk = Math.abs(sw / sh - want) / want <= CARD_ASPECT_TOLERANCE;
+  if (isPng && aspectOk) return bytes;
+
+  const out = PImage.make(CARD_CANVAS_W, CARD_CANVAS_H);
+  const ctx: any = out.getContext("2d");
+  ctx.fillStyle = CARD_GROUND;
+  ctx.fillRect(0, 0, CARD_CANVAS_W, CARD_CANVAS_H);
+  const scale = Math.min(CARD_CANVAS_W / sw, CARD_CANVAS_H / sh);
+  const dw = Math.round(sw * scale);
+  const dh = Math.round(sh * scale);
+  const dx = Math.round((CARD_CANVAS_W - dw) / 2);
+  const dy = Math.round((CARD_CANVAS_H - dh) / 2);
+  ctx.drawImage(src, 0, 0, sw, sh, dx, dy, dw, dh);
+
+  const chunks: Buffer[] = [];
+  const sink = new PassThrough();
+  sink.on("data", (c: Buffer) => chunks.push(c));
+  await PImage.encodePNGToStream(out, sink);
+  return Buffer.concat(chunks);
 }
