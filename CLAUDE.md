@@ -47,6 +47,15 @@ question to ask first, the repro, and why reloading god mode is not a
 diagnostic. Don't re-derive this from static reading — it already
 produced one confident-but-unproven answer.
 
+## A guest says the music is loud and they can't hear the host
+
+That is the guest's own browser, not the broadcast. Guests get no
+auto-leveler, so the host's denoised mic arrives ~20 dB cold and they
+turn up to compensate. Read **`docs/GUEST-AUDIO-BALANCE.md`** — what was
+ruled out on 2026-09-04, how to measure it on a guest before building,
+and the two-piece fix sketch (per-peer GainNode leveling, music volume
+through a GainNode). Documented, not built.
+
 ## Broadcast audio leveling ("The Equalizer")
 
 If a show's voices vs music sounded off (present but wrong level — for
