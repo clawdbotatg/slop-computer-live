@@ -56,6 +56,15 @@ ruled out on 2026-09-04, how to measure it on a guest before building,
 and the two-piece fix sketch (per-peer GainNode leveling, music volume
 through a GainNode). Documented, not built.
 
+## The host's own mic ("my Yeti doesn't sound deep")
+
+Read **`docs/HOST-MIC.md`** before touching gain, position or foam. The
+2026-09-08 session measured the whole chain: the Mac input slider IS the
+Yeti's gain (set to 75), nothing on the Mac compresses, and the site's
+DSP + RNNoise path is tone-neutral. The missing warmth is distance
+(proximity effect), not processing. Tooling lives in `~/mic-lab/` on the
+Mac mini; open thread = analyze the first episode and propose a god-mode EQ.
+
 ## Broadcast audio leveling ("The Equalizer")
 
 If a show's voices vs music sounded off (present but wrong level — for
