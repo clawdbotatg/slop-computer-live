@@ -166,6 +166,10 @@ class AudioBusImpl {
   private filters: BiquadFilterNode[] = [];
   private bands: EqBand[] = BAND_FREQS.map(freq => ({ freq, gain: 0 }));
   private masterGain = 1;
+  /** Output kill switch — see setSilenced(). Not persisted, not in the
+   *  snapshot: it's a property of the TAB (the eye), never of the mix. */
+  private silenced = false;
+  private outNode: GainNode | null = null;
   /** When true the bus continuously adjusts each source's gain to
    *  match AUTO_TARGET_RMS. The popup checkbox toggles it; any manual
    *  set-source-gain (user dragging a slider) also flips it off. */
@@ -227,7 +231,17 @@ class AudioBusImpl {
       prev = f;
     }
     prev.connect(this.masterNode);
-    this.masterNode.connect(ctx.destination);
+    // master -> out -> destination. `out` is the silence gate: 1 normally,
+    // 0 on a tab that must mix (so components behave identically) but must
+    // never be heard — the gesture eye, which is a second god-mode window
+    // on the streaming box and would otherwise play every voice a second
+    // time into OBS's system-audio capture (the 2026-09 "echo in the
+    // recordings", a ~25ms doubled voice). Sits after master so the /eq
+    // numbers on the real broadcaster tab are untouched.
+    this.outNode = ctx.createGain();
+    this.outNode.gain.value = this.silenced ? 0 : 1;
+    this.masterNode.connect(this.outNode);
+    this.outNode.connect(ctx.destination);
     return ctx;
   }
 
@@ -238,6 +252,19 @@ class AudioBusImpl {
     const ctx = this.ctx;
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume().catch(() => undefined);
+  }
+
+  /** Silence this tab's bus output entirely (or restore it). Everything
+   *  still registers, routes, meters and auto-levels exactly as on the
+   *  broadcaster — only nothing reaches the speakers / OS audio capture.
+   *  For god-mode tabs that are not THE broadcast: the eye. Not persisted. */
+  setSilenced(on: boolean): void {
+    this.silenced = on;
+    if (this.outNode) this.outNode.gain.value = on ? 0 : 1;
+  }
+
+  isSilenced(): boolean {
+    return this.silenced;
   }
 
   // --- source registration ---

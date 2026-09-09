@@ -370,3 +370,37 @@ the moment the answer completes. Wasteful, not broken.
 | `fbaa689` | Patched the late-audio-track race with an `addtrack` listener. Correct but symptomatic — it treats one link, not the missing reconciliation |
 | `d5d59ad` | Per-recipient encoder tiers + H264-first. Investigated and **cleared** — `preferEfficientVideoCodecs` correctly skips non-video transceivers, `applySenderCaps` early-returns on `kind === "audio"` |
 | `7688abf` | Video quality fix. Verified not to touch `replaceTrack` / `addTrack` / `streamId` |
+
+
+## Echo / doubled voices in the recording (2026-09-08) — SOLVED
+
+**Symptom:** the show recording has a "weird echo" on every voice. Nobody
+hears it live — the host and guests hear each other peer-to-peer, not
+through the god mix — so it only shows up in the recording / stream.
+
+**Cause:** the gesture eye (`?fx=0`, docs/GESTURES.md) is a *second god-mode
+window* on the streaming box, in the same Chrome. God mode routes every
+peer's audio through the tab's Web Audio bus to the speakers — and nothing
+made the eye an exception, so it played every voice a second time, ~25ms
+offset from the broadcaster tab (two WebRTC jitter buffers). OBS on that box
+captures **system audio** (`sck_audio_capture` with no app filter in the
+`Untitled` collection of clawd-slop-obs), so both copies went to the stream.
+It also ran a second god-mode STT capture (double transcript posts, double
+OpenAI spend).
+
+**Evidence:** `ops/probes/echo-scan.py` over 60s samples at five offsets
+per show. Voice windows with a fixed ~25ms autocorrelation peak: 08-25 and
+08-31 (pre-eye) ≈ 20%, random lags; 09-01 and 09-08 (eye open) 86–100% at
+25–27ms for the whole show; 09-03 evening 0–20% until ~1h10 in, then 100%
+at 32ms — the eye was opened late that show.
+
+**Fix:** `useAudioBusOwner(isGodMode, { silent: isEye })` — the eye still
+owns a bus (so every component mutes its media element exactly as on the
+broadcaster) but the bus output is gated to zero (`AudioBus.setSilenced`,
+a gain node after master, never persisted) and the eye stays off the /eq
+BroadcastChannel. STT is gated `!isEye` too.
+
+**If it comes back:** run the probe first. A fixed-lag double means a second
+tab on the streaming box is audible — any operator "monitor" god-mode tab
+opened there does the same thing (it is not silenced; use headphones or
+open monitors elsewhere). A wandering lag is music periodicity, not echo.

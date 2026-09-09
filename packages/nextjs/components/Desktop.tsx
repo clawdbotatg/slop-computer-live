@@ -793,7 +793,13 @@ function DesktopInner({ slug }: { slug: string }) {
   // gates on its own god-mode flag too, but the bus itself needs to
   // be activated once so its AudioContext is built + resumed on the
   // first user gesture (otherwise registers race the context init).
-  useAudioBusOwner(isGodMode);
+  // The eye (?fx=0) is a SECOND god-mode window on the streaming box: it
+  // owns a bus too (so every component mutes its media element the same
+  // way) but with the output gated to silence and no /eq channel —
+  // otherwise every voice played twice on that box and OBS's system-audio
+  // capture streamed the ~25ms-offset double. Measured in the 2026-09-01
+  // / 09-08 recordings; see docs/BROADCAST-AUDIO-ROUTING.md.
+  useAudioBusOwner(isGodMode, { silent: isEye });
 
   // Composite meter: how well THIS tab is painting, sampled off
   // requestAnimationFrame. Feeds the /eq "composite" line so a stalled
@@ -968,7 +974,9 @@ function DesktopInner({ slug }: { slug: string }) {
   // as the authoritative backstop — see index.ts — so a stale client
   // can't leak a backstage utterance into the archive.
   const godStt = useGodModeStt({
-    enabled: isGodMode && episode.sttOn && !greenRoom,
+    // Never on the eye — it's a second god session on the same box and
+    // would transcribe (and bill) every utterance a second time.
+    enabled: isGodMode && !isEye && episode.sttOn && !greenRoom,
     mesh,
     relayHttpUrl: RELAY_HTTP,
     slug,

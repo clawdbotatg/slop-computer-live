@@ -47,6 +47,14 @@ question to ask first, the repro, and why reloading god mode is not a
 diagnostic. Don't re-derive this from static reading — it already
 produced one confident-but-unproven answer.
 
+## Echo or doubled voices in the recording (not heard live)
+
+Read the "Echo" section at the end of **`docs/BROADCAST-AUDIO-ROUTING.md`**
+first. It was the gesture eye — a second god-mode window on the streaming
+box playing every voice again into OBS's system-audio capture (fixed
+2026-09-08). `ops/probes/echo-scan.py` measures a recording for a
+fixed-lag duplicate in a minute; run it before theorizing.
+
 ## A guest says the music is loud and they can't hear the host
 
 That is the guest's own browser, not the broadcast. Guests get no

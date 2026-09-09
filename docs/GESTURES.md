@@ -88,6 +88,16 @@ show.
      Participants in the real room still see each other's effects backstage
 ```
 
+## The eye is silent (2026-09-08)
+
+The eye is a god-mode session, and god mode plays every peer through the
+tab's audio bus. Left alone, the eye doubled every voice on the streaming
+box (~25ms offset) and OBS's system-audio capture streamed the echo for a
+week of shows. `useAudioBusOwner(isGodMode, { silent: isEye })` keeps the
+bus (so media elements stay muted the same way) but gates its output to
+zero and stays off the /eq channel; god-mode STT is also gated `!isEye`.
+Details + the measurement probe: docs/BROADCAST-AUDIO-ROUTING.md, "Echo".
+
 ## Controls (2026-09-08)
 
 **The ✋ switch** — every camera window has a hand button in its top-right

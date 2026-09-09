@@ -18,16 +18,26 @@ import { AUDIO_BUS_CHANNEL, type BusInboundMessage, type BusOutboundMessage, aud
 // Non-god-mode sessions skip activation entirely — every per-element
 // hook below also gates on `enabled`, so audio elements stay on their
 // normal direct-to-default-output path.
-export function useAudioBusOwner(enabled: boolean): void {
+//
+// `silent`: this god-mode tab is NOT the broadcast (the gesture eye, ?fx=0).
+// It still owns a bus so every component routes audio exactly as on the
+// broadcaster — that's what keeps the media elements muted — but the bus
+// output is gated to zero and the tab stays OFF the /eq BroadcastChannel
+// (two owners answering one popup would fight over snapshots + levels).
+// Without this the eye played every peer a second time on the streaming
+// box, and OBS's system-audio capture put both copies on the stream.
+export function useAudioBusOwner(enabled: boolean, opts: { silent?: boolean } = {}): void {
+  const silent = opts.silent === true;
   useEffect(() => {
     if (!enabled) return;
     const bus = audioBus();
     bus.activate();
+    bus.setSilenced(silent);
     const onActivated = () => bus.resume();
     window.addEventListener(ACTIVATED_EVENT, onActivated);
 
     // BroadcastChannel isn't in older Safari, so feature-check.
-    const BC = typeof BroadcastChannel === "undefined" ? null : BroadcastChannel;
+    const BC = typeof BroadcastChannel === "undefined" || silent ? null : BroadcastChannel;
     const channel = BC ? new BC(AUDIO_BUS_CHANNEL) : null;
     let unsub: (() => void) | null = null;
     let levelsTimer: ReturnType<typeof setInterval> | null = null;
@@ -99,6 +109,7 @@ export function useAudioBusOwner(enabled: boolean): void {
 
     return () => {
       window.removeEventListener(ACTIVATED_EVENT, onActivated);
+      bus.setSilenced(false);
       unsub?.();
       if (levelsTimer !== null) clearInterval(levelsTimer);
       try {
@@ -107,7 +118,7 @@ export function useAudioBusOwner(enabled: boolean): void {
         /* ignore */
       }
     };
-  }, [enabled]);
+  }, [enabled, silent]);
 }
 
 // Register a raw MediaStream with the bus while `enabled` is true.
