@@ -400,12 +400,15 @@ broadcaster) but the bus output is gated to zero (`AudioBus.setSilenced`,
 a gain node after master, never persisted) and the eye stays off the /eq
 BroadcastChannel. STT is gated `!isEye` too.
 
-**Cleaning affected recordings:** `ops/probes/deecho.py` (header has the
-whole recipe). It tracks each speaker's copy delay per second, only treats
-seconds with a sample-exact recurring lag (a clean show passes through
-untouched — validated on 08-25), and subtracts the copy. 09-01 and 09-08
-were cleaned to `<name>_deecho.mp4` beside the originals on 2026-09-08;
-09-03 turned out to have no echo (its late-show hit was a bass note).
+**Cleaning affected recordings — tried, not worth it (2026-09-09).**
+`ops/probes/deecho.py` tracks each speaker's copy delay per second and
+subtracts it; it only treats seconds with a sample-exact recurring lag, so a
+clean show passes through untouched (validated on 08-25). On 09-01 and 09-08
+it removed roughly two thirds of the measurable copy, and side by side
+Austin judged the improvement too small to justify re-clipping the episodes.
+The cleaned files were deleted; the originals stand. 09-03 never had the
+echo (its late-show hit was a bass note). Don't re-open this without a
+clearly better method.
 
 **If it comes back:** run the probe first. A fixed-lag double means a second
 tab on the streaming box is audible — any operator "monitor" god-mode tab
