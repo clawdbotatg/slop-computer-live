@@ -70,6 +70,13 @@ export type VideoViewProps = {
   /** Publisher-only. Flip audio-only mode on/off. The parent routes this
    *  through the mesh so every peer's `cameraOff` updates in lockstep. */
   onToggleCameraOff?: (off: boolean) => void;
+  /** Hand-gesture effects (the eye) switched off for this person. Relay-
+   *  broadcast state, so everyone sees the same ✋ state. */
+  gesturesOff?: boolean;
+  /** When provided, render the ✋ switch. The parent passes it only to
+   *  those allowed to flip it (the owner, the host, god mode); everyone
+   *  else just sees a dimmed ✋ indicator while gestures are off. */
+  onToggleGesturesOff?: (off: boolean) => void;
   /** Identity palette for the audio-only avatar/visualizer backdrop. */
   bands?: Bands;
   /** Uploaded avatar URL for the audio-only backdrop (falls back to the
@@ -116,6 +123,8 @@ export const VideoView = ({
   onSettings,
   cameraOff = false,
   onToggleCameraOff,
+  gesturesOff = false,
+  onToggleGesturesOff,
   bands,
   avatarUrl = null,
   address = null,
@@ -319,6 +328,7 @@ export const VideoView = ({
               <InfoIcon />
             </button>
           ) : null}
+          <GesturesSwitch off={gesturesOff} onToggle={onToggleGesturesOff} />
         </div>
       ) : null}
       {isMine ? (
@@ -378,6 +388,7 @@ export const VideoView = ({
               {cameraOff ? <VideoOffIcon /> : <VideoOnIcon />}
             </button>
           ) : null}
+          <GesturesSwitch off={gesturesOff} onToggle={onToggleGesturesOff} />
           {onSettings ? (
             <button
               type="button"
@@ -528,6 +539,67 @@ const overlayBtnStyle = (active: boolean): React.CSSProperties => ({
 });
 
 // Mac OS 9-flavored monochrome icons. ~16px viewBox.
+// The ✋ switch: hand-gesture effects on/off for the person in this window.
+// Clickable when the parent grants a handler (owner / host / god mode);
+// otherwise only shown, dimmed, while gestures are off — so a guest whose
+// eth stopped flying can see why. Fun is the default, so "on" renders as
+// the plain outline (not the magenta active state); "off" is the struck
+// hand in magenta, matching how the camera-off and mic-off buttons read.
+const GesturesSwitch = ({ off, onToggle }: { off: boolean; onToggle?: (off: boolean) => void }) => {
+  if (!onToggle && !off) return null;
+  return (
+    <button
+      type="button"
+      onClick={onToggle ? () => onToggle(!off) : undefined}
+      disabled={!onToggle}
+      aria-label={off ? "turn hand gestures on" : "turn hand gestures off"}
+      title={
+        off
+          ? onToggle
+            ? "hand gestures OFF for this person — click to turn back on"
+            : "hand gestures are off for this person"
+          : "hand gestures ON — click to stop this person's fist/horns/claw effects"
+      }
+      style={{ ...overlayBtnStyle(off), ...(onToggle ? {} : { cursor: "default", opacity: 0.8 }) }}
+    >
+      {off ? <HandOffIcon /> : <HandIcon />}
+    </button>
+  );
+};
+
+const HandIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M5 8.5 V3.5 a1 1 0 0 1 2 0 V7 M7 7 V2.5 a1 1 0 0 1 2 0 V7 M9 7 V3.2 a1 1 0 0 1 2 0 V7.5 M11 7.5 V4.5 a1 1 0 0 1 2 0 V10 a4.5 4.5 0 0 1 -4.5 4.5 H8 a4 4 0 0 1 -3.2 -1.6 L2.4 9.7 a1.1 1.1 0 0 1 1.8 -1.3 L5 9.5" />
+  </svg>
+);
+
+const HandOffIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M5 8.5 V3.5 a1 1 0 0 1 2 0 V7 M7 7 V2.5 a1 1 0 0 1 2 0 V7 M9 7 V3.2 a1 1 0 0 1 2 0 V7.5 M11 7.5 V4.5 a1 1 0 0 1 2 0 V10 a4.5 4.5 0 0 1 -4.5 4.5 H8 a4 4 0 0 1 -3.2 -1.6 L2.4 9.7 a1.1 1.1 0 0 1 1.8 -1.3 L5 9.5" />
+    <path d="M2 14 L14 2" strokeWidth="1.8" />
+  </svg>
+);
+
 const VideoOnIcon = () => (
   <svg
     width="16"

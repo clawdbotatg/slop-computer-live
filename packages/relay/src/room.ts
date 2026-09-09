@@ -131,6 +131,7 @@ function roomPaths(id: string): {
   chyron: { path: string };
   apps: { path: string };
   greenRoom: { path: string };
+  gesturesOff: { path: string };
 } {
   const dir = `./.slop-data/rooms/${id}`;
   const legacy = id === DEFAULT_SLUG;
@@ -261,6 +262,12 @@ function roomPaths(id: string): {
       // to the live desktop mid-show. Cold start = not in the green room.
       path: `${dir}/green-room.json`,
     },
+    gesturesOff: {
+      // Who has hand-gesture effects switched off (owner keys). Persisted so
+      // a deploy mid-show doesn't quietly turn a muted guest's eth back on.
+      // Cold start = everyone on (the default).
+      path: `${dir}/gestures-off.json`,
+    },
   };
 }
 
@@ -316,10 +323,12 @@ export class Room {
   private streamActive = false;
   private streamGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private greenRoom = false;
+  private gesturesOff = new Set<string>();
   private airState: AirState = "off-air";
   /** Disk path for the persisted green-room flag — survives relay restarts
    *  so a deploy mid-show doesn't drop the stream back to the desktop. */
   private readonly greenRoomPath: string;
+  private readonly gesturesOffPath: string;
 
   /** Per-speaker live-caption arbitration. Speakers running browser STT
    *  (useLiveTranscript) emit `live_caption_state {alive}` on connect
@@ -410,6 +419,13 @@ export class Room {
       this.greenRoom = JSON.parse(readFileSync(this.greenRoomPath, "utf8"))?.on === true;
     } catch {
       this.greenRoom = false;
+    }
+    this.gesturesOffPath = paths.gesturesOff.path;
+    try {
+      const raw: unknown = JSON.parse(readFileSync(this.gesturesOffPath, "utf8"));
+      if (Array.isArray(raw)) for (const k of raw) if (typeof k === "string" && k) this.gesturesOff.add(k.toLowerCase());
+    } catch {
+      /* cold start: nobody muted */
     }
     this.meta = new RoomMeta(paths.meta.path, id);
     this.todos = new TodoList(paths.todos.path, paths.todos.legacy);
@@ -829,6 +845,35 @@ export class Room {
       this.setStreamActive(this.hlsLive && this.hasGodSpectator());
     }, STREAM_GRACE_MS);
     this.streamGraceTimer.unref?.();
+  }
+
+  /** Owner keys (wallet address / handle / anon fallback, lowercased) whose
+   *  hand-gesture effects are switched off. Empty = everyone on. */
+  getGesturesOff(): string[] {
+    return [...this.gesturesOff];
+  }
+
+  isGesturesOff(ownerKey: string): boolean {
+    return this.gesturesOff.has(ownerKey.toLowerCase());
+  }
+
+  /** Flip one person's hand-gesture effects. The relay's GestureEngine stops
+   *  broadcasting their holds/releases while off; every client also learns
+   *  the flag (the ✋ switch on their camera window). Persisted + broadcast
+   *  on change only. Returns whether anything changed. */
+  setGesturesOff(ownerKey: string, off: boolean): boolean {
+    const key = ownerKey.toLowerCase();
+    if (!key) return false;
+    if (this.gesturesOff.has(key) === off) return false;
+    if (off) this.gesturesOff.add(key);
+    else this.gesturesOff.delete(key);
+    try {
+      writeFileAtomic(this.gesturesOffPath, JSON.stringify([...this.gesturesOff]));
+    } catch {
+      /* best-effort — a lost write just means the mute won't survive a restart */
+    }
+    this.broadcast({ type: "gestures_off", ownerKey: key, off });
+    return true;
   }
 
   getGreenRoom(): boolean {

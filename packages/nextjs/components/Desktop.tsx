@@ -4098,6 +4098,21 @@ function DesktopInner({ slug }: { slug: string }) {
                         onToggleCameraOff={
                           pub.peerId === mesh.myId ? off => mesh.setCameraOff(pub.streamId, off) : undefined
                         }
+                        // The ✋ switch: hand-gesture effects for this
+                        // person, relay-broadcast + keyed by owner key so a
+                        // reload doesn't silently turn them back on. Who can
+                        // flip it: the person themself (any of their tabs),
+                        // the host, god mode. Everyone else sees a dimmed ✋
+                        // only while it's off.
+                        gesturesOff={mesh.gesturesOff.has(pub.ownerKey.toLowerCase())}
+                        onToggleGesturesOff={
+                          pub.peerId === mesh.myId ||
+                          (!!myOwnerKey && pub.ownerKey.toLowerCase() === myOwnerKey) ||
+                          (session.authenticated && session.role === "host") ||
+                          isGodMode
+                            ? off => mesh.setGesturesOff(pub.ownerKey, off)
+                            : undefined
+                        }
                         // Avatar backdrop shown when in audio-only mode —
                         // resolved the same way the audio-share window does.
                         bands={pubBands}
@@ -4994,8 +5009,11 @@ function DesktopInner({ slug }: { slug: string }) {
           sender's hand on their camera window; releases fly away (the slop
           computer logo zooms at the screen). Nothing renders for a sender
           whose camera window isn't up and visible. Suppressed on the ?fx=0
-          eye view so effects can't feed back into hand detection. */}
-      {!fxOff && (
+          eye view so effects can't feed back into hand detection, and on
+          god-mode views while in the green room — a backstage fist used to
+          throw eth across the standby card on the stream. Participants in
+          the real room still see each other's effects backstage. */}
+      {!fxOff && !(isGodMode && greenRoom) && (
         <GestureLayer gestures={mesh.gestures} liveGestures={mesh.liveGestures} publications={mesh.publications} />
       )}
 

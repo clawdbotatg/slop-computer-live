@@ -1762,6 +1762,15 @@ export type PeerMeshState = {
    *  green room. No-op for non-spectators — the relay drops the message,
    *  and the shared `greenRoom` flag only updates on the relay's echo. */
   setGreenRoom: (on: boolean) => void;
+  /** Owner keys (lowercased) whose hand-gesture effects are switched off —
+   *  the ✋ switch on a camera window. Relay truth (hello + `gestures_off`);
+   *  the relay also stops broadcasting a muted person's gestures, so this
+   *  set is for rendering the switch, not for filtering. Empty = all on. */
+  gesturesOff: Set<string>;
+  /** Flip someone's hand gestures. Allowed for your own owner key, the host,
+   *  and god mode; the relay rejects anything else and echoes the change to
+   *  everyone via `gestures_off` (no optimistic write). */
+  setGesturesOff: (ownerKey: string, off: boolean) => void;
   /** Most recent STT segment, pushed by the room's WS broadcast when
    *  Whisper appends a new line. `null` until the first segment arrives
    *  in this session. Used by the on-screen subtitle caption. We don't
@@ -2218,6 +2227,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   const [godViewport, setGodViewportState] = useState<{ width: number; height: number } | null>(null);
   const [airState, setAirState] = useState<AirState>("off-air");
   const [greenRoom, setGreenRoomFlag] = useState(false);
+  const [gesturesOff, setGesturesOffSet] = useState<Set<string>>(() => new Set());
   const [latestTranscriptSeg, setLatestTranscriptSeg] = useState<TranscriptSegment | null>(null);
   const [liveCaption, setLiveCaption] = useState<LiveCaption | null>(null);
   const [newsDigestState, setNewsDigestState] = useState<NewsDigestState | null>(null);
@@ -4050,6 +4060,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const setGesturesOff = useCallback(
+    (ownerKey: string, off: boolean) => {
+      // Relay is source of truth — it validates who may flip whom and
+      // echoes `gestures_off`, which the handler below applies.
+      send({ type: "set_gestures_off", ownerKey: ownerKey.toLowerCase(), off });
+    },
+    [send],
+  );
+
   const updateSlot = useCallback(
     (patch: Partial<SlotPosition> & { id: string }) => {
       // HARD RULE: every brand-new window comes to the front. If no slot
@@ -4302,6 +4321,15 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           }
           if (typeof msg.greenRoom === "boolean") {
             setGreenRoomFlag(msg.greenRoom);
+          }
+          if (Array.isArray(msg.gesturesOff)) {
+            setGesturesOffSet(
+              new Set(
+                (msg.gesturesOff as unknown[])
+                  .filter((k): k is string => typeof k === "string")
+                  .map(k => k.toLowerCase()),
+              ),
+            );
           }
           if (msg.newsDigestState && typeof msg.newsDigestState === "object") {
             setNewsDigestState(msg.newsDigestState as NewsDigestState);
@@ -5109,6 +5137,19 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           return;
         }
 
+        if (msg.type === "gestures_off" && typeof msg.ownerKey === "string" && typeof msg.off === "boolean") {
+          const key = (msg.ownerKey as string).toLowerCase();
+          const off = msg.off as boolean;
+          setGesturesOffSet(prev => {
+            if (prev.has(key) === off) return prev;
+            const next = new Set(prev);
+            if (off) next.add(key);
+            else next.delete(key);
+            return next;
+          });
+          return;
+        }
+
         if (msg.type === "transcript_seg" && msg.seg && typeof msg.seg === "object") {
           // Only the latest segment — the subtitle UI cross-fades on
           // each update and doesn't need history. The full transcript
@@ -5637,6 +5678,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     hiddenBalances,
     setBalanceHidden,
     setCameraOff,
+    gesturesOff,
+    setGesturesOff,
     peerPings,
     peerViewports,
     peerLobby,

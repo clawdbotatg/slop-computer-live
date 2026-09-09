@@ -2321,14 +2321,28 @@ app.post<{ Body: TipAnnounceBody }>("/v1/tip/announce", async (req, reply) => {
 // Auth: the god-mode password in a header — the same secret the streaming
 // box already holds; landmarks are scene observations, not user actions.
 const gestureEngines = new Map<string, GestureEngine>();
-const gestureEngineFor = (room: { id: string; broadcast: (msg: Record<string, unknown>) => void }): GestureEngine => {
+const gestureEngineFor = (room: Room): GestureEngine => {
   let e = gestureEngines.get(room.id);
   if (!e) {
-    e = new GestureEngine(msg => room.broadcast(msg as unknown as Record<string, unknown>));
+    e = new GestureEngine(msg => {
+      // The ✋ switch: a person with gestures off never reaches the room.
+      // Filtered here (not in the engine) because the engine only knows
+      // peerIds and the switch is keyed by the stable owner key.
+      if (gesturesOffForPeer(room, msg.from)) return;
+      room.broadcast(msg as unknown as Record<string, unknown>);
+    });
     gestureEngines.set(room.id, e);
   }
   return e;
 };
+// peerId -> is that peer's owner muted? Camera publications carry the owner
+// key; a hand can only be attributed to a peer with a live camera window, so
+// "no publication" only happens in the legacy per-peer WS path (= not muted).
+const gesturesOffForPeer = (room: Room, peerId: string): boolean => {
+  const pub = room.desktop.listPublications().find(p => p.peerId === peerId);
+  return !!pub && room.isGesturesOff(pub.ownerKey);
+};
+
 // Detector-gone sweep: release held effects when the hands stream stops.
 setInterval(() => {
   for (const e of gestureEngines.values()) e.tick();
@@ -7823,6 +7837,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //   { type: "click", x, y }                                    // ripple broadcast (incl. sender)
 //   { type: "gesture_hold", hand, kind, x, y, s, spin, angle, open }  // live hand gesture (cursor-rate)
 //   { type: "gesture_release", hand, kind, x, y, s, spin, angle, open } // gesture ended -> fly-away
+//   { type: "set_gestures_off", ownerKey, off }                // ✋ switch: self, host, or god mode
 //   { type: "publish", streamId, kind, label }                // I'm publishing this stream
 //   { type: "unpublish", streamId }                            // I stopped publishing
 //   { type: "slot_update", id, x, y, width, height, z }        // any auth'd peer; last write wins
@@ -7853,6 +7868,7 @@ app.post<{ Body: KickBody }>("/admin/kick", async (req, reply) => {
 //                                                                    // peer sees this
 //   { type: "gesture_hold", from, hand, kind, x, y, s, spin, angle, open }        // incl. sender
 //   { type: "gesture_release", from, hand, kind, x, y, s, spin, angle, open, seed } // incl. sender
+//   { type: "gestures_off", ownerKey, off }                    // someone's ✋ switch flipped (hello: gesturesOff[])
 //   { type: "pong" }
 //   { type: "error", error }
 
@@ -8044,6 +8060,7 @@ app.register(async function signalRoutes(fastify) {
       godViewport: room.getGodViewport(),
       airState: room.getAirState(),
       greenRoom: room.getGreenRoom(),
+      gesturesOff: room.getGesturesOff(),
     });
     room.broadcast({ type: "peer_join", peer: info }, peerId);
 
@@ -8185,6 +8202,8 @@ app.register(async function signalRoutes(fastify) {
           const kind =
             msg.kind === "eth" || msg.kind === "claw" || msg.kind === "computer" || msg.kind === "heart" ? msg.kind : null;
           if (!kind) return;
+          // Same ✋ switch as the eye path.
+          if (room.isGesturesOff((info.address ?? info.handle ?? peerId).toLowerCase())) return;
           const hand = typeof msg.hand === "string" ? msg.hand.slice(0, 16) : "h";
           const num = (v: unknown, fallback: number, lo: number, hi: number) => {
             const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -8250,6 +8269,26 @@ app.register(async function signalRoutes(fastify) {
             windows.push({ id, x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), z: Number.isFinite(z) ? Math.round(z) : 0 });
           }
           if (windows.length) room.recordGodGeometry(Math.round(vw), Math.round(vh), windows);
+          return;
+        }
+        case "set_gestures_off": {
+          // The ✋ switch on a camera window: hand-gesture effects on/off for
+          // ONE person, keyed by owner key (stable across reconnects, same
+          // key the publication carries). Who may flip it: the person
+          // themself, the host (slop.atg.eth — any admin address running
+          // as host), and god mode. Default is on; the relay stops
+          // broadcasting that person's gestures while off and every client
+          // learns the flag via `gestures_off`.
+          if (typeof msg.ownerKey !== "string" || typeof msg.off !== "boolean") {
+            return send(socket, { type: "error", error: "bad_gestures_off" });
+          }
+          const target = msg.ownerKey.toLowerCase();
+          if (!target || target.length > 128) return send(socket, { type: "error", error: "bad_gestures_off" });
+          const mine = (info.address ?? info.handle ?? peerId).toLowerCase();
+          if (target !== mine && !isHostInfo(info) && !isSpectator) {
+            return send(socket, { type: "error", error: "forbidden" });
+          }
+          room.setGesturesOff(target, msg.off);
           return;
         }
         case "green_room": {

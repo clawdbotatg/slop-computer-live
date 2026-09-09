@@ -1,4 +1,4 @@
-# Hand gestures — "the eye" (2026-08-31)
+# Hand gestures — "the eye" (2026-08-31, controls + strict fist 2026-09-08)
 
 Hand gestures made on camera trigger drawn effects (lobster claw, spinning
 eth, the slop computer logo) rendered live on every screen in the room and
@@ -54,7 +54,8 @@ show.
    · invert object-fit:cover → normalized in-frame coords → virtual
      1280x720 "frame space" (so px-tuned thresholds keep meaning)
    · classifier + state machine ported from the old OBS foreground:
-       fist ✊ → eth releases every 150ms (fires instantly)
+       fist ✊ → eth releases every 150ms — after a 300ms hold, and only
+         when all four fingers are clearly curled (see "Fist strictness")
        horns 🤘 → eth held on the hand
        claw 🦞 (thumb+index+middle, signed thumb-out > 0.10) → held claw,
          jaw opens with thumb-index pinch
@@ -64,8 +65,10 @@ show.
          per-hand poses; palm-apart check rejects prayer hands) → held
          heart + little hearts stream out the top; on release the big
          heart floats away. Relay-only — no OBS-foreground original.
-       everything else → nothing; non-fist poses need 150ms stability
-       (hold-to-activate) before firing
+       everything else → nothing; every pose needs stability before it
+       fires (hold-to-activate): 150ms for horns/claw/L, 300ms for a fist
+   · ✋ switch: a person with gestures OFF is dropped right here (their
+     holds/releases never leave the relay) — see "Controls" below
    · broadcasts gesture_hold (~10Hz while held) / gesture_release (+seed)
      with from=<peerId>, x/y/s normalized to that peer's camera frame
         │
@@ -79,8 +82,52 @@ show.
      sway and fade (~3.2s)
    · sender's camera window closed/docked/camera-off → nothing renders
    · canvas sits just under the cursor layer, pointer-events:none
-   · god mode renders it too → that's what puts effects on the stream
+   · god mode renders it too → that's what puts effects on the stream —
+     EXCEPT while the god operator is in the green room: the layer is not
+     mounted on god-mode views then, so nothing flies over the standby card.
+     Participants in the real room still see each other's effects backstage
 ```
+
+## Controls (2026-09-08)
+
+**The ✋ switch** — every camera window has a hand button in its top-right
+control row. Default is ON for everyone (fun first). Click it and that
+person's gestures stop: the relay's engine drops their holds/releases at the
+source, so nothing renders anywhere, stream included. Who can flip whose:
+
+- the person themself (any of their tabs — it's keyed by owner key, not
+  peer id, so a reload doesn't turn it back on);
+- the host (slop.atg.eth, or any admin address running as host);
+- god mode (the streaming box / operator monitor).
+
+Everyone else sees a dimmed ✋ on that window only while it's off — so a
+guest whose eth stopped flying can see why. State lives on the relay per
+room (`Room.gesturesOff`, persisted to `gestures-off.json` so a deploy
+doesn't silently unmute anyone), reaches clients in `hello.gesturesOff[]`
+and `gestures_off {ownerKey, off}`; the verb is `set_gestures_off {ownerKey,
+off}` (relay rejects anyone but self/host/spectator with `forbidden`).
+
+**Green room** — god-mode views don't mount the GestureLayer while
+`greenRoom` is on (same gate the peer cursors use in `Desktop.tsx`).
+Detection keeps running (the eye is unaffected), and normal participants
+still see effects among themselves backstage; the stream sees a clean
+standby card. Nothing is buffered — when the curtain lifts, only new
+gestures render.
+
+**Fist strictness** — two changes in `gestures.ts`, after a show where eth
+flew off a guest's neck/shoulder (Vision's hand-pose hallucinates a "hand"
+there for a frame or two, and a fist used to fire on frame one):
+
+- `isFist()`: all four fingertips must sit inside `FIST_CURL` (0.85) × their
+  own PIP-to-wrist distance. The old rule was "≤ 1 finger extended" — a thumb
+  out, a half-curled hand, or a mis-tracked blob all read as a fist. Those
+  are "none" now; only `isFist()` makes a fist.
+- `FIST_HOLD_MS` 300: a fist has to survive three consecutive detector frames
+  (10fps) before the first eth. Other poses keep `HOLD_MS` 150. A fist that
+  flickers away for a frame restarts its hold.
+
+`gestures.test.ts` pins all of this and is the working synthetic-hands
+recipe (a 21-point hand builder with per-finger curl).
 
 ## Why the eye has its own layout (2026-09-03)
 
@@ -145,11 +192,11 @@ with an explicit ?slug. Used for testing without the god machine.
 - Logs: `/tmp/slop-eye-detector.log` (detector: "Capturing: …",
   "hands: N" once/sec, "no match yet" loop), `/tmp/slop-eye-chrome.log`.
 - **Synthetic hands** let you test everything without a camera or detector:
-  POST a fake fist positioned over a camera rect (fist fires instantly, so
-  interleaved real empty frames can't suppress it). Working recipe in the
-  session that built this; shape: 21 `[x,y]` normalized to the capture, all
-  fingertips closer to the wrist than their PIPs, thumb tip on the palm
-  axis. Watch broadcasts by opening a WS to `/signal?slug=<room>` with a
+  POST a fake fist positioned over a camera rect, at least twice ≥300ms
+  apart (a fist needs the hold now; a real empty frame in between resets
+  it). Working recipe: the `hand()` builder in
+  `packages/relay/src/gestures.test.ts` — 21 `[x,y]` normalized to the
+  capture, every fingertip well inside its PIP's wrist radius. Watch broadcasts by opening a WS to `/signal?slug=<room>` with a
   room-authed session and filtering `type.startsWith('gesture')`.
 - Client side: `window.__slopGestures` (in any room tab) = `{live, flights,
   drawnAt}` updated per animation frame.
@@ -160,9 +207,11 @@ with an explicit ?slug. Used for testing without the god machine.
 
 ## Tuning knobs
 
-- `gestures.ts`: HOLD_MS 150 (accidental-trigger guard), EMIT_INTERVAL 150
-  (fist eth cadence), FRAME_HOLD_MS 200, THUMB_OUT 0.10 (claw vs peace),
-  HANDS_STALE_MS 700, maximumHandCount 6 (detector).
+- `gestures.ts`: HOLD_MS 150 (accidental-trigger guard, non-fist poses),
+  FIST_HOLD_MS 300 + FIST_CURL 0.85 (fist strictness — raise/lower these
+  first when a show reports false eth or a fist that won't fire),
+  EMIT_INTERVAL 150 (fist eth cadence), FRAME_HOLD_MS 200, THUMB_OUT 0.10
+  (claw vs peace), HANDS_STALE_MS 700, maximumHandCount 6 (detector).
 - `GestureLayer.tsx`: sizes are `s × displayed-video-height` (eth ×0.5);
   outward flight speed 0.10–0.22 viewport-widths/s; COMPUTER_LIFE_MS 900;
   SMOOTH_RATE 14 (hold tracking chase).
@@ -202,8 +251,11 @@ re-approval on that machine. Don't rebuild the night of a show.
 
 ## Files
 
-- slop-computer-live: `packages/relay/src/gestures.ts` (engine),
-  `index.ts` (/v1/hands, eye_geometry WS case, spectator allow-list),
+- slop-computer-live: `packages/relay/src/gestures.ts` (engine) +
+  `gestures.test.ts`, `room.ts` (gesturesOff set, persisted),
+  `index.ts` (/v1/hands, eye_geometry + set_gestures_off WS cases, the
+  ✋ filter in `gestureEngineFor`, spectator allow-list),
+  `VideoView.tsx` (the ✋ button),
   `packages/nextjs/components/ui/GestureLayer.tsx` (renderer),
   `usePeerMesh.ts` (gesture/liveGesture state, eye_geometry sender),
   `Desktop.tsx` (👁 button, fx=0/isEye behavior, eye reporter),

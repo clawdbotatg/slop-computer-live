@@ -49,6 +49,14 @@ const VH = 720;
 const THUMB_OUT = 0.1;
 const CLAW_INWARD = (40 * Math.PI) / 180;
 const HOLD_MS = 150;
+// A fist used to fire on the first frame it was seen — and Vision's hand-pose
+// will happily hallucinate a "hand" on a neck or a shoulder for a frame or
+// two, which then threw eth off people who weren't gesturing at all. A fist
+// now has to survive FIST_HOLD_MS of consecutive frames (3 at the detector's
+// 10fps) before the first eth, and every finger has to be clearly curled
+// (tip-to-wrist under FIST_CURL x pip-to-wrist) — not merely "not extended".
+const FIST_HOLD_MS = 300;
+const FIST_CURL = 0.85;
 const EMIT_INTERVAL = 150;
 const FRAME_HOLD_MS = 200;
 const HEART_MINI_INTERVAL = 240; // little hearts stream out of a held heart at this rate
@@ -80,7 +88,7 @@ function thumbOut(lm: LM): boolean {
   return (lat(at(lm, 4)) * Math.sign(lat(at(lm, 1)) || 1)) / ul > THUMB_OUT;
 }
 
-function fingerExt(lm: LM): boolean[] {
+export function fingerExt(lm: LM): boolean[] {
   const w = at(lm, 0);
   const ext: boolean[] = [];
   ext[0] = thumbOut(lm);
@@ -97,10 +105,28 @@ function fingerExt(lm: LM): boolean[] {
   return ext;
 }
 
-function classify(ext: boolean[]): string {
+/** Strict fist: all four fingers folded well inside their own PIP radius.
+ *  The thumb is ignored — it sits across the fingers or along the side of a
+ *  real fist and thumbOut() reads either way. */
+export function isFist(lm: LM): boolean {
+  const w = at(lm, 0);
+  const pr: [number, number][] = [
+    [8, 6],
+    [12, 10],
+    [16, 14],
+    [20, 18],
+  ];
+  return pr.every(([tip, pip]) => dist(at(lm, tip), w) < dist(at(lm, pip), w) * FIST_CURL);
+}
+
+export function classify(ext: boolean[], fist: boolean): string {
   const [t, i, m, r, p] = ext;
   const count = ext.filter(Boolean).length;
-  if (count <= 1) return "fist";
+  if (fist) return "fist";
+  // One-or-fewer fingers "extended" used to read as a fist too (a thumb out,
+  // a half-curled hand, a mis-tracked blob). That was the false-positive
+  // path — it's nothing now; only isFist() makes a fist.
+  if (count <= 1) return "none";
   if (i && p && !m && !r) return "horns";
   if (t && i && m && !r && !p) return "claw";
   if (t && i && !m && !r && !p) return "L";
@@ -255,12 +281,13 @@ export class GestureEngine {
         dy,
         span,
         scale: Math.max(30, span * 1.7),
-        raw: classify(fingerExt(lm)),
+        raw: classify(fingerExt(lm), isFist(lm)),
         pose: "none",
       });
     });
 
-    // Hold-to-activate debounce ('fist' fires instantly).
+    // Hold-to-activate debounce. A fist needs the LONGER hold (see
+    // FIST_HOLD_MS) — it's the pose the detector false-positives into.
     for (const hi of hands) {
       let st = this.poseState.get(hi.key);
       if (!st) {
@@ -271,7 +298,7 @@ export class GestureEngine {
         st.name = hi.raw;
         st.since = now;
       }
-      hi.pose = hi.raw === "fist" || now - st.since >= HOLD_MS ? hi.raw : "none";
+      hi.pose = now - st.since >= (hi.raw === "fist" ? FIST_HOLD_MS : HOLD_MS) ? hi.raw : "none";
     }
     for (const k of this.poseState.keys()) if (!hands.some(h => h.key === k)) this.poseState.delete(k);
 
