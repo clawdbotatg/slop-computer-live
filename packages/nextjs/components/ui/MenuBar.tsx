@@ -7,7 +7,9 @@ import { Address } from "@scaffold-ui/components";
 import type { Address as AddressType } from "viem";
 import type { AirState } from "~~/hooks/usePeerMesh";
 import { sessionLabel, useSession } from "~~/hooks/useSession";
-import { readStoredRoomPassword } from "~~/utils/roomPassword";
+import { resolveRoomPassword } from "~~/utils/roomPassword";
+
+const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
 // Compact USD formatter for the menubar balance chip. Matches the
 // WalletHeader's format ($0.02) so the two read identically.
@@ -901,7 +903,7 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
   const [publicStatus, setPublicStatus] = useState<"idle" | "copied" | "failed">("idle");
-  const [privateStatus, setPrivateStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [privateStatus, setPrivateStatus] = useState<"idle" | "copied" | "bare" | "failed">("idle");
   const ref = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -933,20 +935,26 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
 
   // Private link: the current origin with the room password baked into
   // `?invite=` so the recipient clears the password gate on landing. The
-  // password is whatever this browser cached when it last passed the gate —
-  // the same value PasswordGate replays on mount.
+  // password comes from whatever this browser cached (gate or admin panel),
+  // else from the relay's host-only invite endpoint — a host whose session
+  // rode in on a cookie never typed the password here, so localStorage alone
+  // produced a bare link. If nothing is on file anywhere we still copy the
+  // bare URL but say so instead of claiming "link copied!".
   const copyPrivate = async () => {
     if (!slug) return;
     try {
-      const password = readStoredRoomPassword(slug);
+      const password = await resolveRoomPassword(slug, RELAY_HTTP);
       const base = `${window.location.origin}/${slug}`;
       const url = password ? `${base}?invite=${encodeURIComponent(password)}` : base;
       await navigator.clipboard.writeText(url);
-      setPrivateStatus("copied");
-      setTimeout(() => {
-        setPrivateStatus("idle");
-        setOpen(false);
-      }, 1200);
+      setPrivateStatus(password ? "copied" : "bare");
+      setTimeout(
+        () => {
+          setPrivateStatus("idle");
+          setOpen(false);
+        },
+        password ? 1200 : 2200,
+      );
     } catch {
       setPrivateStatus("failed");
       setTimeout(() => setPrivateStatus("idle"), 1500);
@@ -956,7 +964,6 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
   const copySkill = async () => {
     setStatus("copying");
     try {
-      const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
       // Mint the token scoped to the current room — the relay locks the
       // agent token to whatever slug is passed here, so it must carry the
       // room or the agent ends up scoped to the debug sandbox instead.
@@ -1079,9 +1086,11 @@ function SlopMenu({ brand, slug }: { brand: string; slug?: string }) {
             >
               {privateStatus === "copied"
                 ? "link copied!"
-                : privateStatus === "failed"
-                  ? "copy failed"
-                  : `${slug} private`}
+                : privateStatus === "bare"
+                  ? "copied — no password on file"
+                  : privateStatus === "failed"
+                    ? "copy failed"
+                    : `${slug} private`}
             </button>
           ) : null}
           {slug ? (

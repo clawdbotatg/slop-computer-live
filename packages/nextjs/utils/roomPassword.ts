@@ -29,3 +29,54 @@ export const readStoredRoomPassword = (slug: string): string => {
     return "";
   }
 };
+
+// The admin panel keeps its own slug→password map (rooms created or rotated
+// from /admin land here, not in the per-slug gate key). Read-only mirror of
+// the key in app/admin/page.tsx so a host who set the room up from the admin
+// panel gets a working private link from the menubar without retyping.
+export const ADMIN_STORAGE_KEY = "slop-admin-room-passwords";
+const readAdminPassword = (slug: string): string => {
+  try {
+    const raw = window.localStorage.getItem(ADMIN_STORAGE_KEY);
+    if (!raw) return "";
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    const v = map?.[slug];
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+};
+
+/** Cache a password under the per-slug gate key (what the gate replays). */
+export const rememberStoredPassword = (slug: string, password: string): void => {
+  try {
+    window.localStorage.setItem(slugStorageKey(slug), password);
+  } catch {
+    /* cookie-only is fine */
+  }
+};
+
+/** Best-effort room password for building a `?invite=` link: every local
+ *  cache first, then the relay's host-only `/v1/rooms/:slug/invite` (the
+ *  relay stores the plaintext precisely so a host on a device that never
+ *  typed the password — cookie session, admin-created room — can still hand
+ *  out the link). A relay hit is cached so the next copy is instant.
+ *  Returns "" when nothing is on file anywhere (non-host, unclaimed room). */
+export const resolveRoomPassword = async (slug: string, relayHttp: string): Promise<string> => {
+  if (typeof window === "undefined") return "";
+  const local = readStoredRoomPassword(slug) || readAdminPassword(slug);
+  if (local) return local;
+  try {
+    const res = await fetch(`${relayHttp}/v1/rooms/${encodeURIComponent(slug)}/invite`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!res.ok) return "";
+    const j = (await res.json()) as { password?: string | null };
+    if (!j.password) return "";
+    rememberStoredPassword(slug, j.password);
+    return j.password;
+  } catch {
+    return "";
+  }
+};
