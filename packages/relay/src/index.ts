@@ -29,6 +29,7 @@ import {
   isFinalizeInFlight,
   regenerateEpisodeMeta,
   setEpisodeStartPoint,
+  setEpisodeTldrInManifest,
 } from "./recordings.js";
 import { detectStartPoint } from "./detect-start.js";
 import {
@@ -7106,6 +7107,25 @@ app.post("/admin/episode-tldr", async (req, reply) => {
     return reply.send({ slug: slug.toLowerCase(), tldr: row });
   } catch (err) {
     return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Fold the stored TLDR into a finalized episode's manifest and re-pin (one
+// field, no AI). Admin shows the button only when the manifest copy is missing
+// or stale. Caller writes the returned CID on-chain via setManifest.
+app.post("/admin/tldr-to-manifest", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const q = (req.query ?? {}) as { manifest?: unknown; episodeSlug?: unknown };
+  const manifestCid = typeof q.manifest === "string" ? q.manifest : "";
+  const episodeSlug = typeof q.episodeSlug === "string" ? q.episodeSlug : "";
+  if (!manifestCid || !episodeSlug) return reply.code(400).send({ error: "missing ?manifest=<cid>&episodeSlug=<slug>" });
+  try {
+    const out = await setEpisodeTldrInManifest({ ipfsApiUrl: config.ipfsApiUrl, manifestCid, episodeSlug });
+    return reply.send({ manifestCid: out.manifestCid });
+  } catch (err) {
+    app.log.error({ err }, "tldr-to-manifest failed");
+    return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

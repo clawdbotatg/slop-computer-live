@@ -1021,3 +1021,38 @@ export async function setEpisodeStartPoint(opts: {
   const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
   return { manifestCid: newCid, startSeconds: start };
 }
+
+/**
+ * Fold the relay-stored TLDR tweet into an already-finalized manifest's
+ * `meta.tldr` and re-pin. Nothing else changes. No AI. Returns the new CID;
+ * the caller writes it on-chain via setManifest. Throws if no TLDR is stored.
+ */
+export async function setEpisodeTldrInManifest(opts: {
+  ipfsApiUrl: string;
+  manifestCid: string;
+  episodeSlug: string;
+}): Promise<{ manifestCid: string }> {
+  const tldr = tldrForManifest(opts.episodeSlug);
+  if (!tldr) throw new Error("no tldr stored for this episode");
+  const bareCid = opts.manifestCid.replace(/^ipfs:\/\//, "").trim();
+  if (!bareCid) throw new Error("no manifest CID provided");
+  const manifestText = await catFromLocalIpfs({ apiUrl: opts.ipfsApiUrl, cid: bareCid });
+  let manifest: EpisodeManifestV1;
+  try {
+    manifest = JSON.parse(manifestText) as EpisodeManifestV1;
+  } catch {
+    throw new Error("existing manifest is not valid JSON");
+  }
+  const baseMeta: EpisodeMeta = manifest.meta ?? {
+    title: "",
+    oneLiner: "",
+    description: "",
+    topics: [],
+    chapters: [],
+    generatedBy: "manual",
+    generatedAt: 0,
+  };
+  const next: EpisodeManifestV1 = { ...manifest, meta: { ...baseMeta, tldr } };
+  const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
+  return { manifestCid: newCid };
+}
