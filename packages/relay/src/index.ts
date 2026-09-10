@@ -129,7 +129,7 @@ import {
   remove as glossaryRemove,
   subscribe as subscribeGlossary,
 } from "./glossary.js";
-import { getEpisodeTldr, listEpisodeTldrs, setEpisodeTldr } from "./episode-tldr.js";
+import { fetchTweetText, getEpisodeTldr, listEpisodeTldrs, setEpisodeTldr } from "./episode-tldr.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
 import {
   type TickerState,
@@ -7090,7 +7090,8 @@ app.get("/v1/episodes/:slug/tldr", async (req, reply) => {
   return { slug: slug.toLowerCase(), ...row };
 });
 
-// Save / clear. JSON body: { slug, text, url }. Empty text clears.
+// Save / clear. JSON body: { slug, url, text? }. With a url and no text the
+// relay fetches the tweet body itself. Empty url + empty text clears.
 app.post("/admin/episode-tldr", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
@@ -7098,12 +7099,10 @@ app.post("/admin/episode-tldr", async (req, reply) => {
   const slug = typeof b.slug === "string" ? b.slug : "";
   if (!slug) return reply.code(400).send({ error: "missing slug" });
   try {
-    const row = setEpisodeTldr({
-      slug,
-      text: typeof b.text === "string" ? b.text : "",
-      url: typeof b.url === "string" ? b.url : "",
-      address: auth.address,
-    });
+    const url = typeof b.url === "string" ? b.url.trim() : "";
+    let text = typeof b.text === "string" ? b.text : "";
+    if (!text.trim() && url) text = await fetchTweetText(url);
+    const row = setEpisodeTldr({ slug, text, url, address: auth.address });
     return reply.send({ slug: slug.toLowerCase(), tldr: row });
   } catch (err) {
     return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });

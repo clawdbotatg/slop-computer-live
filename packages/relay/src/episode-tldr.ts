@@ -89,3 +89,45 @@ export function tldrForManifest(slug: string | undefined): { text: string; url: 
   const row = getEpisodeTldr(slug);
   return row ? { text: row.text, url: row.url, updatedTs: row.updatedTs } : null;
 }
+
+/** Pull the tweet body off a status URL so the host only pastes the link.
+ *  fxtwitter first (plain text, expanded URLs, no auth), then X's official
+ *  oEmbed (HTML we strip). Throws when neither answers. */
+export async function fetchTweetText(url: string): Promise<string> {
+  const m = url.match(/(?:x|twitter)\.com\/[^/]+\/status\/(\d+)/i);
+  if (!m) throw new Error("not a tweet url (expected x.com/<user>/status/<id>)");
+  const id = m[1];
+  const timeout = (ms: number) => AbortSignal.timeout(ms);
+
+  try {
+    const r = await fetch(`https://api.fxtwitter.com/status/${id}`, { signal: timeout(8000) });
+    if (r.ok) {
+      const j = (await r.json()) as { tweet?: { text?: string } };
+      const t = j.tweet?.text?.trim();
+      if (t) return t;
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const r = await fetch(
+    `https://publish.x.com/oembed?omit_script=1&url=${encodeURIComponent(`https://x.com/i/status/${id}`)}`,
+    { signal: timeout(8000) },
+  );
+  if (!r.ok) throw new Error(`could not fetch tweet (${r.status})`);
+  const j = (await r.json()) as { html?: string };
+  const p = j.html?.match(/<p[^>]*>([\s\S]*?)<\/p>/)?.[1];
+  if (!p) throw new Error("tweet fetch returned no text");
+  const text = p
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .trim();
+  if (!text) throw new Error("tweet fetch returned no text");
+  return text;
+}
