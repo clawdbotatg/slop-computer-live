@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { tldrForManifest } from "./episode-tldr.js";
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readdir, stat, unlink, writeFile } from "node:fs/promises";
@@ -894,6 +895,8 @@ export async function regenerateEpisodeMeta(opts: {
   roomSlug?: string;
   roomName?: string;
   researchContext?: string;
+  /** On-chain episode slug — folds the stored TLDR tweet into `meta.tldr` on this re-pin. */
+  episodeSlug?: string;
   onEvent?: (ev: RegenerateEvent) => void;
 }): Promise<{ manifestCid: string; meta: EpisodeMeta }> {
   const emit = opts.onEvent ?? (() => {});
@@ -952,6 +955,10 @@ export async function regenerateEpisodeMeta(opts: {
     // wipe the host's start point.
     const prevStart = manifest.meta?.startSeconds;
     const mergedMeta: EpisodeMeta = prevStart && prevStart > 0 ? { ...meta, startSeconds: prevStart } : meta;
+    // Same for the host's TLDR tweet: relay store wins, else keep what the
+    // old manifest had (the AI pass never emits it).
+    const tldr = tldrForManifest(opts.episodeSlug) ?? manifest.meta?.tldr;
+    if (tldr) mergedMeta.tldr = tldr;
     const next: EpisodeManifestV1 = { ...manifest, meta: mergedMeta };
     const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });
 
@@ -980,6 +987,8 @@ export async function setEpisodeStartPoint(opts: {
   manifestCid: string;
   /** Literal seek position in seconds. <= 0 clears the start point. */
   startSeconds: number;
+  /** On-chain episode slug — used to fold the stored TLDR tweet into `meta.tldr` while we're re-pinning anyway. */
+  episodeSlug?: string;
 }): Promise<{ manifestCid: string; startSeconds: number }> {
   const bareCid = opts.manifestCid.replace(/^ipfs:\/\//, "").trim();
   if (!bareCid) throw new Error("no manifest CID provided");
@@ -1005,6 +1014,8 @@ export async function setEpisodeStartPoint(opts: {
   const meta: EpisodeMeta = { ...baseMeta };
   if (start > 0) meta.startSeconds = start;
   else delete meta.startSeconds;
+  const tldr = tldrForManifest(opts.episodeSlug);
+  if (tldr) meta.tldr = tldr;
 
   const next: EpisodeManifestV1 = { ...manifest, meta };
   const newCid = await pinJsonToLocalIpfs({ apiUrl: opts.ipfsApiUrl, json: next });

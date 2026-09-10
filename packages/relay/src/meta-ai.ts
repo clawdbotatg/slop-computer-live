@@ -60,6 +60,12 @@ export type EpisodeMeta = {
    * play from the start.
    */
   startSeconds?: number;
+  /**
+   * The host's post-episode TLDR tweet (bullet lessons for sloperators).
+   * Human-authored via /admin/episode-tldr; the relay is the live source and
+   * this copy is folded in whenever the manifest is re-pinned.
+   */
+  tldr?: { text: string; url: string; updatedTs: number };
   generatedBy: string;
   generatedAt: number;
 };

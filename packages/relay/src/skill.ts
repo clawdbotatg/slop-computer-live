@@ -341,6 +341,7 @@ rules and recommended loops that aren't repeated here.
 | **Notes** (shared free-form notes) | \`GET ${BASE}/v1/skill/notes\` |  |
 | **Glossary** (shared terms + async AI TLDRs) | \`GET ${BASE}/v1/skill/glossary\` |  |
 | **Gas** (Ethereum gas tracker, read-only) | \`GET ${BASE}/v1/skill/gas\` | read-only |
+| **Episode TLDRs** (the host's post-episode lesson tweets, keyed by episode slug) | \`GET ${BASE}/v1/episodes/tldr\` · \`GET ${BASE}/v1/episodes/<slug>/tldr\` | read-only, no token |
 | **Avatars** (your PFP — upload / hide / clear) | \`GET ${BASE}/v1/skill/avatars\` |  |
 | **Files** (drag-and-drop desktop files) | \`GET ${BASE}/v1/skill/files\` |  |
 | **Transcript** (live STT — read for TLDR + post + clear) | \`GET ${BASE}/v1/skill/transcript\` | core for AI use cases |

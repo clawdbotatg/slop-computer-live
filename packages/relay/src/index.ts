@@ -129,6 +129,7 @@ import {
   remove as glossaryRemove,
   subscribe as subscribeGlossary,
 } from "./glossary.js";
+import { getEpisodeTldr, listEpisodeTldrs, setEpisodeTldr } from "./episode-tldr.js";
 import { type GasState, getState as getGasState, start as startGas, subscribe as subscribeGas } from "./gas.js";
 import {
   type TickerState,
@@ -7034,9 +7035,10 @@ app.post("/admin/regenerate-meta", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
 
-  const q = (req.query ?? {}) as { manifest?: unknown };
+  const q = (req.query ?? {}) as { manifest?: unknown; episodeSlug?: unknown };
   const manifestCid = typeof q.manifest === "string" ? q.manifest : "";
   if (!manifestCid) return reply.code(400).send({ error: "missing ?manifest=<cid> of the episode to regenerate" });
+  const episodeSlug = typeof q.episodeSlug === "string" ? q.episodeSlug : undefined;
 
   const stream = new Readable({ read() {} });
   reply.header("Content-Type", "application/x-ndjson");
@@ -7056,6 +7058,7 @@ app.post("/admin/regenerate-meta", async (req, reply) => {
         roomSlug: room.id,
         roomName: room.meta.getName(),
         researchContext: researchContextForRoom(room),
+        episodeSlug,
         onEvent: writeEvent,
       });
     } catch (err) {
@@ -7071,6 +7074,42 @@ app.post("/admin/regenerate-meta", async (req, reply) => {
   return reply.send(stream);
 });
 
+// Per-episode TLDR tweet (host-authored bullet lessons). Public reads, keyed by
+// the on-chain episode slug. Lives in the relay so saving needs no setManifest
+// tx; folded into `meta.tldr` on the next regenerate / set-start re-pin.
+app.get("/v1/episodes/tldr", async (_req, reply) => {
+  reply.header("Cache-Control", "public, max-age=60");
+  return { items: listEpisodeTldrs() };
+});
+
+app.get("/v1/episodes/:slug/tldr", async (req, reply) => {
+  const { slug } = req.params as { slug: string };
+  const row = getEpisodeTldr(slug);
+  reply.header("Cache-Control", "public, max-age=60");
+  if (!row) return reply.code(404).send({ error: "no tldr for this episode" });
+  return { slug: slug.toLowerCase(), ...row };
+});
+
+// Save / clear. JSON body: { slug, text, url }. Empty text clears.
+app.post("/admin/episode-tldr", async (req, reply) => {
+  const auth = requireHost(req);
+  if (!auth.ok) return reply.code(401).send({ error: auth.error });
+  const b = (req.body ?? {}) as { slug?: unknown; text?: unknown; url?: unknown };
+  const slug = typeof b.slug === "string" ? b.slug : "";
+  if (!slug) return reply.code(400).send({ error: "missing slug" });
+  try {
+    const row = setEpisodeTldr({
+      slug,
+      text: typeof b.text === "string" ? b.text : "",
+      url: typeof b.url === "string" ? b.url : "",
+      address: auth.address,
+    });
+    return reply.send({ slug: slug.toLowerCase(), tldr: row });
+  } catch (err) {
+    return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Set (or clear) the VOD start point for an already-finalized episode: patches
 // meta.startSeconds into the manifest and re-pins. No AI, no video work — a cheap
 // one-field edit — so this replies with a single JSON object (not NDJSON like
@@ -7080,7 +7119,7 @@ app.post("/admin/set-start", async (req, reply) => {
   const auth = requireHost(req);
   if (!auth.ok) return reply.code(401).send({ error: auth.error });
 
-  const q = (req.query ?? {}) as { manifest?: unknown; start?: unknown };
+  const q = (req.query ?? {}) as { manifest?: unknown; start?: unknown; episodeSlug?: unknown };
   const manifestCid = typeof q.manifest === "string" ? q.manifest : "";
   if (!manifestCid) return reply.code(400).send({ error: "missing ?manifest=<cid> of the episode to edit" });
   const startRaw = typeof q.start === "string" ? Number(q.start) : NaN;
@@ -7091,6 +7130,7 @@ app.post("/admin/set-start", async (req, reply) => {
       ipfsApiUrl: config.ipfsApiUrl,
       manifestCid,
       startSeconds: startRaw,
+      episodeSlug: typeof q.episodeSlug === "string" ? q.episodeSlug : undefined,
     });
     return reply.send({ manifestCid: out.manifestCid, startSeconds: out.startSeconds });
   } catch (err) {
