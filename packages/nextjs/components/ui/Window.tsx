@@ -82,6 +82,14 @@ export type WindowProps = {
   // when minimized only because it stays in the DOM. The hidden body is
   // `display:none` so it neither paints nor inflates the docked pill.
   keepMountedWhenDocked?: boolean;
+  // The shared frame every peer can see (the streamed god-mode viewport;
+  // see components/desktop/stageBounds.ts). The docked pill always sits on
+  // the LOCAL bottom edge, but a window re-inflated from it must land where
+  // every peer can see it, so every restore path without a saved rect —
+  // pill click after reload / keyboard minimize, pull-up drag — clamps to
+  // the smaller of this and the local viewport. Undefined = local viewport
+  // only (generic component).
+  stageBounds?: { width: number; height: number } | null;
 };
 
 type WindowMode = "normal" | "max" | "dock";
@@ -112,6 +120,7 @@ export const Window = ({
   dockBottomInset = 0,
   dockUnderZ,
   keepMountedWhenDocked = false,
+  stageBounds,
 }: WindowProps) => {
   const [mounted, setMounted] = useState(false);
   // Track THIS viewer's viewport height. The docked "pill" pins to the
@@ -156,6 +165,19 @@ export const Window = ({
   // just a sliver of titlebar peeking above it.
   const dockedY = Math.max(insets.top, viewportH - insets.bottom - dockBottomInset - TITLEBAR_HEIGHT);
 
+  // Right/bottom edges a RESTORED window must stay inside: the local
+  // viewport, further capped by the shared stage so a host on a tall
+  // display can't re-inflate a window below a guest's screen (the pill
+  // itself still docks at the local edge — dockedY above).
+  const restoreEdges = () => {
+    const vw = window.innerWidth;
+    const vh = viewportH || window.innerHeight;
+    return {
+      right: (stageBounds ? Math.min(vw, stageBounds.width) : vw) - insets.right,
+      bottom: (stageBounds ? Math.min(vh, stageBounds.height) : vh) - insets.bottom,
+    };
+  };
+
   const restore = () => {
     if (savedRect) {
       onMove?.({ x: savedRect.x, y: savedRect.y });
@@ -172,9 +194,12 @@ export const Window = ({
     // peer that minimized).
     const fallbackW = Math.max(minWidth, 320);
     const fallbackH = Math.max(minHeight, 240);
-    const fallbackY = Math.max(insets.top, dockedY - fallbackH - 8);
-    onMove?.({ x, y: fallbackY });
-    onResize?.({ x, y: fallbackY, width: fallbackW, height: fallbackH });
+    const { right, bottom } = restoreEdges();
+    // Just above the local dock edge — unless the shared stage ends higher.
+    const fallbackY = Math.max(insets.top, Math.min(dockedY, bottom) - fallbackH - 8);
+    const fallbackX = Math.min(Math.max(x, insets.left), Math.max(insets.left, right - fallbackW));
+    onMove?.({ x: fallbackX, y: fallbackY });
+    onResize?.({ x: fallbackX, y: fallbackY, width: fallbackW, height: fallbackH });
     setMode("normal");
   };
 
@@ -262,13 +287,14 @@ export const Window = ({
       dockSuppressClickRef.current = moved;
       if (restored) {
         // Just undocked → make sure the freshly-restored window lands fully
-        // on-screen, not hanging off the bottom after a minimal pull-up
-        // (its titlebar can be near the dock edge with the body below it).
-        // Mirror of onDragStop's snap-back clamp.
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const cx = Math.min(Math.max(lastNx, 0), Math.max(0, vw - restoredW));
-        const cy = Math.min(Math.max(lastNy, insets.top), Math.max(insets.top, vh - insets.bottom - restoredH));
+        // inside the frame EVERY peer sees, not hanging off the bottom after
+        // a minimal pull-up (its titlebar can be near the dock edge with the
+        // body below it). Clamped to the shared stage, not just this screen:
+        // on a display taller than the stream frame a pull-up from the local
+        // bottom edge otherwise restores the window where guests can't see it.
+        const { right, bottom } = restoreEdges();
+        const cx = Math.min(Math.max(lastNx, insets.left), Math.max(insets.left, right - restoredW));
+        const cy = Math.min(Math.max(lastNy, insets.top), Math.max(insets.top, bottom - restoredH));
         if (cx !== lastNx || cy !== lastNy) {
           onResize?.({ x: cx, y: cy, width: restoredW, height: restoredH });
         }

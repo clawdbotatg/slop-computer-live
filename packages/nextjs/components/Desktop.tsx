@@ -59,6 +59,7 @@ import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
+import { stageBoundsFor } from "~~/components/desktop/stageBounds";
 import {
   BandFlag,
   Bevel,
@@ -1706,6 +1707,8 @@ function DesktopInner({ slug }: { slug: string }) {
   // OBS target the dashed guide draws when no spectator is live.
   const meshGodViewportRef = useRef(mesh.godViewport);
   meshGodViewportRef.current = mesh.godViewport;
+  // Same frame, for window restore placement (see stageBounds.ts).
+  const stageBounds = stageBoundsFor(mesh.godViewport);
 
   // Live window-set refs for Auto Arrange — read synchronously inside the
   // callback so it doesn't re-create every time a window opens or closes.
@@ -2921,7 +2924,11 @@ function DesktopInner({ slug }: { slug: string }) {
         const h = 400;
         patch.height = h;
         patch.width = Math.max(cur.width, 360);
-        patch.y = Math.max(60, window.innerHeight - h - 80);
+        // …and never below the shared stage: on a display taller than the
+        // streamed frame, a viewport-relative y put the window where guests
+        // couldn't see it (see stageBounds.ts).
+        const stageH = stageBoundsFor(meshGodViewportRef.current).height;
+        patch.y = Math.max(60, Math.min(window.innerHeight, stageH) - h - 80);
       }
       meshUpdateSlot(patch);
     },
@@ -4053,6 +4060,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 containerInset={{ top: 38 }}
                 dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
                 dockUnderZ={BOTTOM_BAR_Z}
+                stageBounds={stageBounds}
               >
                 <div style={{ position: "relative", width: "100%", height: "100%" }}>
                   {stream ? (
@@ -4257,6 +4265,7 @@ function DesktopInner({ slug }: { slug: string }) {
                 containerInset={{ top: 38 }}
                 dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
                 dockUnderZ={BOTTOM_BAR_Z}
+                stageBounds={stageBounds}
               >
                 <SharedBrowser
                   browser={browser}
@@ -4300,6 +4309,7 @@ function DesktopInner({ slug }: { slug: string }) {
               containerInset={{ top: 38 }}
               dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
               dockUnderZ={BOTTOM_BAR_Z}
+              stageBounds={stageBounds}
             >
               <div
                 style={{
@@ -4353,6 +4363,7 @@ function DesktopInner({ slug }: { slug: string }) {
               containerInset={{ top: 38 }}
               dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
               dockUnderZ={BOTTOM_BAR_Z}
+              stageBounds={stageBounds}
             >
               <div
                 style={{

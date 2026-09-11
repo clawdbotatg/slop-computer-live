@@ -2,6 +2,7 @@
 
 import { type CSSProperties, type ReactNode, createContext, useContext, useEffect, useRef } from "react";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
+import { stageBoundsFor } from "~~/components/desktop/stageBounds";
 import { Window } from "~~/components/ui";
 import type { PeerMeshState, SlotPosition } from "~~/hooks/usePeerMesh";
 
@@ -118,6 +119,7 @@ export const SlotWindow = ({
       dockBottomInset={DOCKED_PILL_BOTTOM_INSET}
       dockUnderZ={BOTTOM_BAR_Z}
       keepMountedWhenDocked={keepMountedWhenDocked}
+      stageBounds={stageBoundsFor(mesh.godViewport)}
     >
       {children}
     </Window>
