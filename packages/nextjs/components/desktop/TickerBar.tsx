@@ -118,9 +118,13 @@ function Cell({ item, onOpenUrl }: { item: TickerItem; onOpenUrl: (url: string) 
         },
       } as const)
     : {};
+  const title = item.trending
+    ? `${item.label} — ${item.trending.authors} accounts tweeting $${item.symbol.replace(/^\$/, "")} in the last few days`
+    : item.label;
   return (
     <Tag
       {...linkProps}
+      title={title}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -144,6 +148,7 @@ function Cell({ item, onOpenUrl }: { item: TickerItem; onOpenUrl: (url: string) 
           textTransform: "uppercase",
         }}
       >
+        {item.trending ? "🔥 " : null}
         {item.symbol}
       </span>
       <span

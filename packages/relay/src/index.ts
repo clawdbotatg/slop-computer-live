@@ -135,6 +135,8 @@ import { type GasState, getState as getGasState, start as startGas, subscribe as
 import {
   type TickerState,
   getState as getTickerState,
+  getTrending as getTickerTrending,
+  setTrending as setTickerTrending,
   start as startTicker,
   subscribe as subscribeTicker,
 } from "./ticker.js";
@@ -1979,6 +1981,35 @@ app.post("/v1/timeline/refresh", async (req, reply) => {
   return { ok: true, state: result.state };
 });
 
+// --- Ticker: trending cashtags ----------------------------------------------
+// The bottom bar's 🔥 items. Pushed (host-only) by
+// ops/ticker/trending-cashtags.mjs on the heart Mac, which mines the
+// Twitter home-timeline archive for $CASHTAGS used by ≥N distinct
+// accounts. The relay resolves each to a live price source and drops
+// what it can't price. An empty `tags` array clears the list; a list
+// left alone expires on its own (TRENDING_TTL_MS in ticker.ts).
+// Doc: docs/TICKER.md.
+app.get("/v1/ticker/trending", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  const live = getTickerTrending();
+  const items = (getTickerState()?.items ?? []).filter(i => i.trending);
+  return { trending: live, onBar: items };
+});
+
+app.post<{ Body: unknown }>("/v1/ticker/trending", async (req, reply) => {
+  const a = v1AuthFromReq(req);
+  if (!a) return reply.code(401).send({ error: "unauthenticated" });
+  if (!a.isHost) return reply.code(403).send({ error: "host-only" });
+  const result = await setTickerTrending(req.body);
+  if (!result.ok) return reply.code(400).send({ error: result.error });
+  req.log.info(
+    { by: a.session.address, tags: result.state.tags.map(t => t.symbol), unresolved: result.unresolved },
+    "ticker trending updated",
+  );
+  return { ok: true, resolved: result.resolved, unresolved: result.unresolved, state: result.state };
+});
+
 // --- Headlines: host-only manual refresh ------------------------------------
 // Auto-poll runs hourly. Host clicks the HEADLINES badge to force a
 // fresh pull right before going live. APIs are free, debounce just
@@ -2049,7 +2080,7 @@ subscribeGas(state => {
 });
 startGas();
 
-// Slop ticker (crypto + AI stocks + private valuations + $CLAWD).
+// Slop ticker ($CLAWD + trending cashtags + crypto + AI stocks).
 // Same pattern as gas — relay polls upstream feeds once a minute and
 // fans the snapshot out to every connected peer.
 subscribeTicker(state => {

@@ -688,7 +688,7 @@ export type GasState = {
   updatedAt: number;
 };
 
-/** Slop ticker — crypto + AI stocks + private AI lab valuations,
+/** Slop ticker — $CLAWD + trending cashtags + crypto + AI stocks,
  *  polled on the relay every 60s. Mirrors `packages/relay/src/ticker.ts`. */
 export type TickerItem = {
   symbol: string;
@@ -697,6 +697,9 @@ export type TickerItem = {
   changePct: number;
   kind: "crypto" | "stock" | "private" | "meme";
   url?: string;
+  /** Set when the symbol is on the bar because people are tweeting about
+   *  it (mined cashtags, see docs/TICKER.md). Rendered with a 🔥. */
+  trending?: { authors: number; tweets: number };
 };
 export type TickerState = {
   items: TickerItem[];

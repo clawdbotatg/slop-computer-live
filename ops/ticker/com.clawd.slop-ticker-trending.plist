@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Trending cashtags → slop ticker. Runs daily on the heart Mac at
+       08:17 local, fifteen minutes after com.clawd.twitter-morning drops
+       the day's feed-YYYY-MM-DD.json (08:02). Install:
+         cp ops/ticker/com.clawd.slop-ticker-trending.plist ~/Library/LaunchAgents/
+         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.clawd.slop-ticker-trending.plist
+       Run now: launchctl kickstart -k gui/$(id -u)/com.clawd.slop-ticker-trending
+       See docs/TICKER.md. -->
+  <key>Label</key><string>com.clawd.slop-ticker-trending</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/clawd/clawd-harness/projects/slop-computer-live/ops/ticker/trending-cashtags.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/clawd/clawd-harness/projects/slop-computer-live</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>/Users/clawd</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>17</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/clawd/Library/Logs/slop-ticker-trending.log</string>
+  <key>StandardErrorPath</key><string>/Users/clawd/Library/Logs/slop-ticker-trending.log</string>
+</dict>
+</plist>

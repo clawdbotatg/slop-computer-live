@@ -223,7 +223,7 @@ Returns the canonical desktop snapshot for one room. Top-level fields:
 | \`notes\` | \`Note[]\` | Shared notes (this room) |
 | \`glossary\` | \`GlossaryTerm[]\` | Shared glossary with AI TLDRs (global — one list across all rooms) |
 | \`gasState\` | \`GasState \\| null\` | Latest Ethereum gas snapshot (global) |
-| \`tickerState\` | \`TickerState \\| null\` | Crypto + AI stocks + private valuations + $CLAWD (global) |
+| \`tickerState\` | \`TickerState \\| null\` | $CLAWD + trending cashtags (🔥, mined from the Twitter archive) + crypto + AI stocks (global) |
 | \`headlinesState\` | \`HeadlinesState \\| null\` | Crypto + AI news headlines (global) |
 | \`timelineState\` | \`TimelineState \\| null\` | Host's Twitter home feed, ranked (global) |
 | \`newsDigestState\` | \`NewsDigestState \\| null\` | AI-curated featured news (global) |
@@ -2533,7 +2533,7 @@ same data for every room. Snapshots are embedded inside
 
 | Field | Source | Cadence | Shape |
 | --- | --- | --- | --- |
-| \`tickerState\` | CoinGecko + Stooq + DexScreener + static private valuations | 60s | \`{ items: [{ symbol, label, price, changePct, kind, url? }, ...], updatedAt }\` |
+| \`tickerState\` | CoinGecko + Yahoo Finance + DexScreener; trending cashtags via POST /v1/ticker/trending | 60s | \`{ items: [{ symbol, label, price, changePct, kind, url?, trending?: { authors, tweets } }, ...], updatedAt }\` |
 | \`gasState\` | Alchemy fee history + Chainlink ETH/USD | ~12s | \`{ baseFeeGwei, slowGwei, mediumGwei, fastGwei, ethUsd, updatedAt }\` (see also \`/v1/skill/gas\`) |
 | \`headlinesState\` | CoinDesk RSS + HN Algolia (AI keywords) | 1h | \`{ items: [{ title, url, source, publishedAt, kind: "crypto"\\|"ai" }, ...], updatedAt }\` |
 | \`timelineState\` | Twitter API (host's home feed) | manual only (host clicks TIMELINE badge before going live) | \`{ items: [{ id, text, authorUsername, authorName, authorFollowers, likes, retweets, replies, createdAt, url, authorVerified }, ...], updatedAt }\` |

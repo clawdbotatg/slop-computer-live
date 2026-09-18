@@ -18,6 +18,19 @@ the OBS box.
 
 The sections below are the deep dives it links to.
 
+## The ticker bar (prices along the bottom)
+
+**Nothing in the bar is hard-coded.** If you're touching
+`packages/relay/src/ticker.ts`, adding a symbol, or someone says "the
+ticker is wrong / has no stocks", read **`docs/TICKER.md`** first. It has
+the source per slot (DexScreener / CoinGecko / Yahoo), the 🔥 trending
+pipeline (cashtags mined daily from the Twitter archive on the heart Mac
+by `ops/ticker/trending-cashtags.mjs`, pushed to `POST
+/v1/ticker/trending`, resolved to a live price or dropped), the
+symbol-collision trap in resolution, and the 2026-09 story of Stooq dying
+silently for weeks. Don't add a "private valuation" list back — it went
+stale within a quarter and nobody noticed for four months.
+
 ## Broadcast video quality
 
 If the show looked blocky, smeared or choppy, or you're touching
