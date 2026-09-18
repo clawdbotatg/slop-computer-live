@@ -10,10 +10,14 @@
 //   - CoinGecko `/simple/price` for crypto (free, no key)
 //   - Stooq `q/l` CSV for publicly-traded AI-adjacent stocks
 //     (free, no key, CORS not relevant because we're server-side)
-//   - Static valuations for private AI labs (OpenAI / Anthropic / etc.)
-//     — these don't trade, so we ship last-known funding-round numbers
-//   - $CLAWD: a synthetic comedy token that random-walks around $4.20.
-//     Not real. Don't buy it. It's vibes.
+//   - $CLAWD: the real ERC-20 on Base, via DexScreener
+//
+// Everything in the bar is a live quote. There used to be a block of
+// hand-typed "last funding round" valuations for private AI labs
+// (OpenAI, Anthropic, ...); it was written once on 2026-05-16 and never
+// refreshed, so by September every number on it was 7-17 months stale.
+// Removed 2026-09-18 — nothing hard-coded goes in this bar. If an asset
+// has no daily price source, it doesn't belong here.
 //
 // Poll cadence is conservative (60s) — the ticker bar isn't a trading
 // terminal and free APIs get cranky if you hammer them.
@@ -26,15 +30,16 @@ export type TickerItem = {
   symbol: string;
   /** Short label shown alongside the symbol. */
   label: string;
-  /** USD price (or implied valuation for private companies). */
+  /** USD price. */
   price: number;
   /** 24h % change (positive = up). May be 0 when upstream omits it. */
   changePct: number;
-  /** Display category — drives icon/color hints on the client. */
+  /** Display category — drives icon/color hints on the client.
+   *  ("private" is retired on the relay side; the client still knows
+   *  how to render it so old snapshots don't break.) */
   kind: "crypto" | "stock" | "private" | "meme";
-  /** Optional click-through URL. Crypto → CoinGecko page, stocks →
-   *  Yahoo Finance, CLAWD → its DexScreener page. Missing for private
-   *  companies (no obvious destination for "Anthropic valuation"). */
+  /** Click-through URL. Crypto → CoinGecko page, stocks → Yahoo
+   *  Finance, CLAWD → its DexScreener page. */
   url?: string;
 };
 
@@ -57,53 +62,6 @@ export function subscribe(fn: Subscriber): () => void {
 export function getState(): TickerState | null {
   return state;
 }
-
-// =============================================================
-// PRIVATE AI LAB VALUATIONS — REFRESH ME!
-// =============================================================
-// These are static "last-closed funding round" marks for private
-// companies that don't trade on a public market. They appear in the
-// ticker as headline valuations and they go stale fast — a new round
-// closes somewhere in this list roughly every 6-8 weeks.
-//
-// MAINTENANCE: when editing this file, sanity-check that every
-// `lastUpdated` date below is < ~90 days old. If anything is older
-// than that — or the user asks for a "ticker refresh" — DO A FRESH
-// RESEARCH PASS (see the `refresh_private_valuations` memory for
-// the exact prompt to give a subagent) before continuing.
-//
-// Convention: use the LAST CLOSED round, not the in-talks number.
-// The comment after each entry records *what's currently in talks*
-// so you don't have to re-research if you decide to switch.
-//
-// LAST FULL REFRESH: 2026-05-16
-// =============================================================
-const PRIVATE_VALUATIONS: Array<{
-  symbol: string;
-  label: string;
-  valuation: number;
-  /** ISO date of the source-event that set this valuation. */
-  lastUpdated: string;
-}> = [
-  // In-talks: $852B primary (Mar 2026, not yet closed)
-  { symbol: "OPENAI", label: "OpenAI", valuation: 500_000_000_000, lastUpdated: "2025-10-02" },
-  // In-talks: $900B at ~$30B raise (May 2026, Bloomberg/TechCrunch)
-  { symbol: "ANTHRP", label: "Anthropic", valuation: 380_000_000_000, lastUpdated: "2026-02" },
-  // xAI now part of SpaceX — $250B is the standalone implied leg of the
-  // $1.25T SpaceX/xAI combined merger valuation (Feb 2026).
-  { symbol: "XAI", label: "xAI", valuation: 250_000_000_000, lastUpdated: "2026-02-03" },
-  { symbol: "DBRX", label: "Databricks", valuation: 134_000_000_000, lastUpdated: "2026-02-09" },
-  // STALE — last public mark ~13 months old, refresh round expected.
-  { symbol: "SSI", label: "Safe Superintelligence", valuation: 32_000_000_000, lastUpdated: "2025-04-12" },
-  // In-talks: $50B (Apr 2026, not yet closed)
-  { symbol: "CRSR", label: "Cursor", valuation: 29_000_000_000, lastUpdated: "2025-11-13" },
-  // Meta took 49% stake in this deal — implies whole-company at ~$29B.
-  { symbol: "SCALE", label: "Scale AI", valuation: 29_000_000_000, lastUpdated: "2025-06-13" },
-  { symbol: "PRPLX", label: "Perplexity", valuation: 20_000_000_000, lastUpdated: "2025-09-10" },
-  // €11.7B post-money @ Sept 2025 EUR/USD; recheck FX on refresh.
-  { symbol: "MSTRL", label: "Mistral", valuation: 14_000_000_000, lastUpdated: "2025-09" },
-  { symbol: "11LAB", label: "ElevenLabs", valuation: 11_000_000_000, lastUpdated: "2026-02-04" },
-];
 
 // CoinGecko IDs → display symbol/label. Kept inline because the set is
 // small and editing JSON for one-line additions isn't worth it.
@@ -251,18 +209,6 @@ async function fetchStocks(): Promise<TickerItem[]> {
   });
 }
 
-function staticPrivate(): TickerItem[] {
-  return PRIVATE_VALUATIONS.map(p => ({
-    symbol: p.symbol,
-    label: p.label,
-    price: p.valuation,
-    // Private valuations don't have intraday changes; leave at 0 so the
-    // UI renders them in neutral gray rather than green/red.
-    changePct: 0,
-    kind: "private" as const,
-  }));
-}
-
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 // Last-known CLAWD entry. DexScreener occasionally 429s; on a single
@@ -293,7 +239,6 @@ async function pollOnce(): Promise<void> {
     ...(lastClawd ? [lastClawd] : []),
     ...crypto,
     ...stocks,
-    ...staticPrivate(),
   ];
   state = { items, updatedAt: Date.now() };
 

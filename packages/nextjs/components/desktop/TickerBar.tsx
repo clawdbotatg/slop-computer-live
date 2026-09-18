@@ -33,9 +33,9 @@ function subzero(p: number): { zeros: number; sig: string } | null {
 
 // Slop-themed crypto/AI ticker pinned to the bottom of the desktop.
 // Reads `mesh.tickerState`, which the relay refreshes every 60s
-// (CoinGecko for crypto, Stooq for stocks, hardcoded for private AI
-// labs, synthetic random-walk for $CLAWD). One source of truth across
-// every peer — no per-client API calls.
+// (CoinGecko for crypto, Stooq for stocks, DexScreener for $CLAWD —
+// every item is a live quote, nothing hard-coded). One source of truth
+// across every peer — no per-client API calls.
 //
 // The scrolling is pure CSS: a single track is rendered twice
 // side-by-side and translated -50% so the seam is invisible. No JS
