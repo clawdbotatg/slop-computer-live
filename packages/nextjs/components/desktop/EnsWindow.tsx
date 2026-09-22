@@ -25,6 +25,7 @@ import {
   EnsReverseRegistrarAbi,
   PARENT_NAME,
   PARENT_NODE,
+  reverseNodeFor,
   subdomainFor,
 } from "~~/contracts/ens";
 import { MultisigAbi } from "~~/contracts/multisig";
@@ -50,6 +51,12 @@ import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 //
 // Everything is read live from mainnet, idempotent (already-correct
 // records are skipped + shown with a ✓), and scoped to the current room.
+//
+// The two reverse reads are different things and both are shown: the RAW
+// record (name() on the multisig's reverse node — what setName wrote) and
+// whether the name RESOLVES (viem getEnsName, which also requires the
+// forward addr() to match). "✓ set" is the raw record. A set-but-not-
+// resolving record means step 1 is what's missing — never re-propose it.
 
 export type EnsWindowProps = {
   mesh: PeerMeshState;
@@ -60,7 +67,10 @@ type EnsStatus = {
   subnodeOwner: Address | null;
   subnodeResolver: Address | null;
   forwardAddr: Address | null;
-  reverseName: string | null;
+  /** Raw reverse record: name() on the multisig's reverse node (null = none). */
+  reverseRecord: string | null;
+  /** What apps see: getEnsName, which also checks the forward record. */
+  reverseResolved: string | null;
   multisigOnMainnet: boolean;
 };
 
@@ -98,6 +108,16 @@ const doneBadge: CSSProperties = {
   fontFamily: "var(--slop-font-display)",
   letterSpacing: "0.08em",
 };
+const errorBox: CSSProperties = {
+  color: "var(--slop-red)",
+  fontSize: 11,
+  lineHeight: 1.5,
+  border: "1px solid var(--slop-red)",
+  borderRadius: 4,
+  padding: "6px 8px",
+  background: "rgba(255,0,60,0.08)",
+  wordBreak: "break-word",
+};
 
 export const EnsWindow = ({ mesh }: EnsWindowProps) => {
   const slug = useRoomSlug();
@@ -120,6 +140,10 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
   const [busy, setBusy] = useState<null | "forward" | "reverse">(null);
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Which card the error belongs to — it renders INSIDE that card, where the
+  // eye already is, not as a footnote under both (the 09-22 forward run
+  // stopped after tx 1 of 2 and nobody saw why).
+  const [errorPhase, setErrorPhase] = useState<"forward" | "reverse">("forward");
   const [proposed, setProposed] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -149,16 +173,39 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
           args: [node],
         })) as Address;
       }
-      // Reverse name + whether the multisig actually has code on mainnet
+      // Reverse: the RAW record on the multisig's reverse node (what setName
+      // wrote), the resolved name (what apps see — null until the forward
+      // addr matches too), and whether the multisig has code on mainnet
       // (required before it can execute setName).
-      let reverseName: string | null = null;
+      let reverseRecord: string | null = null;
+      let reverseResolved: string | null = null;
       let multisigOnMainnet = false;
       if (multisig) {
-        const [name, code] = await Promise.all([
-          mainnet.getEnsName({ address: multisig }),
+        const reverseNode = reverseNodeFor(multisig);
+        const [reverseResolver, resolved, code] = await Promise.all([
+          mainnet.readContract({
+            address: ENS_REGISTRY,
+            abi: EnsRegistryAbi,
+            functionName: "resolver",
+            args: [reverseNode],
+          }),
+          // The universal resolver reverts on some malformed records; a
+          // failed resolve must not blank the whole status panel.
+          mainnet.getEnsName({ address: multisig }).catch(() => null),
           mainnet.getCode({ address: multisig }),
         ]);
-        reverseName = name ?? null;
+        if (reverseResolver && reverseResolver !== zeroAddress) {
+          reverseRecord = (await mainnet
+            .readContract({
+              address: reverseResolver as Address,
+              abi: EnsResolverAbi,
+              functionName: "name",
+              args: [reverseNode],
+            })
+            .catch(() => "")) as string;
+          if (!reverseRecord) reverseRecord = null;
+        }
+        reverseResolved = resolved ?? null;
         multisigOnMainnet = !!code && code !== "0x";
       }
       setStatus({
@@ -166,7 +213,8 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
         subnodeOwner: subnodeOwner as Address,
         subnodeResolver: resolverAddr,
         forwardAddr: forwardAddr && forwardAddr !== zeroAddress ? forwardAddr : null,
-        reverseName,
+        reverseRecord,
+        reverseResolved,
         multisigOnMainnet,
       });
     } catch (err) {
@@ -181,7 +229,14 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
   }, [refresh]);
 
   const forwardDone = !!(status?.forwardAddr && multisig && isAddressEqual(status.forwardAddr, multisig));
-  const reverseDone = !!(status?.reverseName && status.reverseName.toLowerCase() === subdomain.toLowerCase());
+  // Step 1 half-done: the subdomain exists (created by a previous run) but
+  // its addr() isn't the multisig yet — one tx (setAddr) is left.
+  const subnodeExists = !!(status?.subnodeOwner && status.subnodeOwner !== zeroAddress);
+  const forwardPartial = subnodeExists && !forwardDone;
+  const reverseDone = !!(status?.reverseRecord && status.reverseRecord.toLowerCase() === subdomain.toLowerCase());
+  const reverseResolves = !!(
+    status?.reverseResolved && status.reverseResolved.toLowerCase() === subdomain.toLowerCase()
+  );
   const isOwner = !!(
     connectedAddress &&
     status?.parentOwner &&
@@ -190,6 +245,7 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
 
   const setForward = useCallback(async () => {
     setError(null);
+    setErrorPhase("forward");
     if (!multisig) {
       setError("This room has no multisig yet — deploy one in the WALLET app first.");
       return;
@@ -248,6 +304,9 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
       await refresh();
     } catch (err) {
       setError(shortErr(err));
+      // Tx 1 may have landed before tx 2 failed — show the half-done state
+      // so the next click is visibly "one tx left", not a mystery.
+      void refresh();
     } finally {
       setBusy(null);
       setStep(null);
@@ -270,6 +329,7 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
 
   const proposeReverse = useCallback(async () => {
     setError(null);
+    setErrorPhase("reverse");
     setProposed(false);
     if (!multisig) {
       setError("This room has no multisig yet — deploy one in the WALLET app first.");
@@ -397,6 +457,13 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
         ) : (
           <div style={muted}>currently → not set</div>
         )}
+        {forwardPartial && multisig ? (
+          <div style={{ ...muted, color: "var(--slop-amber)" }}>
+            ⚠️ The subdomain exists but its address isn&apos;t the multisig yet — a previous run stopped after tx 1 of
+            2. One tx left (set address).
+          </div>
+        ) : null}
+        {error && errorPhase === "forward" ? <div style={errorBox}>{error}</div> : null}
 
         {!forwardDone && multisig ? (
           busy === "forward" ? (
@@ -411,7 +478,7 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
             </div>
           ) : (
             <Button variant="primary" onClick={() => void setForward()} disabled={busy !== null}>
-              Set forward record
+              {forwardPartial ? "Set address (1 tx)" : "Set forward record"}
             </Button>
           )
         ) : null}
@@ -429,11 +496,26 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
           app&apos;s Transactions tab.
         </div>
         <div style={muted}>
-          currently →{" "}
+          record →{" "}
           <span style={{ color: reverseDone ? "var(--slop-lime)" : "var(--slop-amber)" }}>
-            {status?.reverseName ?? "not set"}
+            {status?.reverseRecord ?? "not set"}
           </span>
         </div>
+        {status ? (
+          <div style={muted}>
+            resolves →{" "}
+            <span style={{ color: reverseResolves ? "var(--slop-lime)" : "var(--slop-amber)" }}>
+              {reverseResolves ? "yes" : "no"}
+            </span>
+          </div>
+        ) : null}
+        {reverseDone && !reverseResolves ? (
+          <div style={{ ...muted, color: "var(--slop-amber)" }}>
+            ⚠️ The reverse record is set — nothing to redo here. It won&apos;t resolve until step 1 points{" "}
+            <span style={codeName}>{subdomain}</span> at the multisig: reverse lookups check the forward record too.
+          </div>
+        ) : null}
+        {error && errorPhase === "reverse" ? <div style={errorBox}>{error}</div> : null}
 
         {!reverseDone && multisig ? (
           busy === "reverse" ? (
@@ -455,8 +537,6 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
           )
         ) : null}
       </div>
-
-      {error ? <div style={{ color: "var(--slop-red)", fontSize: 11 }}>{error}</div> : null}
     </div>
   );
 };

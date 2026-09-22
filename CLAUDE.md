@@ -31,6 +31,21 @@ symbol-collision trap in resolution, and the 2026-09 story of Stooq dying
 silently for weeks. Don't add a "private valuation" list back — it went
 stale within a quarter and nobody noticed for four months.
 
+## ENS app ("we set the reverse record and it didn't work")
+
+`EnsWindow.tsx` shows two different reverse reads on purpose: the **raw
+record** (`name()` on the multisig's reverse node — what `setName` wrote)
+and whether the name **resolves** (viem `getEnsName`, which also requires
+the forward `addr()` to match). A raw record that doesn't resolve means
+**step 1 (forward) is incomplete** — never re-propose the reverse tx.
+2026-09-22, room gregskril: the forward run stopped after tx 1 of 2 (the
+subdomain was created, `setAddr` was never sent — the owner's nonce only
+advanced once), the reverse record was set fine, the old UI read
+`getEnsName` alone and said "not set", and the reverse tx got executed a
+second time for nothing. To check a room from here: `cast call` the
+registry's `resolver()` for `<addr-hex>.addr.reverse`, then `name()` on
+it, and `addr()` on `<slug>.slopcomputer.eth` — three reads, no guessing.
+
 ## Broadcast video quality
 
 If the show looked blocky, smeared or choppy, or you're touching

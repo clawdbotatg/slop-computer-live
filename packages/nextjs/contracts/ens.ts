@@ -35,6 +35,19 @@ export function subdomainFor(slug: string): string {
   return `${slug}.${PARENT_NAME}`;
 }
 
+/**
+ * The reverse node for an address: namehash("<hex-no-0x-lowercase>.addr.reverse").
+ * Reading `name()` on this node's resolver is the RAW reverse record — what
+ * ReverseRegistrar.setName actually wrote. `getEnsName` is NOT that: the
+ * universal resolver also checks the forward record and returns null when
+ * <name> doesn't addr() back to the address. 2026-09-22: the reverse record
+ * was set on-chain but the app said "not set" because the forward addr was
+ * still zero, and the tx got proposed + executed a second time for nothing.
+ */
+export function reverseNodeFor(address: string): `0x${string}` {
+  return namehash(`${address.slice(2).toLowerCase()}.addr.reverse`);
+}
+
 // Minimal ENS registry surface — just the calls the ENS app makes.
 export const EnsRegistryAbi = [
   {
@@ -68,7 +81,8 @@ export const EnsRegistryAbi = [
   },
 ] as const;
 
-// Minimal public-resolver surface: read + set the forward addr() record.
+// Minimal public-resolver surface: read + set the forward addr() record,
+// read the reverse name() record.
 export const EnsResolverAbi = [
   {
     type: "function",
@@ -76,6 +90,13 @@ export const EnsResolverAbi = [
     stateMutability: "view",
     inputs: [{ name: "node", type: "bytes32" }],
     outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "name",
+    stateMutability: "view",
+    inputs: [{ name: "node", type: "bytes32" }],
+    outputs: [{ name: "", type: "string" }],
   },
   {
     type: "function",
