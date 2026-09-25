@@ -577,7 +577,7 @@ export type VoteBallotPublic = {
   preview: string;
 };
 
-/** Live Interfold protocol telemetry for a Sepolia E3 poll — mirrors
+/** Live Interfold protocol telemetry for a mainnet E3 poll — mirrors
  *  `E3Telemetry` in `packages/relay/src/voting.ts`. */
 export type VoteE3Telemetry = {
   stage: "requesting" | "sortition" | "dkg" | "open" | "tallying" | "publishing" | "decrypting" | "revealed" | "failed";
@@ -619,16 +619,16 @@ export type VotePoll = {
    *  anchoring configured. `anchoring` = tx in flight. */
   anchoring?: boolean;
   anchor?: { chain: string; txHash: string; explorerUrl: string | null } | null;
-  /** "sepolia"/"mainnet" = a real Interfold E3 settled by the public
-   *  committee on that chain. */
-  mode?: "room" | "sepolia" | "mainnet";
+  /** "mainnet" = a real Interfold E3 settled by the public mainnet
+   *  committee. */
+  mode?: "room" | "mainnet";
   e3?: VoteE3Telemetry;
 };
 
 /** True for polls settled through a real on-chain Interfold E3 (any
  *  chain) — mirrors the helper in packages/relay/src/voting.ts. */
 export function isE3Poll(p: { mode?: string }): boolean {
-  return p.mode === "sepolia" || p.mode === "mainnet";
+  return p.mode === "mainnet";
 }
 
 /** Full ciphertext payload for one poll, fetched on demand (reveal
@@ -1679,11 +1679,11 @@ export type PeerMeshState = {
   todoReorder: (ids: string[]) => void;
   /** Voting Booth polls. Full-state replace from server on every change. */
   votingPolls: VotePoll[];
-  /** True when the relay settles polls through real Sepolia E3s. */
+  /** True when the relay settles polls through real mainnet E3s. */
   votingE3: boolean;
-  /** Which chain on-chain polls settle on ("sepolia" | "mainnet"), when votingE3. */
+  /** Which chain on-chain polls settle on ("mainnet"), when votingE3. */
   votingE3Chain: string | null;
-  /** Create a poll. In E3 mode omit `pubKey` — the public Sepolia
+  /** Create a poll. In E3 mode omit `pubKey` — the public mainnet
    *  committee generates the key. Legacy mode passes the key from the
    *  in-browser ceremony. */
   voteCreate: (input: {
@@ -3247,7 +3247,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       const question = input.question.trim();
       const options = input.options.map(o => o.trim()).filter(Boolean);
       if (!question || options.length < 2) return;
-      // E3 mode: no pubKey — the public Sepolia committee generates the
+      // E3 mode: no pubKey — the public mainnet committee generates the
       // key after the relay requests the E3. Legacy mode sends the
       // browser-ceremony key.
       send({

@@ -43,7 +43,7 @@ export type VoteBallot = {
   ct: string;
 };
 
-/** Live protocol telemetry for a Sepolia E3 poll — everything the nerdy
+/** Live protocol telemetry for a mainnet E3 poll — everything the nerdy
  *  frontend timeline renders. Small enough to ride every broadcast. */
 export type E3Telemetry = {
   stage:
@@ -102,10 +102,9 @@ export type VotePoll = {
   question: string;
   options: string[];
   status: "open" | "closed" | "revealed";
-  /** "sepolia"/"mainnet" = settled through a real Interfold E3 by the
-   *  public committee on that chain; absent/"room" = legacy in-browser
-   *  committee. */
-  mode?: "room" | "sepolia" | "mainnet";
+  /** "mainnet" = settled through a real Interfold E3 by the public
+   *  mainnet committee; absent/"room" = legacy in-browser committee. */
+  mode?: "room" | "mainnet";
   e3?: E3Telemetry;
   creatorKey: string;
   address: string | null;
@@ -125,10 +124,10 @@ export type VotePoll = {
 };
 
 /** Broadcast-safe poll view: ballots without their ciphertext payloads. */
-/** True for polls settled through a real on-chain Interfold E3 (any
- *  chain) — the discriminator every close/reveal/purge rule keys on. */
+/** True for polls settled through a real on-chain Interfold E3 — the
+ *  discriminator every close/reveal/purge rule keys on. */
 export function isE3Poll(p: { mode?: string }): boolean {
-  return p.mode === "sepolia" || p.mode === "mainnet";
+  return p.mode === "mainnet";
 }
 
 export type VotePollPublic = Omit<VotePoll, "ballots" | "pubKey"> & {
@@ -172,6 +171,13 @@ export class VotingBooth {
       const parsed = JSON.parse(raw) as { polls?: unknown };
       if (Array.isArray(parsed.polls)) {
         let polls = parsed.polls as VotePoll[];
+        // Testnet polls are gone for good — drop any still on disk.
+        const loadedCount = polls.length;
+        polls = polls.filter(p => (p.mode as string) !== "sepolia");
+        if (polls.length !== loadedCount) {
+          this.polls = polls.slice(-MAX_POLLS);
+          this.persist();
+        }
         // Purge pre-onchain polls once the room runs real E3s — "everything
         // onchain from here on out". An in-flight E3 poll (has an e3
         // block) is always kept regardless of its transient status.
@@ -408,7 +414,7 @@ export class VotingBooth {
       question,
       options,
       status: "closed", // not yet open — flips to open when the committee key lands
-      mode: input.chain === "mainnet" ? "mainnet" : "sepolia",
+      mode: "mainnet",
       e3: newE3Telemetry(input.chain, input.interfold, input.program),
       creatorKey: input.creatorKey,
       address: input.address ? input.address.toLowerCase() : null,

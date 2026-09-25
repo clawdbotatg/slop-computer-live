@@ -104,7 +104,7 @@ import { anchorPoll, anchoringEnabled } from "./vote-anchor.js";
 import { VoteE3Coordinator, votingE3Enabled, votingE3Info } from "./vote-e3.js";
 import { isE3Poll } from "./voting.js";
 
-// One Sepolia E3 coordinator per room, created lazily on the first
+// One mainnet E3 coordinator per room, created lazily on the first
 // on-chain poll. Holds the facilitator tx queue + ballot buffers.
 const e3Coordinators = new Map<object, VoteE3Coordinator>();
 function e3CoordinatorFor(room: { voting: import("./voting.js").VotingBooth }): VoteE3Coordinator {
@@ -112,7 +112,7 @@ function e3CoordinatorFor(room: { voting: import("./voting.js").VotingBooth }): 
   if (!c) {
     c = new VoteE3Coordinator(room.voting);
     e3Coordinators.set(room, c);
-    // First time this room's coordinator wakes up — recover any Sepolia
+    // First time this room's coordinator wakes up — recover any E3
     // poll whose committee already decrypted while we were away.
     void c.resumePending();
   }
@@ -8085,7 +8085,7 @@ app.register(async function signalRoutes(fastify) {
 
     room.addPeer({ ...info, ws: socket, sessionToken: session.token });
     // Someone opened this room — spin up its E3 coordinator so any
-    // Sepolia poll the committee already decrypted (while the relay was
+    // E3 poll the committee already decrypted (while the relay was
     // away, or after a read hiccup) gets recovered from chain.
     if (votingE3Enabled() && room.voting.list().some(p => isE3Poll(p) && p.status !== "revealed")) {
       e3CoordinatorFor(room);
@@ -8620,7 +8620,7 @@ app.register(async function signalRoutes(fastify) {
           const creatorKey = info.address?.toLowerCase() ?? info.anonId ?? null;
           if (!creatorKey) return send(socket, { type: "error", error: "no_stable_id" });
           // On-chain mode: no client-side key ceremony — the PUBLIC
-          // Sepolia committee produces the key. The coordinator drives
+          // mainnet committee produces the key. The coordinator drives
           // the whole E3 lifecycle and narrates it into the poll.
           if (votingE3Enabled()) {
             const e3Info = votingE3Info();

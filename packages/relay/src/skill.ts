@@ -2867,7 +2867,7 @@ unless you hold a browser cookie session and can run the wasm.
 {
   id, ts, question, options[],
   status: "open" | "closed" | "revealed",
-  mode: "sepolia" | "mainnet" | "room",   # which Interfold deployment settled it ("room" = legacy in-browser committee)
+  mode: "mainnet" | "room",               # "mainnet" = settled by Interfold on Ethereum mainnet ("room" = legacy in-browser committee)
   creatorKey, address, handle, anonId,
   committee: { size, threshold },
   pubKeyLen,                               # bytes; the key itself rides vote_pubkey only
@@ -2889,8 +2889,8 @@ unless you hold a browser cookie session and can run the wasm.
 ### Lifecycle (what you will watch happen)
 
 1. \`vote_create\` → poll appears with \`status:"closed"\`, \`e3.stage:"requesting"\`.
-   The relay's facilitator key quotes + pays the E3 fee, tops up from
-   the faucet on Sepolia if short, and calls \`request()\` on Interfold.
+   The relay's facilitator key quotes + pays the E3 fee and calls
+   \`request()\` on Interfold (Ethereum mainnet).
 2. \`sortition\` → \`dkg\`: the public committee is drawn and publishes
    the threshold key. \`e3.committee\` fills in.
 3. \`open\`: voting window is live (\`windowStart..windowEnd\`,
@@ -2908,10 +2908,10 @@ decrypt). Budget for it before promising a result on air.
 
 ### Honest caveats (say these, don't discover them)
 
-- **Which chain** is a relay-side switch (\`VOTING_E3_CHAIN\`), shown
-  in \`mode\` / \`e3.chain\`. Interfold's mainnet deployment has had
-  \`requestsPaused()\` set since 2026-08; polls there fail at pre-flight
-  with that message. Sepolia is the working demo path.
+- **Mainnet only.** Interfold mainnet is live, but as of 2026-09-25 it
+  requires the secure BFV param set and a 19-node committee (~258 USDS
+  per round) — the relay's port to that is not done, so polls currently
+  fail at pre-flight. Don't promise a live result until it ships.
 - **Zero ballots = the poll fails** (\`e3.stage:"failed"\`, "window
   closed with zero ballots"). Get at least one vote in.
 - **Ballot validity is not proven.** A malicious client could encrypt

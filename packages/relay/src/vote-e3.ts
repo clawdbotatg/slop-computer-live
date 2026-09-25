@@ -14,13 +14,13 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mainnet, sepolia } from "viem/chains";
+import { mainnet } from "viem/chains";
 import { config } from "./config.js";
 import type { VotingBooth, VotePoll } from "./voting.js";
 
 // On-chain E3 coordinator for the Voting Booth. Runs one real Interfold
 // round per poll: request an E3 on-chain (fee in the protocol's fee
-// token — USDS on mainnet, faucet USDC on Sepolia), wait for the PUBLIC
+// token — USDS), wait for the PUBLIC
 // ciphernode committee to run sortition + distributed DKG, open voting
 // under the committee's key, publish each browser-encrypted ballot
 // on-chain (facilitator pays gas), homomorphically sum the ballots
@@ -29,94 +29,49 @@ import type { VotingBooth, VotePoll } from "./voting.js";
 // The relay never holds key material — it cannot read a ballot or the
 // tally; only the committee can, and only in aggregate.
 //
-// History: battle-tested against the ORIGINAL Sepolia deployment's E3s
-// #20-28 (see github.com/clawdbotatg/private-voting). 2026-08-20:
-// rewritten for the mainnet-generation contracts (also live as a new
-// Sepolia deployment) — the request struct gained expectedFeeToken /
-// expectedCryptoConfigId / maxFee (quoted via getE3Quote),
-// publishCiphertextOutput gained a ciphertextCommitment, the
-// E3Requested event changed shape, fee decimals differ per chain
-// (mainnet USDS is 18, Sepolia mock USDC is 6 — every threshold is
-// derived from the live quote, never hardcoded), and mainnet has no
-// faucet. Operational quirks that carried over: e3Id lives in the
-// event DATA, input windows need a lead, InputDeadlineNotReached
-// surfaces as a raw selector (unchanged: 0xbf1af280), and public RPCs
-// lie about logs.
+// History: rewritten 2026-08-20 for the mainnet-generation contracts —
+// the request struct carries expectedFeeToken / expectedCryptoConfigId /
+// maxFee (quoted via getE3Quote), the E3Requested event changed shape,
+// and fee thresholds are derived from the live quote, never hardcoded.
+// Operational quirks: e3Id lives in the event DATA, input windows need a
+// lead, InputDeadlineNotReached surfaces as a raw selector (0xbf1af280),
+// and public RPCs lie about logs.
 //
-// Enabled when VOTING_E3_CHAIN=sepolia|mainnet and the facilitator key
-// exists. NOTE 2026-08-20: mainnet `requestsPaused()` is still true
-// (operator onboarding) — the pre-flight surfaces that as the poll's
+// Mainnet only. Enabled when VOTING_E3_CHAIN=mainnet and the facilitator
+// key exists. The pre-flight surfaces a protocol pause as the poll's
 // failure message rather than a cryptic revert.
 
-type ChainKey = "sepolia" | "mainnet";
+const CHAIN_KEY = process.env.VOTING_E3_CHAIN ?? "";
 
-const CHAIN_KEY = (process.env.VOTING_E3_CHAIN ?? "") as ChainKey;
-
-const CHAIN_DEFAULTS: Record<
-  ChainKey,
-  {
-    chain: Chain;
-    interfold: Hex;
-    registry: Hex;
-    program: Hex;
-    faucet: Hex | null;
-    txRpc: string;
-    logRpc: string;
-    explorer: string;
-  }
-> = {
-  // The NEW Sepolia deployment (same contract generation as mainnet).
-  // The original deployment this coordinator was first built against
-  // (Interfold 0x64Cd…7f26) speaks the old ABI and is no longer used.
-  sepolia: {
-    chain: sepolia,
-    // Interfold redeployed Sepolia again (release v0.12.1, deploy block
-    // 11534993). The 0x38A8… generation is dead — a request there sits in
-    // sortition forever because no ciphernode watches it (2026-09-14 probe).
-    // Source of truth: deployments/manifest.json in theinterfold/interfold
-    // (networks.sepolia.contracts + reference.MockE3Program); their docs'
-    // `interfold config check` flags the old address as stale.
-    interfold: "0x3E856E24c7a95d0e04d387f847DA6FA9f6F6c20C",
-    registry: "0x374F4542eC634d5437Dd65020781A9D9Df9c2AB8",
-    program: "0x5874CD49929ffcf380C82cDE1e74188dEaff9791", // MockE3Program
-    faucet: "0x6e281411C055BEEbD74bDFcB9aB095aa98907F85",
-    txRpc: "https://ethereum-sepolia-rpc.publicnode.com",
-    logRpc: "https://ethereum-sepolia-rpc.publicnode.com",
-    explorer: "https://sepolia.etherscan.io",
-  },
-  mainnet: {
-    chain: mainnet,
-    interfold: "0x28cF63B459e6218C69EA97ea7D90541cf648c715",
-    registry: "0xC927A5B2d8F68697bC28C0670df05178c93df2d7",
-    program: "0x4976E5E47852eFCe6851d35B95A1A2E19456F3D7", // MockE3Program
-    faucet: null,
-    txRpc: "https://ethereum-rpc.publicnode.com",
-    // getLogs-honest RPC — publicnode has silently filtered log queries.
-    logRpc: "https://eth.drpc.org",
-    explorer: "https://etherscan.io",
-  },
+// Source of truth: deployments/manifest.json in theinterfold/interfold
+// (networks.mainnet.contracts + reference.MockE3Program).
+const CFG = {
+  chain: mainnet as Chain,
+  interfold: "0x28cF63B459e6218C69EA97ea7D90541cf648c715" as Hex,
+  registry: "0xC927A5B2d8F68697bC28C0670df05178c93df2d7" as Hex,
+  program: "0x4976E5E47852eFCe6851d35B95A1A2E19456F3D7" as Hex, // MockE3Program
+  txRpc: "https://ethereum-rpc.publicnode.com",
+  // getLogs-honest RPC — publicnode has silently filtered log queries.
+  logRpc: "https://eth.drpc.org",
+  explorer: "https://etherscan.io",
 };
-
-const CFG = CHAIN_DEFAULTS[CHAIN_KEY] ?? CHAIN_DEFAULTS.sepolia;
 
 const INTERFOLD = (process.env.VOTING_E3_INTERFOLD ?? CFG.interfold) as Hex;
 const REGISTRY = (process.env.VOTING_E3_REGISTRY ?? CFG.registry) as Hex;
 const E3_PROGRAM = (process.env.VOTING_E3_PROGRAM ?? CFG.program) as Hex;
-const FAUCET = (process.env.VOTING_E3_FAUCET ?? CFG.faucet ?? "") as Hex | "";
 const TX_RPC = process.env.VOTING_E3_TX_RPC ?? CFG.txRpc;
 const LOG_RPC = process.env.VOTING_E3_LOG_RPC ?? CFG.logRpc;
 const WINDOW_SECS = Number(process.env.VOTING_E3_WINDOW_SECS ?? 300);
 // Lead between request() and the input window opening. The window must
-// outlast committee DKG or ballots have nowhere to land: on the v0.12.1
-// Sepolia deployment request→key is ≥14 min at best (Interfold's own test
-// E3s use 20-min windows) — set VOTING_E3_LEAD_SECS≈1200 there. 120 s was
-// tuned for the July deployment and is kept as the default for mainnet.
+// outlast committee DKG or ballots have nowhere to land. Interfold's own
+// mainnet governance E3 (#2, 2026-09-25) used a ~7 h lead for its
+// 19-node committee — 120 s is far too short for that; set
+// VOTING_E3_LEAD_SECS accordingly.
 const WINDOW_LEAD_SECS = Number(process.env.VOTING_E3_LEAD_SECS ?? 120);
 
 const INPUT_DEADLINE_SELECTOR = "0xbf1af280"; // InputDeadlineNotReached(uint256,uint256)
 // Dev-mode compute "proof" (digits of pi) — accepted because the
-// protocol's ciphertext verifier is still a deployed mock on BOTH
-// networks (DeployableMockCiphertextVerifier, checked 2026-08-20).
+// protocol's ciphertext verifier is still a deployed mock on mainnet (DeployableMockCiphertextVerifier, checked 2026-08-20).
 // Real proofs come with the Boundless integration.
 const DEV_PROOF = "0x0301040105090206050305" as Hex;
 
@@ -153,10 +108,9 @@ const erc20Abi = parseAbi([
   "function balanceOf(address) view returns (uint256)",
 ]);
 const programAbi = parseAbi(["function publishInput(uint256 e3Id, bytes data)"]);
-const faucetAbi = parseAbi(["function faucet()"]);
 
 export function votingE3Enabled(): boolean {
-  return (CHAIN_KEY === "sepolia" || CHAIN_KEY === "mainnet") && Boolean(config.personalWalletDeployerKey);
+  return CHAIN_KEY === "mainnet" && Boolean(config.personalWalletDeployerKey);
 }
 
 export function votingE3Info(): { chain: string; interfold: string; program: string } {
@@ -194,9 +148,11 @@ function loadFhe(): Promise<{ fhe: FheModule; params: unknown }> {
       const pkgDir = process.env.FHE_WASM_DIR ?? join(here, "..", "..", "nextjs", "public", "fhe-wasm");
       const mod = await import(pathToFileURL(join(pkgDir, "fhe_wasm.js")).href);
       await mod.default(readFileSync(join(pkgDir, "fhe_wasm_bg.wasm")));
-      // paramSet 0 — the only param set registered on BOTH networks
-      // (checked 2026-08-20: paramSet 1 / SECURE_THRESHOLD_8192 reverts
-      // in getE3Quote). Revisit if the protocol registers the secure set.
+      // TODO(mainnet port): mainnet now accepts ONLY paramSet 1 (secure
+      // BFV, t=1e6, 3×58-bit moduli — interfold crates/fhe-params
+      // secure_8192), committeeSize 2 (19 nodes), and a DA-referenced
+      // publishCiphertextOutput. This 512 preset reverts
+      // UnsupportedCryptoConfig in getE3Quote (2026-09-25 audit).
       const params = mod.load_params_named("INSECURE_THRESHOLD_512");
       return { fhe: mod as FheModule, params };
     })();
@@ -342,8 +298,7 @@ export class VoteE3Coordinator {
     const maxFee = quote + quote / 10n; // 10% headroom for quote drift while we mine
     const feeStr = fmtFee(quote, feeDecimals);
 
-    // 2. Fee balance. Sepolia: top up from the protocol faucet. Mainnet:
-    // there is no faucet — fail loud with the address to fund.
+    // 2. Fee balance — fail loud with the address to fund.
     const feeBalance = (await this.pub.readContract({
       address: feeToken,
       abi: erc20Abi,
@@ -351,25 +306,9 @@ export class VoteE3Coordinator {
       args: [this.account.address],
     })) as bigint;
     if (feeBalance < maxFee) {
-      if (FAUCET) {
-        this.note(pollId, {}, `⛽ fee balance below this round's ~${feeStr} quote — topping up from the testnet faucet…`);
-        try {
-          const hash = await this.enqueueTx(() =>
-            this.sendWithNonce(nonce =>
-              this.wallet.writeContract({ address: FAUCET as Hex, abi: faucetAbi, functionName: "faucet", account: this.account, chain: CFG.chain, nonce }),
-            ),
-          );
-          await this.waitReceipt(hash);
-          this.note(pollId, {}, "⛽ fee tokens refilled", hash);
-        } catch (err) {
-          // Faucet may be dry or rate-limited; proceed and let request() report if truly empty.
-          this.note(pollId, {}, `⚠ faucet top-up skipped (${err instanceof Error ? err.message.slice(0, 80) : "error"})`);
-        }
-      } else {
-        throw new Error(
-          `facilitator ${this.account.address} holds ${fmtFee(feeBalance, feeDecimals)} of the fee token but this round quotes ~${feeStr} — top it up (no faucet on ${CHAIN_KEY}).`,
-        );
-      }
+      throw new Error(
+        `facilitator ${this.account.address} holds ${fmtFee(feeBalance, feeDecimals)} of the fee token but this round quotes ~${feeStr} — top it up.`,
+      );
     }
 
     // 3. Fee allowance — bounded to this round's maxFee (the requestor
@@ -580,7 +519,7 @@ export class VoteE3Coordinator {
     );
     // ciphertextCommitment is meant to be a SAFE commitment to the
     // decoded BFV ciphertext for the decryption circuit; the deployed
-    // ciphertext verifier is a mock on both networks, so a keccak of
+    // ciphertext verifier is a mock on mainnet, so a keccak of
     // the serialized tally stands in (honest-framing: dev mode).
     const sumHex = toHex(sum);
     const commitment = keccak256(sumHex);

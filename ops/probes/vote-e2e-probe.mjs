@@ -15,7 +15,7 @@
 // `open` → fetches the committee key → encrypts a one-hot ballot for option 3
 // with the same wasm the browser worker uses → vote_cast → waits for the
 // committee to decrypt → asserts tally[2] === 1 → vote_remove. Costs one E3
-// fee + a few Sepolia txs from the facilitator key; ~7 min wall clock.
+// fee (~258 USDS on mainnet) + a few mainnet txs from the facilitator key.
 //
 // Exit codes: 0 pass · 3 timeout · 4 no hello · 8 E3 disabled · 9 cast
 // rejected · 10 wrong tally · 11 E3 failed (message + last log lines printed).

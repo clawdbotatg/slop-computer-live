@@ -108,8 +108,8 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
       const pubKey = await mesh.voteRequestPubKey(poll.id);
       setPhase({ step: "encrypting" });
       // On-chain E3 polls use the protocol's paramSet 0 (512 preset) so
-      // the ciphertext matches the public committee's key — the only
-      // param set registered on BOTH networks as of 2026-08.
+      // the ciphertext matches the public committee's key.
+      // TODO(mainnet port): mainnet now requires paramSet 1 (secure BFV).
       const preset = isE3Poll(poll) ? "INSECURE_THRESHOLD_512" : undefined;
       const ct = await encryptBallot(pubKey, choice, poll.options.length, preset);
       const result = await mesh.voteCast(poll.id, ct);
@@ -295,7 +295,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
               <span>
                 ·{" "}
                 {isE3Poll(poll)
-                  ? `public ${poll.mode === "mainnet" ? "mainnet" : "Sepolia"} committee`
+                  ? "public mainnet committee"
                   : `${poll.committee.threshold}-of-${poll.committee.size} threshold key`}
               </span>
             </div>
@@ -563,10 +563,10 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 >
                   Interfold E3s
                 </a>{" "}
-                on <b>{mesh.votingE3Chain === "mainnet" ? "Ethereum Mainnet" : "Sepolia"}</b>. A <i>public</i>{" "}
-                ciphernode committee — nodes we don&apos;t control — runs distributed key generation, your encrypted
-                ballot is published on-chain, and only that committee can threshold-decrypt the aggregate. The panel on
-                each poll shows every tx. Still dev-mode: the compute proof is stubbed (real{" "}
+                on <b>Ethereum Mainnet</b>. A <i>public</i> ciphernode committee — nodes we don&apos;t control — runs
+                distributed key generation, your encrypted ballot is published on-chain, and only that committee can
+                threshold-decrypt the aggregate. The panel on each poll shows every tx. Still dev-mode: the compute
+                proof is stubbed (real{" "}
                 <a
                   href="https://docs.theinterfold.com/CRISP/introduction"
                   target="_blank"
@@ -575,8 +575,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 >
                   CRISP
                 </a>{" "}
-                adds RISC Zero + a ballot-validity ZK proof)
-                {mesh.votingE3Chain === "mainnet" ? "." : ", and it\u2019s testnet until this room flips to mainnet."}
+                adds RISC Zero + a ballot-validity ZK proof) .
               </div>
             ) : (
               <div>
@@ -676,9 +675,7 @@ export const VotingWindow = ({ mesh }: VotingWindowProps) => {
                 onClick={createPoll}
                 style={buttonStyle(!busy && !!question.trim() && options.filter(o => o.trim()).length >= 2)}
               >
-                {mesh.votingE3
-                  ? `⛓ Request E3 on ${mesh.votingE3Chain === "mainnet" ? "Ethereum Mainnet" : "Sepolia"}`
-                  : "🔑 Run key ceremony & open poll"}
+                {mesh.votingE3 ? "⛓ Request E3 on Ethereum Mainnet" : "🔑 Run key ceremony & open poll"}
               </button>
               <button type="button" disabled={busy} onClick={() => setCreating(false)} style={buttonStyle(false)}>
                 Cancel

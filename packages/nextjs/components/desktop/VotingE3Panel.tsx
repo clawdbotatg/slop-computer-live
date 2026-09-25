@@ -26,17 +26,14 @@ const STAGES: { key: VoteE3Telemetry["stage"]; label: string }[] = [
   { key: "revealed", label: "Revealed" },
 ];
 
-function explorerBase(chain: string): string {
-  return chain === "mainnet" ? "https://etherscan.io" : "https://sepolia.etherscan.io";
-}
 function short(s: string): string {
   return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
 }
 
 export const VotingE3Panel = ({ e3 }: { e3: VoteE3Telemetry }) => {
-  const etherscanTx = (hash: string) => `${explorerBase(e3.chain)}/tx/${hash}`;
-  const etherscanAddr = (addr: string) => `${explorerBase(e3.chain)}/address/${addr}`;
-  const chainLabel = e3.chain === "mainnet" ? "Ethereum Mainnet" : "Sepolia";
+  const etherscanTx = (hash: string) => `https://etherscan.io/tx/${hash}`;
+  const etherscanAddr = (addr: string) => `https://etherscan.io/address/${addr}`;
+  const chainLabel = "Ethereum Mainnet";
   // Re-render each second so the voting-window countdown + bar animate.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
