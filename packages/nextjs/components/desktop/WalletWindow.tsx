@@ -702,8 +702,8 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
               Create the Bank Safe
             </h2>
             <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--slop-text-muted)" }}>
-              Create a Safe for this episode. Pick its owners and how many must sign. It goes on every chain at once,
-              same address everywhere.
+              Create a Safe for this episode. Pick its owners and how many must sign, then deploy it on the chains you
+              want below.
             </p>
           </div>
 
@@ -860,7 +860,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
 
       <Section title="Networks">
         <p style={{ fontSize: 11, color: "var(--slop-text-muted)", margin: "0 0 8px" }}>
-          A Safe, on all 6 chains at once, same address everywhere. slop.computer pays the gas.
+          One Safe, same address on every chain. Deploy it where you need it.
           {!isHost ? " Only the host can create it." : null}
         </p>
         <SafeChains
@@ -1082,14 +1082,14 @@ const SafeChains = ({
 }) => {
   const slug = useRoomSlug();
   const [status, setStatus] = useState<Record<number, ChainState>>({});
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const chains = SUPPORTED_CHAINS.filter(c => (SAFE_CHAIN_IDS as readonly number[]).includes(c.id));
-  const missing = existing ? chains.filter(c => !existing.deployments[c.id]).length : 0;
+  const deploying = chains.some(c => status[c.id]?.state === "deploying");
 
-  // Poll while any chain is still missing; the relay deploys in the background.
+  // Poll while a chain is deploying; the relay deploys in the background.
   useEffect(() => {
-    if (!existing || missing === 0) return;
+    if (!existing) return;
     let stop = false;
     const tick = async () => {
       try {
@@ -1100,60 +1100,66 @@ const SafeChains = ({
       }
     };
     void tick();
+    if (!deploying && busy === null) return;
     const h = setInterval(tick, 3000);
     return () => {
       stop = true;
       clearInterval(h);
     };
-  }, [existing, missing, slug]);
+  }, [existing, deploying, busy, slug]);
 
-  const post = async (body: unknown) => {
-    setBusy(true);
+  const post = async (chainId: number, body: Record<string, unknown>) => {
+    setBusy(chainId);
     setErr(null);
     try {
       const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/deploy`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, chains: [chainId] }),
       });
       if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `relay ${r.status}`);
+      else setStatus(s => ({ ...s, [chainId]: { state: "deploying" } }));
     } catch (e) {
       setErr(String(e).slice(0, 160));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
-  if (!existing) {
-    const owners = signers.map(s =>
-      s.qx && s.qy
-        ? { qx: s.qx, qy: s.qy, label: s.label, ...(s.device ? { device: s.device } : {}) }
-        : { address: s.address, label: s.label },
-    );
-    const ruleErr = wedgieRuleMsg(signers, threshold);
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <Button
-          disabled={!canDeploy || busy || signers.length === 0 || !!ruleErr}
-          onClick={() => void post({ owners, threshold, label })}
-          title={!canDeploy ? "Only the host can create the Safe." : undefined}
-        >
-          {busy ? "Creating…" : `Create Safe (${threshold} of ${signers.length})`}
-        </Button>
-        {ruleErr ? <div style={{ fontSize: 11, color: "#ffb86b" }}>{ruleErr}</div> : null}
-        {err ? <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div> : null}
-      </div>
-    );
-  }
+  const owners = signers.map(s =>
+    s.qx && s.qy
+      ? { qx: s.qx, qy: s.qy, label: s.label, ...(s.device ? { device: s.device } : {}) }
+      : { address: s.address, label: s.label },
+  );
+  const ruleErr = existing ? null : wedgieRuleMsg(signers, threshold);
+  // A later chain starts with the ORIGINAL owners (the address depends on
+  // them — ops/PLAN-safe.md trap 4). Say so once owners have changed.
+  const genesis = existing?.genesis?.owners
+    .map(o => o.toLowerCase())
+    .sort()
+    .join(",");
+  const now = existing?.signers
+    .map(s => s.address.toLowerCase())
+    .sort()
+    .join(",");
+  const ownersChanged =
+    !!existing && !!genesis && (genesis !== now || existing.genesis!.threshold !== existing.threshold);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {!existing ? (
+        <div style={{ fontSize: 11, color: "var(--slop-text-muted)", marginBottom: 4 }}>
+          {threshold} of {signers.length} signers. Deploy on the chains you want, now or later — same address
+          everywhere. slop.computer pays the gas.
+        </div>
+      ) : null}
       {chains.map(c => {
-        const dep = existing.deployments[c.id];
+        const dep = existing?.deployments[c.id];
         const st = status[c.id];
+        const inFlight = busy === c.id || st?.state === "deploying";
         return (
-          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, minHeight: 28 }}>
             <span style={{ width: 80 }}>{c.label}</span>
             {dep ? (
               dep.txHash ? (
@@ -1163,23 +1169,34 @@ const SafeChains = ({
               ) : (
                 <span>✓ live</span>
               )
-            ) : st?.state === "failed" ? (
-              <span style={{ color: "#ff6b6b" }} title={st.error}>
-                failed — {st.error?.slice(0, 60)}
-              </span>
+            ) : inFlight ? (
+              <span style={{ color: "var(--slop-text-muted)" }}>deploying…</span>
             ) : (
-              <span style={{ color: "var(--slop-text-muted)" }}>
-                {st?.state === "deploying" ? "deploying…" : "not yet"}
-              </span>
+              <>
+                <Button
+                  disabled={!canDeploy || busy !== null || (!existing && (signers.length === 0 || !!ruleErr))}
+                  title={!canDeploy ? "Only the host can deploy." : undefined}
+                  onClick={() => void post(c.id, existing ? {} : { owners, threshold, label })}
+                >
+                  Deploy
+                </Button>
+                {st?.state === "failed" ? (
+                  <span style={{ color: "#ff6b6b", fontSize: 10 }} title={st.error}>
+                    failed — {st.error?.slice(0, 50)}
+                  </span>
+                ) : null}
+              </>
             )}
           </div>
         );
       })}
-      {missing > 0 && chains.some(c => !existing.deployments[c.id] && status[c.id]?.state !== "deploying") ? (
-        <Button disabled={busy} onClick={() => void post({})}>
-          {busy ? "Retrying…" : "Retry missing chains"}
-        </Button>
+      {ownersChanged ? (
+        <div style={{ fontSize: 10, color: "#ffb86b" }}>
+          Owners changed since this Safe was created. A new chain starts with the original owners — redo the owner
+          changes there after deploying.
+        </div>
       ) : null}
+      {ruleErr ? <div style={{ fontSize: 11, color: "#ffb86b" }}>{ruleErr}</div> : null}
       {err ? <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div> : null}
     </div>
   );

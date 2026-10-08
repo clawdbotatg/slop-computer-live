@@ -53,12 +53,20 @@ function account() {
   return privateKeyToAccount(pk.startsWith("0x") ? (pk as Hex) : (`0x${pk}` as Hex));
 }
 
+// The relay's Alchemy app doesn't have these networks enabled (10-07: "not
+// enabled for this app"), so they go through the chains' own public RPCs.
+const PUBLIC_RPC: Record<number, string> = {
+  10: "https://mainnet.optimism.io",
+  42161: "https://arb1.arbitrum.io/rpc",
+  100: "https://rpc.gnosischain.com",
+};
+
 const clients = new Map<number, { pub: PublicClient; wallet: WalletClient }>();
 function clientsFor(chainId: number) {
   let c = clients.get(chainId);
   if (!c) {
     // SAFE_RPC_<chainId> points a chain at a local fork (ops/probes/safe-relay-fork.mjs).
-    const rpc = process.env[`SAFE_RPC_${chainId}`] || alchemyUrl(chainId);
+    const rpc = process.env[`SAFE_RPC_${chainId}`] || PUBLIC_RPC[chainId] || alchemyUrl(chainId);
     const chain = defineChain({
       id: chainId,
       name: String(chainId),
@@ -90,6 +98,18 @@ function serial<T>(chainId: number, fn: () => Promise<T>): Promise<T> {
 async function hasCode(chainId: number, addr: Address): Promise<boolean> {
   const code = await clientsFor(chainId).pub.getCode({ address: addr });
   return !!code && code !== "0x";
+}
+
+// Right after a receipt, a load-balanced RPC can still answer from a node
+// that hasn't seen the block (10-07: Base + Robinhood said "no code" for a
+// Safe that was there). Poll before calling it missing.
+async function codeAppears(chainId: number, addr: Address, ms = 30_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await hasCode(chainId, addr)) return true;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return false;
 }
 
 const errText = (err: unknown) =>
@@ -161,8 +181,12 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
       s.saltNonce,
     );
     const txHash = await sendAndWait(chainId, bundle.to, bundle.data);
-    if (!(await hasCode(chainId, safe))) return { chainId, ok: false, error: "no-code-after-deploy" };
-    if ((await missingSigners(chainId, s.passkeys)).length) return { chainId, ok: false, error: "signer-missing-after-deploy" };
+    if (!(await codeAppears(chainId, safe))) return { chainId, ok: false, error: "no-code-after-deploy" };
+    for (const k of missing) {
+      if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy)))) {
+        return { chainId, ok: false, error: "signer-missing-after-deploy" };
+      }
+    }
     return { chainId, ok: true, txHash };
   } catch (err) {
     return { chainId, ok: false, error: errText(err) };
@@ -192,7 +216,9 @@ export async function ensureSignersOn(chainId: number, keys: PasskeyKey[]): Prom
     args: [calls.map(c => ({ target: c.to, allowFailure: false, callData: c.data }))],
   });
   const hash = await sendAndWait(chainId, MULTICALL3, data);
-  if ((await missingSigners(chainId, missing)).length) throw new Error("signer contract missing after deploy");
+  for (const k of missing) {
+    if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy)))) throw new Error("signer contract missing after deploy");
+  }
   return hash;
 }
 

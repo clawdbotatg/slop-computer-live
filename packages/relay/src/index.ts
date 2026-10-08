@@ -2784,12 +2784,18 @@ app.post("/v1/safe/deploy", async (req, reply) => {
     owners?: unknown;
     threshold?: unknown;
     label?: unknown;
+    chains?: unknown;
   };
   const cur = room.wallet.getCurrent();
+  // Which chains to deploy on now (one Deploy button per chain in the UI).
+  // Omitted = every chain the Safe isn't on yet.
+  const asked = Array.isArray(b.chains)
+    ? SAFE_CHAINS.filter(c => (b.chains as unknown[]).includes(c))
+    : null;
 
   if (!Array.isArray(b.owners)) {
     if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
-    const missing = SAFE_CHAINS.filter(c => !cur.deployments[c]);
+    const missing = (asked ?? SAFE_CHAINS).filter(c => !cur.deployments[c]);
     runSafeDeploy(slug, cur, missing);
     return { address: cur.address, chains: missing };
   }
@@ -2846,8 +2852,9 @@ app.post("/v1/safe/deploy", async (req, reply) => {
     label: typeof b.label === "string" && b.label ? b.label.slice(0, 100) : `Episode ${new Date().toISOString().slice(0, 10)}`,
   };
   room.wallet.setCurrent(rec);
-  runSafeDeploy(slug, rec, [...SAFE_CHAINS]);
-  return { address: rec.address, chains: SAFE_CHAINS };
+  const chains = asked ?? [...SAFE_CHAINS];
+  runSafeDeploy(slug, rec, chains);
+  return { address: rec.address, chains };
 });
 
 const shortAddr = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;

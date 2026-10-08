@@ -487,6 +487,8 @@ export type WalletRecord = {
   /** "safe" = Gnosis Safe (ops/PLAN-safe.md). Legacy slop multisigs are
    *  abandoned: the mesh hides them, so the room sees "no wallet". */
   kind?: "safe";
+  /** Safe: the owner set it was created with (new chains start from this). */
+  genesis?: { owners: string[]; threshold: number };
 };
 export type WalletTxSignature = {
   signer: string;
