@@ -2,13 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AddressInput } from "@scaffold-ui/components";
-import { type Address as AddressType, type Hex } from "viem";
-import { usePublicClient } from "wagmi";
+import { type Address as AddressType } from "viem";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
-import { MultisigAbi } from "~~/contracts/multisig";
 import type { Browser, Peer, PeerMeshState, TxRequest, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // Default address shown in the "custom" impersonator input until the user
 // types something else. Vitalik because it's the canonical address every
@@ -28,6 +25,23 @@ const SUPPORTED_NETWORKS: { chainId: number; label: string }[] = [
   { chainId: 137, label: "Polygon" },
 ];
 const DEFAULT_CHAIN_ID = 1;
+
+// Identifies a wallet_sendCalls batch in the Bank queue: same browser, same
+// calls (value compared as a number — dapps send hex, the queue may not).
+const batchKey = (browserId: string, calls: { target: string; value: string; data: string }[]) =>
+  browserId +
+  "|" +
+  calls
+    .map(c => {
+      let v: string;
+      try {
+        v = BigInt(c.value || "0").toString();
+      } catch {
+        v = c.value;
+      }
+      return `${c.target.toLowerCase()}:${v}:${c.data.toLowerCase()}`;
+    })
+    .join(",");
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -197,13 +211,12 @@ export const SharedBrowser = ({
   // prop stream we don't (txRequests), so "clear" filters by key here AND
   // empties the local array — newly-captured tx (new keys) still appear.
   const [hiddenTxKeys, setHiddenTxKeys] = useState<Set<string>>(new Set());
-  // EIP-5792 batch tracking. Keyed by the lowercased execHash we
-  // computed when proposing the batch (since that's what survives
-  // round-tripping through the relay and lets us recognize the same
-  // tx in walletTxs). Value = { batchId, sent }, where `sent` flips
-  // true after we push the executed/failed receipt back to the host
-  // so the WS message only fires once per terminal status.
-  const pendingBatchesRef = useRef<Map<string, { batchId: string; sent: boolean }>>(new Map());
+  // EIP-5792 batch tracking. Keyed by batchKey(browserId, calls) — the
+  // relay picks the Safe nonce + hash, so the calls themselves are what
+  // we can recognize in walletTxs. Value = { batchId, sent, at }: `sent`
+  // flips after we push the executed/failed receipt back to the host so
+  // the WS message fires once; `at` ignores older identical batches.
+  const pendingBatchesRef = useRef<Map<string, { batchId: string; sent: boolean; at: number }>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   // Latest wallet + propose-tx fn lives in a ref so the WS message
@@ -271,8 +284,11 @@ export const SharedBrowser = ({
     const pending = pendingBatchesRef.current;
     if (pending.size === 0) return;
     for (const tx of walletTxs) {
-      const entry = pending.get(tx.execHash.toLowerCase());
-      if (!entry || entry.sent) continue;
+      if (!tx.calls || tx.calls.length === 0 || !tx.browserId) continue;
+      const entry = pending.get(batchKey(tx.browserId, tx.calls));
+      // createdAt is the relay's clock, `at` ours: 2 min slack covers skew
+      // while still skipping an identical batch executed long ago.
+      if (!entry || entry.sent || tx.createdAt < entry.at - 120_000) continue;
       // Map WalletTx terminal status → EIP-5792 v2 status code.
       // 100 = pending (don't ship yet), 200 = success, 500 = error.
       // "expired" / "cancelled" / "failed" all collapse to 500.
@@ -296,31 +312,6 @@ export const SharedBrowser = ({
       });
     }
   }, [walletTxs]);
-
-  // One publicClient per chain the multisig factory deploys to.
-  // The captured tx might be for a different chain than the SharedBrowser
-  // is showing (Uniswap V4 has its own chain selector independent of
-  // wallet_switchEthereumChain), so we can't pin to a single chain.
-  // wagmi hooks must be called unconditionally, so fan out across all
-  // supported chains and pick the right one at tx-capture time.
-  const mainnetClient = usePublicClient({ chainId: 1 });
-  const baseClient = usePublicClient({ chainId: 8453 });
-  const gnosisClient = usePublicClient({ chainId: 100 });
-  const arbitrumClient = usePublicClient({ chainId: 42161 });
-  const optimismClient = usePublicClient({ chainId: 10 });
-  const polygonClient = usePublicClient({ chainId: 137 });
-  const clientForChain = useCallback(
-    (cid: number) => {
-      if (cid === 1) return mainnetClient;
-      if (cid === 8453) return baseClient;
-      if (cid === 100) return gnosisClient;
-      if (cid === 42161) return arbitrumClient;
-      if (cid === 10) return optimismClient;
-      if (cid === 137) return polygonClient;
-      return null;
-    },
-    [mainnetClient, baseClient, gnosisClient, arbitrumClient, optimismClient, polygonClient],
-  );
 
   // ---- Impersonator picker --------------------------------------------------
   // Dropdown lets you act as: the deployed session wallet, any other
@@ -622,14 +613,11 @@ export const SharedBrowser = ({
           }
         }
         const walletDeployedHere = !!w && browserChainId in w.deployments;
-        const txClient = clientForChain(browserChainId);
         console.warn("[SLOP-TX-DEBUG] tx_request received", {
           method,
           hasWallet: !!w,
           walletAddress: w?.address ?? null,
           hasPropose: !!propose,
-          hasTxClient: !!txClient,
-          txClientChainId: txClient?.chain?.id ?? null,
           to,
           calldataPrefix: calldata.slice(0, 12),
           impersonator: imp,
@@ -637,66 +625,28 @@ export const SharedBrowser = ({
           browserChainId,
           walletDeployments: w ? Object.keys(w.deployments) : [],
           walletDeployedHere,
-          willPropose: !!(
-            w &&
-            propose &&
-            txClient &&
-            to &&
-            calldata.startsWith("0x") &&
-            impMatchesWallet &&
-            walletDeployedHere
-          ),
+          willPropose: !!(w && propose && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere),
         });
-        if (w && propose && txClient && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
-          void (async () => {
-            try {
-              console.warn("[SLOP-TX-DEBUG] propose-IIFE start — reading multisig nonce", {
-                chain: txClient.chain?.id ?? null,
-              });
-              const nonce = (await txClient.readContract({
-                address: w.address as AddressType,
-                abi: MultisigAbi,
-                functionName: "nonce",
-              })) as bigint;
-              console.warn("[SLOP-TX-DEBUG] nonce read OK", {
-                nonce: nonce.toString(),
-                readOnChain: txClient.chain?.id ?? null,
-              });
-              const deadline = defaultDeadline();
-              const target = to as AddressType;
-              const valueWei = value && value !== "0x" ? BigInt(value) : 0n;
-              const data = calldata as Hex;
-              const execHash = computeExecHash({
-                chainId: browserChainId,
-                multisig: w.address as AddressType,
-                nonce,
-                deadline,
-                target,
-                value: valueWei,
-                data,
-              });
-              console.warn("[SLOP-TX-DEBUG] calling walletProposeTx", {
-                chainId: browserChainId,
-                target,
-                valueWei: valueWei.toString(),
-                execHash,
-              });
-              propose({
-                chainId: browserChainId,
-                target,
-                value: valueWei.toString(),
-                data,
-                deadline: deadline.toString(),
-                nonce: nonce.toString(),
-                execHash,
-                source: "browser",
-                browserId: browser.id,
-              });
-              console.warn("[SLOP-TX-DEBUG] walletProposeTx returned");
-            } catch (err) {
-              console.warn("[SLOP-TX-DEBUG] propose-IIFE THREW — first-attempt drop suspect", err);
-            }
-          })();
+        if (w && propose && to && calldata.startsWith("0x") && impMatchesWallet && walletDeployedHere) {
+          // The Bank is a Safe: send the plain call; the relay picks the
+          // nonce and computes the safeTxHash (ops/PLAN-safe.md).
+          const valueWei = value && value !== "0x" ? BigInt(value) : 0n;
+          console.warn("[SLOP-TX-DEBUG] calling walletProposeTx", {
+            chainId: browserChainId,
+            target: to,
+            valueWei: valueWei.toString(),
+          });
+          propose({
+            chainId: browserChainId,
+            target: to,
+            value: valueWei.toString(),
+            data: calldata,
+            deadline: "0",
+            nonce: "0",
+            execHash: "0x",
+            source: "browser",
+            browserId: browser.id,
+          });
         }
 
         // wallet_sendCalls (EIP-5792 atomic batch) — Uniswap uses this
@@ -704,17 +654,14 @@ export const SharedBrowser = ({
         // wallet_getCapabilities, bundling approve + Permit2.permit +
         // swap into one call so it doesn't have to ask for the
         // off-chain Permit2 signature we can't produce. Map the batch
-        // 1:1 onto a multisig execBatchTransaction propose. The
-        // sentinel target = the multisig itself, value="0", data="0x"
-        // (matches the WalletHeader SendAll batch shape); the real
-        // calls live in the `calls` field.
+        // 1:1 onto one Safe MultiSendCallOnly tx: the real calls live in
+        // the `calls` field and the relay builds the SafeTx from them.
         if (
           method === "wallet_sendCalls" &&
           params[0] &&
           typeof params[0] === "object" &&
           w &&
           propose &&
-          txClient &&
           impMatchesWallet &&
           walletDeployedHere
         ) {
@@ -741,65 +688,31 @@ export const SharedBrowser = ({
             chain: browserChainId,
           });
           if (calls.length > 0) {
-            void (async () => {
-              try {
-                const nonce = (await txClient.readContract({
-                  address: w.address as AddressType,
-                  abi: MultisigAbi,
-                  functionName: "nonce",
-                })) as bigint;
-                const deadline = defaultDeadline();
-                // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
-                const execHash =
-                  w.kind === "safe"
-                    ? "0x"
-                    : ((await txClient.readContract({
-                        address: w.address as AddressType,
-                        abi: MultisigAbi,
-                        functionName: "getBatchExecHash",
-                        args: [
-                          calls.map(c => ({
-                            target: c.target as AddressType,
-                            value: BigInt(c.value),
-                            data: c.data as Hex,
-                          })),
-                          deadline,
-                        ],
-                      })) as Hex);
-                console.warn("[SLOP-TX-DEBUG] calling walletProposeTx (BATCH)", {
-                  chainId: browserChainId,
-                  callCount: calls.length,
-                  execHash,
-                  batchId,
-                });
-                // Remember the batchId keyed by execHash BEFORE
-                // proposing — that way the walletTxs effect below
-                // can recognize the relay's echo of this tx the
-                // instant it arrives, even if execution happens
-                // faster than the next render cycle.
-                if (batchId) {
-                  pendingBatchesRef.current.set(execHash.toLowerCase(), { batchId, sent: false });
-                }
-                propose({
-                  chainId: browserChainId,
-                  // Sentinel target/value/data — execBatchTransaction
-                  // ignores the top-level fields and uses the calls
-                  // array instead. Point at the multisig itself so
-                  // explorers show a self-call.
-                  target: w.address,
-                  value: "0",
-                  data: "0x",
-                  deadline: deadline.toString(),
-                  nonce: nonce.toString(),
-                  execHash,
-                  source: "browser",
-                  browserId: browser.id,
-                  calls,
-                });
-              } catch (err) {
-                console.warn("[SLOP-TX-DEBUG] wallet_sendCalls propose threw", err);
-              }
-            })();
+            console.warn("[SLOP-TX-DEBUG] calling walletProposeTx (BATCH)", {
+              chainId: browserChainId,
+              callCount: calls.length,
+              batchId,
+            });
+            // Remember the batch BEFORE proposing so the walletTxs effect
+            // can recognize the relay's echo the instant it arrives. The
+            // relay picks the nonce + hash, so we match on the calls.
+            if (batchId) {
+              pendingBatchesRef.current.set(batchKey(browser.id, calls), { batchId, sent: false, at: Date.now() });
+            }
+            propose({
+              chainId: browserChainId,
+              // Placeholder top-level fields — the relay builds the
+              // MultiSendCallOnly SafeTx from `calls`.
+              target: w.address,
+              value: "0",
+              data: "0x",
+              deadline: "0",
+              nonce: "0",
+              execHash: "0x",
+              source: "browser",
+              browserId: browser.id,
+              calls,
+            });
           }
         }
 

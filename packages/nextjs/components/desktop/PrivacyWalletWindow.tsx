@@ -4,14 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Portfolio } from "./wallet/types";
 import { Address } from "@scaffold-ui/components";
 import { QRCodeSVG } from "qrcode.react";
-import { type Address as AddressType, type Hex, isAddress, parseEther } from "viem";
-import { useAccount, useChainId, usePublicClient, useSendTransaction, useSwitchChain } from "wagmi";
+import { type Address as AddressType, isAddress, parseEther } from "viem";
+import { useAccount, useChainId, useSendTransaction, useSwitchChain } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
-import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // Shield — a personal, single-viewer window (like the Wallet) that passes
 // your ETH through Railgun on mainnet so what comes out has no on-chain link
@@ -313,7 +311,6 @@ function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
   const connectedChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
   const { sendTransactionAsync } = useSendTransaction();
-  const mainnetClient = usePublicClient({ chainId: 1 });
   const bank = mesh.wallet;
   const bankOnMainnet = !!bank && 1 in bank.deployments;
 
@@ -353,41 +350,25 @@ function DepositPanel({ s, mesh }: { s: KohakuView; mesh: PeerMeshState }) {
     }
   };
 
-  // Propose a plain transfer from the room's Bank multisig to the deposit
-  // address — same recipe as the wager payout propose (nonce + execHash
-  // computed client-side, relay queues it for signatures in the Bank app).
+  // Propose a plain transfer from the room's Bank Safe to the deposit
+  // address — the relay picks the nonce + safeTxHash and queues it for
+  // signatures in the Bank app.
   const depositFromBank = async () => {
     const wei = parseAmount();
     if (wei === null || !addr) return;
-    if (!bank) return setDepErr("this room has no Bank multisig yet");
+    if (!bank) return setDepErr("this room has no Bank Safe yet");
     if (!bankOnMainnet) return setDepErr("the Bank isn't deployed on mainnet");
-    if (!mainnetClient) return setDepErr("no mainnet RPC client");
     setBusyBtn("bank");
     setBankProposed(false);
     try {
-      const nonce = (await mainnetClient.readContract({
-        address: bank.address as AddressType,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
-      const execHash = computeExecHash({
-        chainId: 1,
-        multisig: bank.address as AddressType,
-        nonce,
-        deadline,
-        target: addr as AddressType,
-        value: wei,
-        data: "0x" as Hex,
-      });
       mesh.walletProposeTx({
         chainId: 1,
         target: addr,
         value: wei.toString(),
         data: "0x",
-        deadline: deadline.toString(),
-        nonce: nonce.toString(),
-        execHash,
+        deadline: "0",
+        nonce: "0",
+        execHash: "0x",
         source: "manual",
         browserId: null,
       });

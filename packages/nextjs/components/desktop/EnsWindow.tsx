@@ -28,10 +28,8 @@ import {
   reverseNodeFor,
   subdomainFor,
 } from "~~/contracts/ens";
-import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // ENS app. Wires <slug>.slopcomputer.eth ←→ the room's multisig without
 // leaving live.slop.computer. Two phases, mirroring how the records
@@ -247,7 +245,7 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
     setError(null);
     setErrorPhase("forward");
     if (!multisig) {
-      setError("This room has no multisig yet — deploy one in the WALLET app first.");
+      setError("This room has no Safe yet — create one in the WALLET app first.");
       return;
     }
     if (!mainnet) {
@@ -332,44 +330,29 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
     setErrorPhase("reverse");
     setProposed(false);
     if (!multisig) {
-      setError("This room has no multisig yet — deploy one in the WALLET app first.");
-      return;
-    }
-    if (!mainnet) {
-      setError("No mainnet RPC client.");
+      setError("This room has no Safe yet — create one in the WALLET app first.");
       return;
     }
     if (!status?.multisigOnMainnet) {
-      setError(
-        "The multisig isn't deployed on Ethereum mainnet yet — deploy it on mainnet in the WALLET app, then propose.",
-      );
+      setError("The Safe isn't deployed on Ethereum mainnet yet — retry mainnet in the WALLET app, then propose.");
       return;
     }
     setBusy("reverse");
     try {
-      setStep("Reading multisig nonce…");
-      const nonce = (await mainnet.readContract({
-        address: multisig,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
-      const target = ENS_REVERSE_REGISTRAR as Address;
-      const value = 0n;
       const data: Hex = encodeFunctionData({
         abi: EnsReverseRegistrarAbi,
         functionName: "setName",
         args: [subdomain],
       });
-      const execHash = computeExecHash({ chainId: ENS_CHAIN_ID, multisig, nonce, deadline, target, value, data });
+      // The Bank is a Safe: the relay picks the nonce + safeTxHash.
       mesh.walletProposeTx({
         chainId: ENS_CHAIN_ID,
-        target,
+        target: ENS_REVERSE_REGISTRAR as Address,
         value: "0",
         data,
-        deadline: deadline.toString(),
-        nonce: nonce.toString(),
-        execHash,
+        deadline: "0",
+        nonce: "0",
+        execHash: "0x",
         source: "manual",
         browserId: null,
       });
@@ -380,7 +363,7 @@ export const EnsWindow = ({ mesh }: EnsWindowProps) => {
       setBusy(null);
       setStep(null);
     }
-  }, [multisig, mainnet, status, subdomain, mesh]);
+  }, [multisig, status, subdomain, mesh]);
 
   return (
     <div

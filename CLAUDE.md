@@ -34,7 +34,7 @@ stale within a quarter and nobody noticed for four months.
 ## ENS app ("we set the reverse record and it didn't work")
 
 `EnsWindow.tsx` shows two different reverse reads on purpose: the **raw
-record** (`name()` on the multisig's reverse node — what `setName` wrote)
+record** (`name()` on the Bank Safe's reverse node — what `setName` wrote)
 and whether the name **resolves** (viem `getEnsName`, which also requires
 the forward `addr()` to match). A raw record that doesn't resolve means
 **step 1 (forward) is incomplete** — never re-propose the reverse tx.

@@ -37,13 +37,13 @@ export const PROVIDER_INJECT_SCRIPT = (
   const SUPPORTED_CHAIN_IDS_HEX = ${JSON.stringify(supportedChainIds.map(c => "0x" + c.toString(16).toLowerCase()))};
 
   // Transactions: capture calldata, then "user rejected" (4001) so the
-  // dapp surfaces gracefully. The captured tx goes into the multisig's
-  // pending queue, where the real signers ratify and broadcast it.
+  // dapp surfaces gracefully. The captured tx goes into the Bank Safe's
+  // pending queue, where the real owners sign and the relay executes it.
   const TX_METHODS = new Set([
     "eth_sendTransaction",
   ]);
-  // Signing methods: a multisig contract has no private key — it can't
-  // sign anything off-chain. If we reject with 4001 (user rejected),
+  // Signing methods: the Bank is a Safe — no private key, and we don't
+  // collect owner signatures for off-chain messages (EIP-1271), only txs. If we reject with 4001 (user rejected),
   // dapps like Uniswap interpret that as "user clicked cancel" and
   // retry the Permit2 signature several times before eventually
   // falling back to legacy approve+swap. 4200 (Unsupported Method, per
@@ -285,7 +285,7 @@ export const PROVIDER_INJECT_SCRIPT = (
         // doesn't support off-chain signing AT ALL, so it falls back to
         // legacy on-chain approve flows on the first try instead of
         // retrying the same signature N times before giving up.
-        const err = new Error("Impersonator: this wallet cannot sign off-chain (multisig contract)");
+        const err = new Error("Impersonator: this wallet cannot sign off-chain (Safe — on-chain transactions only)");
         err.code = 4200;
         throw err;
       }
