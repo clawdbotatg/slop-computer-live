@@ -2,6 +2,7 @@ import {
   type Address,
   type Hex,
   concat,
+  decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   encodePacked,
@@ -180,6 +181,22 @@ export function deployBundle(passkeys: { x: Hex | bigint; y: Hex | bigint }[], i
   };
 }
 
+// ---------------------------------------------------------------- personal wallets
+
+/**
+ * A passkey user's personal wallet: Safe owners [passkey signer, cosigner],
+ * threshold 1 (ops/PLAN-safe.md). The cosigner is a fixed platform address,
+ * so the wallet address depends only on the passkey — no server state.
+ */
+export const PERSONAL_SALT_NONCE = saltNonceFromLabel("slop-personal-safe-v1");
+
+export function personalSafe(qx: Hex, qy: Hex, cosigner: Address) {
+  const owner = passkeyOwner(qx, qy);
+  const owners = normalizeOwners([owner, cosigner]);
+  const init = initializer(owners, 1);
+  return { owner, owners, init, address: safeAddress(init, PERSONAL_SALT_NONCE) };
+}
+
 // ---------------------------------------------------------------- transactions
 
 function multiSendData(calls: Call[]): Hex {
@@ -192,6 +209,31 @@ function multiSendData(calls: Call[]): Hex {
     ),
   );
   return encodeFunctionData({ abi: multiSendAbi, functionName: "multiSend", args: [packed] });
+}
+
+/** The inner calls of a MultiSendCallOnly batch (inverse of multiSendData). Throws on anything malformed. */
+export function decodeMultiSend(data: Hex): Call[] {
+  const [packed] = decodeFunctionData({ abi: multiSendAbi, data }).args as [Hex];
+  const b = packed.slice(2);
+  const calls: Call[] = [];
+  let i = 0;
+  while (i < b.length) {
+    if (parseInt(b.slice(i, i + 2), 16) !== 0) throw new Error("MultiSend entry is not a CALL");
+    const to = getAddress(`0x${b.slice(i + 2, i + 42)}`);
+    const value = BigInt(`0x${b.slice(i + 42, i + 106)}`);
+    const len = Number(BigInt(`0x${b.slice(i + 106, i + 170)}`));
+    const callData = `0x${b.slice(i + 170, i + 170 + len * 2)}` as Hex;
+    if (callData.length !== 2 + len * 2) throw new Error("MultiSend entry truncated");
+    calls.push({ to, value, data: callData });
+    i += 170 + len * 2;
+  }
+  return calls;
+}
+
+/** Total native value a SafeTx moves out of the Safe (top-level + every MultiSend inner call). */
+export function totalValue(t: Pick<SafeTx, "to" | "value" | "data" | "operation">): bigint {
+  if (t.operation === 0) return t.value;
+  return decodeMultiSend(t.data).reduce((sum, c) => sum + c.value, t.value);
 }
 
 /** One call goes out as a plain CALL; several as a MultiSendCallOnly delegatecall. */

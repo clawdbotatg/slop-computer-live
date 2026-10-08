@@ -2363,8 +2363,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       hasPublicClient: !!txPublicClient,
     });
     setErr(null);
-    // Safe: the relay executes (and pays gas) once enough owners signed.
-    if (isSafe) {
+    // Safe Bank: the relay executes (and pays gas) once enough owners signed.
+    // A personal Safe brings its own sponsoredExecute (below) instead.
+    if (isSafe && !sponsoredExecute) {
       setSponsoring(true);
       try {
         const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/exec`, slug), {
@@ -2387,7 +2388,8 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     // when this tx was signed in the queue). The receipt watcher below picks up
     // the resulting hash exactly as it does for the EOA path.
     if (sponsoredExecute) {
-      if (isBatchTx) {
+      // A Safe batch is already one MultiSend tx — only legacy batches can't go.
+      if (isBatchTx && !isSafe) {
         console.warn("[wallet] onExecute: batch tx not sponsored", { txId: tx.id, calls: tx.calls?.length });
         setErr("Batch transactions aren't gas-sponsored yet — coming soon.");
         return;
@@ -2603,8 +2605,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       execHash: safeTxHash(tx.chainId, wallet.address as AddressType, c),
       operation: 0,
       source: "manual",
+      ...(walletAddress ? { address: walletAddress } : {}),
     });
-  }, [safeTx, wallet.address, mesh, tx.chainId]);
+  }, [safeTx, wallet.address, mesh, tx.chainId, walletAddress]);
 
   const onResummarize = useCallback(() => {
     txResummarize(tx.id);

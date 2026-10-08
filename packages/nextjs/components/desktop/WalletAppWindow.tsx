@@ -16,12 +16,13 @@ import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
 import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
-import { PERSONAL_WALLET_DEPLOYER, personalWalletSalt } from "~~/utils/personalWallet";
+import { PERSONAL_SAFE_COSIGNER } from "~~/utils/personalWallet";
+import { PERSONAL_SALT_NONCE } from "~~/utils/safe";
 
 // The personal ("single-player") Wallet desktop app. It adapts to the account:
 //
-//   - passkey session → their personal smart-wallet (a slop Multisig, 1-of-2 at
-//     threshold 1). Gets the full Bank-like experience: Holdings (Zerion) +
+//   - passkey session → their personal smart-wallet (a Safe on Base, owners
+//     [passkey, platform cosigner] at threshold 1 — ops/PLAN-safe.md). Gets the full Bank-like experience: Holdings (Zerion) +
 //     Chat (propose) + Transactions (a per-address tx queue they sign with the
 //     passkey). Looks almost identical to the Bank, just a different signer set.
 //   - connected EOA (MetaMask) → Holdings + Chat only. A chat- or asset-proposed
@@ -52,7 +53,8 @@ export function WalletAppWindow({
 
   // Account-type detection. The passkey path is our slop multisig (deterministic
   // from the passkey); a connected wallet is treated as a plain EOA.
-  const isPasskeyMultisig = pw.isPasskey && !!pw.personalAddress && !!pw.passkeyIdentity && !pw.deployerUnset;
+  const isPasskeyMultisig =
+    pw.isPasskey && !!pw.personalAddress && !!pw.ownerAddress && !!pw.passkeyIdentity && !pw.deployerUnset;
   const mode: WalletTxMode = isPasskeyMultisig ? "multisig" : "eoa";
   // EOA wallet address: a live wagmi connection if there is one, otherwise the
   // authenticated SIWE session address (`myAddress`). Logging into the room
@@ -64,35 +66,27 @@ export function WalletAppWindow({
   const activeAddress = isPasskeyMultisig ? pw.personalAddress : eoaWalletAddress;
 
   // Gas-sponsored execute for the passkey personal wallet's queued txs. A
-  // passkey user has no connected EOA, so the queue's default (EOA broadcast)
-  // path dead-ends at "connect your wallet to execute". Instead we hand the
-  // queued tx's ALREADY-collected signatures (threshold 1 + the passkey sig
-  // gathered at sign time) straight to the relay facilitator, which broadcasts
-  // execTransaction and pays the gas. Single-call only — the facilitator does
-  // execTransaction, not execBatchTransaction, so a batched proposal is
-  // cleanly rejected with a message rather than a confusing on-chain failure.
+  // passkey user has no connected EOA, so we hand the queued SafeTx (the relay
+  // filled nonce + hash at propose time; a batch is already a MultiSend) and
+  // its collected passkey signature straight to the relay facilitator, which
+  // broadcasts execTransaction and pays the gas.
   const { executeSigned } = usePersonalWalletSend();
   const sponsoredExecute = useCallback(
     async (tx: WalletTx): Promise<`0x${string}`> => {
-      if (tx.calls && tx.calls.length > 0) {
-        throw new Error("Batch transactions aren't gas-sponsored yet — coming soon.");
-      }
-      // Multisig.execTransaction rejects out-of-order signer arrays
-      // (`SignersUnsorted`); sort ascending by signer address before handing
-      // them off (threshold 1 makes this a single-element no-op in practice).
-      const signatures = [...tx.signatures]
-        .sort((a, b) => (a.signer.toLowerCase() < b.signer.toLowerCase() ? -1 : 1))
-        .map(s => ({
+      if (tx.operation === undefined) throw new Error("This transaction predates the Safe wallet — propose it again.");
+      return executeSigned({
+        tx: {
+          to: tx.target as AddressType,
+          value: BigInt(tx.value),
+          data: (tx.data || "0x") as Hex,
+          operation: tx.operation,
+          nonce: BigInt(tx.nonce),
+        },
+        signatures: tx.signatures.map(s => ({
           sigType: s.sigType,
           signer: s.signer as AddressType,
           data: s.data as Hex,
-        }));
-      return executeSigned({
-        target: tx.target as AddressType,
-        value: BigInt(tx.value),
-        data: (tx.data || "0x") as Hex,
-        deadline: BigInt(tx.deadline),
-        signatures,
+        })),
       });
     },
     [executeSigned],
@@ -100,22 +94,24 @@ export function WalletAppWindow({
 
   // Synthesize a WalletRecord the reused Bank panels render against.
   const record = useMemo<WalletRecord | null>(() => {
-    if (isPasskeyMultisig && pw.personalAddress && pw.passkeyAddress && pw.passkeyIdentity) {
+    if (isPasskeyMultisig && pw.personalAddress && pw.passkeyAddress && pw.ownerAddress && pw.passkeyIdentity) {
       return {
         id: `personal:${pw.personalAddress}`,
+        kind: "safe",
         address: pw.personalAddress.toLowerCase(),
-        deployer: PERSONAL_WALLET_DEPLOYER,
-        salt: personalWalletSalt(pw.passkeyAddress),
+        deployer: PERSONAL_SAFE_COSIGNER,
+        salt: PERSONAL_SALT_NONCE.toString(),
         // Threshold 1 + you hold the passkey ⇒ one passkey signature executes.
-        // The 1-of-2 recovery co-signer is cosmetic for signing, so we omit it.
+        // The platform cosigner is the second owner but never signs here, so we
+        // omit it. The owner address is the passkey's Safe signer contract.
         signers: [
           {
-            address: pw.passkeyAddress.toLowerCase(),
+            address: pw.ownerAddress.toLowerCase(),
+            passkeyAddr: pw.passkeyAddress.toLowerCase(),
             label: "you (passkey)",
             signerType: "passkey",
             qx: pw.passkeyIdentity.qx,
             qy: pw.passkeyIdentity.qy,
-            credentialIdHash: pw.passkeyIdentity.credentialIdHash,
           },
         ],
         threshold: 1,
@@ -146,7 +142,15 @@ export function WalletAppWindow({
       };
     }
     return null;
-  }, [isPasskeyMultisig, eoaWalletAddress, pw.personalAddress, pw.passkeyAddress, pw.passkeyIdentity, pw.deployed]);
+  }, [
+    isPasskeyMultisig,
+    eoaWalletAddress,
+    pw.personalAddress,
+    pw.passkeyAddress,
+    pw.ownerAddress,
+    pw.passkeyIdentity,
+    pw.deployed,
+  ]);
 
   // Signer set handed to the intent engine for the personal multisig (the relay
   // holds no record for it). EOA has just itself.
@@ -433,7 +437,7 @@ export function WalletAppWindow({
 
 // Arbitrary-call composer for the passkey personal wallet. The user enters a
 // target contract, an optional ETH value, and raw calldata; the passkey signs
-// the exec hash and the relay facilitator broadcasts execTransaction + pays the
+// the safeTxHash and the relay facilitator broadcasts execTransaction + pays the
 // gas (gated on room auth + the per-tx value cap, server-side). This is the
 // generic [Execute] flow — the same plumbing the poker/chess buy-ins ride on,
 // surfaced directly so a passkey user can drive any contract call themselves.

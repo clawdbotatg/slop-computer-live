@@ -4,6 +4,7 @@ import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useEthPrice } from "~~/hooks/useEthPrice";
 import { usePersonalWallet } from "~~/hooks/usePersonalWallet";
+import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
 import { notifySessionChanged } from "~~/hooks/useSession";
 import { createPasskeyAndAuth, loginWithExistingPasskey } from "~~/utils/passkey";
 import { usdSuffixFromWei } from "~~/utils/usd";
@@ -31,6 +32,7 @@ function useCopy(): [boolean, (text: string) => void] {
 
 export function PersonalWalletCard() {
   const pw = usePersonalWallet();
+  const { ensureDeployed } = usePersonalWalletSend();
   const ethUsd = useEthPrice();
   const [copied, copy] = useCopy();
   const [busy, setBusy] = useState<null | "existing" | "create">(null);
@@ -77,25 +79,9 @@ export function PersonalWalletCard() {
     setDeploying(true);
     setDeployMsg("");
     try {
-      const slug = typeof window !== "undefined" ? (window.location.pathname.split("/").filter(Boolean)[0] ?? "") : "";
-      const res = await fetch(`${RELAY_HTTP}/personal-wallet/deploy`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          qx: pw.passkeyIdentity.qx,
-          qy: pw.passkeyIdentity.qy,
-          credentialIdHash: pw.passkeyIdentity.credentialIdHash,
-          slug,
-        }),
-      });
-      const j = (await res.json().catch(() => ({}))) as { error?: string; alreadyDeployed?: boolean };
-      if (!res.ok) {
-        setDeployMsg(`Deploy failed: ${j.error ?? res.status}`);
-        return;
-      }
-      setDeployMsg(j.alreadyDeployed ? "Already deployed ✓" : "Deployed ✓");
-      pw.refetchDeployed();
+      const was = pw.deployed;
+      await ensureDeployed();
+      setDeployMsg(was ? "Already deployed ✓" : "Deployed ✓");
       pw.refetchBalance();
     } catch (err) {
       setDeployMsg(`Deploy failed: ${(err as Error).message}`);

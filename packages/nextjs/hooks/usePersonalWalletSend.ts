@@ -5,26 +5,21 @@ import { usePersonalWallet } from "./usePersonalWallet";
 import type { Address, Hex } from "viem";
 import { base } from "viem/chains";
 import { usePublicClient } from "wagmi";
-import { MultisigAbi } from "~~/contracts/multisig";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
-import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
+import { getStoredPasskeyIdentity, signSafeTxWithPasskey } from "~~/utils/passkey";
+import { type Call, type SafeTx, safeAbi, safeTxHash, toSafeTx } from "~~/utils/safe";
 
-// Spend from a passkey "personal wallet" — the missing piece that makes the
-// counterfactual personal multisig actually spendable (docs/PASSKEY-WALLET.md
-// §6/§7). A passkey user has no EOA and no ETH for gas, so we:
-//   1. ensure the multisig is deployed (it needs code to run execTransaction),
-//   2. read its nonce + compute the exec hash, prompt the passkey to sign it,
-//   3. hand the signed exec to the relay facilitator, which broadcasts
-//      execTransaction from its hot wallet and pays the gas.
+// Spend from a passkey "personal wallet" — a Safe on Base, owners [passkey
+// signer, platform cosigner], threshold 1 (ops/PLAN-safe.md phase 5). A passkey
+// user has no EOA and no ETH for gas, so:
+//   1. read the Safe nonce (0 before it's deployed), build the SafeTx,
+//   2. prompt the passkey to sign its safeTxHash,
+//   3. hand it to the relay facilitator, which deploys the Safe if needed,
+//      broadcasts execTransaction from its hot wallet and pays the gas.
 // Returns the on-chain tx hash; the caller waits for the receipt as usual.
-// Base-only — personal wallets live on Base and the facilitator sponsors Base.
 //
-// The relay only fronts gas for a caller correctly authed in the room: every
-// call carries ?slug=<room> so the relay's room-auth gate engages (it checks
-// the room password cookie). `useRoomSlug()` supplies the slug, so all callers
-// (poker/chess buy-in, the Wallet app's Execute) get the gate for free.
+// Every call carries ?slug=<room> so the relay's room-auth gate engages.
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -33,26 +28,20 @@ export type PersonalSendPhase = "deploying" | "signing" | "broadcasting" | null;
 /** A generic personal-wallet call: an arbitrary `target`/`value`/`data` exec. */
 export type PersonalExec = { target: Address; value: bigint; data?: Hex };
 
-/** A pre-signed personal-wallet exec: target/value/data plus the `deadline` and
- *  `signatures` the hash was already signed over (e.g. a queued tx the user
- *  signed in the Transactions tab). No passkey re-prompt — the collected sigs
- *  go straight to the facilitator. */
+/** A SafeTx the user has ALREADY signed (e.g. a queued tx signed in the
+ *  Transactions tab). No passkey re-prompt — the sigs go straight to the relay. */
 export type PersonalExecSigned = {
-  target: Address;
-  value: bigint;
-  data?: Hex;
-  deadline: bigint;
+  tx: SafeTx;
   signatures: { sigType: number; signer: Address; data: Hex }[];
 };
 
-/** Decode a relay exec error code into a user-readable message. Shared by the
- *  fresh-sign (`execute`) and pre-signed (`executeSigned`) broadcast paths. */
+/** Decode a relay exec error code into a user-readable message. */
 function execErrorMessage(error: string | undefined, status: number): string {
-  if (error === "wallet-not-deployed") return "Wallet not deployed yet — try again in a moment.";
   if (error === "value-exceeds-cap") return "Amount exceeds the per-tx limit for passkey wallets.";
   if (error === "rate-limited") return "Too many transactions — wait a moment and retry.";
   if (error === "room-required") return "Join the room first — sponsored gas needs room access.";
-  if (error === "wallet-mismatch") return "This wallet isn't yours to spend from.";
+  if (error === "passkey-mismatch") return "This wallet isn't yours to spend from.";
+  if (error === "no-passkey-signature") return "Sign the transaction with your passkey first.";
   return error ?? `exec failed: ${status}`;
 }
 
@@ -62,143 +51,120 @@ export function usePersonalWalletSend() {
   const slug = useRoomSlug();
   const [phase, setPhase] = useState<PersonalSendPhase>(null);
 
-  /** execTransaction needs code at the wallet — deploy on first spend. ?slug
-   *  engages the relay's room-auth gate; slug also rides in the body, where the
-   *  relay reads it to pick the co-signer. No-op once deployed. */
-  const ensureDeployed = useCallback(async () => {
-    if (pw.deployed) return;
-    if (!pw.passkeyIdentity) throw new Error("no passkey wallet");
-    setPhase("deploying");
-    const dRes = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/deploy`, slug), {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        qx: pw.passkeyIdentity.qx,
-        qy: pw.passkeyIdentity.qy,
-        credentialIdHash: pw.passkeyIdentity.credentialIdHash,
-        slug,
-      }),
-    });
-    const dj = (await dRes.json().catch(() => ({}))) as { error?: string };
-    if (!dRes.ok) throw new Error(`deploy failed: ${dj.error ?? dRes.status}`);
-    pw.refetchDeployed();
-  }, [pw, slug]);
-
-  /** Hand a signed exec to the relay facilitator, which broadcasts
-   *  execTransaction from its hot wallet and pays gas. The ?slug lets the
-   *  relay's room-auth gate verify we belong to this room. Returns the tx hash. */
-  const postExec = useCallback(
-    async (body: {
-      target: Address;
-      value: bigint;
-      data: Hex;
-      deadline: bigint;
-      signatures: { sigType: number; signer: Address; data: Hex }[];
-    }): Promise<`0x${string}`> => {
-      if (!pw.personalAddress) throw new Error("no passkey wallet");
-      setPhase("broadcasting");
-      const res = await fetch(withSlug(`${RELAY_HTTP}/personal-wallet/exec`, slug), {
+  const post = useCallback(
+    async (path: string, body: unknown) => {
+      const res = await fetch(withSlug(`${RELAY_HTTP}${path}`, slug), {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          multisig: pw.personalAddress,
-          target: body.target,
-          value: body.value.toString(),
-          data: body.data,
-          deadline: body.deadline.toString(),
-          signatures: body.signatures.map(s => ({ sigType: s.sigType, signer: s.signer, data: s.data })),
-        }),
+        body: JSON.stringify(body),
       });
-      const j = (await res.json().catch(() => ({}))) as { txHash?: string; error?: string };
-      if (!res.ok || !j.txHash) throw new Error(execErrorMessage(j.error, res.status));
-      return j.txHash as `0x${string}`;
+      return { res, j: (await res.json().catch(() => ({}))) as { txHash?: string; address?: string; error?: string } };
     },
-    [pw.personalAddress, slug],
+    [slug],
   );
 
-  /** Execute an arbitrary contract call from the personal wallet on Base:
-   *  deploy-if-needed → compute the exec hash → passkey signs → relay
-   *  facilitator broadcasts execTransaction and pays the gas. Resolves to the
-   *  broadcast tx hash; throws (with a user-readable message) on failure. */
-  const execute = useCallback(
-    async ({ target, value, data = "0x" }: PersonalExec): Promise<`0x${string}`> => {
-      if (!pw.isPasskey || !pw.personalAddress || !pw.passkeyAddress || !pw.passkeyIdentity) {
-        throw new Error("no passkey wallet");
+  /** Deploy the Safe now (the exec route also deploys on first spend). Checks
+   *  the relay agrees on the address — a different cosigner would mean funds
+   *  sent to the derived address aren't spendable. No-op once deployed. */
+  const ensureDeployed = useCallback(async () => {
+    if (pw.deployed) return;
+    if (!pw.passkeyIdentity || !pw.personalAddress) throw new Error("no passkey wallet");
+    setPhase("deploying");
+    const { res, j } = await post("/personal-wallet/deploy", { qx: pw.passkeyIdentity.qx, qy: pw.passkeyIdentity.qy });
+    if (!res.ok) throw new Error(`deploy failed: ${j.error ?? res.status}`);
+    if (j.address?.toLowerCase() !== pw.personalAddress.toLowerCase()) {
+      throw new Error("relay derived a different wallet address — not deploying");
+    }
+    pw.refetchDeployed();
+  }, [pw, post]);
+
+  /** Hand a signed SafeTx to the relay facilitator. Returns the tx hash. */
+  const postExec = useCallback(
+    async ({ tx, signatures }: PersonalExecSigned): Promise<`0x${string}`> => {
+      if (!pw.passkeyIdentity || !pw.personalAddress) throw new Error("no passkey wallet");
+      setPhase("broadcasting");
+      const { res, j } = await post("/personal-wallet/exec", {
+        qx: pw.passkeyIdentity.qx,
+        qy: pw.passkeyIdentity.qy,
+        tx: {
+          to: tx.to,
+          value: tx.value.toString(),
+          data: tx.data,
+          operation: tx.operation,
+          nonce: tx.nonce.toString(),
+        },
+        signatures: signatures.map(s => ({ sigType: s.sigType, signer: s.signer, data: s.data })),
+      });
+      if (!res.ok || !j.txHash) throw new Error(execErrorMessage(j.error, res.status));
+      if (j.address && j.address.toLowerCase() !== pw.personalAddress.toLowerCase()) {
+        throw new Error("relay derived a different wallet address");
       }
+      pw.refetchDeployed();
+      return j.txHash as `0x${string}`;
+    },
+    [pw, post],
+  );
+
+  /** Execute one or more calls from the personal Safe on Base (several go out as
+   *  one MultiSend batch): nonce → passkey signs the safeTxHash → relay sends +
+   *  pays gas. Resolves to the broadcast tx hash; throws a readable message. */
+  const executeCalls = useCallback(
+    async (calls: Call[]): Promise<`0x${string}`> => {
+      const { personalAddress: wallet, ownerAddress: owner } = pw;
+      if (!pw.isPasskey || !wallet || !owner || !pw.passkeyAddress) throw new Error("no passkey wallet");
       if (!publicClient) throw new Error("no Base RPC client");
       const identity = getStoredPasskeyIdentity(pw.passkeyAddress);
       if (!identity?.credentialIdBase64Url) throw new Error("missing passkey credential — sign in again");
-
       try {
-        // 1. Deploy on first spend (execTransaction needs code at the wallet).
-        await ensureDeployed();
-
-        // 2. Read nonce, compute the exec hash, prompt the passkey to sign it.
-        const nonce = (await publicClient.readContract({
-          address: pw.personalAddress,
-          abi: MultisigAbi,
-          functionName: "nonce",
-        })) as bigint;
-        const deadline = defaultDeadline();
-        const execHash = computeExecHash({
-          chainId: base.id,
-          multisig: pw.personalAddress,
-          nonce,
-          deadline,
-          target,
-          value,
-          data,
-        });
+        const nonce = pw.deployed
+          ? ((await publicClient.readContract({
+              address: wallet,
+              abi: safeAbi,
+              functionName: "nonce",
+            })) as bigint)
+          : 0n;
+        const tx = toSafeTx(calls, nonce);
         setPhase("signing");
-        const sigData = await signMultisigExecWithPasskey({
+        const data = await signSafeTxWithPasskey({
           credentialIdBase64Url: identity.credentialIdBase64Url,
-          execHash,
-          qx: pw.passkeyIdentity.qx as Hex,
-          qy: pw.passkeyIdentity.qy as Hex,
+          safeTxHash: safeTxHash(base.id, wallet, tx),
+          owner: owner as `0x${string}`,
         });
-
-        // 3. Facilitator broadcasts execTransaction + pays gas.
-        return await postExec({
-          target,
-          value,
-          data,
-          deadline,
-          signatures: [{ sigType: 1, signer: pw.passkeyAddress, data: sigData as Hex }],
-        });
+        return await postExec({ tx, signatures: [{ sigType: 1, signer: owner, data }] });
       } finally {
         setPhase(null);
       }
     },
-    [pw, publicClient, ensureDeployed, postExec],
+    [pw, publicClient, postExec],
   );
 
-  /** Broadcast an exec the user has ALREADY signed — e.g. a queued tx signed in
-   *  the Transactions tab (threshold 1 + the passkey sig collected at sign time).
-   *  deploy-if-needed → hand the collected target/value/data/deadline/signatures
-   *  straight to the facilitator. No passkey re-prompt. Resolves to the tx hash. */
+  const execute = useCallback(
+    ({ target, value, data = "0x" }: PersonalExec) => executeCalls([{ to: target, value, data }]),
+    [executeCalls],
+  );
+
+  /** Broadcast a SafeTx the user ALREADY signed (queued + signed in the
+   *  Transactions tab). No passkey re-prompt. Resolves to the tx hash. */
   const executeSigned = useCallback(
-    async ({ target, value, data = "0x", deadline, signatures }: PersonalExecSigned): Promise<`0x${string}`> => {
-      if (!pw.isPasskey || !pw.personalAddress || !pw.passkeyIdentity) throw new Error("no passkey wallet");
-      if (signatures.length === 0) throw new Error("no signatures collected — sign the transaction first");
+    async (signed: PersonalExecSigned): Promise<`0x${string}`> => {
+      if (!pw.isPasskey || !pw.personalAddress) throw new Error("no passkey wallet");
+      if (signed.signatures.length === 0) throw new Error("no signatures collected — sign the transaction first");
       try {
-        await ensureDeployed();
-        return await postExec({ target, value, data, deadline, signatures });
+        return await postExec(signed);
       } finally {
         setPhase(null);
       }
     },
-    [pw, ensureDeployed, postExec],
+    [pw, postExec],
   );
 
-  /** Send `valueWei` ETH from the personal wallet to `to` on Base. Thin wrapper
-   *  over `execute` (a plain value transfer is an exec with empty calldata). */
+  /** Send `valueWei` ETH from the personal wallet to `to` on Base. */
   const send = useCallback(
     ({ to, valueWei }: { to: Address; valueWei: bigint }): Promise<`0x${string}`> =>
       execute({ target: to, value: valueWei, data: "0x" }),
     [execute],
   );
 
-  return { send, execute, executeSigned, phase, isPasskey: pw.isPasskey };
+  return { send, execute, executeCalls, executeSigned, ensureDeployed, phase, isPasskey: pw.isPasskey };
 }

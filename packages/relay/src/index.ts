@@ -62,8 +62,8 @@ import {
   deployPersonalWallet,
   execPersonalWalletTx,
   isPersonalWalletDeployConfigured,
-  isPersonalWalletExecConfigured,
   passkeyAddressFromCoords,
+  personalCosigner,
   personalWalletAddressFor,
 } from "./personal-wallet.js";
 import {
@@ -2571,152 +2571,105 @@ app.post<{ Body: KohakuExecuteBody }>("/v1/kohaku/execute", async (req, reply) =
   return r;
 });
 
-// Deploy a passkey user's personal ("single-player") wallet — a 1-of-2 slop
-// Multisig [passkey, coSigner] at threshold 1, deployed + gas-paid by the
-// relay's deployer hot wallet so a passkey-only user can make their wallet
-// executable. Idempotent. See docs/PASSKEY-WALLET.md.
+// Personal ("single-player") passkey wallet = a Safe on Base, owners
+// [passkey signer, platform cosigner], threshold 1 (ops/PLAN-safe.md phase 5).
+// The relay's hot key deploys it and pays gas. Both routes are room-gated
+// (?slug + room cookie, same as every room route) and the caller may only act
+// on THEIR OWN wallet: the passkey pubkey in the body must derive to the
+// session's address, and the wallet address derives from that pubkey.
+
+/** Parse + check the caller's passkey: must be the session's own. */
+function ownPasskey(req: {
+  query?: unknown;
+  body?: unknown;
+  cookies: Record<string, string | undefined>;
+  headers: Record<string, string | string[] | undefined>;
+}): { ok: true; qx: `0x${string}`; qy: `0x${string}` } | { ok: false; code: number; error: string } {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  if (!isValidSlug(typeof q.slug === "string" ? q.slug : "")) return { ok: false, code: 400, error: "room-required" };
+  const a = v1AuthFromReq(req);
+  if (!a) return { ok: false, code: 401, error: "unauthenticated" };
+  if (!isPersonalWalletDeployConfigured()) return { ok: false, code: 503, error: "deployer-not-configured" };
+  const b = (req.body ?? {}) as { qx?: unknown; qy?: unknown };
+  const hex32 = /^0x[0-9a-fA-F]{64}$/;
+  if (typeof b.qx !== "string" || typeof b.qy !== "string" || !hex32.test(b.qx) || !hex32.test(b.qy)) {
+    return { ok: false, code: 400, error: "bad-passkey-fields" };
+  }
+  const qx = b.qx.toLowerCase() as `0x${string}`;
+  const qy = b.qy.toLowerCase() as `0x${string}`;
+  const sessionAddr = a.session.address?.toLowerCase();
+  if (!sessionAddr || sessionAddr !== passkeyAddressFromCoords(qx, qy).toLowerCase()) {
+    return { ok: false, code: 403, error: "passkey-mismatch" };
+  }
+  return { ok: true, qx, qy };
+}
+
+// The fixed cosigner the personal Safe address is derived with. The frontend
+// derives addresses offline and checks it agrees with this.
+app.get("/personal-wallet/config", async () => ({ cosigner: personalCosigner(), chainId: 8453 }));
+
 const personalWalletDeployBucket = new TokenBucket(5, 5 / 3600); // 5 burst, ~5/hour refill
 app.post("/personal-wallet/deploy", async (req, reply) => {
-  // Room-auth gate (same as /personal-wallet/exec): the facilitator only fronts
-  // the deploy gas for a caller who is a legitimate participant of the room. We
-  // require a valid ?slug and drop skipRoomGate so v1AuthFromReq enforces the
-  // room's password cookie. Requiring the slug is what makes that gate engage —
-  // without it the room check is a no-op. debug (passwordless sandbox) passes.
-  const q = (req.query ?? {}) as { slug?: unknown };
-  const querySlug = typeof q.slug === "string" ? q.slug : "";
-  if (!isValidSlug(querySlug)) return reply.code(400).send({ error: "room-required" });
-  const a = v1AuthFromReq(req);
-  if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!isPersonalWalletDeployConfigured()) return reply.code(503).send({ error: "deployer-not-configured" });
-
-  const body = (req.body ?? {}) as { qx?: unknown; qy?: unknown; credentialIdHash?: unknown; slug?: unknown };
-  const qx = (typeof body.qx === "string" ? body.qx : "") as `0x${string}`;
-  const qy = (typeof body.qy === "string" ? body.qy : "") as `0x${string}`;
-  const credentialIdHash = (typeof body.credentialIdHash === "string" ? body.credentialIdHash : "") as `0x${string}`;
-
-  // Integrity: a caller may only deploy THEIR OWN wallet — the passkey pubkey
-  // must derive to the authed session's address.
-  let passkeyAddress: string;
-  try {
-    passkeyAddress = passkeyAddressFromCoords(qx, qy).toLowerCase();
-  } catch {
-    return reply.code(400).send({ error: "bad-passkey-fields" });
-  }
-  const sessionAddr = a.session.address?.toLowerCase();
-  if (!sessionAddr || sessionAddr !== passkeyAddress) {
-    return reply.code(403).send({ error: "passkey-mismatch" });
-  }
-
-  // Gas guard: per-IP token bucket protects the deployer's ETH float against
-  // someone minting many passkeys and spamming first-deploys.
-  if (!personalWalletDeployBucket.allow(req.ip)) {
-    return reply.code(429).send({ error: "rate-limited" });
-  }
-
-  // Co-signer: this room's deployed Bank multisig, else the platform fallback,
-  // else the deployer itself (last-resort hot EOA).
-  const rawSlug = typeof body.slug === "string" && isValidSlug(body.slug) ? body.slug : null;
-  const roomMultisig = rawSlug ? (getOrCreateRoom(rawSlug).wallet.getCurrent()?.address ?? null) : null;
-  // `||` (not `??`): the platform-cosigner config defaults to "", which must
-  // fall through to the deployer address, not short-circuit on the empty string.
-  const coSigner = (roomMultisig || config.personalWalletPlatformCosigner || config.personalWalletDeployer) as `0x${string}`;
-  if (!coSigner) return reply.code(503).send({ error: "no-cosigner" });
-
-  const result = await deployPersonalWallet({ qx, qy, credentialIdHash, coSigner });
+  const own = ownPasskey(req);
+  if (!own.ok) return reply.code(own.code).send({ error: own.error });
+  // Gas guard: someone minting many passkeys can't drain the deployer.
+  if (!personalWalletDeployBucket.allow(req.ip)) return reply.code(429).send({ error: "rate-limited" });
+  const result = await deployPersonalWallet({ qx: own.qx, qy: own.qy });
   if (!result.ok) return reply.code(400).send({ error: result.error });
   return {
     address: result.address,
     txHash: result.txHash,
     alreadyDeployed: result.alreadyDeployed,
-    coSigner,
+    cosigner: personalCosigner(),
   };
 });
 
-// Facilitator: broadcast a passkey wallet's signed `execTransaction` and pay
-// gas (docs/PASSKEY-WALLET.md §7). This is what makes a passkey personal wallet
-// *spendable* — e.g. buying into a poker/chess escrow. The wallet holds the ETH
-// being sent; the relay only fronts the outer-tx gas. Two gates: the Multisig
-// verifies the passkey signature on-chain (a bad sig reverts in simulate), and
-// here we verify the caller owns the wallet (its address derives from their
-// session's passkey). Base-only in v1, matching deploy.
+// Facilitator: broadcast the personal Safe's passkey-signed tx and pay gas.
+// Body: {qx, qy, tx:{to,value,data,operation,nonce}, signatures:[{sigType,signer,data}]}.
+// Deploys first if needed. The Safe checks the signature (a bad one fails in
+// estimateGas, no broadcast); PERSONAL_WALLET_MAX_SPEND_WEI caps the value
+// moved, batches included.
 const personalWalletExecBucket = new TokenBucket(8, 8 / 600); // 8 burst, ~8 / 10 min per IP
 app.post("/personal-wallet/exec", async (req, reply) => {
-  // Room-auth gate: the facilitator only fronts gas for a caller who is a
-  // legitimate participant of the room. We require a valid ?slug and drop
-  // skipRoomGate so v1AuthFromReq enforces the room's password cookie (the
-  // same gate as the WS /signal mesh and every other room-scoped route).
-  // Requiring the slug is what makes that gate actually engage — without a
-  // slug v1AuthFromReq's room check is a no-op, so an attacker could sponsor
-  // gas by simply omitting it. debug (passwordless sandbox) still passes.
-  const q = (req.query ?? {}) as { slug?: unknown };
-  const rawSlug = typeof q.slug === "string" ? q.slug : "";
-  if (!isValidSlug(rawSlug)) return reply.code(400).send({ error: "room-required" });
-  const a = v1AuthFromReq(req);
-  if (!a) return reply.code(401).send({ error: "unauthenticated" });
-  if (!isPersonalWalletExecConfigured()) return reply.code(503).send({ error: "facilitator-not-configured" });
-
-  const hexRe = /^0x[0-9a-fA-F]*$/;
-  const addrRe = /^0x[0-9a-fA-F]{40}$/;
-  const b = (req.body ?? {}) as {
-    multisig?: unknown;
-    target?: unknown;
-    value?: unknown;
-    data?: unknown;
-    deadline?: unknown;
-    signatures?: unknown;
-  };
-  const multisig = typeof b.multisig === "string" ? b.multisig : "";
-  const target = typeof b.target === "string" ? b.target : "";
-  const data = typeof b.data === "string" && hexRe.test(b.data) ? (b.data as `0x${string}`) : "0x";
-  if (!addrRe.test(multisig) || !addrRe.test(target)) return reply.code(400).send({ error: "bad-address" });
-
-  let value: bigint;
-  let deadline: bigint;
+  const own = ownPasskey(req);
+  if (!own.ok) {
+    const error = own.error === "deployer-not-configured" ? "facilitator-not-configured" : own.error;
+    return reply.code(own.code).send({ error });
+  }
+  const b = (req.body ?? {}) as { tx?: Record<string, unknown>; signatures?: unknown };
+  const t = b.tx ?? {};
+  let tx: { to: `0x${string}`; value: bigint; data: `0x${string}`; operation: 0 | 1; nonce: bigint };
   try {
-    value = BigInt(String(b.value ?? "0"));
-    deadline = BigInt(String(b.deadline ?? "0"));
+    if (t.operation !== 0 && t.operation !== 1) throw new Error("operation");
+    if (typeof t.to !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(t.to)) throw new Error("to");
+    const data = typeof t.data === "string" && /^0x[0-9a-fA-F]*$/.test(t.data) ? t.data : "0x";
+    tx = {
+      to: t.to as `0x${string}`,
+      value: BigInt(String(t.value ?? "0")),
+      data: data as `0x${string}`,
+      operation: t.operation,
+      nonce: BigInt(String(t.nonce)),
+    };
   } catch {
-    return reply.code(400).send({ error: "bad-numeric" });
+    return reply.code(400).send({ error: "bad-tx" });
   }
   if (!Array.isArray(b.signatures) || b.signatures.length === 0) {
     return reply.code(400).send({ error: "no-signatures" });
   }
-  const signatures = (b.signatures as unknown[]).map(s => {
+  const signatures = (b.signatures as unknown[]).slice(0, 4).map(s => {
     const o = (s ?? {}) as { sigType?: unknown; signer?: unknown; data?: unknown };
     return {
       sigType: Number(o.sigType),
-      signer: (typeof o.signer === "string" ? o.signer : "") as `0x${string}`,
-      data: (typeof o.data === "string" ? o.data : "") as `0x${string}`,
+      signer: typeof o.signer === "string" ? o.signer : "",
+      data: typeof o.data === "string" ? o.data : "",
     };
   });
-
-  // Gas guard: per-IP token bucket protects the facilitator's ETH float.
   if (!personalWalletExecBucket.allow(req.ip)) return reply.code(429).send({ error: "rate-limited" });
-
-  // Integrity: the caller may only spend from THEIR OWN personal wallet — the
-  // target multisig must derive from the authed session's passkey address.
-  const sessionAddr = a.session.address?.toLowerCase();
-  if (!sessionAddr || !addrRe.test(sessionAddr)) return reply.code(403).send({ error: "no-session-address" });
-  const expected = await personalWalletAddressFor(sessionAddr as `0x${string}`);
-  if (!expected || expected.toLowerCase() !== multisig.toLowerCase()) {
-    return reply.code(403).send({ error: "wallet-mismatch" });
-  }
-
-  const result = await execPersonalWalletTx({
-    multisig: multisig as `0x${string}`,
-    target: target as `0x${string}`,
-    value,
-    data,
-    deadline,
-    signatures,
-  });
+  const result = await execPersonalWalletTx({ qx: own.qx, qy: own.qy, tx, signatures });
   if (!result.ok) {
-    // wallet-not-deployed is a precondition the UI can act on (deploy first);
-    // value-exceeds-cap / rate-limited are policy. Map the rest to 400.
-    const code = result.error === "facilitator-not-configured" ? 503 : 400;
-    return reply.code(code).send({ error: result.error });
+    return reply.code(result.error === "facilitator-not-configured" ? 503 : 400).send({ error: result.error });
   }
-  return { txHash: result.txHash };
+  return { txHash: result.txHash, address: personalWalletAddressFor(own.qx, own.qy) };
 });
 
 // Money-game settlement: the escrow's linked payout (or refund) just executed
@@ -10252,12 +10205,16 @@ app.register(async function signalRoutes(fastify) {
             app.log.warn({ slug: room.id, from: info.address }, "[SLOP-TX-DEBUG] propose rejected — no_wallet");
             return send(socket, { type: "error", error: "no_wallet" });
           }
-          // Safe Bank, plain calls: the relay fills nonce + safeTxHash, then
+          // Safe (the Bank, or any personal wallet — those are all Safes on
+          // Base now), plain calls: the relay fills nonce + safeTxHash, then
           // feeds the completed SafeTx back through this handler (checked below).
-          if (cur?.kind === "safe" && msg.operation !== 0 && msg.operation !== 1) {
-            // A Safe tx is chain-specific: no chainId, no proposal (never guess).
-            if (typeof msg.chainId !== "number") return send(socket, { type: "error", error: "no_chain" });
-            void fillSafeProposal(cur.address, room.wallet.listTxs(), msg, msg.chainId).then(r => {
+          const safeAddr = personalAddr ?? (cur?.kind === "safe" ? cur.address : null);
+          if (safeAddr && msg.operation !== 0 && msg.operation !== 1) {
+            // A Safe tx is chain-specific: the Bank must name its chain (never
+            // guess); a personal wallet lives on Base only.
+            if (!personalAddr && typeof msg.chainId !== "number") return send(socket, { type: "error", error: "no_chain" });
+            const chainId = typeof msg.chainId === "number" ? msg.chainId : 8453;
+            void fillSafeProposal(safeAddr, ws.listTxs(), msg, chainId).then(r => {
               if (!r.ok) return send(socket, { type: "error", error: r.error });
               socket.emit("message", JSON.stringify({ ...msg, ...r.fields }));
             });
@@ -10303,8 +10260,8 @@ app.register(async function signalRoutes(fastify) {
           // Safe Bank: the relay re-derives the safeTxHash and refuses any
           // delegatecall that isn't MultiSendCallOnly (ops/PLAN-safe.md trap 2).
           let safeOp: 0 | 1 | undefined;
-          if (cur?.kind === "safe") {
-            const checked = checkSafePropose(msg, cur.address, chainId, batchCalls);
+          if (safeAddr) {
+            const checked = checkSafePropose(msg, safeAddr, chainId, batchCalls);
             if (!checked.ok) return send(socket, { type: "error", error: checked.error });
             safeOp = checked.operation;
           }

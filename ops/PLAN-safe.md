@@ -169,8 +169,19 @@ safeTxHash, sigs by owner. Not mirrored to Safe's tx service in v1.
    PrivacyWalletWindow, WagerPanel/Poker escrow, tips, room gate,
    `wallet-intent.ts` owner-change builders, `wallet-ai.ts` simulation,
    `/v1/wallet/propose`, `/v1/rooms/:slug/meta`, agent skill docs.
-5. **Personal wallets** on Safe (`personal-wallet.ts`, `usePersonalWallet*`,
-   `PasskeyWalletContext`).
+5. ✅ 10-07 **Personal wallets** on Safe: Base, owners [passkey signer,
+   cosigner], threshold 1, `PERSONAL_SALT_NONCE` (`safe.ts` `personalSafe`).
+   Cosigner = relay `PERSONAL_WALLET_PLATFORM_COSIGNER || PERSONAL_WALLET_DEPLOYER
+   || deployer` and must equal the frontend's `NEXT_PUBLIC_PERSONAL_WALLET_DEPLOYER`
+   (both `0xBa16…0FF0` on prod; `GET /personal-wallet/config` serves the relay's,
+   the deploy/exec routes echo the address and the frontend refuses a mismatch).
+   Address is offline math, so `PasskeyWalletProvider` now takes {address,qx,qy}.
+   `/personal-wallet/exec` takes a full SafeTx, deploys first if needed, caps
+   the total value moved (MultiSend inner calls included). Per-wallet queues get
+   the Bank's relay-filled nonce/hash + `checkSafePropose`. Proven by
+   `ops/probes/safe-personal-fork.mjs`. Note: threshold 1 with the hot deployer
+   as an owner means the relay key can also move personal funds (same trust as
+   the old 1-of-2).
 6. **Wedgie** signer in Bank (desktop Chrome).
 7. **Delete** `contracts/multisig.ts`, `utils/multisig.ts`, the
    Multisig/MultisigFactory ABIs, `computeExecHash`, old nested-attestation

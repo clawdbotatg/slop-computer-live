@@ -629,17 +629,17 @@ function DesktopInner({ slug }: { slug: string }) {
   // connected passkey peers, the Bank's passkey signers, and the local user
   // (self isn't in mesh.peers, so add separately when signed in via passkey).
   const selfSessionAddress = session.authenticated ? (session.address ?? null) : null;
-  const passkeyAddressesForResolve = useMemo(() => {
-    const out = new Set<string>();
-    for (const p of mesh.peers) if (p.passkey && p.address) out.add(p.address.toLowerCase());
-    // A Safe passkey owner's address is its signer contract; the identity is
-    // passkeyAddr. Wedgie owners have no identity to resolve.
-    for (const s of mesh.wallet?.signers ?? []) {
-      if (s.signerType === "passkey" && s.device !== "wedgie") out.add((s.passkeyAddr ?? s.address).toLowerCase());
-    }
+  // A personal wallet is derived from the passkey's public key, so collect keys.
+  const passkeysForResolve = useMemo(() => {
+    const out = new Map<string, { address: string; qx: string; qy: string }>();
+    for (const p of mesh.peers)
+      if (p.passkey && p.address) out.set(p.address.toLowerCase(), { address: p.address, ...p.passkey });
+    for (const s of mesh.wallet?.signers ?? [])
+      if (s.passkeyAddr && s.qx && s.qy) out.set(s.passkeyAddr, { address: s.passkeyAddr, qx: s.qx, qy: s.qy });
     const selfAddr = selfSessionAddress?.toLowerCase();
-    if (selfAddr && getStoredPasskeyIdentity(selfAddr)) out.add(selfAddr);
-    return [...out];
+    const self = selfAddr ? getStoredPasskeyIdentity(selfAddr) : null;
+    if (selfAddr && self) out.set(selfAddr, { address: selfAddr, qx: self.qx, qy: self.qy });
+    return [...out.values()];
   }, [mesh.peers, mesh.wallet, selfSessionAddress]);
   // Publish the relay WS state into the module-level pub/sub so
   // UpgradeModal (mounted in the providers shell) can react to deploy-
@@ -3588,7 +3588,7 @@ function DesktopInner({ slug }: { slug: string }) {
   }, [session.authenticated, uploadFiles]);
 
   return (
-    <PasskeyWalletProvider passkeyAddresses={passkeyAddressesForResolve}>
+    <PasskeyWalletProvider passkeys={passkeysForResolve}>
       <DesktopBackground />
       <IncomingTxModal incomingForwards={mesh.incomingForwards} dismissIncomingForward={mesh.dismissIncomingForward} />
       <MenuBar
