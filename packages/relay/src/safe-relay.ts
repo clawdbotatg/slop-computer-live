@@ -271,6 +271,9 @@ export function checkSafePropose(
     return { ok: false, error: "bad_propose" };
   }
   if (!isSafeOperation(tx)) return { ok: false, error: "delegatecall_blocked" };
+  // A batch must carry its `calls`, so signers, the AI second opinion and
+  // escrow matching see the real sub-calls instead of opaque MultiSend bytes.
+  if (tx.operation === 1 && !(calls && calls.length > 0)) return { ok: false, error: "batch_needs_calls" };
   if (calls && calls.length > 0) {
     let packed: SafeTx;
     try {

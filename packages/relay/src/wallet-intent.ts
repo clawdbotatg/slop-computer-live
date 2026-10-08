@@ -1554,6 +1554,11 @@ export type WalletIntentInput = {
   // treats the user's MetaMask address as a contract. Defaults to multisig
   // for back-compat.
   walletKind?: "multisig" | "eoa";
+  // Set when the wallet is a room's Safe Bank (ops/PLAN-safe.md). Owner
+  // changes then skip calldata entirely: buildSignerChange calls this, which
+  // queues one Safe tx per deployed chain (same path as the Bank's Owners
+  // panel) and returns what was queued.
+  safeOwnerChange?: (args: { action: string; signer?: string; threshold?: number }) => Promise<unknown>;
   // Caller-specific framing appended after the mode override (read last, so
   // it wins conflicts) — e.g. the Shield wallet's mainnet-only/cap rules.
   extraSystem?: string;
@@ -1627,11 +1632,13 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
 
   const signerSummary =
     input.signers && input.signers.length > 0
-      ? `\n\nThis wallet is a slop Multisig — ${input.threshold ?? "?"}-of-${input.signers.length}. Current signers:\n` +
+      ? `\n\nThis wallet is a ${input.safeOwnerChange ? "Gnosis Safe" : "slop Multisig"} — ${input.threshold ?? "?"}-of-${input.signers.length}. Current signers:\n` +
         input.signers
           .map(s => `- ${s.address}${s.label ? ` (${s.label})` : ""} · ${s.kind}`)
           .join("\n") +
-        `\nTo change membership/threshold, build a self-call with buildSignerChange (multisigAddress = ${input.address}).`
+        (input.safeOwnerChange
+          ? `\nThis is a Gnosis Safe on several chains. To change membership/threshold call buildSignerChange (multisigAddress = ${input.address}): it QUEUES the change on every chain itself and returns { queued }. Then reply in plain chat that it's waiting for signatures in the Transactions tab — do NOT return a transaction for it. Removing an owner or adding one keeps the current threshold unless the user names one. Passkeys and wedgies are added from the Bank's Owners panel, not here.`
+          : `\nTo change membership/threshold, build a self-call with buildSignerChange (multisigAddress = ${input.address}).`)
       : "";
 
   const loopMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -1654,6 +1661,13 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
   ];
 
   async function executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    if (name === "buildSignerChange" && input.safeOwnerChange) {
+      return input.safeOwnerChange({
+        action: String(args.action ?? ""),
+        ...(typeof args.signer === "string" ? { signer: args.signer } : {}),
+        ...(args.threshold !== undefined ? { threshold: Number(args.threshold) } : {}),
+      });
+    }
     const t = intentTools[name];
     if (!t) return { error: `Unknown tool: ${name}` };
     return t.execute(args);

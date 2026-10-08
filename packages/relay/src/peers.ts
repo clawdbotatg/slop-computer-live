@@ -32,7 +32,7 @@ export type PeerInfo = {
   // Mirrored from the session for passkey peers. Lets other peers in
   // the same room register this user as a passkey signer on a multisig
   // (the deploy form auto-routes signers with a `passkey` field into
-  // the passkey arrays of `createMultisig`). Undefined for SIWE/anon
+  // the Bank's passkey owners — a Safe signer contract per key). Undefined for SIWE/anon
   // peers. The pubkey is public-by-design; nothing sensitive here.
   passkey?: { qx: string; qy: string; credentialIdHash: string };
   // Latest browser viewport (window.innerWidth × innerHeight) this

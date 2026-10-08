@@ -632,7 +632,11 @@ function DesktopInner({ slug }: { slug: string }) {
   const passkeyAddressesForResolve = useMemo(() => {
     const out = new Set<string>();
     for (const p of mesh.peers) if (p.passkey && p.address) out.add(p.address.toLowerCase());
-    for (const s of mesh.wallet?.signers ?? []) if (s.signerType === "passkey") out.add(s.address.toLowerCase());
+    // A Safe passkey owner's address is its signer contract; the identity is
+    // passkeyAddr. Wedgie owners have no identity to resolve.
+    for (const s of mesh.wallet?.signers ?? []) {
+      if (s.signerType === "passkey" && s.device !== "wedgie") out.add((s.passkeyAddr ?? s.address).toLowerCase());
+    }
     const selfAddr = selfSessionAddress?.toLowerCase();
     if (selfAddr && getStoredPasskeyIdentity(selfAddr)) out.add(selfAddr);
     return [...out];

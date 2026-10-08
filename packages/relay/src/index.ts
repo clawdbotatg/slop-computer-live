@@ -2927,20 +2927,25 @@ async function refreshSafeOwners(room: ReturnType<typeof getOrCreateRoom>, txId:
 // Owner changes: add (EOA, passkey, wedgie), remove, or set the threshold.
 // One Safe tx per deployed chain (each chain keeps its own owner list), all
 // queued for signing. A new passkey/wedgie gets its signer contract first.
-app.post("/v1/safe/owners", async (req, reply) => {
-  const r = safeRoomFromReq(req);
-  if (!r.ok) return reply.code(r.code).send(r.body);
-  const cur = r.room.wallet.getCurrent();
-  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
-  const a = v1AuthFromReq(req)!;
-  const b = (req.body ?? {}) as {
-    action?: unknown;
-    threshold?: unknown;
-    owner?: { address?: unknown; qx?: unknown; qy?: unknown; label?: unknown; device?: unknown };
-  };
+// Shared by POST /v1/safe/owners (Bank UI) and the wallet AI's buildSignerChange.
+type SafeOwnerChange = {
+  action?: unknown;
+  threshold?: unknown;
+  owner?: { address?: unknown; qx?: unknown; qy?: unknown; label?: unknown; device?: unknown };
+};
+type SafeOwnerResult =
+  | { code: number; body: { error: string } }
+  | { code: 200; body: { results: { chainId: number; txId?: string; error?: string }[] } };
+
+async function queueSafeOwnerChange(
+  room: ReturnType<typeof getOrCreateRoom>,
+  cur: WalletRecord,
+  from: { address?: string | null; handle?: string | null },
+  b: SafeOwnerChange,
+): Promise<SafeOwnerResult> {
   const hex32 = /^0x[0-9a-fA-F]{64}$/;
   const threshold = Number(b.threshold);
-  if (!Number.isInteger(threshold) || threshold < 1) return reply.code(400).send({ error: "bad-threshold" });
+  if (!Number.isInteger(threshold) || threshold < 1) return { code: 400, body: { error: "bad-threshold" } };
 
   let meta: WalletSigner | null = null;
   let target: string | null = null;
@@ -2962,23 +2967,23 @@ app.post("/v1/safe/owners", async (req, reply) => {
     } else if (typeof o.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(o.address)) {
       meta = { address: o.address.toLowerCase(), label: label || shortAddr(o.address), signerType: "eoa" };
     } else {
-      return reply.code(400).send({ error: "bad-owner" });
+      return { code: 400, body: { error: "bad-owner" } };
     }
     target = meta.address as string;
-    if (cur.signers.some(s => s.address === target)) return reply.code(400).send({ error: "already-owner" });
+    if (cur.signers.some(s => s.address === target)) return { code: 400, body: { error: "already-owner" } };
   } else if (b.action === "remove") {
     target = typeof b.owner?.address === "string" ? b.owner.address.toLowerCase() : null;
-    if (!target || !cur.signers.some(s => s.address === target)) return reply.code(400).send({ error: "not-owner" });
+    if (!target || !cur.signers.some(s => s.address === target)) return { code: 400, body: { error: "not-owner" } };
   } else if (b.action !== "threshold") {
-    return reply.code(400).send({ error: "bad-action" });
+    return { code: 400, body: { error: "bad-action" } };
   }
 
   const after =
     b.action === "add" ? [...cur.signers, meta!] : b.action === "remove" ? cur.signers.filter(s => s.address !== target) : cur.signers;
-  if (threshold > after.length) return reply.code(400).send({ error: "threshold-above-owners" });
+  if (threshold > after.length) return { code: 400, body: { error: "threshold-above-owners" } };
   const wedgieErr = wedgieRuleError(after, threshold);
-  if (wedgieErr) return reply.code(400).send({ error: wedgieErr });
-  if (meta?.qx && !safeSignerRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
+  if (wedgieErr) return { code: 400, body: { error: wedgieErr } };
+  if (meta?.qx && !safeSignerRoomBucket.allow(room.id)) return { code: 429, body: { error: "rate-limited" } };
 
   const safe = cur.address as `0x${string}`;
   const chains = Object.keys(cur.deployments).map(Number);
@@ -2997,17 +3002,17 @@ app.post("/v1/safe/owners", async (req, reply) => {
       }
       const filled = await fillSafeProposal(
         cur.address,
-        r.room.wallet.listTxs(),
+        room.wallet.listTxs(),
         { chainId, target: call.to, value: "0", data: call.data },
         chainId,
       );
       if (!filled.ok) throw new Error(filled.error);
       const f = filled.fields as { target: string; value: string; data: string; nonce: string; execHash: string; operation: 0 | 1 };
-      const tx = r.room.wallet.proposeTx({
+      const tx = room.wallet.proposeTx({
         multisigAddress: cur.address,
         chainId,
-        from: a.session.address ?? null,
-        fromLabel: a.session.handle ?? a.session.address ?? null,
+        from: from.address ?? null,
+        fromLabel: from.handle ?? from.address ?? null,
         source: "manual",
         browserId: null,
         target: f.target,
@@ -3026,15 +3031,25 @@ app.post("/v1/safe/owners", async (req, reply) => {
             ? `Remove owner ${cur.signers.find(s => s.address === target)?.label ?? shortAddr(target!)}, threshold ${threshold}`
             : `Change threshold to ${threshold}`;
       const card = { headline: `${summary} — ${chainLabel(chainId)}`, kind: "call", inputs: [], outputs: [], to: cur.address };
-      r.room.wallet.setTxSummary(tx.id, JSON.stringify(card));
-      r.room.wallet.setTxAiAnalysis(tx.id, JSON.stringify(card));
+      room.wallet.setTxSummary(tx.id, JSON.stringify(card));
+      room.wallet.setTxAiAnalysis(tx.id, JSON.stringify(card));
       results.push({ chainId, txId: tx.id });
     } catch (err) {
       results.push({ chainId, error: (err as Error).message.split("\n")[0] });
     }
   }
-  r.room.broadcast({ type: "wallet_tx_attention", address: null, txId: results.find(x => x.txId)?.txId, source: "manual", at: Date.now() });
-  return { results };
+  room.broadcast({ type: "wallet_tx_attention", address: null, txId: results.find(x => x.txId)?.txId, source: "manual", at: Date.now() });
+  return { code: 200, body: { results } };
+}
+
+app.post("/v1/safe/owners", async (req, reply) => {
+  const r = safeRoomFromReq(req);
+  if (!r.ok) return reply.code(r.code).send(r.body);
+  const cur = r.room.wallet.getCurrent();
+  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
+  const a = v1AuthFromReq(req)!;
+  const out = await queueSafeOwnerChange(r.room, cur, a.session, (req.body ?? {}) as SafeOwnerChange);
+  return reply.code(out.code).send(out.body);
 });
 
 app.get("/v1/safe/status", async (req, reply) => {
@@ -5789,9 +5804,11 @@ async function runWalletChatTurn(
     userMsgId: string;
     clientSigners?: { address: string; kind: "account" | "passkey"; label: string }[] | null;
     clientThreshold?: number;
+    /** Who asked — recorded as the proposer of Safe owner changes the AI queues. */
+    from?: { address?: string | null; handle?: string | null };
   },
 ): Promise<void> {
-  const { message, address, chainId, userMsgId, clientSigners, clientThreshold } = opts;
+  const { message, address, chainId, userMsgId, clientSigners, clientThreshold, from } = opts;
   try {
     const [portfolio, activity] = await Promise.all([
       fetchPortfolio(address).catch(() => null),
@@ -5812,6 +5829,30 @@ async function runWalletChatTurn(
         : undefined;
     const walletSigners = clientSigners ?? bankSigners;
     const walletThreshold = clientSigners ? (clientThreshold ?? 1) : bankSigners ? curWallet?.threshold : undefined;
+    // Safe Bank: the AI's owner changes go through the same queue path as the
+    // Bank's Owners panel (one Safe tx per chain), never AI-built calldata.
+    const safeBank = bankSigners && curWallet?.kind === "safe" ? curWallet : null;
+    const safeOwnerChange = safeBank
+      ? async (args: { action: string; signer?: string; threshold?: number }) => {
+          const action =
+            args.action === "addAccountSigner" ? "add" : args.action === "removeSigner" ? "remove" : args.action === "changeThreshold" ? "threshold" : null;
+          if (!action) return { error: "Use addAccountSigner | removeSigner | changeThreshold. Passkeys/wedgies: the Owners panel." };
+          const fresh = room.wallet.getCurrent();
+          if (fresh?.kind !== "safe") return { error: "no Safe in this room" };
+          const owners = fresh.signers.length + (action === "add" ? 1 : action === "remove" ? -1 : 0);
+          const threshold =
+            typeof args.threshold === "number" && Number.isInteger(args.threshold)
+              ? args.threshold
+              : Math.max(1, Math.min(fresh.threshold, owners));
+          const out = await queueSafeOwnerChange(room, fresh, from ?? {}, {
+            action,
+            threshold,
+            ...(args.signer ? { owner: { address: args.signer } } : {}),
+          });
+          if (!("results" in out.body)) return { error: out.body.error };
+          return { queued: out.body.results };
+        }
+      : undefined;
     const intentInput: WalletIntentInput = {
       message,
       address,
@@ -5821,6 +5862,7 @@ async function runWalletChatTurn(
       // No signer set from the client and not this room's Bank multisig →
       // the chat is operating the user's own connected EOA.
       walletKind: walletSigners ? "multisig" : "eoa",
+      ...(safeOwnerChange ? { safeOwnerChange } : {}),
       portfolio: (portfolio?.assets ?? []).map(x => ({
         tokenSymbol: x.tokenSymbol,
         balance: x.balance,
@@ -5892,6 +5934,7 @@ app.post<{ Body: WalletChatBody }>("/v1/wallet-chat", async (req, reply) => {
     userMsgId: userMsg.id,
     clientSigners,
     clientThreshold,
+    from: a.session,
   });
 
   reply.header("cache-control", "no-store");
@@ -6042,11 +6085,14 @@ app.get<{ Querystring: { hash?: string; chain?: string } }>("/v1/wallet/transact
 // live peer via Room's wallet subscriber. The agent supplies the human-
 // readable summary directly, skipping the AI summarization pass. execHash
 // is derived server-side from the current multisig + the proposed call so
-// agents don't have to import viem to talk to us.
+// agents don't have to import viem to talk to us. A Safe Bank takes plain
+// calls only (`target/value/data` or `calls`); the relay picks the nonce and
+// the safeTxHash — deadline/nonce from the body are ignored.
 type WalletProposeBody = {
   target?: unknown;
   value?: unknown;
   data?: unknown;
+  calls?: unknown;
   deadline?: unknown;
   nonce?: unknown;
   summary?: unknown;
@@ -6069,6 +6115,42 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
   const cur = personalAddr ? null : room.wallet.getCurrent();
   if (!personalAddr && !cur) return reply.code(409).send({ error: "no_wallet" });
   const multisigAddress = personalAddr ?? cur!.address;
+  if (cur?.kind === "safe") {
+    const chainId = typeof body.chainId === "number" ? body.chainId : Number(Object.keys(cur.deployments)[0] ?? "8453");
+    if (!cur.deployments[chainId]) return reply.code(400).send({ error: "safe_not_deployed_on_chain", chainId });
+    const calls = Array.isArray(body.calls) ? (body.calls as { target: string; value: string; data: string }[]).slice(0, 50) : undefined;
+    const filled = await fillSafeProposal(
+      cur.address,
+      room.wallet.listTxs(),
+      { chainId, target: body.target, value: body.value ?? "0", data: body.data ?? "0x", calls },
+      chainId,
+    );
+    if (!filled.ok) return reply.code(400).send({ error: filled.error });
+    const f = filled.fields as { target: string; value: string; data: string; nonce: string; execHash: string; operation: 0 | 1 };
+    const tx = room.wallet.proposeTx({
+      multisigAddress,
+      chainId,
+      from: a.session.address,
+      fromLabel: a.session.handle ?? a.session.address ?? null,
+      source: "manual",
+      browserId: null,
+      target: f.target,
+      value: f.value,
+      data: f.data,
+      deadline: "0",
+      nonce: f.nonce,
+      execHash: f.execHash,
+      operation: f.operation,
+      ...(calls && calls.length > 0
+        ? { calls: calls.map(c => ({ target: String(c.target), value: String(c.value ?? "0"), data: String(c.data || "0x") })) }
+        : {}),
+    });
+    const summary = typeof body.summary === "string" ? body.summary.slice(0, 1000) : "";
+    if (summary && !tx.summary) room.wallet.setTxSummary(tx.id, summary);
+    if (!tx.aiAnalysis) fireWalletAi(room.wallet, tx);
+    room.broadcast({ type: "wallet_tx_attention", address: null, txId: tx.id, source: tx.source, at: Date.now() });
+    return { ok: true, id: tx.id, nonce: f.nonce, safeTxHash: f.execHash };
+  }
   const target = typeof body.target === "string" ? body.target : "";
   const value = typeof body.value === "string" ? body.value : "";
   const data = typeof body.data === "string" ? body.data : "";
@@ -6668,7 +6750,9 @@ function isRoomSigner(room: Room, address: string | null): boolean {
   const cur = room.wallet.getCurrent();
   if (!cur) return false;
   const want = address.toLowerCase();
-  return cur.signers.some(s => s.address.toLowerCase() === want);
+  // Safe passkey owners are signer contracts; the session holds the passkey
+  // identity, mapped via passkeyAddr.
+  return cur.signers.some(s => s.address.toLowerCase() === want || s.passkeyAddr?.toLowerCase() === want);
 }
 
 function hasValidRoomCookie(req: { cookies?: Record<string, string | undefined> }, slug: string): boolean {

@@ -48,7 +48,7 @@ export type SummarizeArgs = {
 
 function fallbackSummary(args: SummarizeArgs): string {
   if (args.calls && args.calls.length > 0) {
-    return `Batched tx: ${args.calls.length} call${args.calls.length === 1 ? "" : "s"} via execBatchTransaction. (Set BANKR_LLM_API_KEY on the relay for an AI summary.)`;
+    return `Batched tx: ${args.calls.length} call${args.calls.length === 1 ? "" : "s"}. (Set BANKR_LLM_API_KEY on the relay for an AI summary.)`;
   }
   const sel = args.data.length >= 10 ? args.data.slice(0, 10) : "0x";
   const targetShort = `${args.target.slice(0, 10)}…${args.target.slice(-4)}`;

@@ -1661,8 +1661,9 @@ the multisig, and every \`eth_sendTransaction\` becomes a PROPOSAL in the
 room's multisig wallet for the signers to approve — nothing
 auto-executes. Notes:
 - Want slop-specific UX? Branch on \`window.ethereum.isSlopImpersonator\`.
-- The impersonated account lives on the multisig's chain — point the
-  dapp's target network at it (the house multisig is on Base).
+- The impersonated account is the room's Safe — same address on Ethereum,
+  Base, Optimism, Arbitrum, Gnosis and Robinhood; point the dapp at the
+  chain you want (Base is the usual one).
 `;
 }
 
@@ -2630,12 +2631,16 @@ export function skillWallet(token: string, isHost: boolean, slug: string | null 
 
 ${slugNote(slug)}
 
-Per-room **session multisig**. Each room can have one active
-multisig wallet whose deployment is deterministic across chains
-(CREATE2 — same address everywhere). The deploy, signing, and
-execution all happen over WebSockets from connected browsers; the
-The REST surface lets agents read wallet state **and propose new
-transactions** — see the Mutation paths section below.
+Per-room **Bank** = a **Gnosis Safe** (1.5.0, SafeL2). Each room has
+one active Safe, created by the relay (which pays the gas) on Ethereum,
+Base, Optimism, Arbitrum, Gnosis and Robinhood at once — same address
+on all of them. Owners are normal wallets (EOA, sign EIP-712 SafeTx),
+passkeys, or a wedgie hardware signer (both: a SafeWebAuthnSigner
+contract as the owner address). A wedgie is never enough alone.
+Safe signatures have **no deadline**: an unwanted tx dies when another
+tx at the same nonce executes (the UI's Cancel). Each chain has its own
+nonce and its own owner list. The REST surface lets agents read wallet
+state **and propose new transactions** — see Mutation paths below.
 
 ### Read state
 
@@ -2655,8 +2660,12 @@ The full wallet picture is inside \`GET /v1/state?slug=${slugStr(slug)}\`:
 \`\`\`
 {
   id, address,                         // lowercased; same on every chain
-  deployer, salt,                      // CREATE2 inputs
-  signers: [{ address, label, signerType: "eoa"|"passkey" }, ...],
+  kind: "safe",
+  deployer, salt,                      // relay that paid · saltNonce (decimal)
+  signers: [{ address, label, signerType: "eoa"|"passkey",
+              passkeyAddr?, device?: "wedgie" }, ...],
+                                       // passkey/wedgie: address = signer contract;
+                                       // passkeyAddr = the person's passkey identity
   threshold: number,
   deployments: { [chainId]: { txHash, deployedAt } },
   createdAt, label
@@ -2672,8 +2681,11 @@ The full wallet picture is inside \`GET /v1/state?slug=${slugStr(slug)}\`:
   from, fromLabel,                     // proposer
   source: "browser" | "manual",
   browserId,                           // when source=browser, the originating shared browser
-  target, value, data, deadline, nonce,
-  execHash,                            // hash signers signed
+  target, value, data, operation,      // the exact SafeTx (operation 1 = MultiSend batch)
+  calls?,                              // a batch's sub-calls [{target, value, data}]
+  nonce,                               // the Safe nonce on this chain
+  execHash,                            // the safeTxHash signers sign
+  deadline,                            // always "0" (Safe has none)
   summary,                             // AI plain-English description (may be null until populated)
   signatures: [{ signer, sigType, data, receivedAt }, ...],
   status: "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled",
@@ -2693,19 +2705,21 @@ Authorization: Bearer <agent-token>
 Content-Type: application/json
 
 {
-  "target":   "0x...",          // destination address (required)
-  "value":    "0",              // wei as decimal string (required, "0" for token calls)
-  "data":     "0x...",          // calldata hex (required, "0x" for ETH sends)
-  "deadline": "1780000000",     // unix timestamp as decimal string (required)
-  "nonce":    "6",              // tx nonce as decimal string (required)
+  "target":   "0x...",          // destination address
+  "value":    "0",              // wei as decimal string ("0" for token calls)
+  "data":     "0x...",          // calldata hex ("0x" for ETH sends)
+  "calls":    [{ "target", "value", "data" }],  // OR a batch (sent as one MultiSend)
   "summary":  "Send 0.01 ETH", // plain-English description (optional — AI will generate if omitted)
-  "chainId":  8453              // optional — defaults to first deployed chain of the multisig
+  "chainId":  8453              // optional — defaults to the first deployed chain
 }
 \`\`\`
 
-Returns \`{ ok: true, id: "<txId>" }\` on success. The tx is immediately
-broadcast to all live WS peers and the wallet window surfaces on their desktop.
-\`execHash\` is derived server-side — agents don't need viem.
+Returns \`{ ok: true, id, nonce, safeTxHash }\`. The relay picks the Safe
+nonce (next free one after the pending queue) and computes the safeTxHash —
+agents don't need viem, and any \`nonce\`/\`deadline\` you send is ignored.
+The tx is broadcast to every live peer and the wallet window surfaces.
+Owner/threshold changes are not raw calldata: ask the Bank chat ("add 0x… as
+an owner") or use the Owners panel — each queues one Safe tx per chain.
 
 Error codes: \`401\` bad/expired token · \`409\` no wallet in this room ·
 \`400\` missing fields / bad address / bad bigint / unknown chain.
@@ -3577,7 +3591,7 @@ defense-in-depth measure.
 | \`escrow_fund\` / \`escrow_cancel\` / \`escrow_clear\` | \`txHash\` (fund) | **WS-only** | deposit a buy-in (relay verifies on-chain) / abort / reset the escrow session |
 | \`tx_request\` | tx | **WS-only** | impersonator captured an \`eth_sendTransaction\` (from browser-host) |
 | \`tx_forward\` | tx | **WS-only** | peer wants to forward a captured tx to their own real wallet |
-| \`wallet_deploy\` / \`wallet_add_deployment\` | sigs + deployment | **WS-only** | multisig deployment flow (real signers, not agents) |
+| \`wallet_deploy\` | — | refused (\`use_safe_deploy\`) | the Bank is a Safe now: the host creates it with \`POST /v1/safe/deploy\` (relay pays, every chain); owners change via \`POST /v1/safe/owners\`; a fully-signed tx executes via \`POST /v1/safe/exec\` |
 | \`wallet_new_episode\` | — | **WS-only** | host clears wallet for new show |
 | \`wallet_draft_update\` | partial draft | **WS-only** | collaborative pre-deploy form state |
 | \`wallet_tx_propose\` | proposal | \`POST /v1/wallet/propose\` | propose a multisig tx (REST mirror is the agent-friendly path) |

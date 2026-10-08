@@ -242,8 +242,13 @@ try {
   check(!!wallet?.deployments?.[8453], "Base deployment recorded");
   check(wallet.kind === "safe" && wallet.signers.some(s => s.passkeyAddr), "record is a Safe with a passkey owner mapped to its peer");
   check((await pub.getCode({ address: wallet.address }))?.length > 2, "Safe has code on Base");
-  const st = await api("GET", "/v1/safe/status");
-  check(st.json.chains?.[1]?.state === "failed", "mainnet (dead RPC here) shows failed, not stuck");
+  // viem retries the dead RPC with backoff, so give it a moment to give up.
+  let mainnetState = null;
+  for (let i = 0; i < 60 && mainnetState !== "failed"; i++) {
+    mainnetState = (await api("GET", "/v1/safe/status")).json.chains?.[1]?.state;
+    if (mainnetState !== "failed") await sleep(500);
+  }
+  check(mainnetState === "failed", "mainnet (dead RPC here) shows failed, not stuck");
   const dup = await api("POST", "/v1/safe/deploy", { owners: [{ address: eoa.address }], threshold: 1 });
   check(dup.status === 409, "second create refused while a Safe exists");
 
@@ -266,6 +271,24 @@ try {
   wsSend({ type: "wallet_tx_propose", chainId: 8453, target: to, value: "0", data: "0x", deadline: "0", nonce: "1", execHash: "0x" + "11".repeat(32), operation: 1, source: "manual" });
   await until(() => errs.length);
   check(errs.includes("delegatecall_blocked"), "delegatecall to a random address refused");
+
+  // agent REST propose: relay picks nonce + safeTxHash, ignores client nonce/deadline
+  const rp = await api("POST", "/v1/wallet/propose", { target: to, value: "7", data: "0x", nonce: "999", deadline: "1", chainId: 8453 });
+  const rpTx = txs.find(t => t.id === rp.json.id) ?? (await until(() => txs.find(t => t.id === rp.json.id)));
+  check(rp.status === 200 && rpTx?.operation === 0 && rpTx.nonce !== "999" && rpTx.execHash === rp.json.safeTxHash, `REST propose fills the Safe nonce/hash (nonce ${rp.json.nonce})`);
+  const rb = await api("POST", "/v1/wallet/propose", {
+    calls: [
+      { target: to, value: "1", data: "0x" },
+      { target: to, value: "2", data: "0x" },
+    ],
+    chainId: 8453,
+  });
+  const rbTx = await until(() => txs.find(t => t.id === rb.json.id));
+  check(rb.status === 200 && rbTx?.operation === 1 && rbTx.calls?.length === 2, "REST batch queued as a MultiSend with its calls");
+  const rbHash = S.safeTxHash(8453, wallet.address, { to: rbTx.target, value: 0n, data: rbTx.data, operation: 1, nonce: BigInt(rbTx.nonce) });
+  check(rbHash.toLowerCase() === rbTx.execHash, "REST batch hash is the real safeTxHash");
+  for (const id of [rp.json.id, rb.json.id]) wsSend({ type: "wallet_tx_remove", id });
+  await until(() => !txs.some(t => t.id === rp.json.id || t.id === rb.json.id));
 
   // ---------------------------------------------------------------- owners
   const third = privateKeyToAccount(generatePrivateKey());

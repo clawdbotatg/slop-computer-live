@@ -407,13 +407,21 @@ export class EscrowState {
    *  Single payout → execTransaction(to, amount); multiple → batch with
    *  one call per payout and no extra calls. Used to auto-adopt a payout
    *  proposal (and to reject anything that doesn't match the plan). */
-  payoutTxMatches(tx: { target: string; value: string; calls?: { target: string; value: string }[] }): boolean {
+  // Works for both bank kinds: a Safe's single payout is a plain call
+  // (operation 0, target = winner); a Safe batch carries the same `calls`
+  // the relay verified against its MultiSend bytes.
+  payoutTxMatches(tx: {
+    target: string;
+    value: string;
+    operation?: 0 | 1;
+    calls?: { target: string; value: string }[];
+  }): boolean {
     this.load();
     const payouts = this.current?.payouts;
     if (!payouts || payouts.length === 0) return false;
     if (payouts.length === 1) {
       const p = payouts[0]!;
-      return tx.target.toLowerCase() === p.to && tx.value === p.amountWei;
+      return tx.operation !== 1 && tx.target.toLowerCase() === p.to && tx.value === p.amountWei;
     }
     const calls = tx.calls ?? [];
     if (calls.length !== payouts.length) return false;
