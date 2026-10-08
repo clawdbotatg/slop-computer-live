@@ -29,6 +29,12 @@ export type WalletSigner = {
   qx?: string;
   qy?: string;
   credentialIdHash?: string;
+  // Safe wallets (kind "safe"): a passkey owner's `address` is its
+  // SafeWebAuthnSigner proxy; `passkeyAddr` is keccak(qx‖qy), the peer's
+  // identity, so the room can map owner ↔ peer. `device` marks a wedgie
+  // (same proxy kind, signs over WebSerial).
+  passkeyAddr?: string;
+  device?: "wedgie";
 };
 
 // The multisig's CREATE2 address is the same on every chain (factory at
@@ -52,6 +58,9 @@ export type WalletRecord = {
   deployments: Record<number, WalletDeployment>; // keyed by chainId
   createdAt: number;
   label: string; // human-readable, e.g. "Episode 12"
+  // "safe" = Gnosis Safe 1.5.0 (ops/PLAN-safe.md); absent = legacy slop Multisig.
+  // For a Safe: `salt` is the saltNonce (decimal), `deployer` is the relay that paid.
+  kind?: "safe";
 };
 
 export type WalletTxSignature = {
@@ -119,6 +128,10 @@ export type WalletTx = {
   // 0, 0x) and ignored at execute time. The execHash is computed from
   // the batch instead of (target, value, data).
   calls?: WalletTxCall[];
+  // Safe txs only: 0 = call, 1 = delegatecall (MultiSendCallOnly only).
+  // target/value/data are the exact SafeTx fields; execHash is the
+  // safeTxHash; deadline is "0" (Safe signatures never expire — trap 1).
+  operation?: 0 | 1;
   // When present, this tx is a nested-signature attestation request (see
   // WalletTxAttestation). Signable in this room, never executed here — on
   // threshold the client routes the assembled blob back to the outer tx.
@@ -215,6 +228,7 @@ export type ProposeTxInput = {
   calls?: WalletTxCall[];
   // Optional: when set, this is a nested-signature attestation request.
   attestationFor?: WalletTxAttestation;
+  operation?: 0 | 1;
 };
 
 export class WalletState {
@@ -420,6 +434,7 @@ export class WalletState {
       createdAt: now,
       updatedAt: now,
       ...(normalizedCalls ? { calls: normalizedCalls } : {}),
+      ...(input.operation !== undefined ? { operation: input.operation } : {}),
       ...(input.attestationFor
         ? {
             attestationFor: {
@@ -462,6 +477,23 @@ export class WalletState {
     if (status === "pending") tx.txHash = null;
     else if (txHash) tx.txHash = txHash;
     tx.updatedAt = Date.now();
+    // Safe: executing a nonce kills every other tx signed at that nonce
+    // (that's how cancel works — trap 1). Mark them so nobody keeps signing.
+    if (status === "executed" && tx.operation !== undefined) {
+      for (const t of this.state.txs) {
+        if (
+          t !== tx &&
+          t.status === "pending" &&
+          t.operation !== undefined &&
+          t.chainId === tx.chainId &&
+          t.multisigAddress === tx.multisigAddress &&
+          BigInt(t.nonce) <= BigInt(tx.nonce)
+        ) {
+          t.status = "cancelled";
+          t.updatedAt = tx.updatedAt;
+        }
+      }
+    }
     this.persist();
     this.emit();
     return tx;

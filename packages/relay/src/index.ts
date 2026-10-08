@@ -67,6 +67,22 @@ import {
   personalWalletAddressFor,
 } from "./personal-wallet.js";
 import {
+  SAFE_CHAINS,
+  type ChainResult,
+  type PasskeyKey,
+  type SafeSpec,
+  checkSafePropose,
+  deploySafeOn,
+  deployerAddress,
+  ensureSignersOn,
+  execSafeTx,
+  isSafeRelayConfigured,
+  predictSafe,
+  toSafeSignatures,
+  validateSpec,
+} from "./safe-relay.js";
+import { passkeyOwner, saltNonceFromLabel } from "./safe.js";
+import {
   isKohakuConfigured,
   kohakuChat,
   kohakuExecuteChatTx,
@@ -2690,6 +2706,222 @@ app.post("/personal-wallet/exec", async (req, reply) => {
     return reply.code(code).send({ error: result.error });
   }
   return { txHash: result.txHash };
+});
+
+// ── Safe Bank (ops/PLAN-safe.md) ─────────────────────────────────────────────
+// The relay pays to put a room's Safe on all 7 chains, to create passkey
+// signer contracts, and to execute fully-signed txs. Every route is room-gated
+// (?slug + room cookie) and bucketed per room, since mainnet gas is real money.
+
+// Per-room, per-chain deploy progress for the Bank UI. In memory: a restart
+// mid-deploy just shows "retry", and /v1/safe/deploy with no body resumes.
+const safeDeployStatus = new Map<string, Record<number, { state: "deploying" | "ok" | "failed"; txHash?: string | null; error?: string }>>();
+const safeDeployRoomBucket = new TokenBucket(3, 3 / 86400); // 3 burst, ~3/day per room
+const safeSignerRoomBucket = new TokenBucket(10, 10 / 86400);
+const safeExecRoomBucket = new TokenBucket(20, 20 / 3600);
+
+function safeSpecOf(rec: WalletRecord): SafeSpec {
+  return {
+    owners: rec.signers.map(s => s.address as `0x${string}`),
+    threshold: rec.threshold,
+    saltNonce: BigInt(rec.salt),
+    passkeys: rec.signers
+      .filter(s => s.qx && s.qy)
+      .map(s => ({ qx: s.qx as `0x${string}`, qy: s.qy as `0x${string}` })),
+  };
+}
+
+function runSafeDeploy(slug: string, rec: WalletRecord, chains: number[]): void {
+  const room = getOrCreateRoom(slug);
+  const status = safeDeployStatus.get(slug) ?? {};
+  safeDeployStatus.set(slug, status);
+  const spec = safeSpecOf(rec);
+  const push = () => room.broadcast({ type: "safe_deploy_status", address: rec.address, chains: status });
+  for (const chainId of chains) {
+    if (status[chainId]?.state === "deploying") continue;
+    status[chainId] = { state: "deploying" };
+    void deploySafeOn(chainId, spec).then((r: ChainResult) => {
+      if (r.ok) {
+        status[chainId] = { state: "ok", txHash: r.txHash };
+        if (room.wallet.getCurrent()?.address === rec.address) room.wallet.addDeployment(chainId, r.txHash);
+      } else {
+        status[chainId] = { state: "failed", error: r.error };
+        app.log.warn({ slug, chainId, error: r.error }, "[safe] deploy failed");
+      }
+      push();
+    });
+  }
+  push();
+}
+
+type SafeRoomReq =
+  | { ok: true; slug: string; room: ReturnType<typeof getOrCreateRoom> }
+  | { ok: false; code: number; body: { error: string } };
+
+function safeRoomFromReq(req: {
+  query?: unknown;
+  cookies: Record<string, string | undefined>;
+  headers: Record<string, string | string[] | undefined>;
+}): SafeRoomReq {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const slug = typeof q.slug === "string" ? q.slug : "";
+  if (!isValidSlug(slug)) return { ok: false, code: 400, body: { error: "room-required" } };
+  if (!v1AuthFromReq(req)) return { ok: false, code: 401, body: { error: "unauthenticated" } };
+  if (!isSafeRelayConfigured()) return { ok: false, code: 503, body: { error: "deployer-not-configured" } };
+  return { ok: true, slug, room: getOrCreateRoom(slug) };
+}
+
+// Deploy a new room Safe on every chain, or (empty body) retry the chains the
+// current one is still missing. Returns at once; progress streams over WS as
+// `safe_deploy_status` and lands in the wallet record per chain.
+app.post("/v1/safe/deploy", async (req, reply) => {
+  const r = safeRoomFromReq(req);
+  if (!r.ok) return reply.code(r.code).send(r.body);
+  const { slug, room } = r;
+  const b = (req.body ?? {}) as {
+    owners?: unknown;
+    threshold?: unknown;
+    label?: unknown;
+  };
+  const cur = room.wallet.getCurrent();
+
+  if (!Array.isArray(b.owners)) {
+    if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
+    const missing = SAFE_CHAINS.filter(c => !cur.deployments[c]);
+    runSafeDeploy(slug, cur, missing);
+    return { address: cur.address, chains: missing };
+  }
+  if (cur?.kind === "safe") return reply.code(409).send({ error: "safe-exists" });
+  if (!safeDeployRoomBucket.allow(slug)) return reply.code(429).send({ error: "rate-limited" });
+
+  const signers: WalletSigner[] = [];
+  const passkeys: PasskeyKey[] = [];
+  const hex32 = /^0x[0-9a-fA-F]{64}$/;
+  for (const raw of b.owners.slice(0, 20) as unknown[]) {
+    const o = (raw ?? {}) as { address?: unknown; label?: unknown; qx?: unknown; qy?: unknown; device?: unknown };
+    const label = typeof o.label === "string" ? o.label.slice(0, 60) : "";
+    if (typeof o.qx === "string" && typeof o.qy === "string") {
+      if (!hex32.test(o.qx) || !hex32.test(o.qy)) return reply.code(400).send({ error: "bad-passkey" });
+      const qx = o.qx.toLowerCase() as `0x${string}`;
+      const qy = o.qy.toLowerCase() as `0x${string}`;
+      passkeys.push({ qx, qy });
+      signers.push({
+        address: passkeyOwner(qx, qy).toLowerCase(),
+        label,
+        signerType: "passkey",
+        qx,
+        qy,
+        passkeyAddr: passkeyAddressFromCoords(qx, qy).toLowerCase(),
+        ...(o.device === "wedgie" ? { device: "wedgie" as const } : {}),
+      });
+    } else if (typeof o.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(o.address)) {
+      signers.push({ address: o.address.toLowerCase(), label, signerType: "eoa" });
+    } else {
+      return reply.code(400).send({ error: "bad-owner" });
+    }
+  }
+  const threshold = Number(b.threshold);
+  // A wedgie is never enough on its own (its firmware isn't locked down).
+  const wedgies = signers.filter(s => s.device === "wedgie").length;
+  if (wedgies > 0 && signers.length - wedgies < threshold) return reply.code(400).send({ error: "wedgie-alone" });
+  if (wedgies > 0 && threshold < 2) return reply.code(400).send({ error: "wedgie-alone" });
+
+  const createdAt = Date.now();
+  const saltNonce = saltNonceFromLabel(`slop-room:${slug}:${createdAt}`);
+  const spec: SafeSpec = { owners: signers.map(s => s.address as `0x${string}`), threshold, saltNonce, passkeys };
+  const bad = validateSpec(spec);
+  if (bad) return reply.code(400).send({ error: bad });
+
+  const rec: WalletRecord = {
+    id: Math.random().toString(36).slice(2),
+    kind: "safe",
+    address: predictSafe(spec).toLowerCase(),
+    deployer: (deployerAddress() ?? "").toLowerCase(),
+    salt: saltNonce.toString(),
+    signers,
+    threshold,
+    deployments: {},
+    createdAt,
+    label: typeof b.label === "string" && b.label ? b.label.slice(0, 100) : `Episode ${new Date().toISOString().slice(0, 10)}`,
+  };
+  room.wallet.setCurrent(rec);
+  runSafeDeploy(slug, rec, [...SAFE_CHAINS]);
+  return { address: rec.address, chains: SAFE_CHAINS };
+});
+
+app.get("/v1/safe/status", async (req, reply) => {
+  const q = (req.query ?? {}) as { slug?: unknown };
+  const slug = typeof q.slug === "string" ? q.slug : "";
+  if (!isValidSlug(slug)) return reply.code(400).send({ error: "room-required" });
+  if (!v1AuthFromReq(req)) return reply.code(401).send({ error: "unauthenticated" });
+  const cur = getOrCreateRoom(slug).wallet.getCurrent();
+  return { address: cur?.kind === "safe" ? cur.address : null, chains: safeDeployStatus.get(slug) ?? {} };
+});
+
+// Create a passkey's signer contract on every chain the room Safe lives on.
+// Called before proposing addOwner for a passkey, so the new owner can sign.
+app.post("/v1/safe/signer", async (req, reply) => {
+  const r = safeRoomFromReq(req);
+  if (!r.ok) return reply.code(r.code).send(r.body);
+  const cur = r.room.wallet.getCurrent();
+  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
+  const b = (req.body ?? {}) as { qx?: unknown; qy?: unknown };
+  const hex32 = /^0x[0-9a-fA-F]{64}$/;
+  if (typeof b.qx !== "string" || typeof b.qy !== "string" || !hex32.test(b.qx) || !hex32.test(b.qy)) {
+    return reply.code(400).send({ error: "bad-passkey" });
+  }
+  if (!safeSignerRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
+  const key = { qx: b.qx.toLowerCase() as `0x${string}`, qy: b.qy.toLowerCase() as `0x${string}` };
+  const chains = Object.keys(cur.deployments).map(Number);
+  const results = await Promise.all(
+    chains.map(c =>
+      ensureSignersOn(c, [key]).then(
+        h => ({ chainId: c, ok: true, txHash: h }),
+        (e: Error) => ({ chainId: c, ok: false, error: e.message.split("\n")[0] }),
+      ),
+    ),
+  );
+  return { owner: passkeyOwner(key.qx, key.qy).toLowerCase(), results };
+});
+
+// Execute a fully-signed Bank tx, relay pays gas. The Safe re-checks every
+// signature on-chain; a short or bad set fails in estimateGas, before broadcast.
+app.post("/v1/safe/exec", async (req, reply) => {
+  const r = safeRoomFromReq(req);
+  if (!r.ok) return reply.code(r.code).send(r.body);
+  const cur = r.room.wallet.getCurrent();
+  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
+  const b = (req.body ?? {}) as { txId?: unknown };
+  const tx = typeof b.txId === "string" ? r.room.wallet.findTx(b.txId) : null;
+  if (!tx || tx.multisigAddress !== cur.address || tx.operation === undefined) {
+    return reply.code(404).send({ error: "no-tx" });
+  }
+  if (tx.status !== "pending" && tx.status !== "failed") return reply.code(409).send({ error: `tx-${tx.status}` });
+  const owners = new Set(cur.signers.map(s => s.address));
+  const sigs = tx.signatures.filter(s => owners.has(s.signer));
+  if (sigs.length < cur.threshold) return reply.code(400).send({ error: "not-enough-signatures" });
+  if (!safeExecRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
+
+  r.room.wallet.setTxStatus(tx.id, "executing");
+  const res = await execSafeTx(
+    tx.chainId,
+    cur.address as `0x${string}`,
+    {
+      to: tx.target as `0x${string}`,
+      value: BigInt(tx.value),
+      data: tx.data as `0x${string}`,
+      operation: tx.operation,
+      nonce: BigInt(tx.nonce),
+    },
+    toSafeSignatures(sigs),
+    safeSpecOf(cur).passkeys,
+  );
+  if (!res.ok) {
+    r.room.wallet.setTxStatus(tx.id, "pending");
+    return reply.code(400).send({ error: res.error });
+  }
+  r.room.wallet.setTxStatus(tx.id, "executed", res.txHash);
+  return { txHash: res.txHash };
 });
 
 // Mint a single-use Coinbase Onramp session (Apple Pay → ETH on Base) aimed at
@@ -9846,6 +10078,14 @@ app.register(async function signalRoutes(fastify) {
             if (!valid) return send(socket, { type: "error", error: "bad_calls" });
             batchCalls = (msg.calls as { target: string; value: string; data: string }[]).slice(0, 50);
           }
+          // Safe Bank: the relay re-derives the safeTxHash and refuses any
+          // delegatecall that isn't MultiSendCallOnly (ops/PLAN-safe.md trap 2).
+          let safeOp: 0 | 1 | undefined;
+          if (cur?.kind === "safe") {
+            const checked = checkSafePropose(msg, cur.address, chainId, batchCalls);
+            if (!checked.ok) return send(socket, { type: "error", error: checked.error });
+            safeOp = checked.operation;
+          }
           const tx = ws.proposeTx({
             multisigAddress,
             chainId,
@@ -9860,6 +10100,7 @@ app.register(async function signalRoutes(fastify) {
             nonce: msg.nonce,
             execHash: msg.execHash,
             ...(batchCalls ? { calls: batchCalls } : {}),
+            ...(safeOp !== undefined ? { operation: safeOp } : {}),
           });
           // Money games: if an escrow is awaiting settlement and this tx
           // pays out the plan (winner takes pot, or a refund batch), adopt

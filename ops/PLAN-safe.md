@@ -139,9 +139,19 @@ safeTxHash, sigs by owner. Not mirrored to Safe's tx service in v1.
    **real** slop.computer passkey assertion from Chrome, Safari, and iOS
    (clientDataJSON field order differs by browser; Safe's signer rebuilds it
    from `type`+`challenge`+the rest — prove it on all three).
-2. **Relay**: wallet record → `{safe, chains, owners:[{addr,kind,qx?,qy?}]}`;
-   `/v1/safe/signer`; sponsored deploy; queue on SafeTx + nonce rules; op=1
-   guard; exec endpoint.
+2. ✅ 10-07 (not deployed yet — nothing calls it until phase 3) — **Relay**:
+   `packages/relay/src/safe-relay.ts` + routes in `index.ts`:
+   `POST /v1/safe/deploy` (new Safe on all 7 chains, or empty body = retry
+   missing chains; progress over WS `safe_deploy_status`), `GET
+   /v1/safe/status`, `POST /v1/safe/signer`, `POST /v1/safe/exec`. Record has
+   `kind:"safe"`, passkey owners carry `passkeyAddr` + `device`; txs carry
+   `operation`; `wallet_tx_propose` re-derives the safeTxHash and blocks
+   foreign delegatecall; executing a nonce cancels its siblings. Relay copies
+   `nextjs/utils/safe.ts` at build. Proven by `ops/probes/safe-relay-fork.mjs`.
+   Left for phase 4: escrow payout settle on `/v1/safe/exec` (today only the
+   WS `wallet_tx_status` path settles it).
+   **Needs Austin:** fund the payer `0xBa16e496574514A28b15e19c222c4d367c6C0FF0`
+   on Optimism, Arbitrum, Polygon, Gnosis, Robinhood (has mainnet + Base only).
 3. **Bank UI**: deploy (multi-chain, signer status), add/remove owner,
    threshold, sign (EOA / passkey / wedgie), execute, cancel.
 4. **Consumers**: EnsWindow (reverse `setName` as a Safe tx on mainnet — Safe
