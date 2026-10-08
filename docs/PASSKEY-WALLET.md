@@ -1,16 +1,40 @@
 # Passkey Personal Wallets (smart-account mode for passkey sign-in)
 
-> Status: **partially built.** Derivation, receive, Apple-Pay on-ramp, deploy,
-> and now a **minimal single-send facilitator** (`POST /personal-wallet/exec`)
-> are live — enough for a passkey wallet to **buy into a poker/chess escrow**
-> (its first real spend). See §7 for what's built vs. the fuller subscriber
-> design still planned. This describes a mode where signing in with a passkey
-> gives you a real, spendable wallet address — a personal multisig the passkey
-> controls — instead of the un-spendable raw passkey identifier. The raw passkey
-> address keeps doing its existing job (signer on the main/room multisig); we
-> just stop ever showing it as a place to receive funds.
+> **Now (2026-10-07): personal wallets are Gnosis Safes.** The slop Multisig
+> (v1–v4) described in §1–§12 below is **abandoned** — old personal multisigs
+> were swept by hand and are not migrated. Read the "Current design" section;
+> everything after it is the original v4 plan, kept for history and for the
+> parts that still hold (the burn trap, identity ≠ custody, the onramp, the
+> facilitator idea). Shared contract facts and traps: `ops/PLAN-safe.md`.
 
-## TL;DR
+## Current design (Safe)
+
+- **Address.** A Safe 1.5.0 on **Base** with owners
+  `[passkeyOwner(qx,qy), PLATFORM_COSIGNER]`, threshold **1**,
+  `saltNonce = saltNonceFromLabel("slop-personal-safe-v1")`. The address is
+  pure math from the passkey's public key (`utils/personalWallet.ts`, using
+  `utils/safe.ts`) — no RPC, no deployer baked in. `passkeyOwner` is the
+  passkey's `SafeWebAuthnSignerProxy` (safe-modules 0.2.1, verifiers =
+  P-256 precompile + Daimo fallback, fixed forever).
+- **Co-signer = the relay's hot key** (`0xBa16…0FF0`, served at
+  `GET /personal-wallet/config` so the frontend and relay can't disagree).
+  At threshold 1 **that key can move any personal wallet's funds** — the same
+  trust as the old 1-of-2, now concentrated in one hot key. Changing it later
+  changes every personal-wallet address.
+- **Deploy + spend** (`personal-wallet.ts`, `POST /personal-wallet/deploy`,
+  `POST /personal-wallet/exec`): the relay creates the passkey signer + Safe
+  (Multicall3, every call must succeed) and broadcasts `execTransaction`,
+  paying gas. The caller must own the passkey; `PERSONAL_WALLET_MAX_SPEND_WEI`
+  caps value, counting every call inside a MultiSend batch.
+- **Signing.** `signSafeTxWithPasskey` (`utils/passkey.ts`) over the
+  safeTxHash → a v=0 contract signature (sigType 1 in the queue).
+- **Queue.** Per-address queue (`room.walletFor(addr)`); the relay fills the
+  Safe nonce + safeTxHash for plain-call proposals (WS and
+  `POST /v1/wallet/propose` with `address`), so clients never compute hashes.
+- **Probe:** `ops/probes/safe-personal-fork.mjs` (Base fork, real Chrome passkey).
+
+## TL;DR (original v4 plan — history)
+
 
 - **Problem.** The address a passkey user is "given" today is
   `keccak256(qx ‖ qy)[-20:]` — a P-256 (secp256r1) identifier. It is **not a

@@ -3,14 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type Portfolio, type PortfolioAsset, toRawUnits, zerionChainToId } from "./types";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import { type Address as AddressType, type Hex, encodeFunctionData, erc20Abi } from "viem";
-import { usePublicClient } from "wagmi";
-import { MultisigAbi } from "~~/contracts/multisig";
+import { type Address as AddressType, encodeFunctionData, erc20Abi } from "viem";
 import type { PeerMeshState, WalletRecord, WalletTxCall } from "~~/hooks/usePeerMesh";
-import { defaultDeadline } from "~~/utils/multisig";
 
 // Sticky header above the wallet window's tab bar. Always shows total
-// USD balance + refresh + send-all icons on the left, multisig Address
+// USD balance + refresh + send-all icons on the left, Safe address
 // on the right. The send-all button opens a modal (same shape as the
 // per-asset SendAssetModal) that proposes one execBatchTransaction per
 // chain bundling every transfer on that chain.
@@ -27,9 +24,9 @@ const fmtUsd = (v: string | number) => {
 const isNativeAsset = (a: PortfolioAsset): boolean =>
   !a.contractAddress || a.contractAddress.toLowerCase() === NATIVE_TOKEN_PLACEHOLDER;
 
-// Group sendable assets by chainId. Only chains where the multisig is
+// Group sendable assets by chainId. Only chains where the Safe is
 // actually deployed get a batch — others are unreachable from the
-// multisig, so we drop them from the proposal silently.
+// Safe, so we drop them from the proposal silently.
 function groupAssetsByChain(
   assets: PortfolioAsset[],
   deployments: Record<number, unknown>,
@@ -130,7 +127,7 @@ export const WalletHeader = ({ wallet, mesh, portfolio, loading, onRefresh }: Wa
             sendAllAvailable
               ? "Send every asset to one address"
               : portfolio
-                ? "No sendable assets on a chain where the multisig is deployed."
+                ? "No sendable assets on a chain where the Safe is deployed."
                 : "Loading portfolio…"
           }
         >
@@ -138,7 +135,7 @@ export const WalletHeader = ({ wallet, mesh, portfolio, loading, onRefresh }: Wa
         </IconButton>
       </div>
 
-      {/* Right: multisig address */}
+      {/* Right: Safe address */}
       <div style={{ flexShrink: 0 }}>
         <Address address={wallet.address as AddressType} size="sm" />
       </div>
@@ -239,30 +236,6 @@ const SendAllModal = ({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // One publicClient per supported chain — wagmi hooks must be called
-  // unconditionally on render, so we fan out across every chain
-  // zerionChainToId can return and pick at proposal time.
-  const baseClient = usePublicClient({ chainId: 8453 });
-  const mainnetClient = usePublicClient({ chainId: 1 });
-  const gnosisClient = usePublicClient({ chainId: 100 });
-  const arbitrumClient = usePublicClient({ chainId: 42161 });
-  const optimismClient = usePublicClient({ chainId: 10 });
-  const polygonClient = usePublicClient({ chainId: 137 });
-  const robinhoodClient = usePublicClient({ chainId: 4663 });
-  const clientFor = useCallback(
-    (chainId: number) => {
-      if (chainId === 8453) return baseClient;
-      if (chainId === 1) return mainnetClient;
-      if (chainId === 100) return gnosisClient;
-      if (chainId === 42161) return arbitrumClient;
-      if (chainId === 10) return optimismClient;
-      if (chainId === 137) return polygonClient;
-      if (chainId === 4663) return robinhoodClient;
-      return null;
-    },
-    [baseClient, mainnetClient, gnosisClient, arbitrumClient, optimismClient, polygonClient, robinhoodClient],
-  );
-
   const onSendAll = useCallback(async () => {
     setTopError(null);
     setOutcomes(null);
@@ -276,11 +249,6 @@ const SendAllModal = ({
     let anyOk = false;
     try {
       for (const [chainId, assets] of chainEntries) {
-        const client = clientFor(chainId);
-        if (!client) {
-          results.push({ chainId, ok: false, reason: "no RPC client", calls: assets.length });
-          continue;
-        }
         try {
           // One call per asset on this chain. Skip dust (rounds to 0n)
           // so we don't ship a no-op.
@@ -304,44 +272,12 @@ const SendAllModal = ({
             results.push({ chainId, ok: false, reason: "no non-dust balances", calls: 0 });
             continue;
           }
-          const nonce = (await client.readContract({
-            address: wallet.address as AddressType,
-            abi: MultisigAbi,
-            functionName: "nonce",
-          })) as bigint;
-          const deadline = defaultDeadline();
-          // Batch exec hash from the contract view function — safer than
-          // re-implementing the encoding; available because the multisig
-          // is deployed here (otherwise this chain wouldn't be in
-          // sendableChains).
-          // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
-          const execHash =
-            wallet.kind === "safe"
-              ? "0x"
-              : ((await client.readContract({
-                  address: wallet.address as AddressType,
-                  abi: MultisigAbi,
-                  functionName: "getBatchExecHash",
-                  args: [
-                    calls.map(c => ({
-                      target: c.target as AddressType,
-                      value: BigInt(c.value),
-                      data: c.data as Hex,
-                    })),
-                    deadline,
-                  ],
-                })) as Hex);
+          // One MultiSend batch; the relay picks the Safe nonce + safeTxHash.
           mesh.walletProposeTx({
             chainId,
-            // Sentinel target/value/data — batch txs ignore these at
-            // exec time. We point the sentinel at the multisig itself
-            // so the explorer view shows a self-call.
             target: wallet.address,
             value: "0",
             data: "0x",
-            deadline: deadline.toString(),
-            nonce: nonce.toString(),
-            execHash,
             source: "manual",
             browserId: null,
             calls,
@@ -362,7 +298,7 @@ const SendAllModal = ({
       // EVERY chain failed — that's the case the user has to look at.
       if (anyOk) onClose();
     }
-  }, [recipientValid, recipient, chainEntries, clientFor, wallet.address, mesh, onClose]);
+  }, [recipientValid, recipient, chainEntries, wallet.address, mesh, onClose]);
 
   return (
     <div

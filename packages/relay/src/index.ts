@@ -3,7 +3,6 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import { encodeAbiParameters, keccak256, parseAbiParameters } from "viem";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
@@ -43,7 +42,6 @@ import {
 import {
   DEFAULT_SLUG,
   findPeerRoom,
-  findRoomByWalletAddress,
   getOrCreateRoom,
   getRoom,
   hibernateRoom,
@@ -6036,18 +6034,15 @@ app.get<{ Querystring: { hash?: string; chain?: string } }>("/v1/wallet/transact
 // result as the `wallet_tx_propose` WS handler: pushes a pending entry into
 // the room's wallet tx queue, which auto-broadcasts `wallet_txs` to every
 // live peer via Room's wallet subscriber. The agent supplies the human-
-// readable summary directly, skipping the AI summarization pass. execHash
-// is derived server-side from the current multisig + the proposed call so
-// agents don't have to import viem to talk to us. A Safe Bank takes plain
-// calls only (`target/value/data` or `calls`); the relay picks the nonce and
-// the safeTxHash — deadline/nonce from the body are ignored.
+// readable summary directly, skipping the AI summarization pass. Every wallet
+// is a Safe: the body is plain calls only (`target/value/data` or `calls`);
+// the relay picks the nonce and computes the safeTxHash, so agents never
+// import viem and can never get a hash signed that isn't what's shown.
 type WalletProposeBody = {
   target?: unknown;
   value?: unknown;
   data?: unknown;
   calls?: unknown;
-  deadline?: unknown;
-  nonce?: unknown;
   summary?: unknown;
   chainId?: unknown;
   address?: unknown;
@@ -6058,103 +6053,52 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
   if (!a) return reply.code(401).send({ error: "unauthenticated" });
   const room = roomFromReq(req);
   const body = (req.body ?? {}) as WalletProposeBody;
-  // PERSONAL wallet supplies `address` → per-address queue; the Bank omits it
-  // and uses the room's singleton `current` multisig.
+  // PERSONAL wallet supplies `address` → its per-address queue (a Safe on
+  // Base); the Bank omits it and uses the room's Safe.
   const personalAddr =
     typeof body.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(body.address)
       ? body.address.toLowerCase()
       : null;
   const ws = personalAddr ? room.walletFor(personalAddr) : room.wallet;
   const cur = personalAddr ? null : room.wallet.getCurrent();
-  if (!personalAddr && !cur) return reply.code(409).send({ error: "no_wallet" });
-  const multisigAddress = personalAddr ?? cur!.address;
-  if (cur?.kind === "safe") {
-    const chainId = typeof body.chainId === "number" ? body.chainId : Number(Object.keys(cur.deployments)[0] ?? "8453");
+  const safeAddr = personalAddr ?? (cur?.kind === "safe" ? cur.address : null);
+  if (!safeAddr) return reply.code(409).send({ error: "no_wallet" });
+  let chainId: number;
+  if (cur) {
+    chainId = typeof body.chainId === "number" ? body.chainId : Number(Object.keys(cur.deployments)[0] ?? "8453");
     if (!cur.deployments[chainId]) return reply.code(400).send({ error: "safe_not_deployed_on_chain", chainId });
-    const calls = Array.isArray(body.calls) ? (body.calls as { target: string; value: string; data: string }[]).slice(0, 50) : undefined;
-    const filled = await fillSafeProposal(
-      cur.address,
-      room.wallet.listTxs(),
-      { chainId, target: body.target, value: body.value ?? "0", data: body.data ?? "0x", calls },
-      chainId,
-    );
-    if (!filled.ok) return reply.code(400).send({ error: filled.error });
-    const f = filled.fields as { target: string; value: string; data: string; nonce: string; execHash: string; operation: 0 | 1 };
-    const tx = room.wallet.proposeTx({
-      multisigAddress,
-      chainId,
-      from: a.session.address,
-      fromLabel: a.session.handle ?? a.session.address ?? null,
-      source: "manual",
-      browserId: null,
-      target: f.target,
-      value: f.value,
-      data: f.data,
-      deadline: "0",
-      nonce: f.nonce,
-      execHash: f.execHash,
-      operation: f.operation,
-      ...(calls && calls.length > 0
-        ? { calls: calls.map(c => ({ target: String(c.target), value: String(c.value ?? "0"), data: String(c.data || "0x") })) }
-        : {}),
-    });
-    const summary = typeof body.summary === "string" ? body.summary.slice(0, 1000) : "";
-    if (summary && !tx.summary) room.wallet.setTxSummary(tx.id, summary);
-    if (!tx.aiAnalysis) fireWalletAi(room.wallet, tx);
-    room.broadcast({ type: "wallet_tx_attention", address: null, txId: tx.id, source: tx.source, at: Date.now() });
-    return { ok: true, id: tx.id, nonce: f.nonce, safeTxHash: f.execHash };
+  } else {
+    chainId = 8453; // personal Safes live on Base only
+    if (typeof body.chainId === "number" && body.chainId !== chainId) {
+      return reply.code(400).send({ error: "personal_wallet_base_only" });
+    }
   }
-  const target = typeof body.target === "string" ? body.target : "";
-  const value = typeof body.value === "string" ? body.value : "";
-  const data = typeof body.data === "string" ? body.data : "";
-  const deadline = typeof body.deadline === "string" ? body.deadline : "";
-  const nonce = typeof body.nonce === "string" ? body.nonce : "";
-  if (!/^0x[a-fA-F0-9]{40}$/.test(target)) return reply.code(400).send({ error: "bad-target" });
-  if (!/^0x[a-fA-F0-9]*$/.test(data)) return reply.code(400).send({ error: "bad-data" });
-  if (!value || !deadline || !nonce) {
-    return reply.code(400).send({ error: "missing-fields", required: ["value", "deadline", "nonce"] });
-  }
-  // chainId: optional in body, otherwise fall back to a deployment we know
-  // exists. Mirrors the WS `wallet_tx_propose` path. Personal wallets carry
-  // no room-level deployments map, so they must send chainId explicitly.
-  const incomingChainId = typeof body.chainId === "number" ? body.chainId : null;
-  const fallbackChain = cur ? Number(Object.keys(cur.deployments)[0] ?? "0") : 0;
-  const chainId = incomingChainId ?? fallbackChain;
-  if (!Number.isFinite(chainId) || chainId === 0) {
-    return reply.code(400).send({ error: "no_chain" });
-  }
-  let execHash: `0x${string}`;
-  try {
-    execHash = keccak256(
-      encodeAbiParameters(
-        parseAbiParameters("uint256, address, uint256, uint256, address, uint256, bytes32"),
-        [
-          BigInt(chainId),
-          multisigAddress as `0x${string}`,
-          BigInt(nonce),
-          BigInt(deadline),
-          target as `0x${string}`,
-          BigInt(value),
-          keccak256(data as `0x${string}`),
-        ],
-      ),
-    );
-  } catch {
-    return reply.code(400).send({ error: "bad-bigint" });
-  }
+  const calls = Array.isArray(body.calls) ? (body.calls as { target: string; value: string; data: string }[]).slice(0, 50) : undefined;
+  const filled = await fillSafeProposal(
+    safeAddr,
+    ws.listTxs(),
+    { chainId, target: body.target, value: body.value ?? "0", data: body.data ?? "0x", calls },
+    chainId,
+  );
+  if (!filled.ok) return reply.code(400).send({ error: filled.error });
+  const f = filled.fields as { target: string; value: string; data: string; nonce: string; execHash: string; operation: 0 | 1 };
   const tx = ws.proposeTx({
-    multisigAddress,
+    multisigAddress: safeAddr,
     chainId,
     from: a.session.address,
     fromLabel: a.session.handle ?? a.session.address ?? null,
     source: "manual",
     browserId: null,
-    target,
-    value,
-    data,
-    deadline,
-    nonce,
-    execHash,
+    target: f.target,
+    value: f.value,
+    data: f.data,
+    deadline: "0",
+    nonce: f.nonce,
+    execHash: f.execHash,
+    operation: f.operation,
+    ...(calls && calls.length > 0
+      ? { calls: calls.map(c => ({ target: String(c.target), value: String(c.value ?? "0"), data: String(c.data || "0x") })) }
+      : {}),
   });
   // Agent-provided summary becomes the proposer claim. Either way fire
   // the independent AI analyzer — that's the whole point of having a
@@ -6165,7 +6109,7 @@ app.post<{ Body: WalletProposeBody }>("/v1/wallet/propose", async (req, reply) =
   if (summary && !tx.summary) ws.setTxSummary(tx.id, summary);
   if (!tx.aiAnalysis) fireWalletAi(ws, tx);
   room.broadcast({ type: "wallet_tx_attention", address: personalAddr, txId: tx.id, source: tx.source, at: Date.now() });
-  return { ok: true, id: tx.id };
+  return { ok: true, id: tx.id, nonce: f.nonce, safeTxHash: f.execHash };
 });
 
 // --- Jamendo genre playlists -----------------------------------------------
@@ -10241,9 +10185,8 @@ app.register(async function signalRoutes(fastify) {
             return send(socket, { type: "error", error: "no_chain" });
           }
           const multisigAddress = personalAddr ?? cur!.address;
-          // Optional batched calls — when provided, exec uses
-          // Multisig.execBatchTransaction and target/value/data are
-          // sentinels (multisig self-address, "0", "0x").
+          // Optional batched calls — the individual calls inside a Safe
+          // MultiSend (checkSafePropose verifies they match target/data).
           let batchCalls: { target: string; value: string; data: string }[] | undefined;
           if (Array.isArray(msg.calls) && msg.calls.length > 0) {
             const valid = msg.calls.every(
@@ -10357,77 +10300,6 @@ app.register(async function signalRoutes(fastify) {
             signer: msg.signer,
             sigType: msg.sigType,
             data: msg.data,
-            receivedAt: Date.now(),
-          });
-          return;
-        }
-        case "wallet_nested_request": {
-          // Wallet B (in THIS room) has wallet A as an ERC-1271 signer and
-          // asks A to attest to B's execHash. Route an attestation proposal
-          // into A's room; A's signers sign it normally and the result
-          // bubbles back via `wallet_nested_result`.
-          const signerWallet = typeof msg.signerWallet === "string" ? msg.signerWallet.toLowerCase() : null;
-          const outerWallet = typeof msg.outerWallet === "string" ? msg.outerWallet.toLowerCase() : null;
-          const outerTxId = typeof msg.outerTxId === "string" ? msg.outerTxId : null;
-          const execHash = typeof msg.execHash === "string" ? msg.execHash : null;
-          const chainId = typeof msg.chainId === "number" ? msg.chainId : null;
-          if (!signerWallet || !outerWallet || !outerTxId || !execHash || chainId === null) {
-            return send(socket, { type: "error", error: "bad_nested_request" });
-          }
-          const targetRoom = findRoomByWalletAddress(signerWallet);
-          if (!targetRoom) {
-            return send(socket, { type: "error", error: "nested_wallet_not_found", signerWallet });
-          }
-          const rawCalls = Array.isArray(msg.calls)
-            ? (msg.calls as unknown[])
-                .map(c => {
-                  if (!c || typeof c !== "object") return null;
-                  const call = c as { target?: unknown; value?: unknown; data?: unknown };
-                  if (typeof call.target !== "string" || typeof call.value !== "string" || typeof call.data !== "string")
-                    return null;
-                  return { target: call.target, value: call.value, data: call.data };
-                })
-                .filter((c): c is { target: string; value: string; data: string } => c !== null)
-            : undefined;
-          targetRoom.wallet.proposeTx({
-            multisigAddress: signerWallet,
-            chainId,
-            from: outerWallet,
-            fromLabel: typeof msg.outerLabel === "string" ? msg.outerLabel : null,
-            source: "manual",
-            browserId: null,
-            target: typeof msg.target === "string" ? msg.target : signerWallet,
-            value: typeof msg.value === "string" ? msg.value : "0",
-            data: typeof msg.data === "string" ? msg.data : "0x",
-            deadline: typeof msg.deadline === "string" ? msg.deadline : "0",
-            nonce: "0", // irrelevant: A attests, it does not execute
-            execHash,
-            ...(rawCalls && rawCalls.length > 0 ? { calls: rawCalls } : {}),
-            attestationFor: { outerSlug: room.id, outerWalletAddress: outerWallet, outerTxId },
-          });
-          return;
-        }
-        case "wallet_nested_result": {
-          // Wallet A's room reached threshold on an attestation and assembled
-          // the ERC-1271 blob. Add it to the outer wallet B's tx as a
-          // sigType-2 signature from A's address.
-          const outerSlug = typeof msg.outerSlug === "string" ? msg.outerSlug : null;
-          const outerTxId = typeof msg.outerTxId === "string" ? msg.outerTxId : null;
-          const signerWallet = typeof msg.signerWallet === "string" ? msg.signerWallet.toLowerCase() : null;
-          const blob = typeof msg.blob === "string" ? msg.blob : null;
-          if (!outerSlug || !outerTxId || !signerWallet || !blob) {
-            return send(socket, { type: "error", error: "bad_nested_result" });
-          }
-          const outerRoom = getRoom(outerSlug) ?? findRoomByWalletAddress(signerWallet);
-          if (!outerRoom) {
-            return send(socket, { type: "error", error: "outer_room_not_found", outerSlug });
-          }
-          outerRoom.wallet.addSignature(outerTxId, {
-            signer: signerWallet,
-            // v4: a nested wallet is an Account signer (sigType 0); the contract validates the blob
-            // via ECDSA-or-ERC1271. (Was sigType 2 / ERC1271 in v2–v3.)
-            sigType: 0,
-            data: blob,
             receivedAt: Date.now(),
           });
           return;

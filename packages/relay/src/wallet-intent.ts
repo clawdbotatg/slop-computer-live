@@ -924,55 +924,16 @@ const intentTools: Record<string, { execute: (args: any) => Promise<unknown> }> 
     },
   },
 
-  // Build calldata for a self-call that changes the multisig's own signer set
-  // or threshold. The wallet IS a slop Multisig; these execute via the normal
-  // threshold-approved exec flow (target = the wallet's own address). Returns
-  // { to, value, data } ready to drop into a transaction. addPasskeySigner is
-  // intentionally NOT handled here — registering a passkey needs a browser
-  // WebAuthn enrollment ceremony (to mint qx/qy/credentialId) that the relay
-  // cannot perform; tell the user to add a passkey from the wallet UI instead.
+  // Owner / threshold changes. Every wallet is a Gnosis Safe now: the Bank's
+  // chat injects `safeOwnerChange` (runIntent → executeTool), which queues the
+  // change on every chain the same way the Owners panel does. Anywhere else
+  // (a personal wallet: fixed owners [passkey, cosigner]) there's nothing to
+  // build — never hand-roll Safe owner calldata here.
   buildSignerChange: {
-    execute: async ({ action, signer, threshold, multisigAddress }: any) => {
-      const SEL: Record<string, string> = {
-        addAccountSigner: "aba7f004",
-        removeSigner: "0e316ab7",
-        changeThreshold: "694e80c3",
-      };
-      const to = typeof multisigAddress === "string" ? multisigAddress.toLowerCase() : "";
-      if (!/^0x[0-9a-f]{40}$/.test(to)) {
-        return { error: "multisigAddress (the wallet's own address) is required for a self-call." };
-      }
-      if (action === "addAccountSigner" || action === "removeSigner") {
-        if (typeof signer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(signer)) {
-          return { error: `${action} needs a valid 20-byte address in 'signer' (resolve ENS first).` };
-        }
-        const data = "0x" + SEL[action] + signer.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-        return {
-          to,
-          value: "0x0",
-          data,
-          description: `${action === "addAccountSigner" ? "Add" : "Remove"} signer ${signer}`,
-        };
-      }
-      if (action === "changeThreshold") {
-        let n: bigint;
-        try {
-          n = BigInt(threshold);
-        } catch {
-          return { error: "changeThreshold needs an integer 'threshold'." };
-        }
-        if (n < 1n) return { error: "threshold must be >= 1." };
-        const data = "0x" + SEL.changeThreshold + n.toString(16).padStart(64, "0");
-        return { to, value: "0x0", data, description: `Change threshold to ${n.toString()}` };
-      }
-      if (action === "addPasskeySigner") {
-        return {
-          error:
-            "Adding a passkey requires a browser WebAuthn enrollment (to create the new credential and read its P-256 public key) — the relay can't do it. Tell the user to add a passkey from the wallet UI on the device that will hold it.",
-        };
-      }
-      return { error: `Unknown action '${action}'. Use addAccountSigner | removeSigner | changeThreshold.` };
-    },
+    execute: async () => ({
+      error:
+        "Owner changes are only available for the room Bank (its Owners panel or this chat in the Bank). A personal wallet's owners are fixed.",
+    }),
   },
 
   logMiss: {
@@ -1632,13 +1593,13 @@ export async function runWalletIntent(input: WalletIntentInput): Promise<IntentR
 
   const signerSummary =
     input.signers && input.signers.length > 0
-      ? `\n\nThis wallet is a ${input.safeOwnerChange ? "Gnosis Safe" : "slop Multisig"} — ${input.threshold ?? "?"}-of-${input.signers.length}. Current signers:\n` +
+      ? `\n\nThis wallet is a Gnosis Safe — ${input.threshold ?? "?"}-of-${input.signers.length}. Current signers:\n` +
         input.signers
           .map(s => `- ${s.address}${s.label ? ` (${s.label})` : ""} · ${s.kind}`)
           .join("\n") +
         (input.safeOwnerChange
           ? `\nThis is a Gnosis Safe on several chains. To change membership/threshold call buildSignerChange (multisigAddress = ${input.address}): it QUEUES the change on every chain itself and returns { queued }. Then reply in plain chat that it's waiting for signatures in the Transactions tab — do NOT return a transaction for it. Removing an owner or adding one keeps the current threshold unless the user names one. Passkeys and wedgies are added from the Bank's Owners panel, not here.`
-          : `\nTo change membership/threshold, build a self-call with buildSignerChange (multisigAddress = ${input.address}).`)
+          : `\nIts owners can't be changed from this chat.`)
       : "";
 
   const loopMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [

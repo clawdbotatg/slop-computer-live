@@ -139,36 +139,34 @@ safeTxHash, sigs by owner. Not mirrored to Safe's tx service in v1.
    **real** slop.computer passkey assertion from Chrome, Safari, and iOS
    (clientDataJSON field order differs by browser; Safe's signer rebuilds it
    from `type`+`challenge`+the rest — prove it on all three).
-2. ✅ 10-07 (not deployed yet — nothing calls it until phase 3) — **Relay**:
-   `packages/relay/src/safe-relay.ts` + routes in `index.ts`:
-   `POST /v1/safe/deploy` (new Safe on all 7 chains, or empty body = retry
-   missing chains; progress over WS `safe_deploy_status`), `GET
-   /v1/safe/status`, `POST /v1/safe/signer`, `POST /v1/safe/exec`. Record has
-   `kind:"safe"`, passkey owners carry `passkeyAddr` + `device`; txs carry
-   `operation`; `wallet_tx_propose` re-derives the safeTxHash and blocks
-   foreign delegatecall; executing a nonce cancels its siblings. Relay copies
-   `nextjs/utils/safe.ts` at build. Proven by `ops/probes/safe-relay-fork.mjs`.
-   Left for phase 4: escrow payout settle on `/v1/safe/exec` (today only the
-   WS `wallet_tx_status` path settles it).
-   **Needs Austin:** fund the payer `0xBa16e496574514A28b15e19c222c4d367c6C0FF0`
-   on Optimism, Arbitrum, Polygon, Gnosis, Robinhood (has mainnet + Base only).
-3. 🟡 10-07 **Bank UI** (pushed, NOT deployed — deploying hides every legacy
-   multisig, so the phase-0 sweep must be finished first): Deploy tab =
-   "Create Safe" → `/v1/safe/deploy`, per-chain live/deploying/failed + retry;
-   TxCard signs Safe txs (EOA EIP-712 after a chain switch, passkey
-   `signSafeTxWithPasskey`), Execute → `/v1/safe/exec`, Cancel = no-op at the
-   same nonce. `usePeerMesh` drops non-Safe wallet records; relay refuses the
-   legacy `wallet_deploy`. Batch proposers (SharedBrowser, WagerPanel, Assets
-   send-all, header sweep) send `calls` and let the relay fill the hash.
-   Still to do: add/remove owner + threshold UI, wedgie, SharedBrowser
-   `wallet_sendCalls` status tracking (keyed by execHash, which the relay now
-   picks), untested in a real browser.
-4. **Consumers**: EnsWindow (reverse `setName` as a Safe tx on mainnet — Safe
-   must be on mainnet), SharedBrowser + browser-host inject (batches →
-   MultiSend; typed-data signing could now be allowed via 1271 — later),
-   PrivacyWalletWindow, WagerPanel/Poker escrow, tips, room gate,
-   `wallet-intent.ts` owner-change builders, `wallet-ai.ts` simulation,
-   `/v1/wallet/propose`, `/v1/rooms/:slug/meta`, agent skill docs.
+2. ✅ 10-07 **Relay**: `packages/relay/src/safe-relay.ts` + routes in
+   `index.ts`: `POST /v1/safe/deploy` (new Safe on every `SAFE_CHAIN_IDS`
+   chain, or empty body = retry missing chains from the stored `genesis`),
+   `GET /v1/safe/status`, `POST /v1/safe/signer`, `POST /v1/safe/owners`
+   (add/remove/threshold, one queued tx per chain, wedgie rule),
+   `POST /v1/safe/exec` (trusts on-chain owners, settles escrow). Record has
+   `kind:"safe"` + `genesis`; passkey owners carry `passkeyAddr` + `device`;
+   txs carry `operation` + `ownerMeta`. Proposals are plain calls — the relay
+   fills nonce + safeTxHash (WS and `POST /v1/wallet/propose`, Bank and
+   personal), re-derives any client SafeTx, blocks foreign delegatecall, and
+   refuses a Bank proposal without a chainId. Executing a nonce cancels its
+   siblings. Signer contracts are created strictly (allowFailure + estimateGas
+   silently skipped them once). Relay copies `nextjs/utils/safe.ts` at build.
+   Payer `0xBa16…0FF0` is funded everywhere but **Polygon, which is skipped**
+   (`SAFE_CHAIN_IDS`) until it holds POL.
+3. ✅ 10-07 **Bank UI**: "Create Safe" (host only) → per-chain
+   live/deploying/failed + retry; Owners panel (add member / passkey / wedgie,
+   remove, threshold); TxCard signs (EOA EIP-712 after a chain switch, passkey
+   `signSafeTxWithPasskey`, "Sign with wedgie"), Execute → relay, Cancel =
+   no-op at the same nonce. `usePeerMesh` hides non-Safe wallet records;
+   relay refuses the legacy `wallet_deploy`. Clicked through end to end in a
+   local browser (create, passkey sign, execute, threshold change).
+4. ✅ 10-07 **Consumers**: ENS reverse `setName` + Privacy deposit are plain
+   mainnet proposals; SharedBrowser captures (tx + `wallet_sendCalls`, batch
+   status matched by browserId+calls, never re-targeted to another chain);
+   browser-host inject wording; room gate maps `passkeyAddr`; AI owner changes
+   go through the Owners path; `wallet-ai` batches; escrow matches Safe
+   payouts; skill docs.
 5. ✅ 10-07 **Personal wallets** on Safe: Base, owners [passkey signer,
    cosigner], threshold 1, `PERSONAL_SALT_NONCE` (`safe.ts` `personalSafe`).
    Cosigner = relay `PERSONAL_WALLET_PLATFORM_COSIGNER || PERSONAL_WALLET_DEPLOYER
@@ -182,10 +180,19 @@ safeTxHash, sigs by owner. Not mirrored to Safe's tx service in v1.
    `ops/probes/safe-personal-fork.mjs`. Note: threshold 1 with the hot deployer
    as an owner means the relay key can also move personal funds (same trust as
    the old 1-of-2).
-6. **Wedgie** signer in Bank (desktop Chrome).
-7. **Delete** `contracts/multisig.ts`, `utils/multisig.ts`, the
-   Multisig/MultisigFactory ABIs, `computeExecHash`, old nested-attestation
-   code; update `docs/PASSKEY-WALLET.md` and the ENS note in CLAUDE.md.
+6. ✅ 10-07 **Wedgie** (`utils/wedgie.ts`, WebSerial, desktop Chrome): add
+   as owner from the Owners panel, "Sign with wedgie" on a tx. Never enough
+   alone (`wedgieRuleError`). **Tested by code only — no device run yet.**
+7. ✅ 10-07 **Deleted** the slop Multisig: `contracts/multisig.ts`,
+   `utils/multisig.ts`, the Multisig/MultisigFactory ABIs,
+   `signMultisigExecWithPasskey`, every legacy sign/exec/deadline branch, and
+   the nested ERC-1271 attestation flow (`wallet_nested_*`) — Safe-as-owner
+   signing (trap 5) is not rebuilt yet. `docs/PASSKEY-WALLET.md` updated.
+
+**Still open:** Safari + iOS passkey assertions (Chrome proven); a real
+wedgie run; Polygon (fund POL, then add 137 to `SAFE_CHAIN_IDS` — only
+before a room changes owners, trap 4); off-chain message signing (EIP-1271)
+for dapps in the shared browser.
 
 ## Phase 0 — old multisigs holding value (scanned 2026-10-07)
 

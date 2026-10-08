@@ -2,17 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import { type Address as AddressType, type Hex, encodeAbiParameters, formatEther, parseAbiParameters } from "viem";
+import { type Address as AddressType, type Hex, formatEther } from "viem";
 import { arbitrum, base, gnosis, mainnet, optimism, polygon } from "viem/chains";
 import {
   useAccount,
   useChainId,
   usePublicClient,
-  useSignMessage,
   useSignTypedData,
   useSwitchChain,
   useWaitForTransactionReceipt,
-  useWriteContract,
 } from "wagmi";
 import { ClearSignPanel } from "~~/components/desktop/wallet/ClearSignPanel";
 import { TokenAvatar } from "~~/components/desktop/wallet/TokenAvatar";
@@ -21,15 +19,13 @@ import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
 import { WalletHeader } from "~~/components/desktop/wallet/WalletHeader";
 import type { Portfolio } from "~~/components/desktop/wallet/types";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
-import { MultisigAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useSyncedUIState } from "~~/hooks/useSyncedUIState";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { robinhood } from "~~/scaffold.config";
-import { sortSignatures } from "~~/utils/multisig";
-import { getStoredPasskeyIdentity, signMultisigExecWithPasskey, signSafeTxWithPasskey } from "~~/utils/passkey";
+import { getStoredPasskeyIdentity, signSafeTxWithPasskey } from "~~/utils/passkey";
 import { SAFE_CHAIN_IDS, type SafeTx, cancelTx, passkeyOwner, safeTxHash, safeTxTypedData } from "~~/utils/safe";
 import { wedgieSupported, withWedgie } from "~~/utils/wedgie";
 
@@ -69,7 +65,8 @@ export type WalletWindowProps = {
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
-// The chains the multisig factory is deployed on (same address each).
+// The chains the app knows (labels + explorers). Which ones a Safe lives on
+// is SAFE_CHAIN_IDS (utils/safe.ts).
 // Order matters for the UI — cheap chains first since they're
 // the recommended default. Adding a new chain here lights up a new row
 // in the deploy grid and a new option in the activity picker — provided
@@ -222,7 +219,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
     if (portfolio) onBalanceUsd?.(portfolio.totalBalanceUsd);
   }, [portfolio, onBalanceUsd]);
 
-  // Reset + refetch when the multisig address changes (new episode /
+  // Reset + refetch when the Safe address changes (new episode /
   // first deploy). Clearing the prior result avoids the header briefly
   // showing the old wallet's balance during the new fetch.
   const walletAddress = wallet?.address ?? null;
@@ -298,7 +295,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
   }, [mesh.walletTxs, walletAddress, schedulePortfolioRefresh]);
 
   // A spectator tip just flew into the vault. Tips are incoming transfers
-  // — they never show up in mesh.walletTxs (those are multisig-initiated)
+  // — they never show up in mesh.walletTxs (those are Safe-initiated)
   // — so the executed-tx refresh above won't catch them. Pull immediately
   // when the card lands (catches already-indexed / fast chains), then at
   // 5s and 15s to cover Zerion's indexer lag.
@@ -378,7 +375,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
           <WalletChatPanel mesh={mesh} wallet={wallet} />
         </div>
       ) : null}
-      {/* Assets tab — read-only portfolio + activity for the multisig. */}
+      {/* Assets tab — read-only portfolio + activity for the Safe. */}
       {wallet ? (
         <div
           ref={assetsRef}
@@ -398,7 +395,7 @@ export const WalletWindow = ({ mesh, myAddress, myHandle, onBalanceUsd }: Wallet
           />
         </div>
       ) : null}
-      {/* Transactions tab body — dedicated to the multisig queue (txs
+      {/* Transactions tab body — dedicated to the Safe queue (txs
        *  proposed from the wallet chat, SharedBrowser dapps, or future
        *  in-app send forms all land here for signing + execute). */}
       {wallet ? (
@@ -1229,7 +1226,7 @@ const DeployedSummary = ({
 };
 
 // ============================================================================
-// Activity tx queue — per-chain pending + recent multisig txs. The
+// Activity tx queue — per-chain pending + recent Safe txs. The
 // Transactions tab; txs proposed from the wallet chat land here.
 // ============================================================================
 
@@ -1804,7 +1801,7 @@ const parseSummaryCard = (raw: string | null): TxSummaryCard | null => {
   }
 };
 
-// "out" = leaving the multisig (magenta loss-side), "in" = arriving
+// "out" = leaving the Safe (magenta loss-side), "in" = arriving
 // (lime gain-side). Uses the shared TokenAvatar so the chip carries the
 // same icon + chain badge that the Assets tab shows for that token.
 const AssetPill = ({ asset, direction }: { asset: TxSummaryAsset; direction: "in" | "out" }) => {
@@ -1992,11 +1989,11 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     meshSignTx(id, sig, walletAddress);
   const txRemove = (id: string) => meshRemoveTx(id, walletAddress);
   const txResummarize = (id: string) => meshResummarize(id, walletAddress);
-  const { signMessageAsync, isPending: signingMsg } = useSignMessage();
-  const { signTypedDataAsync, isPending: signingTyped } = useSignTypedData();
-  const signing = signingMsg || signingTyped;
-  // Safe tx (ops/PLAN-safe.md): EOAs sign EIP-712, passkeys sign the
+  const { signTypedDataAsync, isPending: signing } = useSignTypedData();
+  // Safe tx (ops/PLAN-safe.md): EOAs sign EIP-712, passkeys + wedgies sign the
   // safeTxHash, the relay executes. No deadline — cancel burns the nonce.
+  // A tx without `operation` is a leftover from the abandoned slop multisig:
+  // shown, never signable.
   const isSafe = tx.operation !== undefined;
   const slug = useRoomSlug();
   const safeTx: SafeTx | null = isSafe
@@ -2008,7 +2005,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
         nonce: BigInt(tx.nonce),
       }
     : null;
-  const { writeContractAsync, isPending: writing } = useWriteContract();
   // The connected wallet's ACTIVE network (what MetaMask is pointed at) —
   // independent of the slop UI's chain selectors. Execute is an on-chain tx
   // that must run on tx.chainId, so we switch the wallet there first.
@@ -2085,13 +2081,12 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
   }, [watchedHash, txPublicClient, mesh, tx.id, refetchReceipt]);
   const [err, setErr] = useState<string | null>(null);
   // True while the WebAuthn passkey prompt is open. wagmi's
-  // useSignMessage.isPending only covers the EOA path; we track this
+  // useSignTypedData.isPending only covers the EOA path; we track this
   // ourselves so the Sign button stays disabled during the OS sheet
   // and doesn't double-prompt on a stray click.
   const [passkeySigning, setPasskeySigning] = useState(false);
-  // True while a gas-sponsored facilitator broadcast is in flight (the passkey
-  // personal-wallet path). The EOA path tracks this via wagmi's `writing`;
-  // sponsored exec has no writeContract, so we track it ourselves.
+  // True while the relay is executing (it pays gas): the Bank's
+  // /v1/safe/exec, or a personal wallet's sponsoredExecute.
   const [sponsoring, setSponsoring] = useState(false);
 
   // Identify the local user against the wallet's registered signers.
@@ -2111,80 +2106,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
   const isPasskeySigner = mySignerEntry?.signerType === "passkey";
   const hasMySig = !!myLowerAddress && tx.signatures.some(s => s.signer.toLowerCase() === myLowerAddress);
   const enoughSigs = tx.signatures.length >= wallet.threshold;
-
-  // Nested-multisig (ERC-1271) wiring.
-  // - This wallet's registered contract signers (e.g. another slop wallet).
-  const contractSignerEntries = wallet.signers.filter(s => s.signerType === "erc1271");
-  const unsignedContractSigners = contractSignerEntries.filter(
-    cs => !tx.signatures.some(sig => sig.signer.toLowerCase() === cs.address.toLowerCase()),
-  );
-  // - This tx is an ATTESTATION request: it lives in the contract signer's
-  //   room and, once threshold is met, its blob routes back to the outer tx.
-  //   Signable here, never executed here.
-  const isAttestation = !!tx.attestationFor;
-  // v3: a contract signer can attest via EITHER its passkey OR its EOA signer.
-  // The EOA uses normal personal_sign (prefixed); the v3 contract's
-  // isValidSignature accepts that for nested signers, so no raw signing needed.
-
-  // Once an attestation reaches this wallet's threshold, assemble the
-  // ERC-1271 blob from the collected signatures and route it back to the
-  // outer wallet's tx. Guarded so we send exactly once per tx.
-  const nestedResultSentRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!isAttestation || !tx.attestationFor) return;
-    if (tx.signatures.length < wallet.threshold) return;
-    if (nestedResultSentRef.current.has(tx.id)) return;
-    try {
-      const sorted = sortSignatures(
-        tx.signatures.map<WalletSignature>(s => ({
-          sigType: s.sigType,
-          signer: s.signer as `0x${string}`,
-          data: s.data as `0x${string}`,
-        })),
-      );
-      const blob = encodeAbiParameters(parseAbiParameters("(uint8 sigType, address signer, bytes data)[]"), [sorted]);
-      nestedResultSentRef.current.add(tx.id);
-      mesh.walletSendNestedResult({
-        outerSlug: tx.attestationFor.outerSlug,
-        outerTxId: tx.attestationFor.outerTxId,
-        signerWallet: wallet.address,
-        blob,
-      });
-    } catch (e) {
-      console.error("[wallet] nested result assembly failed", e);
-    }
-  }, [isAttestation, tx.attestationFor, tx.signatures, tx.id, wallet.threshold, wallet.address, mesh]);
-
-  const onRequestNested = useCallback(
-    (signerWallet: string) => {
-      mesh.walletRequestNestedSig({
-        signerWallet,
-        outerWallet: wallet.address,
-        outerLabel: wallet.label,
-        outerTxId: tx.id,
-        chainId: tx.chainId,
-        execHash: tx.execHash,
-        deadline: tx.deadline,
-        target: tx.target,
-        value: tx.value,
-        data: tx.data,
-        ...(tx.calls && tx.calls.length > 0 ? { calls: tx.calls } : {}),
-      });
-    },
-    [
-      mesh,
-      wallet.address,
-      wallet.label,
-      tx.id,
-      tx.chainId,
-      tx.execHash,
-      tx.deadline,
-      tx.target,
-      tx.value,
-      tx.data,
-      tx.calls,
-    ],
-  );
 
   useEffect(() => {
     if (execReceipt) {
@@ -2242,8 +2163,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     });
     setErr(null);
     if (!mySignerEntry) {
-      console.warn("[wallet] onSign abort: not a signer on this multisig");
-      setErr("you're not a signer on this multisig");
+      setErr("you're not an owner of this Safe");
       return;
     }
     if (safeTx) {
@@ -2278,58 +2198,10 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       }
       return;
     }
-    if (mySignerEntry.signerType === "passkey") {
-      // Passkey path: locate the credential locally (we stashed it after
-      // /auth/passkey), prompt the authenticator, ABI-encode the result.
-      const identity = getStoredPasskeyIdentity(mySignerEntry.address);
-      const qx = (mySignerEntry.qx ?? identity?.qx) as `0x${string}` | undefined;
-      const qy = (mySignerEntry.qy ?? identity?.qy) as `0x${string}` | undefined;
-      const credentialIdBase64Url = identity?.credentialIdBase64Url;
-      if (!qx || !qy || !credentialIdBase64Url) {
-        setErr("missing passkey credentials — sign in with your passkey first");
-        return;
-      }
-      setPasskeySigning(true);
-      try {
-        console.log("[wallet] onSign passkey: prompting authenticator…");
-        const data = await signMultisigExecWithPasskey({
-          credentialIdBase64Url,
-          execHash: tx.execHash as `0x${string}`,
-          qx,
-          qy,
-        });
-        console.log("[wallet] onSign passkey: got signature", { len: data?.length });
-        txSign(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
-      } catch (e) {
-        console.error("[wallet] onSign passkey error", e);
-        setErr(String(e).slice(0, 200));
-      } finally {
-        setPasskeySigning(false);
-      }
-      return;
-    }
-    // EOA path — needs the wagmi wallet. Works for both normal txs and
-    // attestations: signMessage produces a personal_sign-prefixed signature,
-    // which the v3 contract's isValidSignature accepts for nested signers
-    // (no raw / eth_sign — MetaMask-safe).
-    if (!connectedAddress) {
-      console.warn("[wallet] onSign abort: no connected EOA");
-      setErr("connect your wallet to sign");
-      return;
-    }
-    try {
-      console.log("[wallet] onSign EOA: calling signMessageAsync…");
-      const sig = await signMessageAsync({ message: { raw: tx.execHash as Hex } });
-      console.log("[wallet] onSign EOA: got signature", { len: sig?.length });
-      txSign(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
-    } catch (e) {
-      console.error("[wallet] onSign EOA error", e);
-      setErr(String(e).slice(0, 200));
-    }
+    setErr("this is a leftover from the old multisig — remove it");
   }, [
     mySignerEntry,
     connectedAddress,
-    signMessageAsync,
     signTypedDataAsync,
     connectedChainId,
     switchChainAsync,
@@ -2339,70 +2211,24 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     mesh,
     tx.id,
     tx.execHash,
-    isAttestation,
   ]);
 
-  // A tx with `calls` is a batched proposal — exec goes through
-  // execBatchTransaction instead of execTransaction. The top-level
-  // target/value/data are sentinels and ignored here.
+  // A tx with `calls` is a MultiSend batch; `calls` lists what's inside.
   const isBatchTx = !!tx.calls && tx.calls.length > 0;
 
   const onExecute = useCallback(async () => {
-    const t0 = performance.now();
-    console.log("[wallet] onExecute clicked", {
-      txId: tx.id,
-      status: tx.status,
-      chainId: tx.chainId,
-      isBatchTx,
-      callsCount: tx.calls?.length ?? 0,
-      sigs: tx.signatures.length,
-      threshold: wallet.threshold,
-      connectedAddress,
-      multisig: wallet.address,
-      deadline: tx.deadline,
-      hasPublicClient: !!txPublicClient,
-    });
     setErr(null);
-    // Safe Bank: the relay executes (and pays gas) once enough owners signed.
-    // A personal Safe brings its own sponsoredExecute (below) instead.
-    if (isSafe && !sponsoredExecute) {
-      setSponsoring(true);
-      try {
-        const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/exec`, slug), {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ txId: tx.id }),
-        });
-        if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `relay ${r.status}`);
-      } catch (e) {
-        setErr(String(e).slice(0, 200));
-      } finally {
-        setSponsoring(false);
-      }
-      return;
-    }
-    // Gas-sponsored path (passkey personal wallet): no connected EOA. The relay
-    // facilitator broadcasts execTransaction + pays gas using the tx's
-    // already-collected signatures (threshold 1, the passkey sig was gathered
-    // when this tx was signed in the queue). The receipt watcher below picks up
-    // the resulting hash exactly as it does for the EOA path.
+    if (!isSafe) return setErr("this is a leftover from the old multisig — remove it");
+    setSponsoring(true);
+    // A personal Safe brings its own sponsoredExecute; the Bank asks the relay.
+    // Either way the relay broadcasts and pays gas; the Safe checks signatures.
     if (sponsoredExecute) {
-      // A Safe batch is already one MultiSend tx — only legacy batches can't go.
-      if (isBatchTx && !isSafe) {
-        console.warn("[wallet] onExecute: batch tx not sponsored", { txId: tx.id, calls: tx.calls?.length });
-        setErr("Batch transactions aren't gas-sponsored yet — coming soon.");
-        return;
-      }
-      setSponsoring(true);
       try {
         txStatus(tx.id, "executing");
         const hash = await sponsoredExecute(tx);
-        console.log("[wallet] onExecute sponsored: facilitator broadcast", { txId: tx.id, hash });
         setExecHash(hash);
         txStatus(tx.id, "executing", hash);
       } catch (e) {
-        console.error("[wallet] onExecute sponsored FAILED", { txId: tx.id, err: e });
         txStatus(tx.id, "pending");
         setErr((e instanceof Error ? e.message : String(e)).slice(0, 200));
       } finally {
@@ -2410,160 +2236,21 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       }
       return;
     }
-    if (!connectedAddress) {
-      console.warn("[wallet] onExecute abort: no connected wallet");
-      setErr("connect your wallet to execute");
-      return;
-    }
     try {
-      const sorted = sortSignatures(
-        tx.signatures.map<WalletSignature>(s => ({
-          sigType: s.sigType,
-          signer: s.signer as `0x${string}`,
-          data: s.data as `0x${string}`,
-        })),
-      );
-      console.log("[wallet] onExecute sorted signatures", {
-        sorted: sorted.map(s => ({ signer: s.signer, sigType: s.sigType, dataLen: s.data.length })),
+      const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/exec`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ txId: tx.id }),
       });
-      txStatus(tx.id, "executing");
-      // Estimate gas with a 50% buffer. eth_estimateGas returns the minimum
-      // viable amount, but the 63/64 forwarding rule plus heavy inner calls
-      // (LI.FI swaps, multi-hop bridges) starve the inner frame if we don't
-      // overshoot the outer limit. A 1.5x multiplier matches what wallets
-      // like Safe use for the same reason. 800k floor in case estimate
-      // is wildly off — txs that need more than 800k still get the 1.5x.
-      const functionName = isBatchTx ? "execBatchTransaction" : "execTransaction";
-      const args = isBatchTx
-        ? ([
-            (tx.calls ?? []).map(c => ({
-              target: c.target as AddressType,
-              value: BigInt(c.value),
-              data: c.data as Hex,
-            })),
-            BigInt(tx.deadline),
-            sorted,
-          ] as const)
-        : ([tx.target as AddressType, BigInt(tx.value), tx.data as Hex, BigInt(tx.deadline), sorted] as const);
-      console.log("[wallet] onExecute prepared args", {
-        functionName,
-        argShapeLen: args.length,
-        batchCalls: isBatchTx ? tx.calls : undefined,
-        singleTarget: !isBatchTx ? tx.target : undefined,
-        singleValue: !isBatchTx ? tx.value : undefined,
-      });
-      let gasLimit: bigint | undefined;
-      if (txPublicClient && connectedAddress) {
-        const tEst = performance.now();
-        try {
-          console.log("[wallet] onExecute estimateContractGas: START");
-          const estimate = await txPublicClient.estimateContractGas({
-            address: wallet.address as AddressType,
-            abi: MultisigAbi,
-            functionName,
-            // viem's overload inference can't keep up with the union of
-            // args shapes here, so we widen at the call site — the
-            // runtime branches above guarantee the right shape.
-            args: args as never,
-            account: connectedAddress as AddressType,
-          });
-          // Batch txs do more work — give them a fatter floor. Single
-          // txs keep the 800k floor that was tuned for swaps.
-          const minFloor = isBatchTx ? 1_500_000n : 800_000n;
-          const buffered = (estimate * 3n) / 2n;
-          gasLimit = buffered < minFloor ? minFloor : buffered;
-          console.log("[wallet] onExecute estimateContractGas: OK", {
-            ms: Math.round(performance.now() - tEst),
-            estimate: estimate.toString(),
-            buffered: buffered.toString(),
-            gasLimit: gasLimit.toString(),
-          });
-        } catch (estErr) {
-          // If estimate fails (sometimes happens with revert-prone calldata),
-          // fall back to a high fixed limit so the signer can still try.
-          gasLimit = isBatchTx ? 3_000_000n : 1_500_000n;
-          console.warn("[wallet] onExecute estimateContractGas FAILED — using fallback gas", {
-            ms: Math.round(performance.now() - tEst),
-            gasLimit: gasLimit.toString(),
-            err: estErr,
-          });
-        }
-      } else {
-        console.warn("[wallet] onExecute: no public client for gas estimate — wallet will pick a default", {
-          chainId: tx.chainId,
-        });
-      }
-      // Make sure the wallet is actually ON the tx's chain before writing.
-      // wagmi's writeContract throws "current chain (id: X) does not match
-      // the target chain" if they differ — it does NOT auto-switch. The
-      // slop UI's network selectors are app-level and don't move the wallet,
-      // so a signer whose MetaMask sits on another chain (e.g. Gnosis) would
-      // otherwise hit that error even with "Base" selected everywhere.
-      if (connectedChainId !== tx.chainId) {
-        console.log("[wallet] onExecute switching wallet chain", {
-          from: connectedChainId,
-          to: tx.chainId,
-        });
-        await switchChainAsync({ chainId: tx.chainId });
-      }
-      console.log("[wallet] onExecute writeContractAsync: START (expect wallet popup now)", {
-        gasLimit: gasLimit?.toString(),
-        chainId: tx.chainId,
-      });
-      const tWrite = performance.now();
-      const hash = await writeContractAsync({
-        address: wallet.address as AddressType,
-        abi: MultisigAbi,
-        functionName,
-        chainId: tx.chainId,
-        args: args as never,
-        gas: gasLimit,
-      });
-      console.log("[wallet] onExecute writeContractAsync: OK", {
-        ms: Math.round(performance.now() - tWrite),
-        totalMs: Math.round(performance.now() - t0),
-        hash,
-      });
-      setExecHash(hash);
-      // Broadcast the hash NOW so every peer's TxProgressBar can show
-      // it (with explorer link) and every peer's poller can race to
-      // resolve the receipt. Previously the hash was only broadcast
-      // on receipt — meaning if the submitter's tab stalled, nobody
-      // else had the hash to recover from.
-      txStatus(tx.id, "executing", hash);
+      if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `relay ${r.status}`);
     } catch (e) {
-      console.error("[wallet] onExecute FAILED", {
-        totalMs: Math.round(performance.now() - t0),
-        err: e,
-        shortMessage: (e as { shortMessage?: string })?.shortMessage,
-        message: (e as { message?: string })?.message,
-      });
-      txStatus(tx.id, "pending");
       setErr(String(e).slice(0, 200));
+    } finally {
+      setSponsoring(false);
     }
-  }, [
-    connectedAddress,
-    tx.signatures,
-    tx.status,
-    tx.target,
-    tx.value,
-    tx.data,
-    tx.deadline,
-    tx.calls,
-    tx.id,
-    tx.chainId,
-    wallet.address,
-    wallet.threshold,
-    writeContractAsync,
-    connectedChainId,
-    switchChainAsync,
-    mesh,
-    txPublicClient,
-    isBatchTx,
-    sponsoredExecute,
-    isSafe,
-    slug,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tx, isSafe, sponsoredExecute, slug]);
   // Wedgie owners sign from whichever computer the device is plugged into,
   // not tied to a room identity: the device's key picks the owner.
   const unsignedWedgies =
@@ -2620,15 +2307,6 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       return tx.value;
     }
   })();
-  const deadlineDate = (() => {
-    try {
-      return new Date(Number(BigInt(tx.deadline)) * 1000);
-    } catch {
-      return null;
-    }
-  })();
-  const expired = !isSafe && deadlineDate ? deadlineDate.getTime() < Date.now() : false;
-
   return (
     <div
       style={{
@@ -2842,81 +2520,45 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
         </div>
       ) : null}
 
-      {isAttestation && tx.attestationFor ? (
-        <div
-          style={{
-            fontSize: 10,
-            color: "var(--slop-cyan, #3fcfff)",
-            padding: 6,
-            background: "rgba(63,207,255,0.07)",
-            borderRadius: 3,
-          }}
-        >
-          Co-signing for wallet {tx.attestationFor.outerWalletAddress.slice(0, 6)}…
-          {tx.attestationFor.outerWalletAddress.slice(-4)} · {tx.signatures.length}/{wallet.threshold} signed
-          {enoughSigs ? " · returned ✓" : ""}
-        </div>
-      ) : null}
       {tx.status === "pending" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <Button
             variant={enoughSigs ? undefined : "primary"}
             onClick={onSign}
-            disabled={signing || passkeySigning || !isMySigner || hasMySig || expired}
+            disabled={signing || passkeySigning || !isMySigner || hasMySig || !isSafe}
             title={
-              !isMySigner
-                ? "You aren't a registered signer on this multisig."
-                : hasMySig
-                  ? "You've already signed."
-                  : expired
-                    ? "Past deadline."
+              !isSafe
+                ? "A leftover from the old multisig — remove it."
+                : !isMySigner
+                  ? "You aren't an owner of this Safe."
+                  : hasMySig
+                    ? "You've already signed."
                     : isPasskeySigner
                       ? "Sign this transaction with your passkey."
                       : "Sign this transaction."
             }
           >
-            {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : isAttestation ? "Co-sign" : "Sign"}
+            {hasMySig ? "Signed" : signing || passkeySigning ? "Signing…" : "Sign"}
           </Button>
-          {/* Attestation txs are never executed in this room — the blob
-           *  routes back to the outer wallet. So no Execute / nested-request
-           *  controls here; just the Sign button above. */}
-          {!isAttestation ? (
-            <>
-              <Button
-                variant={enoughSigs ? "primary" : undefined}
-                onClick={onExecute}
-                disabled={writing || sponsoring || execWaiting || !enoughSigs || expired}
-              >
-                {execWaiting ? "Waiting…" : writing || sponsoring ? "Submitting…" : "Execute"}
-              </Button>
-              {unsignedWedgies.length > 0 ? (
-                <Button
-                  onClick={() => void onSignWedgie()}
-                  disabled={wedgieSigning}
-                  title="Press A on the wedgie to sign."
-                >
-                  {wedgieSigning ? "Press A on the wedgie…" : "Sign with wedgie"}
-                </Button>
-              ) : null}
-              {isSafe && !(tx.target.toLowerCase() === wallet.address.toLowerCase() && tx.data === "0x") ? (
-                <Button
-                  onClick={onCancelSafe}
-                  title={`Propose a no-op at nonce ${tx.nonce}. Executing it kills this transaction for good.`}
-                >
-                  Cancel
-                </Button>
-              ) : null}
-              {unsignedContractSigners.map(cs => (
-                <Button
-                  key={cs.address}
-                  onClick={() => onRequestNested(cs.address)}
-                  disabled={expired}
-                  title={`Ask wallet ${cs.address} (a contract signer) to co-sign in its own session.`}
-                >
-                  Request from {cs.label || `${cs.address.slice(0, 6)}…${cs.address.slice(-4)}`}
-                </Button>
-              ))}
-            </>
+          <Button
+            variant={enoughSigs ? "primary" : undefined}
+            onClick={onExecute}
+            disabled={sponsoring || execWaiting || !enoughSigs || !isSafe}
+          >
+            {execWaiting ? "Waiting…" : sponsoring ? "Submitting…" : "Execute"}
+          </Button>
+          {unsignedWedgies.length > 0 ? (
+            <Button onClick={() => void onSignWedgie()} disabled={wedgieSigning} title="Press A on the wedgie to sign.">
+              {wedgieSigning ? "Press A on the wedgie…" : "Sign with wedgie"}
+            </Button>
+          ) : null}
+          {isSafe && !(tx.target.toLowerCase() === wallet.address.toLowerCase() && tx.data === "0x") ? (
+            <Button
+              onClick={onCancelSafe}
+              title={`Propose a no-op at nonce ${tx.nonce}. Executing it kills this transaction for good.`}
+            >
+              Cancel
+            </Button>
           ) : null}
         </div>
       ) : isStuckExecuting ? (

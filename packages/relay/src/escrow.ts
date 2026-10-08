@@ -66,9 +66,9 @@ export type EscrowAccount = {
 };
 
 /** One leg of a settlement: pay `amountWei` to `to`. A single-payout
- *  settlement executes as Multisig.execTransaction; multiple legs as
- *  execBatchTransaction (the batch IS the splitter — recipients are
- *  EOAs, so no splitter contract is needed). */
+ *  settlement is one Safe call; multiple legs one MultiSend batch (the
+ *  batch IS the splitter — recipients are EOAs, so no splitter contract
+ *  is needed). */
 export type EscrowPayout = { to: string; amountWei: string };
 
 export type EscrowSession = {

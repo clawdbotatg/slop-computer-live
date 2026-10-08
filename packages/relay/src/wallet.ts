@@ -73,22 +73,9 @@ export type WalletTxSignature = {
   receivedAt: number;
 };
 
-// Marks a WalletTx as a nested-signature ATTESTATION request rather than an
-// executable transaction. When wallet B has wallet A as an ERC-1271 signer,
-// B's session asks A to attest to B's execHash: the relay injects an
-// attestation tx into A's room. A's signers sign it normally (over the raw
-// execHash); once A reaches its own threshold, A's session assembles the
-// ERC-1271 blob and routes it back to B's outer tx (`wallet_nested_result`).
-// An attestation tx is signable but NEVER executed on-chain in A's room.
-export type WalletTxAttestation = {
-  outerSlug: string; // room slug of the outer wallet (B) — where the result routes back
-  outerWalletAddress: string; // B's multisig address (lowercased)
-  outerTxId: string; // the outer tx id this attestation contributes a signature to
-};
-
 export type WalletTxStatus = "pending" | "executing" | "executed" | "failed" | "expired" | "cancelled";
 
-// One sub-call inside a batched tx (Multisig.execBatchTransaction).
+// One sub-call inside a batched tx (a MultiSendCallOnly batch).
 // Single-call txs leave WalletTx.calls undefined / empty and use the
 // top-level target/value/data fields.
 export type WalletTxCall = {
@@ -109,8 +96,8 @@ export type WalletTx = {
   value: string; // decimal string of bigint
   data: string; // 0x-prefixed calldata
   deadline: string; // decimal string of bigint
-  nonce: string; // decimal string at proposal time (matches multisig.nonce())
-  execHash: string; // 0x-prefixed (single: getExecHash, batch: getBatchExecHash)
+  nonce: string; // decimal Safe nonce this tx is signed at
+  execHash: string; // 0x-prefixed safeTxHash (what owners sign)
   // Proposer's claim about what the tx does (agent-supplied via REST,
   // otherwise filled lazily by the AI summarizer as a fallback so the
   // signer dialog still has something to render).
@@ -125,11 +112,9 @@ export type WalletTx = {
   txHash: string | null; // execution tx hash
   createdAt: number;
   updatedAt: number;
-  // When present and non-empty, this is a batched tx executed via
-  // Multisig.execBatchTransaction(calls, deadline, signatures). The
-  // top-level target/value/data are sentinels (multisig self-address,
-  // 0, 0x) and ignored at execute time. The execHash is computed from
-  // the batch instead of (target, value, data).
+  // Batches: the individual calls inside the MultiSend. The top-level
+  // target/data are the MultiSendCallOnly call itself (operation 1);
+  // `calls` is what signers see and the AI analyzes.
   calls?: WalletTxCall[];
   // Safe txs only: 0 = call, 1 = delegatecall (MultiSendCallOnly only).
   // target/value/data are the exact SafeTx fields; execHash is the
@@ -138,10 +123,6 @@ export type WalletTx = {
   // Safe addOwner txs: who is being added, so the record can label them
   // once it executes (the chain only knows the address).
   ownerMeta?: WalletSigner;
-  // When present, this tx is a nested-signature attestation request (see
-  // WalletTxAttestation). Signable in this room, never executed here — on
-  // threshold the client routes the assembled blob back to the outer tx.
-  attestationFor?: WalletTxAttestation;
 };
 
 // Collaborative pre-deploy form state — replicated to every peer so
@@ -232,8 +213,6 @@ export type ProposeTxInput = {
   // target/value/data are still required (as sentinels) so the schema
   // stays uniform.
   calls?: WalletTxCall[];
-  // Optional: when set, this is a nested-signature attestation request.
-  attestationFor?: WalletTxAttestation;
   operation?: 0 | 1;
   ownerMeta?: WalletSigner;
 };
@@ -452,15 +431,6 @@ export class WalletState {
       ...(normalizedCalls ? { calls: normalizedCalls } : {}),
       ...(input.operation !== undefined ? { operation: input.operation } : {}),
       ...(input.ownerMeta ? { ownerMeta: input.ownerMeta } : {}),
-      ...(input.attestationFor
-        ? {
-            attestationFor: {
-              outerSlug: input.attestationFor.outerSlug,
-              outerWalletAddress: input.attestationFor.outerWalletAddress.toLowerCase(),
-              outerTxId: input.attestationFor.outerTxId,
-            },
-          }
-        : {}),
     };
     this.state.txs.unshift(tx);
     if (this.state.txs.length > MAX_TXS) this.state.txs.length = MAX_TXS;

@@ -406,7 +406,7 @@ ${Array.from(resolved.values())
 
   const isBatch = args.calls && args.calls.length > 0;
   const txBlock = isBatch
-    ? `BATCH of ${args.calls!.length} calls (executed atomically via execBatchTransaction):
+    ? `BATCH of ${args.calls!.length} calls (executed atomically as one Safe MultiSend):
 ${args
   .calls!.map(
     (c, i) => `  ${i + 1}. target=${c.target}  value=${c.value} wei  data=${c.data.slice(0, 138)}${c.data.length > 138 ? "…" : ""}`,

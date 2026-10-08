@@ -3594,10 +3594,9 @@ defense-in-depth measure.
 | \`wallet_deploy\` | — | refused (\`use_safe_deploy\`) | the Bank is a Safe now: the host creates it with \`POST /v1/safe/deploy\` (relay pays, every chain); owners change via \`POST /v1/safe/owners\`; a fully-signed tx executes via \`POST /v1/safe/exec\` |
 | \`wallet_new_episode\` | — | **WS-only** | host clears wallet for new show |
 | \`wallet_draft_update\` | partial draft | **WS-only** | collaborative pre-deploy form state |
-| \`wallet_tx_propose\` | proposal | \`POST /v1/wallet/propose\` | propose a multisig tx (REST mirror is the agent-friendly path) |
+| \`wallet_tx_propose\` | proposal | \`POST /v1/wallet/propose\` | propose a Bank Safe tx (REST mirror is the agent-friendly path) |
 | \`wallet_tx_sign\` | sig | **WS-only** | sign a pending tx (needs a real signer's private key) |
 | \`wallet_tx_status\` / \`wallet_tx_remove\` / \`wallet_tx_resummarize\` | \`txId\`, ... | **WS-only** | tx-queue maintenance |
-| \`wallet_nested_request\` / \`wallet_nested_result\` | \`outerSlug\`, \`outerWalletAddress\`, \`outerTxId\`, sig | **WS-only** | nested-multisig signing (a room wallet that is itself a signer on another room's wallet) — real signers only |
 | \`vote_create\` | \`question\`, \`options[2..8]\` | **WS-only** | open a private poll — the relay requests an Interfold E3 and the public committee makes the key (see \`/v1/skill/voting\`) |
 | \`vote_cast\` | \`pollId\`, \`ct\` (base64 BFV ciphertext) | **WS-only** | cast an encrypted one-hot ballot; ack is \`vote_cast_ack { result }\` |
 | \`vote_pubkey\` / \`vote_ballots\` | \`pollId\` | **WS-only** | fetch the committee key / every ciphertext (reply only to you — too heavy for broadcasts) |

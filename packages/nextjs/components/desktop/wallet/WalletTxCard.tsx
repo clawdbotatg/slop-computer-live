@@ -2,24 +2,21 @@
 
 import { useCallback, useState } from "react";
 import { type Address as AddressType, type Hex } from "viem";
-import { useChainId, usePublicClient, useSendTransaction, useSwitchChain } from "wagmi";
-import { MultisigAbi } from "~~/contracts/multisig";
+import { useChainId, useSendTransaction, useSwitchChain } from "wagmi";
 import type { PeerMeshState, WalletChatMessage, WalletRecord } from "~~/hooks/usePeerMesh";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 // The Wallet/Bank can run a chat tx card in two modes:
-//   - "multisig": propose into the (per-address) multisig queue for signing.
+//   - "multisig": propose into the (Bank or personal) Safe's queue for signing.
 //   - "eoa": bubble the tx straight up to the connected EOA (pops MetaMask),
 //     since a plain account has no queue/signers — it just signs + sends.
 export type WalletTxMode = "multisig" | "eoa";
 
 // Renders the transaction / multi-step payload attached to an assistant
-// message in the wallet chat. "Send to multisig" computes the exec hash
-// the same way the old AI-wallet iframe bridge did, then drops the tx
-// into the existing multiplayer multisig queue (the Transactions tab)
-// where signers approve + execute. Each multi-step step proposes
-// independently — a multisig can only hold one tx at a time, so the
-// room executes them in order across separate sign/execute cycles.
+// message in the wallet chat. "Send" drops the tx into the Safe's
+// multiplayer queue (the Transactions tab), where the relay picks the
+// nonce + safeTxHash and signers approve + execute. Each multi-step step
+// proposes independently; the relay queues them at consecutive nonces, so
+// the room executes them in order.
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
 const PANEL_BG = "#0a061a";
@@ -60,7 +57,6 @@ const SendButton = ({
   /** Personal multisig: route the proposal to its per-address queue. */
   walletAddress?: string;
 }) => {
-  const publicClient = usePublicClient({ chainId: tx.chainId });
   const { sendTransactionAsync } = useSendTransaction();
   const connectedChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
@@ -68,7 +64,6 @@ const SendButton = ({
   const [error, setError] = useState<string | null>(null);
 
   const onSend = useCallback(async () => {
-    const t0 = performance.now();
     setError(null);
     const target = tx.to as AddressType;
     const valueWei = BigInt(tx.value || "0");
@@ -111,47 +106,17 @@ const SendButton = ({
       deployedChains: Object.keys(wallet.deployments),
     });
     if (!(tx.chainId in wallet.deployments)) {
-      console.warn("[wallet] SendButton abort: multisig not deployed on chain", tx.chainId);
+      console.warn("[wallet] SendButton abort: Safe not deployed on chain", tx.chainId);
       setError(`wallet isn't deployed on chain ${tx.chainId}`);
-      return;
-    }
-    if (!publicClient) {
-      console.warn("[wallet] SendButton abort: no public client for chain", tx.chainId);
-      setError(`no RPC client for chain ${tx.chainId}`);
       return;
     }
     setState("sending");
     try {
-      console.log("[wallet] SendButton reading nonce…");
-      const nonce = (await publicClient.readContract({
-        address: wallet.address as AddressType,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
-      const execHash = computeExecHash({
-        chainId: tx.chainId,
-        multisig: wallet.address as AddressType,
-        nonce,
-        deadline,
-        target,
-        value: valueWei,
-        data,
-      });
-      console.log("[wallet] SendButton proposing tx", {
-        ms: Math.round(performance.now() - t0),
-        nonce: nonce.toString(),
-        deadline: deadline.toString(),
-        execHash,
-      });
       mesh.walletProposeTx({
         chainId: tx.chainId,
         target,
         value: valueWei.toString(),
         data,
-        deadline: deadline.toString(),
-        nonce: nonce.toString(),
-        execHash,
         source: "manual",
         browserId: null,
         ...(walletAddress ? { address: walletAddress } : {}),
@@ -162,7 +127,7 @@ const SendButton = ({
       setState("idle");
       setError(String(err).slice(0, 160));
     }
-  }, [tx, wallet, mesh, publicClient, mode, walletAddress, sendTransactionAsync, connectedChainId, switchChainAsync]);
+  }, [tx, wallet, mesh, mode, walletAddress, sendTransactionAsync, connectedChainId, switchChainAsync]);
 
   const sentLabel = mode === "eoa" ? "✓ Sent" : "✓ In queue";
   const sendingLabel = mode === "eoa" ? "Confirm in wallet…" : "Sending…";

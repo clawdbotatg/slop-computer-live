@@ -19,22 +19,13 @@
 // generic escrow shape — pong/poker get their own panels over the same
 // session. White/black come from account.role; the winner from meta.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type Address as AddressType, type Hex, formatEther, parseEther } from "viem";
+import { type Address as AddressType, formatEther, parseEther } from "viem";
 import { base } from "viem/chains";
-import {
-  useAccount,
-  useChainId,
-  usePublicClient,
-  useSendTransaction,
-  useSwitchChain,
-  useWaitForTransactionReceipt,
-} from "wagmi";
+import { useAccount, useChainId, useSendTransaction, useSwitchChain, useWaitForTransactionReceipt } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
-import { MultisigAbi } from "~~/contracts/multisig";
 import { useEthPrice } from "~~/hooks/useEthPrice";
 import type { EscrowAccount, EscrowSession, PeerMeshState } from "~~/hooks/usePeerMesh";
 import { usePersonalWalletSend } from "~~/hooks/usePersonalWalletSend";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 import { usdSuffixFromEth, usdSuffixFromWei } from "~~/utils/usd";
 
 const ACCENT = "var(--slop-magenta, #ff3ec9)";
@@ -594,7 +585,6 @@ export const PayoutProposeButton = ({
   onProposed?: () => void;
 }) => {
   const ethUsd = useEthPrice();
-  const publicClient = usePublicClient({ chainId: escrow.chainId });
   const [state, setState] = useState<"idle" | "proposing" | "done">("idle");
   const [err, setErr] = useState<string | null>(null);
 
@@ -602,67 +592,31 @@ export const PayoutProposeButton = ({
     setErr(null);
     const wallet = mesh.wallet;
     const payouts = escrow.payouts;
-    if (!wallet) return setErr("No escrow multisig.");
+    if (!wallet) return setErr("No Bank Safe.");
     if (!payouts || payouts.length === 0) return setErr("No payout plan yet.");
-    if (!publicClient) return setErr(`No RPC client for ${chainLabel(escrow.chainId)}.`);
     if (!(escrow.chainId in wallet.deployments)) {
-      return setErr(`Multisig isn't deployed on ${chainLabel(escrow.chainId)}.`);
+      return setErr(`The Bank Safe isn't deployed on ${chainLabel(escrow.chainId)}.`);
     }
     setState("proposing");
     try {
-      const nonce = (await publicClient.readContract({
-        address: wallet.address as AddressType,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
+      // The relay picks the Safe nonce and computes the safeTxHash.
       if (payouts.length > 1) {
-        const calls = payouts.map(p => ({ target: p.to, value: p.amountWei, data: "0x" }));
-        // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
-        const execHash =
-          wallet.kind === "safe"
-            ? "0x"
-            : ((await publicClient.readContract({
-                address: wallet.address as AddressType,
-                abi: MultisigAbi,
-                functionName: "getBatchExecHash",
-                args: [
-                  calls.map(c => ({ target: c.target as AddressType, value: BigInt(c.value), data: c.data as Hex })),
-                  deadline,
-                ],
-              })) as Hex);
         mesh.walletProposeTx({
           chainId: escrow.chainId,
           target: wallet.address,
           value: "0",
           data: "0x",
-          deadline: deadline.toString(),
-          nonce: nonce.toString(),
-          execHash,
           source: "manual",
           browserId: null,
-          calls,
+          calls: payouts.map(p => ({ target: p.to, value: p.amountWei, data: "0x" })),
         });
       } else {
         const p = payouts[0]!;
-        const value = BigInt(p.amountWei);
-        const execHash = computeExecHash({
-          chainId: escrow.chainId,
-          multisig: wallet.address as AddressType,
-          nonce,
-          deadline,
-          target: p.to as AddressType,
-          value,
-          data: "0x",
-        });
         mesh.walletProposeTx({
           chainId: escrow.chainId,
           target: p.to,
-          value: value.toString(),
+          value: BigInt(p.amountWei).toString(),
           data: "0x",
-          deadline: deadline.toString(),
-          nonce: nonce.toString(),
-          execHash,
           source: "manual",
           browserId: null,
         });
@@ -673,7 +627,7 @@ export const PayoutProposeButton = ({
       setState("idle");
       setErr(String(e).slice(0, 160));
     }
-  }, [mesh, publicClient, escrow, onProposed]);
+  }, [mesh, escrow, onProposed]);
 
   if (!canPropose) {
     return (

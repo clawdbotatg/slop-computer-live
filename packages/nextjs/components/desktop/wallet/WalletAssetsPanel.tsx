@@ -6,13 +6,11 @@ import { type WalletTxMode } from "./WalletTxCard";
 import { type Portfolio, type PortfolioAsset, toRawUnits, zerionChainToId } from "./types";
 import { AddressInput } from "@scaffold-ui/components";
 import { type Address as AddressType, type Hex, encodeFunctionData, erc20Abi, formatUnits } from "viem";
-import { usePublicClient, useSendTransaction } from "wagmi";
+import { useSendTransaction } from "wagmi";
 import { LoadingBar } from "~~/components/ui";
-import { MultisigAbi } from "~~/contracts/multisig";
 import type { PeerMeshState, WalletRecord } from "~~/hooks/usePeerMesh";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
-import { computeExecHash, defaultDeadline } from "~~/utils/multisig";
 
 const NATIVE_TOKEN_PLACEHOLDER = "0x0000000000000000000000000000000000000000";
 
@@ -894,7 +892,6 @@ const SendAssetModal = ({
   walletAddress?: string;
 }) => {
   const chainId = zerionChainToId(asset.blockchain);
-  const publicClient = usePublicClient({ chainId: chainId ?? undefined });
   const { sendTransactionAsync } = useSendTransaction();
   const isEoa = mode === "eoa";
   const native = isNativeAsset(asset);
@@ -969,34 +966,12 @@ const SendAssetModal = ({
         onClose();
         return;
       }
-      if (!publicClient) {
-        setError("no RPC client for this chain");
-        setSubmitting(false);
-        return;
-      }
-      const nonce = (await publicClient.readContract({
-        address: wallet.address as AddressType,
-        abi: MultisigAbi,
-        functionName: "nonce",
-      })) as bigint;
-      const deadline = defaultDeadline();
-      const execHash = computeExecHash({
-        chainId,
-        multisig: wallet.address as AddressType,
-        nonce,
-        deadline,
-        target,
-        value,
-        data,
-      });
+      // The relay picks the Safe nonce and computes the safeTxHash.
       mesh.walletProposeTx({
         chainId,
         target,
         value: value.toString(),
         data,
-        deadline: deadline.toString(),
-        nonce: nonce.toString(),
-        execHash,
         source: "manual",
         browserId: null,
         ...(walletAddress ? { address: walletAddress } : {}),
@@ -1014,7 +989,6 @@ const SendAssetModal = ({
     chainId,
     isEoa,
     deployedOnChain,
-    publicClient,
     recipient,
     recipientValid,
     amountRaw,
@@ -1023,7 +997,6 @@ const SendAssetModal = ({
     native,
     asset.contractAddress,
     asset.blockchain,
-    wallet.address,
     walletAddress,
     mesh,
     onClose,
@@ -1293,7 +1266,6 @@ const SweepModal = ({
   sweepChainId: number;
   onClose: () => void;
 }) => {
-  const publicClient = usePublicClient({ chainId: sweepChainId });
   const { sendTransactionAsync } = useSendTransaction();
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1353,12 +1325,7 @@ const SweepModal = ({
           }
         }
       } else {
-        // Multisig: one batched proposal.
-        if (!publicClient) {
-          setError("no RPC client for this chain");
-          setBusy(false);
-          return;
-        }
+        // Safe: one batched proposal.
         const calls = chainAssets.map(a => {
           const decimals = a.tokenDecimals ?? 18;
           const raw = toRawUnits(a.balance, decimals);
@@ -1369,32 +1336,12 @@ const SweepModal = ({
             data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, raw] }),
           };
         });
-        const deadline = defaultDeadline();
-        const nonce = (await publicClient.readContract({
-          address: wallet.address as AddressType,
-          abi: MultisigAbi,
-          functionName: "nonce",
-        })) as bigint;
-        // The contract computes the batch hash over the current nonce + calls.
-        // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
-        const execHash =
-          wallet.kind === "safe"
-            ? "0x"
-            : ((await publicClient.readContract({
-                address: wallet.address as AddressType,
-                abi: MultisigAbi,
-                functionName: "getBatchExecHash",
-                args: [calls.map(c => ({ target: c.target, value: c.value, data: c.data })), deadline],
-              })) as `0x${string}`);
+        // One MultiSend batch; the relay picks the Safe nonce + safeTxHash.
         mesh.walletProposeTx({
           chainId: sweepChainId,
-          // Batched txs carry sentinels in the top-level fields; calls drive exec.
           target: wallet.address,
           value: "0",
           data: "0x",
-          deadline: deadline.toString(),
-          nonce: nonce.toString(),
-          execHash,
           source: "manual",
           browserId: null,
           calls: calls.map(c => ({ target: c.target, value: c.value.toString(), data: c.data })),
@@ -1412,7 +1359,6 @@ const SweepModal = ({
     chainAssets,
     recipient,
     mode,
-    publicClient,
     wallet.address,
     walletAddress,
     mesh,
