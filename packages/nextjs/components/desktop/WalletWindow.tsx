@@ -779,7 +779,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                       }}
                     >
                       {s.wedgie ? (
-                        <span>🩲 {s.label}</span>
+                        <WedgieTag label={s.label} />
                       ) : (
                         <SlopAddress address={s.address} customNames={mesh.customNames} />
                       )}
@@ -946,7 +946,11 @@ const SafeOwners = ({
       <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
         {wallet.signers.map(s => (
           <div key={s.address} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <SlopAddress address={s.passkeyAddr ?? s.address} customNames={customNames} />
+            {s.device === "wedgie" ? (
+              <WedgieTag label={s.label} />
+            ) : (
+              <SlopAddress address={s.passkeyAddr ?? s.address} customNames={customNames} />
+            )}
             <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>
               {s.device === "wedgie" ? "wedgie" : s.signerType}
             </span>
@@ -993,7 +997,7 @@ const SafeOwners = ({
         </Field>
         {addable.map(c => (
           <div key={c.address} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {c.wedgie ? <span>🩲 {c.label}</span> : <SlopAddress address={c.address} customNames={customNames} />}
+            {c.wedgie ? <WedgieTag label={c.label} /> : <SlopAddress address={c.address} customNames={customNames} />}
             <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>
               {c.wedgie ? "wedgie" : c.passkey ? "passkey" : "wallet"}
             </span>
@@ -2664,6 +2668,15 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
 // ----------------------------------------------------------------------------
 // Tiny shared layout helpers
 // ----------------------------------------------------------------------------
+
+// A wedgie owner's avatar is the Wedgie app icon.
+const WedgieTag = ({ label }: { label: string }) => (
+  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img src="/icons/wedgie.png" alt="" width={18} height={18} style={{ imageRendering: "auto" }} />
+    {label}
+  </span>
+);
 
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
