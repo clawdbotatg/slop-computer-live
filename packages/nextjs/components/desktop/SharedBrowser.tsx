@@ -597,21 +597,9 @@ export const SharedBrowser = ({
           else if (typeof cidRaw === "number") parsed = cidRaw;
           if (parsed != null && Number.isFinite(parsed)) browserChainId = parsed;
         }
-        // If still not on a chain the multisig is deployed on, fall back
-        // to ANY deployed chain — better to queue on something the user
-        // can sign than to drop the tx on the floor. The user can spot
-        // the wrong-chain mismatch in the Transactions tab if it happens.
-        if (w && !(browserChainId in w.deployments)) {
-          const deployedChainIds = Object.keys(w.deployments).map(Number);
-          if (deployedChainIds.length > 0) {
-            console.warn("[SLOP-TX-DEBUG] multisig not on inferred chain — retrying on deployed chain", {
-              inferred: browserChainId,
-              fallback: deployedChainIds[0],
-              available: deployedChainIds,
-            });
-            browserChainId = deployedChainIds[0];
-          }
-        }
+        // Never re-target another chain: the same calldata on a different
+        // chain is a different (possibly harmful) tx. Not deployed here →
+        // falls through to the local panel below.
         const walletDeployedHere = !!w && browserChainId in w.deployments;
         console.warn("[SLOP-TX-DEBUG] tx_request received", {
           method,
