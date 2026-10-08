@@ -214,3 +214,12 @@ not scanned.
 Total ≈ 0.0235 ETH + 1.75 USDC + 0.03 xDAI. Each needs its own signers to
 sign (`0x34aa…fDF3` appears in most rooms' wallet records; signer sets not
 yet checked onchain).
+
+## Verified 2026-10-07 (local stack: Base fork + real relay + Next, headless Chrome)
+
+Clicked through the real Bank UI: Create Safe (host wallet + passkey, 2 of 2);
+send signed by browser wallet (eth_signTypedData_v4 from the UI) + passkey
+(WebAuthn from the UI), executed by the relay; Add wedgie; send signed by
+wedgie + passkey, executed. The wedgie was the real wedgie-safe firmware code
+(`ops/probes/wedgie-emu.py`, software P-256 key in place of the Trust M chip)
+behind a fake WebSerial port. Not yet: a physical wedgie, Safari/iOS passkeys.
