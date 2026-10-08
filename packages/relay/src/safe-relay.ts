@@ -18,6 +18,7 @@ import {
   type SafeTx,
   type Sig,
   MULTICALL3,
+  SAFE_CHAIN_IDS,
   deployBundle,
   deployPasskeyOwnerCall,
   encodeSignatures,
@@ -39,7 +40,7 @@ import {
 // a failed simulate — never a broadcast.
 
 /** A room's Safe goes on all of these at creation (trap 4: the address only matches with the original owners). */
-export const SAFE_CHAINS = [1, 8453, 10, 42161, 137, 100, 4663] as const;
+export const SAFE_CHAINS = SAFE_CHAIN_IDS;
 
 export type PasskeyKey = { qx: Hex; qy: Hex };
 

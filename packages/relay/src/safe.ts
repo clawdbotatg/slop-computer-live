@@ -33,6 +33,12 @@ export const MULTISEND_CALL_ONLY: Address = "0x9641d764fc13c8B624c04430C7356C1C7
 export const PASSKEY_FACTORY: Address = "0x1d31F259eE307358a26dFb23EB365939E8641195"; // safe-modules passkey 0.2.1
 export const PASSKEY_SINGLETON: Address = "0x4E27b51350e6c2083EE19011120F50DAfEc5CA50";
 export const DAIMO_VERIFIER: Address = "0xc2b78104907F722DABAc4C69f826a522B2754De4";
+/**
+ * Chains a room Safe is created on. Polygon (137) is left out until the fee
+ * wallet holds POL (10-07). Adding it later only works with the genesis
+ * owners (ops/PLAN-safe.md trap 4) — do it before owners change.
+ */
+export const SAFE_CHAIN_IDS = [1, 8453, 10, 42161, 100, 4663] as const;
 export const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 /**

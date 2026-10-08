@@ -30,7 +30,7 @@ import { withSlug } from "~~/lib/slug";
 import { robinhood } from "~~/scaffold.config";
 import { sortSignatures } from "~~/utils/multisig";
 import { getStoredPasskeyIdentity, signMultisigExecWithPasskey, signSafeTxWithPasskey } from "~~/utils/passkey";
-import { type SafeTx, cancelTx, safeTxHash, safeTxTypedData } from "~~/utils/safe";
+import { SAFE_CHAIN_IDS, type SafeTx, cancelTx, safeTxHash, safeTxTypedData } from "~~/utils/safe";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -825,7 +825,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
 
       <Section title="Networks">
         <p style={{ fontSize: 11, color: "var(--slop-text-muted)", margin: "0 0 8px" }}>
-          A Safe, on all 7 chains at once, same address everywhere. slop.computer pays the gas.
+          A Safe, on all 6 chains at once, same address everywhere. slop.computer pays the gas.
           {!isHost ? " Only the host can create it." : null}
         </p>
         <SafeChains
@@ -841,7 +841,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
 };
 
 // ============================================================================
-// SafeChains — create the room Safe (relay pays, all 7 chains) and show
+// SafeChains — create the room Safe (relay pays, every SAFE_CHAIN_IDS chain) and show
 // per-chain progress. ops/PLAN-safe.md.
 // ============================================================================
 
@@ -864,7 +864,8 @@ const SafeChains = ({
   const [status, setStatus] = useState<Record<number, ChainState>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const missing = existing ? SUPPORTED_CHAINS.filter(c => !existing.deployments[c.id]).length : 0;
+  const chains = SUPPORTED_CHAINS.filter(c => (SAFE_CHAIN_IDS as readonly number[]).includes(c.id));
+  const missing = existing ? chains.filter(c => !existing.deployments[c.id]).length : 0;
 
   // Poll while any chain is still missing; the relay deploys in the background.
   useEffect(() => {
@@ -924,7 +925,7 @@ const SafeChains = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {SUPPORTED_CHAINS.map(c => {
+      {chains.map(c => {
         const dep = existing.deployments[c.id];
         const st = status[c.id];
         return (
@@ -950,7 +951,7 @@ const SafeChains = ({
           </div>
         );
       })}
-      {missing > 0 && SUPPORTED_CHAINS.some(c => !existing.deployments[c.id] && status[c.id]?.state !== "deploying") ? (
+      {missing > 0 && chains.some(c => !existing.deployments[c.id] && status[c.id]?.state !== "deploying") ? (
         <Button disabled={busy} onClick={() => void post({})}>
           {busy ? "Retrying…" : "Retry missing chains"}
         </Button>

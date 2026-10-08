@@ -2734,7 +2734,7 @@ function settleEscrowPayout(room: ReturnType<typeof getOrCreateRoom>, txId: stri
 }
 
 // ── Safe Bank (ops/PLAN-safe.md) ─────────────────────────────────────────────
-// The relay pays to put a room's Safe on all 7 chains, to create passkey
+// The relay pays to put a room's Safe on every SAFE_CHAINS chain, to create passkey
 // signer contracts, and to execute fully-signed txs. Every route is room-gated
 // (?slug + room cookie) and bucketed per room, since mainnet gas is real money.
 
