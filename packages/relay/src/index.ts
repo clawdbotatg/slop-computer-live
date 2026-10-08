@@ -2709,6 +2709,30 @@ app.post("/personal-wallet/exec", async (req, reply) => {
   return { txHash: result.txHash };
 });
 
+// Money-game settlement: the escrow's linked payout (or refund) just executed
+// on-chain → close out the session. Generic across games. Bank-only.
+function settleEscrowPayout(room: ReturnType<typeof getOrCreateRoom>, txId: string, txHash: string | null): void {
+  if (!room.escrow.isPayoutTx(txId)) return;
+  const settled = room.escrow.markSettled(txHash);
+  if (settled.ok) {
+    broadcastEscrowState(room);
+    const s = settled.session;
+    const total = (s.payouts ?? []).reduce((acc, p) => acc + BigInt(p.amountWei), 0n).toString();
+    const winner = s.meta.winner as string | undefined;
+    const winAcct = winner && winner !== "draw" ? s.accounts.find(a => a.role === winner) : null;
+    const text = winAcct
+      ? `🏆 Pot paid out — ${formatEth(total)} ETH to ${winAcct.label}`
+      : `↩️ Wager settled — buy-ins refunded`;
+    room.transcript.appendAction({
+      kind: "wallet",
+      address: winAcct ? winAcct.key : null,
+      handle: null,
+      text,
+      meta: { escrowId: s.id, txHash: s.payoutTxHash },
+    });
+  }
+}
+
 // ── Safe Bank (ops/PLAN-safe.md) ─────────────────────────────────────────────
 // The relay pays to put a room's Safe on all 7 chains, to create passkey
 // signer contracts, and to execute fully-signed txs. Every route is room-gated
@@ -2904,6 +2928,7 @@ app.post("/v1/safe/exec", async (req, reply) => {
   if (!safeExecRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
 
   r.room.wallet.setTxStatus(tx.id, "executing");
+  const room = r.room;
   const res = await execSafeTx(
     tx.chainId,
     cur.address as `0x${string}`,
@@ -2916,12 +2941,14 @@ app.post("/v1/safe/exec", async (req, reply) => {
     },
     toSafeSignatures(sigs),
     safeSpecOf(cur).passkeys,
+    hash => room.wallet.setTxStatus(tx.id, "executing", hash),
   );
   if (!res.ok) {
     r.room.wallet.setTxStatus(tx.id, "pending");
     return reply.code(400).send({ error: res.error });
   }
   r.room.wallet.setTxStatus(tx.id, "executed", res.txHash);
+  settleEscrowPayout(r.room, tx.id, res.txHash);
   return { txHash: res.txHash };
 });
 
@@ -9875,82 +9902,9 @@ app.register(async function signalRoutes(fastify) {
           return;
         }
         case "wallet_deploy": {
-          // Client has just confirmed a `MultisigFactory.createMultisig` tx
-          // and tells us the resulting record. We don't recompute — we trust
-          // the broadcast (the client already verified the tx receipt).
-          const rec = msg.wallet as Partial<WalletRecord> | undefined;
-          if (
-            !rec ||
-            typeof rec.address !== "string" ||
-            typeof rec.deployer !== "string" ||
-            typeof rec.salt !== "string" ||
-            typeof rec.threshold !== "number" ||
-            !Array.isArray(rec.signers) ||
-            !rec.deployments ||
-            typeof rec.deployments !== "object"
-          ) {
-            return send(socket, { type: "error", error: "bad_wallet_deploy" });
-          }
-          const signers: WalletSigner[] = [];
-          for (const raw of rec.signers as unknown[]) {
-            if (!raw || typeof raw !== "object") continue;
-            const s = raw as {
-              address?: unknown;
-              label?: unknown;
-              signerType?: unknown;
-              qx?: unknown;
-              qy?: unknown;
-              credentialIdHash?: unknown;
-            };
-            if (typeof s.address !== "string" || typeof s.label !== "string") continue;
-            if (s.signerType !== "eoa" && s.signerType !== "passkey" && s.signerType !== "erc1271") continue;
-            const signer: WalletSigner = {
-              address: s.address.toLowerCase(),
-              label: s.label,
-              signerType: s.signerType,
-            };
-            if (s.signerType === "passkey") {
-              // Preserve qx/qy/credentialIdHash if the client supplied
-              // them — without them the rest of the room can't sign
-              // exec hashes against this signer later.
-              if (typeof s.qx === "string" && /^0x[0-9a-fA-F]{64}$/.test(s.qx)) signer.qx = s.qx.toLowerCase();
-              if (typeof s.qy === "string" && /^0x[0-9a-fA-F]{64}$/.test(s.qy)) signer.qy = s.qy.toLowerCase();
-              if (
-                typeof s.credentialIdHash === "string" &&
-                /^0x[0-9a-fA-F]{64}$/.test(s.credentialIdHash)
-              ) {
-                signer.credentialIdHash = s.credentialIdHash.toLowerCase();
-              }
-            }
-            signers.push(signer);
-          }
-          if (signers.length === 0) return send(socket, { type: "error", error: "no_signers" });
-          const deployments: Record<number, { txHash: string | null; deployedAt: number }> = {};
-          for (const [k, v] of Object.entries(rec.deployments)) {
-            const chainId = Number(k);
-            if (!Number.isFinite(chainId)) continue;
-            if (!v || typeof v !== "object") continue;
-            const dep = v as { txHash?: unknown; deployedAt?: unknown };
-            deployments[chainId] = {
-              txHash: typeof dep.txHash === "string" ? dep.txHash : null,
-              deployedAt: typeof dep.deployedAt === "number" ? dep.deployedAt : Date.now(),
-            };
-          }
-          if (Object.keys(deployments).length === 0) {
-            return send(socket, { type: "error", error: "no_deployments" });
-          }
-          room.wallet.setCurrent({
-            id: typeof rec.id === "string" ? rec.id : Math.random().toString(36).slice(2),
-            address: rec.address.toLowerCase(),
-            deployer: rec.deployer.toLowerCase(),
-            salt: rec.salt,
-            signers,
-            threshold: rec.threshold,
-            deployments,
-            createdAt: typeof rec.createdAt === "number" ? rec.createdAt : Date.now(),
-            label: typeof rec.label === "string" ? rec.label : `Episode ${new Date().toISOString().slice(0, 10)}`,
-          });
-          return;
+          // Legacy slop Multisig deploy. New Banks are Safes, created only via
+          // POST /v1/safe/deploy (ops/PLAN-safe.md); refuse old cached clients.
+          return send(socket, { type: "error", error: "use_safe_deploy" });
         }
         case "wallet_add_deployment": {
           // Record a deployment of the current wallet on an additional
@@ -10285,26 +10239,7 @@ app.register(async function signalRoutes(fastify) {
           // session. This is the "watch for it to go out" the whole payout
           // window waits on. Generic across games. Bank-only — a personal
           // wallet's tx never settles room escrow.
-          if (!statusAddr && msg.status === "executed" && room.escrow.isPayoutTx(msg.id)) {
-            const settled = room.escrow.markSettled(txHash);
-            if (settled.ok) {
-              broadcastEscrowState(room);
-              const s = settled.session;
-              const total = (s.payouts ?? []).reduce((acc, p) => acc + BigInt(p.amountWei), 0n).toString();
-              const winner = s.meta.winner as string | undefined;
-              const winAcct = winner && winner !== "draw" ? s.accounts.find(a => a.role === winner) : null;
-              const text = winAcct
-                ? `🏆 Pot paid out — ${formatEth(total)} ETH to ${winAcct.label}`
-                : `↩️ Wager settled — buy-ins refunded`;
-              room.transcript.appendAction({
-                kind: "wallet",
-                address: winAcct ? winAcct.key : null,
-                handle: null,
-                text,
-                meta: { escrowId: s.id, txHash: s.payoutTxHash },
-              });
-            }
-          }
+          if (!statusAddr && msg.status === "executed") settleEscrowPayout(room, msg.id, txHash);
           return;
         }
         case "wallet_tx_remove": {

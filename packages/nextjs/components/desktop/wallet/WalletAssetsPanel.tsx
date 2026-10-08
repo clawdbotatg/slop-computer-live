@@ -1376,12 +1376,16 @@ const SweepModal = ({
           functionName: "nonce",
         })) as bigint;
         // The contract computes the batch hash over the current nonce + calls.
-        const execHash = (await publicClient.readContract({
-          address: wallet.address as AddressType,
-          abi: MultisigAbi,
-          functionName: "getBatchExecHash",
-          args: [calls.map(c => ({ target: c.target, value: c.value, data: c.data })), deadline],
-        })) as `0x${string}`;
+        // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
+        const execHash =
+          wallet.kind === "safe"
+            ? "0x"
+            : ((await publicClient.readContract({
+                address: wallet.address as AddressType,
+                abi: MultisigAbi,
+                functionName: "getBatchExecHash",
+                args: [calls.map(c => ({ target: c.target, value: c.value, data: c.data })), deadline],
+              })) as `0x${string}`);
         mesh.walletProposeTx({
           chainId: sweepChainId,
           // Batched txs carry sentinels in the top-level fields; calls drive exec.

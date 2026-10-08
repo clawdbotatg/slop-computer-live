@@ -749,19 +749,23 @@ export const SharedBrowser = ({
                   functionName: "nonce",
                 })) as bigint;
                 const deadline = defaultDeadline();
-                const execHash = (await txClient.readContract({
-                  address: w.address as AddressType,
-                  abi: MultisigAbi,
-                  functionName: "getBatchExecHash",
-                  args: [
-                    calls.map(c => ({
-                      target: c.target as AddressType,
-                      value: BigInt(c.value),
-                      data: c.data as Hex,
-                    })),
-                    deadline,
-                  ],
-                })) as Hex;
+                // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
+                const execHash =
+                  w.kind === "safe"
+                    ? "0x"
+                    : ((await txClient.readContract({
+                        address: w.address as AddressType,
+                        abi: MultisigAbi,
+                        functionName: "getBatchExecHash",
+                        args: [
+                          calls.map(c => ({
+                            target: c.target as AddressType,
+                            value: BigInt(c.value),
+                            data: c.data as Hex,
+                          })),
+                          deadline,
+                        ],
+                      })) as Hex);
                 console.warn("[SLOP-TX-DEBUG] calling walletProposeTx (BATCH)", {
                   chainId: browserChainId,
                   callCount: calls.length,

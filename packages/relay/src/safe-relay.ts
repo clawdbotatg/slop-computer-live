@@ -95,7 +95,7 @@ const errText = (err: unknown) =>
   ((err as { shortMessage?: string }).shortMessage ?? (err as Error).message ?? "failed").split("\n")[0]!;
 
 /** Send `data` to `to` from the deployer, wait for it, throw on revert. */
-async function sendAndWait(chainId: number, to: Address, data: Hex): Promise<Hex> {
+async function sendAndWait(chainId: number, to: Address, data: Hex, onSent?: (hash: Hex) => void): Promise<Hex> {
   const { pub, wallet } = clientsFor(chainId);
   const acct = account();
   return serial(chainId, async () => {
@@ -108,6 +108,7 @@ async function sendAndWait(chainId: number, to: Address, data: Hex): Promise<Hex
       data,
       gas: (gas * 12n) / 10n,
     });
+    onSent?.(hash);
     const r = await pub.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (r.status !== "success") throw new Error(`reverted (${hash})`);
     return hash;
@@ -212,12 +213,13 @@ export async function execSafeTx(
   tx: SafeTx,
   signatures: Hex,
   passkeys: PasskeyKey[],
+  onSent?: (hash: Hex) => void,
 ): Promise<{ ok: true; txHash: Hex } | { ok: false; error: string }> {
   if (!isSafeOperation(tx)) return { ok: false, error: "delegatecall-blocked" };
   try {
     if (!(await hasCode(chainId, safe))) return { ok: false, error: "safe-not-deployed" };
     await ensureSignersOn(chainId, passkeys);
-    const txHash = await sendAndWait(chainId, safe, execData(tx, signatures));
+    const txHash = await sendAndWait(chainId, safe, execData(tx, signatures), onSent);
     return { ok: true, txHash };
   } catch (err) {
     return { ok: false, error: errText(err) };

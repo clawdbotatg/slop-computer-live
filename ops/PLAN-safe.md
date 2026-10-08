@@ -152,8 +152,17 @@ safeTxHash, sigs by owner. Not mirrored to Safe's tx service in v1.
    WS `wallet_tx_status` path settles it).
    **Needs Austin:** fund the payer `0xBa16e496574514A28b15e19c222c4d367c6C0FF0`
    on Optimism, Arbitrum, Polygon, Gnosis, Robinhood (has mainnet + Base only).
-3. **Bank UI**: deploy (multi-chain, signer status), add/remove owner,
-   threshold, sign (EOA / passkey / wedgie), execute, cancel.
+3. 🟡 10-07 **Bank UI** (pushed, NOT deployed — deploying hides every legacy
+   multisig, so the phase-0 sweep must be finished first): Deploy tab =
+   "Create Safe" → `/v1/safe/deploy`, per-chain live/deploying/failed + retry;
+   TxCard signs Safe txs (EOA EIP-712 after a chain switch, passkey
+   `signSafeTxWithPasskey`), Execute → `/v1/safe/exec`, Cancel = no-op at the
+   same nonce. `usePeerMesh` drops non-Safe wallet records; relay refuses the
+   legacy `wallet_deploy`. Batch proposers (SharedBrowser, WagerPanel, Assets
+   send-all, header sweep) send `calls` and let the relay fill the hash.
+   Still to do: add/remove owner + threshold UI, wedgie, SharedBrowser
+   `wallet_sendCalls` status tracking (keyed by execHash, which the relay now
+   picks), untested in a real browser.
 4. **Consumers**: EnsWindow (reverse `setName` as a Safe tx on mainnet — Safe
    must be on mainnet), SharedBrowser + browser-host inject (batches →
    MultiSend; typed-data signing could now be allowed via 1271 — later),

@@ -1,23 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { Address, AddressInput } from "@scaffold-ui/components";
-import {
-  type Address as AddressType,
-  type Hex,
-  decodeEventLog,
-  encodeAbiParameters,
-  formatEther,
-  parseAbiParameters,
-} from "viem";
+import { type Address as AddressType, type Hex, encodeAbiParameters, formatEther, parseAbiParameters } from "viem";
 import { arbitrum, base, gnosis, mainnet, optimism, polygon } from "viem/chains";
 import {
   useAccount,
   useChainId,
   usePublicClient,
-  useReadContract,
   useSignMessage,
+  useSignTypedData,
   useSwitchChain,
   useWaitForTransactionReceipt,
   useWriteContract,
@@ -29,15 +21,16 @@ import { WalletChatPanel } from "~~/components/desktop/wallet/WalletChatPanel";
 import { WalletHeader } from "~~/components/desktop/wallet/WalletHeader";
 import type { Portfolio } from "~~/components/desktop/wallet/types";
 import { Button, LoadingBar, SlopAddress, TextField } from "~~/components/ui";
-import { FACTORY_ADDRESS, MultisigAbi, MultisigFactoryAbi, type WalletSignature } from "~~/contracts/multisig";
+import { MultisigAbi, type WalletSignature } from "~~/contracts/multisig";
 import type { Peer, PeerMeshState, WalletRecord, WalletTx } from "~~/hooks/usePeerMesh";
 import { useSyncedScroll } from "~~/hooks/useSyncedScroll";
 import { useSyncedUIState } from "~~/hooks/useSyncedUIState";
 import { useRoomSlug } from "~~/lib/room-slug";
 import { withSlug } from "~~/lib/slug";
 import { robinhood } from "~~/scaffold.config";
-import { saltFromLabel, sortSignatures } from "~~/utils/multisig";
-import { getStoredPasskeyIdentity, signMultisigExecWithPasskey } from "~~/utils/passkey";
+import { sortSignatures } from "~~/utils/multisig";
+import { getStoredPasskeyIdentity, signMultisigExecWithPasskey, signSafeTxWithPasskey } from "~~/utils/passkey";
+import { type SafeTx, cancelTx, safeTxHash, safeTxTypedData } from "~~/utils/safe";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -526,13 +519,8 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   const slug = useRoomSlug();
   const existing = mesh.wallet;
 
-  // Host detection — the host's wallet is what signs createMultisig, so
-  // the predicted address depends on their address (not whoever's
-  // viewing). Non-hosts see a disabled Deploy button.
-  const hostPeer = useMemo(
-    () => (mesh.peers as Peer[]).find(p => p.role === "host" && !!p.address) ?? null,
-    [mesh.peers],
-  );
+  // Only the host creates the Safe (the relay pays; this just keeps one
+  // person in charge of the owner list). Non-hosts see a disabled button.
   const isHost = useMemo(
     () => (mesh.peers as Peer[]).some(p => p.id === mesh.myId && p.role === "host"),
     [mesh.peers, mesh.myId],
@@ -634,18 +622,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     [candidateSigners, draftOrDefault.selected],
   );
 
-  // After deploy, signers/threshold/salt/label are locked into the
-  // wallet record. Before deploy, they come from the shared draft and
-  // the deployer is the *host's* address — so all peers compute the
-  // same predicted CREATE2 address regardless of who's viewing.
-  const effectiveDeployer = existing
-    ? (existing.deployer as AddressType)
-    : ((hostPeer?.address as AddressType | undefined) ?? null);
   const effectiveLabel = existing ? existing.label : draftOrDefault.label;
-  const effectiveSalt = useMemo(() => {
-    if (existing) return existing.salt as Hex;
-    return saltFromLabel(`${effectiveDeployer ?? "0x0"}:${effectiveLabel}`);
-  }, [existing, effectiveDeployer, effectiveLabel]);
   // Rich signer set used by both the `createMultisig` call (partition
   // into EOA vs passkey arrays) and the WalletRecord we hand the relay
   // post-deploy. For an already-deployed wallet we trust the persisted
@@ -677,21 +654,6 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     });
   }, [existing, selectedSigners]);
   const effectiveThreshold = existing ? existing.threshold : draftOrDefault.threshold;
-
-  // Predicted multisig address. Deterministic + identical on every chain the
-  // factory is deployed to, so we pin the read to one known-deployed chain.
-  // Must be a chain where the CURRENT factory version actually has code — v2+
-  // factories are Base-only (v1 was everywhere incl. mainnet), so reading on
-  // mainnet would hit a codeless address and hang at "computing".
-  const { data: predicted } = useReadContract({
-    address: FACTORY_ADDRESS,
-    abi: MultisigFactoryAbi,
-    functionName: "getMultisigAddress",
-    args: effectiveDeployer ? [effectiveDeployer, effectiveSalt] : undefined,
-    chainId: base.id,
-    query: { enabled: !!effectiveDeployer },
-  });
-  const predictedAddress = (existing?.address ?? predicted ?? null) as AddressType | null;
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -858,41 +820,142 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
               style={{ width: "100%" }}
             />
           </Field>
-
-          <Field label="Predicted address">
-            <div style={{ fontSize: 12 }}>
-              {predictedAddress ? (
-                <Address address={predictedAddress} size="sm" />
-              ) : !effectiveDeployer ? (
-                <span style={{ color: "var(--slop-text-muted)" }}>
-                  waiting for host (deploys go through their wallet so the address is the same for everyone)
-                </span>
-              ) : (
-                <span style={{ color: "var(--slop-text-muted)" }}>computing…</span>
-              )}
-            </div>
-          </Field>
         </>
       )}
 
       <Section title="Networks">
         <p style={{ fontSize: 11, color: "var(--slop-text-muted)", margin: "0 0 8px" }}>
-          Deploy the multisig on the chains you need. The address is the same everywhere — funding the address before
-          deploying works too; you just can&apos;t execute txs on a chain until <code>createMultisig</code> runs there.
-          {!isHost ? " Only the host can deploy — their wallet pays gas and signs createMultisig." : null}
+          A Safe, on all 7 chains at once, same address everywhere. slop.computer pays the gas.
+          {!isHost ? " Only the host can create it." : null}
         </p>
-        <ChainGrid
-          mesh={mesh}
+        <SafeChains
           existing={existing}
-          predicted={predictedAddress}
-          deployer={effectiveDeployer}
-          salt={effectiveSalt}
           signers={effectiveSigners}
           threshold={effectiveThreshold}
           label={effectiveLabel}
           canDeploy={isHost}
         />
       </Section>
+    </div>
+  );
+};
+
+// ============================================================================
+// SafeChains — create the room Safe (relay pays, all 7 chains) and show
+// per-chain progress. ops/PLAN-safe.md.
+// ============================================================================
+
+type ChainState = { state: "deploying" | "ok" | "failed"; txHash?: string | null; error?: string };
+
+const SafeChains = ({
+  existing,
+  signers,
+  threshold,
+  label,
+  canDeploy,
+}: {
+  existing: WalletRecord | null;
+  signers: ResolvedSigner[];
+  threshold: number;
+  label: string;
+  canDeploy: boolean;
+}) => {
+  const slug = useRoomSlug();
+  const [status, setStatus] = useState<Record<number, ChainState>>({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const missing = existing ? SUPPORTED_CHAINS.filter(c => !existing.deployments[c.id]).length : 0;
+
+  // Poll while any chain is still missing; the relay deploys in the background.
+  useEffect(() => {
+    if (!existing || missing === 0) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/status`, slug), { credentials: "include" });
+        if (r.ok && !stop) setStatus(((await r.json()) as { chains: Record<number, ChainState> }).chains ?? {});
+      } catch {
+        /* next tick */
+      }
+    };
+    void tick();
+    const h = setInterval(tick, 3000);
+    return () => {
+      stop = true;
+      clearInterval(h);
+    };
+  }, [existing, missing, slug]);
+
+  const post = async (body: unknown) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/deploy`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `relay ${r.status}`);
+    } catch (e) {
+      setErr(String(e).slice(0, 160));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!existing) {
+    const owners = signers.map(s =>
+      s.qx && s.qy ? { qx: s.qx, qy: s.qy, label: s.label } : { address: s.address, label: s.label },
+    );
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <Button
+          disabled={!canDeploy || busy || signers.length === 0}
+          onClick={() => void post({ owners, threshold, label })}
+          title={!canDeploy ? "Only the host can create the Safe." : undefined}
+        >
+          {busy ? "Creating…" : `Create Safe (${threshold} of ${signers.length})`}
+        </Button>
+        {err ? <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {SUPPORTED_CHAINS.map(c => {
+        const dep = existing.deployments[c.id];
+        const st = status[c.id];
+        return (
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span style={{ width: 80 }}>{c.label}</span>
+            {dep ? (
+              dep.txHash ? (
+                <a href={`${c.explorer}/tx/${dep.txHash}`} target="_blank" rel="noreferrer">
+                  ✓ live
+                </a>
+              ) : (
+                <span>✓ live</span>
+              )
+            ) : st?.state === "failed" ? (
+              <span style={{ color: "#ff6b6b" }} title={st.error}>
+                failed — {st.error?.slice(0, 60)}
+              </span>
+            ) : (
+              <span style={{ color: "var(--slop-text-muted)" }}>
+                {st?.state === "deploying" ? "deploying…" : "not yet"}
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {missing > 0 && SUPPORTED_CHAINS.some(c => !existing.deployments[c.id] && status[c.id]?.state !== "deploying") ? (
+        <Button disabled={busy} onClick={() => void post({})}>
+          {busy ? "Retrying…" : "Retry missing chains"}
+        </Button>
+      ) : null}
+      {err ? <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div> : null}
     </div>
   );
 };
@@ -977,7 +1040,8 @@ const DeployedSummary = ({
         }}
       >
         {wallet.signers.map(s => {
-          const isMe = myLower && s.address.toLowerCase() === myLower;
+          const who = s.passkeyAddr ?? s.address;
+          const isMe = myLower && who.toLowerCase() === myLower;
           return (
             <li
               key={s.address}
@@ -996,14 +1060,14 @@ const DeployedSummary = ({
               {/* SlopAddress shows the spendable wallet address for a passkey
                   signer; the raw passkey address (the ACTUAL signer) is shown
                   subtly in parens — don't send funds there. */}
-              <SlopAddress address={s.address} customNames={customNames} />
+              <SlopAddress address={who} customNames={customNames} />
               {isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
               {s.signerType === "passkey" ? (
                 <span
                   style={{ color: "var(--slop-text-muted)", fontSize: 10 }}
-                  title="passkey signer address — do not send funds here"
+                  title="the passkey's signer contract — the Safe owner. Do not send funds here."
                 >
-                  · passkey ({short(s.address)})
+                  · {s.device === "wedgie" ? "wedgie" : "passkey"} ({short(s.address)})
                 </span>
               ) : null}
             </li>
@@ -1011,573 +1075,6 @@ const DeployedSummary = ({
         })}
       </ul>
     </div>
-  );
-};
-
-// ============================================================================
-// ChainGrid — one row per supported chain. Each row figures out its
-// own deployed-or-not status via either the wallet record or eth_getCode,
-// and renders either an explorer link or a [ deploy ] button.
-// ============================================================================
-
-type ChainGridProps = {
-  mesh: PeerMeshState;
-  existing: WalletRecord | null;
-  predicted: AddressType | null;
-  deployer: AddressType | null;
-  salt: Hex;
-  signers: ResolvedSigner[];
-  threshold: number;
-  label: string;
-  /** Local user can submit a deploy tx. False for non-hosts — the
-   *  button still renders but is disabled with a "host only" tooltip. */
-  canDeploy: boolean;
-};
-
-const ChainGrid = ({
-  mesh,
-  existing,
-  predicted,
-  deployer,
-  salt,
-  signers,
-  threshold,
-  label,
-  canDeploy,
-}: ChainGridProps) => {
-  return (
-    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-      {SUPPORTED_CHAINS.map(c => (
-        <ChainRow
-          key={c.id}
-          chainId={c.id}
-          chainLabel={c.label}
-          explorer={c.explorer}
-          mesh={mesh}
-          existing={existing}
-          predicted={predicted}
-          deployer={deployer}
-          salt={salt}
-          signers={signers}
-          threshold={threshold}
-          label={label}
-          canDeploy={canDeploy}
-        />
-      ))}
-    </ul>
-  );
-};
-
-type ChainRowProps = {
-  chainId: number;
-  chainLabel: string;
-  explorer: string;
-  mesh: PeerMeshState;
-  existing: WalletRecord | null;
-  predicted: AddressType | null;
-  deployer: AddressType | null;
-  salt: Hex;
-  signers: ResolvedSigner[];
-  threshold: number;
-  label: string;
-  canDeploy: boolean;
-};
-
-const ChainRow = ({
-  chainId,
-  chainLabel,
-  explorer,
-  mesh,
-  existing,
-  predicted,
-  deployer,
-  salt,
-  signers,
-  threshold,
-  label,
-  canDeploy,
-}: ChainRowProps) => {
-  const connectedChainId = useChainId() ?? mainnet.id;
-  const { switchChainAsync, isPending: switching } = useSwitchChain();
-  const { writeContractAsync, isPending: writePending } = useWriteContract();
-  // The relay says who the host is; wagmi says whether a wallet is actually
-  // connected in THIS tab. They drift (reload before auto-reconnect, session
-  // cookie outliving the connector) and writeContractAsync then throws
-  // ConnectorNotConnectedError — so check the connector here, not the role.
-  const { isConnected: walletConnected, address: walletAddress } = useAccount();
-  const { openConnectModal } = useConnectModal();
-  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
-  const {
-    isLoading: receiptLoading,
-    data: receipt,
-    isError: receiptIsError,
-    error: receiptErr,
-  } = useWaitForTransactionReceipt({
-    hash: txHash ?? undefined,
-    chainId,
-    // App-wide pollingInterval is 30s (set in scaffold.config) which is
-    // fine for ambient state but makes "waiting for deploy receipt"
-    // feel broken. Override to 2s for this specific wait — once we have
-    // a hash, the user just wants to see it land.
-    pollingInterval: 2000,
-  });
-  const [err, setErr] = useState<string | null>(null);
-
-  // Self-predict on this chain as a backup. The parent computes the
-  // predicted address via mainnet RPC (factory at same address on every
-  // chain so the answer's identical) — but if mainnet RPC is slow or
-  // down at the moment we need it, having a second source pinned to
-  // *this* chain's RPC means we still know where the multisig will land.
-  const { data: selfPredicted } = useReadContract({
-    address: FACTORY_ADDRESS,
-    abi: MultisigFactoryAbi,
-    functionName: "getMultisigAddress",
-    args: deployer ? [deployer, salt] : undefined,
-    chainId,
-    query: { enabled: !!deployer },
-  });
-  const localPredicted = (predicted ?? (selfPredicted as AddressType | undefined) ?? null) as AddressType | null;
-
-  // Code probe: does contract bytecode already exist at the predicted
-  // address on this chain? If so, someone already deployed it — even if
-  // we don't have a record locally. Used to gate the deploy button and
-  // to surface the [Register] affordance when the receipt path missed.
-  const publicClient = usePublicClient({ chainId });
-  const [hasCode, setHasCode] = useState<boolean | null>(null);
-  const probeKey = localPredicted ? `${chainId}:${localPredicted.toLowerCase()}` : null;
-  useEffect(() => {
-    if (!publicClient || !localPredicted) {
-      setHasCode(null);
-      return;
-    }
-    let cancelled = false;
-    publicClient
-      .getBytecode({ address: localPredicted })
-      .then(code => {
-        if (cancelled) return;
-        setHasCode(!!code && code !== "0x");
-      })
-      .catch(() => {
-        if (!cancelled) setHasCode(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [probeKey]);
-
-  // Detect which non-passkey signers are nested Multisigs → they must be
-  // registered as ERC-1271 `contractSigners`, not EOAs, or the multisig can
-  // never verify their nested signatures.
-  //
-  // We probe `signerCount()` rather than just checking for on-chain code:
-  // an EIP-7702-delegated EOA (e.g. a MetaMask smart account) HAS code but is
-  // still an EOA that signs with ECDSA — `getBytecode` would misclassify it as
-  // a contract signer (and break EOA signing). A slop Multisig answers
-  // signerCount(); a 7702 EOA / random contract reverts. Only relevant
-  // pre-deploy (an `existing` wallet trusts its persisted signer types).
-  const [contractSignerAddrs, setContractSignerAddrs] = useState<Set<string>>(new Set());
-  const candidateContractAddrs = useMemo(
-    () => signers.filter(s => s.signerType !== "passkey").map(s => s.address.toLowerCase()),
-    [signers],
-  );
-  const contractProbeKey = `${chainId}:${candidateContractAddrs.join(",")}`;
-  useEffect(() => {
-    if (existing || !publicClient || candidateContractAddrs.length === 0) {
-      setContractSignerAddrs(new Set());
-      return;
-    }
-    let cancelled = false;
-    Promise.all(
-      candidateContractAddrs.map(async addr => {
-        try {
-          // A slop Multisig responds to signerCount(); EOAs (incl. 7702) revert.
-          await publicClient.readContract({
-            address: addr as AddressType,
-            abi: MultisigAbi,
-            functionName: "signerCount",
-          });
-          return addr;
-        } catch {
-          return null;
-        }
-      }),
-    ).then(results => {
-      if (cancelled) return;
-      setContractSignerAddrs(new Set(results.filter((a): a is string => a !== null)));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contractProbeKey, existing]);
-
-  // Effective signer type for one signer, upgrading detected contracts to
-  // erc1271. Used by both the createMultisig partition and the WalletRecord.
-  const effectiveSignerType = useCallback(
-    (s: ResolvedSigner): ResolvedSigner["signerType"] =>
-      s.signerType !== "passkey" && contractSignerAddrs.has(s.address.toLowerCase()) ? "erc1271" : s.signerType,
-    [contractSignerAddrs],
-  );
-
-  // Did we already record a deployment for this chain?
-  const localDep = existing?.deployments[chainId] ?? null;
-  const alreadyDeployedOnChain = !!localDep || hasCode === true;
-
-  // When a deploy lands, tell the relay so every peer sees the new chain
-  // entry. Also retro-fill the WalletRecord on the very first deploy
-  // (no existing wallet → we need to call walletDeploy with the full
-  // record; subsequent deploys use walletAddDeployment).
-  useEffect(() => {
-    if (!receipt) return;
-    if (receipt.status !== "success") {
-      setErr("deploy tx reverted");
-      setTxHash(null);
-      return;
-    }
-    if (existing) {
-      mesh.walletAddDeployment(chainId, receipt.transactionHash);
-    } else {
-      // First-ever deploy — build the full WalletRecord. We try to
-      // pull the multisig address from the MultisigCreated event log
-      // (canonical), but the address is also CREATE2-deterministic
-      // from (deployer, salt), so we fall back to the predicted value
-      // if log decoding fails. This makes the deploy path resilient
-      // to flaky RPC responses that drop or mangle event logs — the
-      // tx confirmed, the contract is live; we shouldn't lose the
-      // wallet record over a parse error.
-      try {
-        let multisigAddr: AddressType | null = null;
-        for (const log of receipt.logs) {
-          if (log.address.toLowerCase() !== FACTORY_ADDRESS.toLowerCase()) continue;
-          try {
-            const decoded = decodeEventLog({
-              abi: MultisigFactoryAbi,
-              data: log.data,
-              topics: log.topics,
-              strict: false,
-            });
-            if (decoded.eventName === "MultisigCreated") {
-              multisigAddr = (decoded.args as { multisig: AddressType }).multisig;
-              break;
-            }
-          } catch (logErr) {
-            console.warn("[wallet] failed to decode factory log; will try next", logErr);
-          }
-        }
-        if (!multisigAddr) {
-          const fallback = localPredicted;
-          if (fallback) {
-            console.warn(
-              "[wallet] MultisigCreated event not found in receipt; falling back to CREATE2-predicted address",
-              { chainId, txHash: receipt.transactionHash, predicted: fallback },
-            );
-            multisigAddr = fallback;
-          } else {
-            setErr("Deploy confirmed but couldn't determine multisig address (no event log, no prediction)");
-            setTxHash(null);
-            return;
-          }
-        }
-        if (!deployer) {
-          setErr("missing deployer");
-          setTxHash(null);
-          return;
-        }
-        const record: WalletRecord = {
-          id: Math.random().toString(36).slice(2),
-          address: multisigAddr.toLowerCase(),
-          deployer: deployer.toLowerCase(),
-          salt,
-          signers: signers.map(s => ({
-            address: s.address.toLowerCase(),
-            label: s.label,
-            signerType: effectiveSignerType(s),
-            ...(s.qx ? { qx: s.qx } : {}),
-            ...(s.qy ? { qy: s.qy } : {}),
-            ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
-          })),
-          threshold,
-          deployments: {
-            [chainId]: { txHash: receipt.transactionHash, deployedAt: Date.now() },
-          },
-          createdAt: Date.now(),
-          label,
-        };
-        mesh.walletDeploy(record);
-      } catch (e) {
-        console.warn("[wallet] post-receipt walletDeploy failed", e);
-        setErr(String(e).slice(0, 200));
-      }
-    }
-    setTxHash(null);
-    // We deliberately key only on the receipt landing — every other
-    // input is captured at the time the deploy fired.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receipt]);
-
-  const onDeploy = useCallback(async () => {
-    setErr(null);
-    if (!canDeploy) {
-      // The button is disabled when !canDeploy, but belt-and-braces:
-      // also short-circuit the handler in case the button is reached
-      // via a programmatic click (e.g. dev tools).
-      setErr("only the host can deploy");
-      return;
-    }
-    if (!deployer) {
-      setErr("connect wallet first");
-      return;
-    }
-    if (!walletConnected || !walletAddress) {
-      setErr("wallet not connected in this tab — connect it, then deploy");
-      openConnectModal?.();
-      return;
-    }
-    if (walletAddress.toLowerCase() !== deployer.toLowerCase()) {
-      setErr(
-        `connected wallet ${walletAddress.slice(0, 6)}… is not the host wallet ${deployer.slice(0, 6)}… — the address is derived from the host, switch accounts`,
-      );
-      return;
-    }
-    if (signers.length === 0) {
-      setErr("pick at least one signer");
-      return;
-    }
-    // Partition the resolved signer set into the contract's two
-    // parallel arrays. A passkey signer is one we have full pubkey data for
-    // (qx + qy + credentialIdHash); everything else (EOA, 7702 smart account,
-    // Safe, nested Multisig) is an "account" signer — v4 validates those
-    // polymorphically (ECDSA-or-ERC1271), so they all go in one array and the
-    // contract never needs to know which kind at registration.
-    const accounts: AddressType[] = [];
-    const passkeyQxs: `0x${string}`[] = [];
-    const passkeyQys: `0x${string}`[] = [];
-    const credentialIdHashes: `0x${string}`[] = [];
-    for (const s of signers) {
-      if (s.signerType === "passkey" && s.qx && s.qy && s.credentialIdHash) {
-        passkeyQxs.push(s.qx);
-        passkeyQys.push(s.qy);
-        credentialIdHashes.push(s.credentialIdHash);
-      } else {
-        accounts.push(s.address);
-      }
-    }
-    try {
-      if (connectedChainId !== chainId) {
-        await switchChainAsync({ chainId });
-      }
-      const hash = await writeContractAsync({
-        address: FACTORY_ADDRESS,
-        abi: MultisigFactoryAbi,
-        functionName: "createMultisig",
-        chainId,
-        // args: accounts, passkeyQxs, passkeyQys, credentialIdHashes, threshold, salt
-        args: [accounts, passkeyQxs, passkeyQys, credentialIdHashes, BigInt(threshold), salt],
-      });
-      setTxHash(hash);
-    } catch (e) {
-      setErr(String(e).slice(0, 200));
-    }
-  }, [
-    canDeploy,
-    deployer,
-    signers,
-    connectedChainId,
-    chainId,
-    switchChainAsync,
-    writeContractAsync,
-    threshold,
-    salt,
-    walletConnected,
-    walletAddress,
-    openConnectModal,
-  ]);
-
-  const busy = writePending || receiptLoading || switching;
-
-  // Recovery path: bytecode exists at the predicted address on this
-  // chain but we have no record. Either a previous deploy receipt
-  // never closed the loop (RPC flake) or someone deployed off-app.
-  // Host clicks [ Register ] to construct the WalletRecord from the
-  // current form + the predicted address. Same as the normal post-
-  // receipt path, just without the receipt.
-  const onRegister = useCallback(() => {
-    setErr(null);
-    if (!canDeploy) return;
-    if (!localPredicted || !deployer) {
-      setErr("missing predicted address or deployer");
-      return;
-    }
-    if (existing) {
-      mesh.walletAddDeployment(chainId, null);
-      return;
-    }
-    const record: WalletRecord = {
-      id: Math.random().toString(36).slice(2),
-      address: localPredicted.toLowerCase(),
-      deployer: deployer.toLowerCase(),
-      salt,
-      signers: signers.map(s => ({
-        address: s.address.toLowerCase(),
-        label: s.label,
-        signerType: effectiveSignerType(s),
-        ...(s.qx ? { qx: s.qx } : {}),
-        ...(s.qy ? { qy: s.qy } : {}),
-        ...(s.credentialIdHash ? { credentialIdHash: s.credentialIdHash } : {}),
-      })),
-      threshold,
-      deployments: { [chainId]: { txHash: null, deployedAt: Date.now() } },
-      createdAt: Date.now(),
-      label,
-    };
-    mesh.walletDeploy(record);
-  }, [
-    canDeploy,
-    localPredicted,
-    deployer,
-    existing,
-    chainId,
-    salt,
-    signers,
-    threshold,
-    label,
-    mesh,
-    effectiveSignerType,
-  ]);
-
-  const statusNode = (() => {
-    if (alreadyDeployedOnChain) {
-      // Already deployed (either we have a record, or eth_getCode found
-      // bytecode at the address from some prior deploy).
-      const link = localDep?.txHash
-        ? `${explorer}/tx/${localDep.txHash}`
-        : localPredicted
-          ? `${explorer}/address/${localPredicted}`
-          : null;
-      const txt = localDep ? "already deployed" : "already deployed (on-chain)";
-      const orphaned = hasCode === true && !localDep;
-      return (
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "#7be88a", fontSize: 11 }}>✓ {txt}</span>
-          {link ? (
-            <a
-              href={link}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                fontSize: 10,
-                color: "var(--slop-magenta, #ff3ec9)",
-                textDecoration: "underline",
-              }}
-            >
-              view
-            </a>
-          ) : null}
-          {orphaned && canDeploy ? (
-            <Button
-              onClick={onRegister}
-              title="The contract is on-chain but we don't have a wallet record yet — click to register it from this chain."
-            >
-              Register
-            </Button>
-          ) : null}
-        </div>
-      );
-    }
-    return (
-      <Button
-        variant="primary"
-        onClick={onDeploy}
-        disabled={busy || !deployer || signers.length === 0 || !canDeploy}
-        title={
-          !canDeploy
-            ? "Only the host can deploy. The host's wallet pays gas and signs createMultisig — that's what makes the address the same for everyone."
-            : !deployer
-              ? "Waiting for the host to connect their wallet."
-              : signers.length === 0
-                ? "Pick at least one signer."
-                : undefined
-        }
-      >
-        {switching
-          ? "Switching…"
-          : writePending
-            ? "Confirm…"
-            : receiptLoading
-              ? "Waiting…"
-              : !canDeploy
-                ? "Deploy (host only)"
-                : !walletConnected
-                  ? "Connect wallet"
-                  : "Deploy"}
-      </Button>
-    );
-  })();
-
-  return (
-    <li
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        padding: "10px 12px",
-        background: alreadyDeployedOnChain ? "rgba(123,232,138,0.04)" : "rgba(255,255,255,0.025)",
-        border: `1px solid ${alreadyDeployedOnChain ? "rgba(123,232,138,0.25)" : "rgba(255,62,201,0.18)"}`,
-        borderRadius: 6,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              fontFamily: "var(--slop-font-display)",
-              letterSpacing: "0.06em",
-              fontSize: 13,
-              color: "var(--slop-text)",
-            }}
-          >
-            {chainLabel}
-          </div>
-          <div style={{ fontSize: 10, color: "var(--slop-text-muted)", marginTop: 2 }}>chain {chainId}</div>
-        </div>
-        {statusNode}
-      </div>
-      {txHash ? (
-        <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
-          tx{" "}
-          <a
-            href={`${explorer}/tx/${txHash}`}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              color: "var(--slop-magenta, #ff3ec9)",
-              textDecoration: "underline",
-              fontFamily: "monospace",
-              wordBreak: "break-all",
-            }}
-          >
-            {txHash.slice(0, 10)}…{txHash.slice(-6)}
-          </a>{" "}
-          {receipt ? "confirmed" : receiptIsError ? "failed" : "waiting…"}
-        </div>
-      ) : null}
-      {receiptIsError ? (
-        <div style={{ fontSize: 10, color: "#ff7676" }}>{receiptErr?.message?.slice(0, 160) ?? "wait failed"}</div>
-      ) : null}
-      {err ? (
-        <div
-          style={{ fontSize: 10, color: "#ff7676", padding: 4, background: "rgba(255,118,118,0.08)", borderRadius: 3 }}
-        >
-          {err}
-        </div>
-      ) : null}
-      {writePending || receiptLoading ? (
-        <LoadingBar
-          caption={writePending ? "confirm in wallet…" : receiptLoading ? "waiting for inclusion…" : "finalizing…"}
-        />
-      ) : null}
-    </li>
   );
 };
 
@@ -2345,7 +1842,22 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     meshSignTx(id, sig, walletAddress);
   const txRemove = (id: string) => meshRemoveTx(id, walletAddress);
   const txResummarize = (id: string) => meshResummarize(id, walletAddress);
-  const { signMessageAsync, isPending: signing } = useSignMessage();
+  const { signMessageAsync, isPending: signingMsg } = useSignMessage();
+  const { signTypedDataAsync, isPending: signingTyped } = useSignTypedData();
+  const signing = signingMsg || signingTyped;
+  // Safe tx (ops/PLAN-safe.md): EOAs sign EIP-712, passkeys sign the
+  // safeTxHash, the relay executes. No deadline — cancel burns the nonce.
+  const isSafe = tx.operation !== undefined;
+  const slug = useRoomSlug();
+  const safeTx: SafeTx | null = isSafe
+    ? {
+        to: tx.target as AddressType,
+        value: BigInt(tx.value),
+        data: tx.data as Hex,
+        operation: tx.operation!,
+        nonce: BigInt(tx.nonce),
+      }
+    : null;
   const { writeContractAsync, isPending: writing } = useWriteContract();
   // The connected wallet's ACTIVE network (what MetaMask is pointed at) —
   // independent of the slop UI's chain selectors. Execute is an on-chain tx
@@ -2437,7 +1949,13 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
   // signers we use the relay session's `myAddress` (the passkey-derived
   // identity). Trying both lets one browser participate as either kind.
   const lowerCandidates = [connectedAddress?.toLowerCase(), myAddress?.toLowerCase()].filter((a): a is string => !!a);
-  const mySignerEntry = wallet.signers.find(s => lowerCandidates.includes(s.address.toLowerCase())) ?? null;
+  // A Safe passkey owner is its signer contract; match the peer by passkeyAddr.
+  const mySignerEntry =
+    wallet.signers.find(
+      s =>
+        lowerCandidates.includes(s.address.toLowerCase()) ||
+        (!!s.passkeyAddr && lowerCandidates.includes(s.passkeyAddr.toLowerCase())),
+    ) ?? null;
   const myLowerAddress = mySignerEntry?.address.toLowerCase() ?? "";
   const isMySigner = !!mySignerEntry;
   const isPasskeySigner = mySignerEntry?.signerType === "passkey";
@@ -2578,6 +2096,38 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       setErr("you're not a signer on this multisig");
       return;
     }
+    if (safeTx) {
+      try {
+        if (mySignerEntry.signerType === "passkey") {
+          const identity = getStoredPasskeyIdentity(mySignerEntry.passkeyAddr ?? mySignerEntry.address);
+          if (!identity?.credentialIdBase64Url) {
+            setErr("missing passkey credentials — sign in with your passkey first");
+            return;
+          }
+          setPasskeySigning(true);
+          const data = await signSafeTxWithPasskey({
+            credentialIdBase64Url: identity.credentialIdBase64Url,
+            safeTxHash: tx.execHash as Hex,
+            owner: mySignerEntry.address as `0x${string}`,
+          });
+          txSign(tx.id, { signer: mySignerEntry.address.toLowerCase(), sigType: 1, data });
+        } else {
+          if (!connectedAddress) {
+            setErr("connect your wallet to sign");
+            return;
+          }
+          // Wallets refuse EIP-712 whose domain chainId isn't the active chain.
+          if (connectedChainId !== tx.chainId) await switchChainAsync({ chainId: tx.chainId });
+          const sig = await signTypedDataAsync(safeTxTypedData(tx.chainId, wallet.address as AddressType, safeTx));
+          txSign(tx.id, { signer: connectedAddress.toLowerCase(), sigType: 0, data: sig });
+        }
+      } catch (e) {
+        setErr(String(e).slice(0, 200));
+      } finally {
+        setPasskeySigning(false);
+      }
+      return;
+    }
     if (mySignerEntry.signerType === "passkey") {
       // Passkey path: locate the credential locally (we stashed it after
       // /auth/passkey), prompt the authenticator, ABI-encode the result.
@@ -2626,7 +2176,21 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       console.error("[wallet] onSign EOA error", e);
       setErr(String(e).slice(0, 200));
     }
-  }, [mySignerEntry, connectedAddress, signMessageAsync, mesh, tx.id, tx.execHash, isAttestation]);
+  }, [
+    mySignerEntry,
+    connectedAddress,
+    signMessageAsync,
+    signTypedDataAsync,
+    connectedChainId,
+    switchChainAsync,
+    safeTx,
+    wallet.address,
+    tx.chainId,
+    mesh,
+    tx.id,
+    tx.execHash,
+    isAttestation,
+  ]);
 
   // A tx with `calls` is a batched proposal — exec goes through
   // execBatchTransaction instead of execTransaction. The top-level
@@ -2649,6 +2213,24 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       hasPublicClient: !!txPublicClient,
     });
     setErr(null);
+    // Safe: the relay executes (and pays gas) once enough owners signed.
+    if (isSafe) {
+      setSponsoring(true);
+      try {
+        const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/exec`, slug), {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ txId: tx.id }),
+        });
+        if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `relay ${r.status}`);
+      } catch (e) {
+        setErr(String(e).slice(0, 200));
+      } finally {
+        setSponsoring(false);
+      }
+      return;
+    }
     // Gas-sponsored path (passkey personal wallet): no connected EOA. The relay
     // facilitator broadcasts execTransaction + pays gas using the tx's
     // already-collected signatures (threshold 1, the passkey sig was gathered
@@ -2827,7 +2409,26 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     txPublicClient,
     isBatchTx,
     sponsoredExecute,
+    isSafe,
+    slug,
   ]);
+  // Safe has no deadline: kill a signed-but-unwanted tx by proposing a
+  // no-op at the same nonce. Whichever executes first wins (trap 1).
+  const onCancelSafe = useCallback(() => {
+    if (!safeTx) return;
+    const c = cancelTx(wallet.address as AddressType, safeTx.nonce);
+    mesh.walletProposeTx({
+      chainId: tx.chainId,
+      target: c.to,
+      value: "0",
+      data: c.data,
+      deadline: "0",
+      nonce: c.nonce.toString(),
+      execHash: safeTxHash(tx.chainId, wallet.address as AddressType, c),
+      operation: 0,
+      source: "manual",
+    });
+  }, [safeTx, wallet.address, mesh, tx.chainId]);
 
   const onResummarize = useCallback(() => {
     txResummarize(tx.id);
@@ -2847,7 +2448,7 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
       return null;
     }
   })();
-  const expired = deadlineDate ? deadlineDate.getTime() < Date.now() : false;
+  const expired = !isSafe && deadlineDate ? deadlineDate.getTime() < Date.now() : false;
 
   return (
     <div
@@ -3109,6 +2710,14 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
               >
                 {execWaiting ? "Waiting…" : writing || sponsoring ? "Submitting…" : "Execute"}
               </Button>
+              {isSafe && !(tx.target.toLowerCase() === wallet.address.toLowerCase() && tx.data === "0x") ? (
+                <Button
+                  onClick={onCancelSafe}
+                  title={`Propose a no-op at nonce ${tx.nonce}. Executing it kills this transaction for good.`}
+                >
+                  Cancel
+                </Button>
+              ) : null}
               {unsignedContractSigners.map(cs => (
                 <Button
                   key={cs.address}

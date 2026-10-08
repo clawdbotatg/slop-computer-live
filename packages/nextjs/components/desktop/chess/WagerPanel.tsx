@@ -618,15 +618,19 @@ export const PayoutProposeButton = ({
       const deadline = defaultDeadline();
       if (payouts.length > 1) {
         const calls = payouts.map(p => ({ target: p.to, value: p.amountWei, data: "0x" }));
-        const execHash = (await publicClient.readContract({
-          address: wallet.address as AddressType,
-          abi: MultisigAbi,
-          functionName: "getBatchExecHash",
-          args: [
-            calls.map(c => ({ target: c.target as AddressType, value: BigInt(c.value), data: c.data as Hex })),
-            deadline,
-          ],
-        })) as Hex;
+        // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
+        const execHash =
+          wallet.kind === "safe"
+            ? "0x"
+            : ((await publicClient.readContract({
+                address: wallet.address as AddressType,
+                abi: MultisigAbi,
+                functionName: "getBatchExecHash",
+                args: [
+                  calls.map(c => ({ target: c.target as AddressType, value: BigInt(c.value), data: c.data as Hex })),
+                  deadline,
+                ],
+              })) as Hex);
         mesh.walletProposeTx({
           chainId: escrow.chainId,
           target: wallet.address,

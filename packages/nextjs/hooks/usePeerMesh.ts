@@ -455,6 +455,10 @@ export type WalletSigner = {
   qx?: string;
   qy?: string;
   credentialIdHash?: string;
+  /** Safe wallets: a passkey owner's `address` is its signer contract;
+   *  this is keccak(qx‖qy) — the peer's identity. */
+  passkeyAddr?: string;
+  device?: "wedgie";
 };
 export type WalletDeployment = {
   txHash: string | null;
@@ -478,6 +482,9 @@ export type WalletRecord = {
   deployments: Record<number, WalletDeployment>;
   createdAt: number;
   label: string;
+  /** "safe" = Gnosis Safe (ops/PLAN-safe.md). Legacy slop multisigs are
+   *  abandoned: the mesh hides them, so the room sees "no wallet". */
+  kind?: "safe";
 };
 export type WalletTxSignature = {
   signer: string;
@@ -534,7 +541,13 @@ export type WalletTx = {
   // wallet's execHash, and the assembled blob routes back to the outer tx.
   // It is signable but never executed in this room.
   attestationFor?: WalletTxAttestation;
+  /** Safe txs only: 0 = call, 1 = MultiSendCallOnly batch. execHash is the safeTxHash. */
+  operation?: 0 | 1;
 };
+
+// Old slop multisigs were abandoned for Safe (ops/PLAN-safe.md, 10-07).
+const safeOnly = (w: unknown): WalletRecord | null =>
+  w && typeof w === "object" && (w as WalletRecord).kind === "safe" ? (w as WalletRecord) : null;
 
 export type ChatMessage = {
   id: string;
@@ -2096,6 +2109,8 @@ export type PeerMeshState = {
     /** PERSONAL wallet: its own multisig address → per-address queue.
      *  Omit for the Bank. */
     address?: string;
+    /** Safe: a complete SafeTx at a fixed nonce (e.g. cancel). */
+    operation?: 0 | 1;
   }) => void;
   walletSignTx: (id: string, sig: { signer: string; sigType: 0 | 1; data: string }, address?: string) => void;
   walletSetTxStatus: (id: string, status: WalletTxStatus, txHash?: string | null, address?: string) => void;
@@ -3904,6 +3919,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
       /** PERSONAL wallet: its own multisig address → per-address queue.
        *  Omit for the Bank (the room's singleton wallet). */
       address?: string;
+      /** Safe: send a complete SafeTx (e.g. a cancel at a fixed nonce). Omit
+       *  and the relay fills nonce + hash from target/value/data or calls. */
+      operation?: 0 | 1;
     }) => {
       send({
         type: "wallet_tx_propose",
@@ -3918,6 +3936,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         browserId: req.browserId ?? null,
         ...(req.calls && req.calls.length > 0 ? { calls: req.calls } : {}),
         ...(req.address ? { address: req.address } : {}),
+        ...(req.operation !== undefined ? { operation: req.operation } : {}),
       });
     },
     [send],
@@ -4353,7 +4372,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             setClockStateLocal(msg.clockState as ClockState);
           }
           if (msg.wallet === null || (msg.wallet && typeof msg.wallet === "object")) {
-            setWallet((msg.wallet ?? null) as WalletRecord | null);
+            setWallet(safeOnly(msg.wallet));
           }
           if (msg.walletDraft === null || (msg.walletDraft && typeof msg.walletDraft === "object")) {
             setWalletDraft((msg.walletDraft ?? null) as WalletDraft | null);
@@ -5243,7 +5262,7 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
         }
 
         if (msg.type === "wallet") {
-          setWallet((msg.current ?? null) as WalletRecord | null);
+          setWallet(safeOnly(msg.current));
           if (Array.isArray(msg.history)) {
             setWalletHistory(msg.history as WalletRecord[]);
           }

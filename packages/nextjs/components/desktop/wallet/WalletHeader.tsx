@@ -314,19 +314,23 @@ const SendAllModal = ({
           // re-implementing the encoding; available because the multisig
           // is deployed here (otherwise this chain wouldn't be in
           // sendableChains).
-          const execHash = (await client.readContract({
-            address: wallet.address as AddressType,
-            abi: MultisigAbi,
-            functionName: "getBatchExecHash",
-            args: [
-              calls.map(c => ({
-                target: c.target as AddressType,
-                value: BigInt(c.value),
-                data: c.data as Hex,
-              })),
-              deadline,
-            ],
-          })) as Hex;
+          // A Safe Bank: the relay fills nonce + safeTxHash from `calls`.
+          const execHash =
+            wallet.kind === "safe"
+              ? "0x"
+              : ((await client.readContract({
+                  address: wallet.address as AddressType,
+                  abi: MultisigAbi,
+                  functionName: "getBatchExecHash",
+                  args: [
+                    calls.map(c => ({
+                      target: c.target as AddressType,
+                      value: BigInt(c.value),
+                      data: c.data as Hex,
+                    })),
+                    deadline,
+                  ],
+                })) as Hex);
           mesh.walletProposeTx({
             chainId,
             // Sentinel target/value/data — batch txs ignore these at
