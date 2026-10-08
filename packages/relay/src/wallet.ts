@@ -61,6 +61,9 @@ export type WalletRecord = {
   // "safe" = Gnosis Safe 1.5.0 (ops/PLAN-safe.md); absent = legacy slop Multisig.
   // For a Safe: `salt` is the saltNonce (decimal), `deployer` is the relay that paid.
   kind?: "safe";
+  // Safe: the owner set it was created with. Deploying to another chain must
+  // use exactly this (the address depends on it — ops/PLAN-safe.md trap 4).
+  genesis?: { owners: string[]; threshold: number; passkeys: { qx: string; qy: string }[] };
 };
 
 export type WalletTxSignature = {
@@ -132,6 +135,9 @@ export type WalletTx = {
   // target/value/data are the exact SafeTx fields; execHash is the
   // safeTxHash; deadline is "0" (Safe signatures never expire — trap 1).
   operation?: 0 | 1;
+  // Safe addOwner txs: who is being added, so the record can label them
+  // once it executes (the chain only knows the address).
+  ownerMeta?: WalletSigner;
   // When present, this tx is a nested-signature attestation request (see
   // WalletTxAttestation). Signable in this room, never executed here — on
   // threshold the client routes the assembled blob back to the outer tx.
@@ -229,6 +235,7 @@ export type ProposeTxInput = {
   // Optional: when set, this is a nested-signature attestation request.
   attestationFor?: WalletTxAttestation;
   operation?: 0 | 1;
+  ownerMeta?: WalletSigner;
 };
 
 export class WalletState {
@@ -373,6 +380,15 @@ export class WalletState {
     return this.state.current;
   }
 
+  // Safe owner change executed: replace signers/threshold, keep the rest.
+  setOwners(signers: WalletSigner[], threshold: number): void {
+    this.load();
+    if (!this.state.current) return;
+    this.state.current = { ...this.state.current, signers, threshold };
+    this.persist();
+    this.emit();
+  }
+
   archiveCurrent(): void {
     this.load();
     if (!this.state.current) return;
@@ -435,6 +451,7 @@ export class WalletState {
       updatedAt: now,
       ...(normalizedCalls ? { calls: normalizedCalls } : {}),
       ...(input.operation !== undefined ? { operation: input.operation } : {}),
+      ...(input.ownerMeta ? { ownerMeta: input.ownerMeta } : {}),
       ...(input.attestationFor
         ? {
             attestationFor: {

@@ -30,7 +30,8 @@ import { withSlug } from "~~/lib/slug";
 import { robinhood } from "~~/scaffold.config";
 import { sortSignatures } from "~~/utils/multisig";
 import { getStoredPasskeyIdentity, signMultisigExecWithPasskey, signSafeTxWithPasskey } from "~~/utils/passkey";
-import { SAFE_CHAIN_IDS, type SafeTx, cancelTx, safeTxHash, safeTxTypedData } from "~~/utils/safe";
+import { SAFE_CHAIN_IDS, type SafeTx, cancelTx, passkeyOwner, safeTxHash, safeTxTypedData } from "~~/utils/safe";
+import { wedgieSupported, withWedgie } from "~~/utils/wedgie";
 
 const RELAY_HTTP = process.env.NEXT_PUBLIC_RELAY_HTTP_URL ?? "http://localhost:8080";
 
@@ -658,12 +659,15 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
       {existing ? (
-        <DeployedSummary
-          wallet={existing}
-          customNames={mesh.customNames}
-          myAddress={myAddress}
-          onArchive={() => mesh.walletNewEpisode()}
-        />
+        <>
+          <DeployedSummary
+            wallet={existing}
+            customNames={mesh.customNames}
+            myAddress={myAddress}
+            onArchive={() => mesh.walletNewEpisode()}
+          />
+          <SafeOwners wallet={existing} candidates={candidateSigners} customNames={mesh.customNames} />
+        </>
       ) : (
         <>
           <div>
@@ -837,6 +841,151 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
         />
       </Section>
     </div>
+  );
+};
+
+// ============================================================================
+// SafeOwners — add (room member or wedgie) / remove owners, change threshold.
+// The relay queues one Safe tx per chain; they're signed + executed like any
+// other tx in the Transactions tab.
+// ============================================================================
+
+const SafeOwners = ({
+  wallet,
+  candidates,
+  customNames,
+}: {
+  wallet: WalletRecord;
+  candidates: { address: string; label: string; passkey?: { qx: string; qy: string } }[];
+  customNames: Record<string, string>;
+}) => {
+  const slug = useRoomSlug();
+  const [threshold, setThreshold] = useState(wallet.threshold);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => setThreshold(wallet.threshold), [wallet.threshold]);
+
+  const ownerIds = new Set(wallet.signers.flatMap(s => [s.address.toLowerCase(), s.passkeyAddr?.toLowerCase() ?? ""]));
+  const addable = candidates.filter(c => !ownerIds.has(c.address.toLowerCase()));
+
+  const call = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await fetch(withSlug(`${RELAY_HTTP}/v1/safe/owners`, slug), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = (await r.json().catch(() => ({}))) as {
+        error?: string;
+        results?: { chainId: number; txId?: string; error?: string }[];
+      };
+      if (!r.ok) return setMsg(j.error ?? `relay ${r.status}`);
+      const failed = (j.results ?? []).filter(x => x.error);
+      setMsg(
+        `Queued on ${(j.results ?? []).length - failed.length} chains — sign it in Transactions.` +
+          (failed.length ? ` Failed: ${failed.map(f => `${chainMeta(f.chainId).label} (${f.error})`).join(", ")}` : ""),
+      );
+    } catch (e) {
+      setMsg(String(e).slice(0, 160));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addWedgie = async () => {
+    try {
+      const k = await withWedgie(w => w.key());
+      await call({ action: "add", owner: { qx: k.x, qy: k.y, device: "wedgie", label: "wedgie" }, threshold });
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <Section title="Owners">
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+        {wallet.signers.map(s => (
+          <div key={s.address} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <SlopAddress address={s.passkeyAddr ?? s.address} customNames={customNames} />
+            <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>
+              {s.device === "wedgie" ? "wedgie" : s.signerType}
+            </span>
+            <button
+              type="button"
+              disabled={busy || wallet.signers.length <= 1}
+              onClick={() =>
+                void call({
+                  action: "remove",
+                  owner: { address: s.address },
+                  threshold: Math.min(threshold, wallet.signers.length - 1),
+                })
+              }
+              title="Propose removing this owner"
+              style={{
+                marginLeft: "auto",
+                background: "transparent",
+                border: 0,
+                color: "var(--slop-text-muted)",
+                cursor: "pointer",
+              }}
+            >
+              remove
+            </button>
+          </div>
+        ))}
+        <Field label={`Signatures needed: ${threshold} of ${wallet.signers.length}`}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="range"
+              min={1}
+              max={Math.max(1, wallet.signers.length + 1)}
+              value={threshold}
+              onChange={e => setThreshold(parseInt(e.target.value, 10))}
+              style={{ flex: 1 }}
+            />
+            <Button
+              disabled={busy || threshold === wallet.threshold || threshold > wallet.signers.length}
+              onClick={() => void call({ action: "threshold", threshold })}
+            >
+              Change
+            </Button>
+          </div>
+        </Field>
+        {addable.map(c => (
+          <div key={c.address} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <SlopAddress address={c.address} customNames={customNames} />
+            <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>{c.passkey ? "passkey" : "wallet"}</span>
+            <Button
+              disabled={busy}
+              onClick={() =>
+                void call({
+                  action: "add",
+                  owner: c.passkey
+                    ? { qx: c.passkey.qx, qy: c.passkey.qy, label: c.label }
+                    : { address: c.address, label: c.label },
+                  threshold,
+                })
+              }
+            >
+              Add
+            </Button>
+          </div>
+        ))}
+        {wedgieSupported() ? (
+          <Button disabled={busy} onClick={() => void addWedgie()} title="Plug in the wedgie (Safe signer app) first.">
+            Add wedgie
+          </Button>
+        ) : null}
+        <div style={{ fontSize: 10, color: "var(--slop-text-muted)" }}>
+          A wedgie can never be the only signature needed: with one, at least 2 are needed and the other owners must
+          reach that number on their own.
+        </div>
+        {msg ? <div style={{ fontSize: 11 }}>{msg}</div> : null}
+      </div>
+    </Section>
   );
 };
 
@@ -2413,6 +2562,32 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     isSafe,
     slug,
   ]);
+  // Wedgie owners sign from whichever computer the device is plugged into,
+  // not tied to a room identity: the device's key picks the owner.
+  const unsignedWedgies =
+    isSafe && wedgieSupported()
+      ? wallet.signers.filter(s => s.device === "wedgie" && !tx.signatures.some(g => g.signer === s.address))
+      : [];
+  const [wedgieSigning, setWedgieSigning] = useState(false);
+  const onSignWedgie = useCallback(async () => {
+    if (!safeTx) return;
+    setErr(null);
+    setWedgieSigning(true);
+    try {
+      await withWedgie(async w => {
+        const k = await w.key();
+        const owner = passkeyOwner(k.x, k.y).toLowerCase();
+        if (!wallet.signers.some(s => s.address === owner)) throw new Error("This wedgie isn't an owner of this Safe.");
+        const data = await w.sign(tx.chainId, wallet.address as AddressType, safeTx, tx.execHash as Hex);
+        txSign(tx.id, { signer: owner, sigType: 1, data });
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWedgieSigning(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [safeTx, wallet.signers, wallet.address, tx.chainId, tx.execHash, tx.id]);
   // Safe has no deadline: kill a signed-but-unwanted tx by proposing a
   // no-op at the same nonce. Whichever executes first wins (trap 1).
   const onCancelSafe = useCallback(() => {
@@ -2711,6 +2886,15 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
               >
                 {execWaiting ? "Waiting…" : writing || sponsoring ? "Submitting…" : "Execute"}
               </Button>
+              {unsignedWedgies.length > 0 ? (
+                <Button
+                  onClick={() => void onSignWedgie()}
+                  disabled={wedgieSigning}
+                  title="Press A on the wedgie to sign."
+                >
+                  {wedgieSigning ? "Press A on the wedgie…" : "Sign with wedgie"}
+                </Button>
+              ) : null}
               {isSafe && !(tx.target.toLowerCase() === wallet.address.toLowerCase() && tx.data === "0x") ? (
                 <Button
                   onClick={onCancelSafe}

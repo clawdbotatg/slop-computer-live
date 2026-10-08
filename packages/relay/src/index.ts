@@ -79,10 +79,20 @@ import {
   execSafeTx,
   isSafeRelayConfigured,
   predictSafe,
+  safeOwners,
+  safeThreshold,
   toSafeSignatures,
   validateSpec,
+  wedgieRuleError,
 } from "./safe-relay.js";
-import { passkeyOwner, saltNonceFromLabel } from "./safe.js";
+import {
+  type Call as SafeCall,
+  addOwnerCall,
+  changeThresholdCall,
+  passkeyOwner,
+  removeOwnerCall,
+  saltNonceFromLabel,
+} from "./safe.js";
 import {
   isKohakuConfigured,
   kohakuChat,
@@ -2746,6 +2756,14 @@ const safeSignerRoomBucket = new TokenBucket(10, 10 / 86400);
 const safeExecRoomBucket = new TokenBucket(20, 20 / 3600);
 
 function safeSpecOf(rec: WalletRecord): SafeSpec {
+  if (rec.genesis) {
+    return {
+      owners: rec.genesis.owners as `0x${string}`[],
+      threshold: rec.genesis.threshold,
+      saltNonce: BigInt(rec.salt),
+      passkeys: rec.genesis.passkeys as PasskeyKey[],
+    };
+  }
   return {
     owners: rec.signers.map(s => s.address as `0x${string}`),
     threshold: rec.threshold,
@@ -2846,10 +2864,8 @@ app.post("/v1/safe/deploy", async (req, reply) => {
     }
   }
   const threshold = Number(b.threshold);
-  // A wedgie is never enough on its own (its firmware isn't locked down).
-  const wedgies = signers.filter(s => s.device === "wedgie").length;
-  if (wedgies > 0 && signers.length - wedgies < threshold) return reply.code(400).send({ error: "wedgie-alone" });
-  if (wedgies > 0 && threshold < 2) return reply.code(400).send({ error: "wedgie-alone" });
+  const wedgieErr = wedgieRuleError(signers, threshold);
+  if (wedgieErr) return reply.code(400).send({ error: wedgieErr });
 
   const createdAt = Date.now();
   const saltNonce = saltNonceFromLabel(`slop-room:${slug}:${createdAt}`);
@@ -2866,12 +2882,159 @@ app.post("/v1/safe/deploy", async (req, reply) => {
     signers,
     threshold,
     deployments: {},
+    genesis: { owners: spec.owners.map(o => o.toLowerCase()), threshold, passkeys },
     createdAt,
     label: typeof b.label === "string" && b.label ? b.label.slice(0, 100) : `Episode ${new Date().toISOString().slice(0, 10)}`,
   };
   room.wallet.setCurrent(rec);
   runSafeDeploy(slug, rec, [...SAFE_CHAINS]);
   return { address: rec.address, chains: SAFE_CHAINS };
+});
+
+const shortAddr = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+// Every passkey/wedgie key this Safe has ever had, so exec can make sure their
+// signer contracts exist on the chain it runs on.
+function knownPasskeys(rec: WalletRecord): PasskeyKey[] {
+  const keys = new Map<string, PasskeyKey>();
+  for (const k of rec.genesis?.passkeys ?? []) keys.set(k.qx + k.qy, k as PasskeyKey);
+  for (const s of rec.signers) if (s.qx && s.qy) keys.set(s.qx + s.qy, { qx: s.qx as `0x${string}`, qy: s.qy as `0x${string}` });
+  return [...keys.values()];
+}
+
+// An owner-change tx (a self-call) executed: re-read owners + threshold on its
+// chain and rewrite the record, keeping labels/keys we know and adding the new
+// owner's from the tx's ownerMeta.
+async function refreshSafeOwners(room: ReturnType<typeof getOrCreateRoom>, txId: string): Promise<void> {
+  const cur = room.wallet.getCurrent();
+  const tx = room.wallet.findTx(txId);
+  if (cur?.kind !== "safe" || !tx || tx.target.toLowerCase() !== cur.address || tx.data === "0x") return;
+  try {
+    const owners = await safeOwners(tx.chainId, cur.address as `0x${string}`);
+    const threshold = await safeThreshold(tx.chainId, cur.address as `0x${string}`);
+    const meta = new Map<string, WalletSigner>();
+    for (const t of room.wallet.listTxs()) if (t.ownerMeta) meta.set(t.ownerMeta.address, t.ownerMeta);
+    for (const s of cur.signers) meta.set(s.address, s);
+    const signers = owners.map(
+      o => meta.get(o.toLowerCase()) ?? { address: o.toLowerCase(), label: shortAddr(o), signerType: "eoa" as const },
+    );
+    room.wallet.setOwners(signers, threshold);
+  } catch (err) {
+    app.log.warn({ slug: room.id, err: String(err) }, "[safe] owner refresh failed");
+  }
+}
+
+// Owner changes: add (EOA, passkey, wedgie), remove, or set the threshold.
+// One Safe tx per deployed chain (each chain keeps its own owner list), all
+// queued for signing. A new passkey/wedgie gets its signer contract first.
+app.post("/v1/safe/owners", async (req, reply) => {
+  const r = safeRoomFromReq(req);
+  if (!r.ok) return reply.code(r.code).send(r.body);
+  const cur = r.room.wallet.getCurrent();
+  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
+  const a = v1AuthFromReq(req)!;
+  const b = (req.body ?? {}) as {
+    action?: unknown;
+    threshold?: unknown;
+    owner?: { address?: unknown; qx?: unknown; qy?: unknown; label?: unknown; device?: unknown };
+  };
+  const hex32 = /^0x[0-9a-fA-F]{64}$/;
+  const threshold = Number(b.threshold);
+  if (!Number.isInteger(threshold) || threshold < 1) return reply.code(400).send({ error: "bad-threshold" });
+
+  let meta: WalletSigner | null = null;
+  let target: string | null = null;
+  if (b.action === "add") {
+    const o = b.owner ?? {};
+    const label = typeof o.label === "string" ? o.label.slice(0, 60) : "";
+    if (typeof o.qx === "string" && typeof o.qy === "string" && hex32.test(o.qx) && hex32.test(o.qy)) {
+      const qx = o.qx.toLowerCase() as `0x${string}`;
+      const qy = o.qy.toLowerCase() as `0x${string}`;
+      const wedgie = o.device === "wedgie";
+      meta = {
+        address: passkeyOwner(qx, qy).toLowerCase(),
+        label: label || (wedgie ? "wedgie" : "passkey"),
+        signerType: "passkey",
+        qx,
+        qy,
+        ...(wedgie ? { device: "wedgie" as const } : { passkeyAddr: passkeyAddressFromCoords(qx, qy).toLowerCase() }),
+      };
+    } else if (typeof o.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(o.address)) {
+      meta = { address: o.address.toLowerCase(), label: label || shortAddr(o.address), signerType: "eoa" };
+    } else {
+      return reply.code(400).send({ error: "bad-owner" });
+    }
+    target = meta.address as string;
+    if (cur.signers.some(s => s.address === target)) return reply.code(400).send({ error: "already-owner" });
+  } else if (b.action === "remove") {
+    target = typeof b.owner?.address === "string" ? b.owner.address.toLowerCase() : null;
+    if (!target || !cur.signers.some(s => s.address === target)) return reply.code(400).send({ error: "not-owner" });
+  } else if (b.action !== "threshold") {
+    return reply.code(400).send({ error: "bad-action" });
+  }
+
+  const after =
+    b.action === "add" ? [...cur.signers, meta!] : b.action === "remove" ? cur.signers.filter(s => s.address !== target) : cur.signers;
+  if (threshold > after.length) return reply.code(400).send({ error: "threshold-above-owners" });
+  const wedgieErr = wedgieRuleError(after, threshold);
+  if (wedgieErr) return reply.code(400).send({ error: wedgieErr });
+  if (meta?.qx && !safeSignerRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
+
+  const safe = cur.address as `0x${string}`;
+  const chains = Object.keys(cur.deployments).map(Number);
+  const results: { chainId: number; txId?: string; error?: string }[] = [];
+  for (const chainId of chains) {
+    try {
+      let call: SafeCall;
+      if (b.action === "add") {
+        if (meta!.qx) await ensureSignersOn(chainId, [{ qx: meta!.qx as `0x${string}`, qy: meta!.qy as `0x${string}` }]);
+        call = addOwnerCall(safe, meta!.address as `0x${string}`, threshold);
+      } else if (b.action === "remove") {
+        // removeOwner needs the owner before it in this chain's list (trap 3).
+        call = removeOwnerCall(safe, await safeOwners(chainId, safe), target as `0x${string}`, threshold);
+      } else {
+        call = changeThresholdCall(safe, threshold);
+      }
+      const filled = await fillSafeProposal(
+        cur.address,
+        r.room.wallet.listTxs(),
+        { chainId, target: call.to, value: "0", data: call.data },
+        chainId,
+      );
+      if (!filled.ok) throw new Error(filled.error);
+      const f = filled.fields as { target: string; value: string; data: string; nonce: string; execHash: string; operation: 0 | 1 };
+      const tx = r.room.wallet.proposeTx({
+        multisigAddress: cur.address,
+        chainId,
+        from: a.session.address ?? null,
+        fromLabel: a.session.handle ?? a.session.address ?? null,
+        source: "manual",
+        browserId: null,
+        target: f.target,
+        value: f.value,
+        data: f.data,
+        deadline: "0",
+        nonce: f.nonce,
+        execHash: f.execHash,
+        operation: f.operation,
+        ...(meta ? { ownerMeta: meta } : {}),
+      });
+      const summary =
+        b.action === "add"
+          ? `Add owner ${meta!.label} (${meta!.device ?? meta!.signerType}), threshold ${threshold}`
+          : b.action === "remove"
+            ? `Remove owner ${cur.signers.find(s => s.address === target)?.label ?? shortAddr(target!)}, threshold ${threshold}`
+            : `Change threshold to ${threshold}`;
+      const card = { headline: `${summary} — ${chainLabel(chainId)}`, kind: "call", inputs: [], outputs: [], to: cur.address };
+      r.room.wallet.setTxSummary(tx.id, JSON.stringify(card));
+      r.room.wallet.setTxAiAnalysis(tx.id, JSON.stringify(card));
+      results.push({ chainId, txId: tx.id });
+    } catch (err) {
+      results.push({ chainId, error: (err as Error).message.split("\n")[0] });
+    }
+  }
+  r.room.broadcast({ type: "wallet_tx_attention", address: null, txId: results.find(x => x.txId)?.txId, source: "manual", at: Date.now() });
+  return { results };
 });
 
 app.get("/v1/safe/status", async (req, reply) => {
@@ -2922,9 +3085,17 @@ app.post("/v1/safe/exec", async (req, reply) => {
     return reply.code(404).send({ error: "no-tx" });
   }
   if (tx.status !== "pending" && tx.status !== "failed") return reply.code(409).send({ error: `tx-${tx.status}` });
-  const owners = new Set(cur.signers.map(s => s.address));
-  const sigs = tx.signatures.filter(s => owners.has(s.signer));
-  if (sigs.length < cur.threshold) return reply.code(400).send({ error: "not-enough-signatures" });
+  // Owners can differ per chain mid owner-change, so trust the chain, not the record.
+  let onchain: Set<string>;
+  let threshold: number;
+  try {
+    onchain = new Set((await safeOwners(tx.chainId, cur.address as `0x${string}`)).map(o => o.toLowerCase()));
+    threshold = await safeThreshold(tx.chainId, cur.address as `0x${string}`);
+  } catch {
+    return reply.code(400).send({ error: "safe-not-deployed-on-chain" });
+  }
+  const sigs = tx.signatures.filter(s => onchain.has(s.signer.toLowerCase())).slice(0, threshold);
+  if (sigs.length < threshold) return reply.code(400).send({ error: "not-enough-signatures" });
   if (!safeExecRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
 
   r.room.wallet.setTxStatus(tx.id, "executing");
@@ -2940,7 +3111,7 @@ app.post("/v1/safe/exec", async (req, reply) => {
       nonce: BigInt(tx.nonce),
     },
     toSafeSignatures(sigs),
-    safeSpecOf(cur).passkeys,
+    knownPasskeys(cur),
     hash => room.wallet.setTxStatus(tx.id, "executing", hash),
   );
   if (!res.ok) {
@@ -2949,6 +3120,7 @@ app.post("/v1/safe/exec", async (req, reply) => {
   }
   r.room.wallet.setTxStatus(tx.id, "executed", res.txHash);
   settleEscrowPayout(r.room, tx.id, res.txHash);
+  await refreshSafeOwners(r.room, tx.id);
   return { txHash: res.txHash };
 });
 
@@ -10240,6 +10412,7 @@ app.register(async function signalRoutes(fastify) {
           // window waits on. Generic across games. Bank-only — a personal
           // wallet's tx never settles room escrow.
           if (!statusAddr && msg.status === "executed") settleEscrowPayout(room, msg.id, txHash);
+          if (!statusAddr && msg.status === "executed") void refreshSafeOwners(room, msg.id);
           return;
         }
         case "wallet_tx_remove": {

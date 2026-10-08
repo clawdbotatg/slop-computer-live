@@ -335,3 +335,25 @@ export async function fillSafeProposal(
     },
   };
 }
+
+export async function safeThreshold(chainId: number, safe: Address): Promise<number> {
+  const t = (await clientsFor(chainId).pub.readContract({
+    address: safe,
+    abi: safeAbi,
+    functionName: "getThreshold",
+  })) as bigint;
+  return Number(t);
+}
+
+/**
+ * The wedgie's firmware isn't locked down (prototype), so a Safe must never
+ * be spendable by wedgies alone: with any wedgie owner, threshold ≥ 2 and the
+ * non-wedgie owners alone must still reach the threshold.
+ */
+export function wedgieRuleError(owners: { device?: string }[], threshold: number): string | null {
+  const wedgies = owners.filter(o => o.device === "wedgie").length;
+  if (wedgies === 0) return null;
+  if (threshold < 2) return "wedgie-alone: threshold must be at least 2 with a wedgie owner";
+  if (owners.length - wedgies < threshold) return "wedgie-alone: the other owners must be able to reach the threshold";
+  return null;
+}

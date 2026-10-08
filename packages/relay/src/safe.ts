@@ -322,11 +322,21 @@ export function passkeySig(args: {
   if (!json.startsWith(prefix) || !json.endsWith("}")) {
     throw new Error("This browser's passkey response has an unexpected format (clientDataJSON order).");
   }
-  const data = encodeAbiParameters(
-    [{ type: "bytes" }, { type: "string" }, { type: "uint256" }, { type: "uint256" }],
-    [toHex(args.authenticatorData), json.slice(prefix.length, -1), args.r, args.s],
-  );
+  const data = webAuthnSigData({
+    authenticatorData: toHex(args.authenticatorData),
+    clientDataFields: json.slice(prefix.length, -1),
+    r: args.r,
+    s: args.s,
+  });
   return { signer: getAddress(args.owner), data, kind: "contract" };
+}
+
+/** The signer-contract payload for any WebAuthn-shaped P-256 signature (passkey or wedgie). */
+export function webAuthnSigData(w: { authenticatorData: Hex; clientDataFields: string; r: bigint; s: bigint }): Hex {
+  return encodeAbiParameters(
+    [{ type: "bytes" }, { type: "string" }, { type: "uint256" }, { type: "uint256" }],
+    [w.authenticatorData, w.clientDataFields, w.r, w.s],
+  );
 }
 
 /** Safe signature bytes: owners ascending; contract sigs as (r = owner, s = offset, v = 0) heads + payload tails. */
