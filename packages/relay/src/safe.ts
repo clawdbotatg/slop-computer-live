@@ -159,12 +159,14 @@ export function deploySafeCall(init: Hex, saltNonce: bigint): Call {
 }
 
 /**
- * One transaction that creates every passkey owner (allowFailure: some may
- * already exist) and then the Safe. Send it to MULTICALL3 from any account.
+ * One transaction that creates the passkey owners and then the Safe. Send it
+ * to MULTICALL3 from any account. Pass only signers that don't exist yet:
+ * every call must succeed, because with allowFailure eth_estimateGas happily
+ * picks a limit where createSigner runs out of gas and is silently skipped.
  */
 export function deployBundle(passkeys: { x: Hex | bigint; y: Hex | bigint }[], init: Hex, saltNonce: bigint): Call {
   const calls = [
-    ...passkeys.map(p => ({ c: deployPasskeyOwnerCall(p.x, p.y), allowFailure: true })),
+    ...passkeys.map(p => ({ c: deployPasskeyOwnerCall(p.x, p.y), allowFailure: false })),
     { c: deploySafeCall(init, saltNonce), allowFailure: false },
   ];
   return {

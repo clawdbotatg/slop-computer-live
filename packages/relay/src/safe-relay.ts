@@ -154,13 +154,15 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
       await ensureSignersOn(chainId, s.passkeys);
       return { chainId, ok: true, txHash: null };
     }
+    const missing = await missingSigners(chainId, s.passkeys);
     const bundle = deployBundle(
-      s.passkeys.map(k => ({ x: k.qx, y: k.qy })),
+      missing.map(k => ({ x: k.qx, y: k.qy })),
       init,
       s.saltNonce,
     );
     const txHash = await sendAndWait(chainId, bundle.to, bundle.data);
     if (!(await hasCode(chainId, safe))) return { chainId, ok: false, error: "no-code-after-deploy" };
+    if ((await missingSigners(chainId, s.passkeys)).length) return { chainId, ok: false, error: "signer-missing-after-deploy" };
     return { chainId, ok: true, txHash };
   } catch (err) {
     return { chainId, ok: false, error: errText(err) };
@@ -168,17 +170,26 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
 }
 
 /** Create any missing passkey signer contracts on one chain, in one tx. */
-export async function ensureSignersOn(chainId: number, keys: PasskeyKey[]): Promise<Hex | null> {
+async function missingSigners(chainId: number, keys: PasskeyKey[]): Promise<PasskeyKey[]> {
   const missing: PasskeyKey[] = [];
   for (const k of keys) if (!(await hasCode(chainId, passkeyOwner(k.qx, k.qy)))) missing.push(k);
+  return missing;
+}
+
+// allowFailure stays false: with it, eth_estimateGas finds a limit where
+// createSigner runs out of gas inside the multicall and is silently skipped.
+export async function ensureSignersOn(chainId: number, keys: PasskeyKey[]): Promise<Hex | null> {
+  const missing = await missingSigners(chainId, keys);
   if (missing.length === 0) return null;
   const calls = missing.map(k => deployPasskeyOwnerCall(k.qx, k.qy));
   const data = encodeFunctionData({
     abi: multicall3Abi,
     functionName: "aggregate3",
-    args: [calls.map(c => ({ target: c.to, allowFailure: true, callData: c.data }))],
+    args: [calls.map(c => ({ target: c.to, allowFailure: false, callData: c.data }))],
   });
-  return sendAndWait(chainId, MULTICALL3, data);
+  const hash = await sendAndWait(chainId, MULTICALL3, data);
+  if ((await missingSigners(chainId, missing)).length) throw new Error("signer contract missing after deploy");
+  return hash;
 }
 
 // ---------------------------------------------------------------- exec
