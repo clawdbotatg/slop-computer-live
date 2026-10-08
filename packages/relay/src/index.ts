@@ -10171,8 +10171,9 @@ app.register(async function signalRoutes(fastify) {
           // Safe Bank, plain calls: the relay fills nonce + safeTxHash, then
           // feeds the completed SafeTx back through this handler (checked below).
           if (cur?.kind === "safe" && msg.operation !== 0 && msg.operation !== 1) {
-            const fallback = Number(Object.keys(cur.deployments)[0] ?? "8453");
-            void fillSafeProposal(cur.address, room.wallet.listTxs(), msg, fallback).then(r => {
+            // A Safe tx is chain-specific: no chainId, no proposal (never guess).
+            if (typeof msg.chainId !== "number") return send(socket, { type: "error", error: "no_chain" });
+            void fillSafeProposal(cur.address, room.wallet.listTxs(), msg, msg.chainId).then(r => {
               if (!r.ok) return send(socket, { type: "error", error: r.error });
               socket.emit("message", JSON.stringify({ ...msg, ...r.fields }));
             });
