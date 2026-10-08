@@ -73,6 +73,7 @@ import {
   type SafeSpec,
   checkSafePropose,
   deploySafeOn,
+  fillSafeProposal,
   deployerAddress,
   ensureSignersOn,
   execSafeTx,
@@ -10040,6 +10041,16 @@ app.register(async function signalRoutes(fastify) {
           if (!personalAddr && !cur) {
             app.log.warn({ slug: room.id, from: info.address }, "[SLOP-TX-DEBUG] propose rejected — no_wallet");
             return send(socket, { type: "error", error: "no_wallet" });
+          }
+          // Safe Bank, plain calls: the relay fills nonce + safeTxHash, then
+          // feeds the completed SafeTx back through this handler (checked below).
+          if (cur?.kind === "safe" && msg.operation !== 0 && msg.operation !== 1) {
+            const fallback = Number(Object.keys(cur.deployments)[0] ?? "8453");
+            void fillSafeProposal(cur.address, room.wallet.listTxs(), msg, fallback).then(r => {
+              if (!r.ok) return send(socket, { type: "error", error: r.error });
+              socket.emit("message", JSON.stringify({ ...msg, ...r.fields }));
+            });
+            return;
           }
           if (
             typeof msg.target !== "string" ||

@@ -427,6 +427,44 @@ export async function signMultisigExecWithPasskey(args: {
   ) as `0x${string}`;
 }
 
+/** Sign a Safe's safeTxHash with a passkey. Returns the contract-signature
+ *  payload Safe's passkey signer expects (utils/safe.ts passkeySig); store it
+ *  in the queue as sigType 1 with `signer` = the passkey's Safe owner address. */
+export async function signSafeTxWithPasskey(args: {
+  credentialIdBase64Url: string;
+  safeTxHash: `0x${string}`;
+  owner: `0x${string}`;
+}): Promise<`0x${string}`> {
+  if (typeof window === "undefined") throw new Error("no-window");
+  const cred = (await navigator.credentials.get({
+    publicKey: {
+      challenge: hexToBytes(args.safeTxHash.slice(2)),
+      rpId: window.location.hostname,
+      userVerification: "required",
+      allowCredentials: [
+        {
+          id: bytesFromBase64Url(args.credentialIdBase64Url),
+          type: "public-key",
+          transports: ["internal", "hybrid"] as AuthenticatorTransport[],
+        },
+      ],
+      timeout: 60_000,
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("passkey-sign-cancelled");
+  const a = cred.response as AuthenticatorAssertionResponse;
+  const { r, s } = parseDerSignature(new Uint8Array(a.signature));
+  const { passkeySig } = await import("~~/utils/safe");
+  return passkeySig({
+    owner: args.owner,
+    hash: args.safeTxHash,
+    authenticatorData: new Uint8Array(a.authenticatorData),
+    clientDataJSON: new Uint8Array(a.clientDataJSON),
+    r,
+    s,
+  }).data;
+}
+
 // ---- helpers (signing) -----------------------------------------------------
 
 async function signWithCredentialId(args: { rawId: ArrayBuffer; challenge: Uint8Array }): Promise<{

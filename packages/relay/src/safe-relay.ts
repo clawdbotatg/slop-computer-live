@@ -276,3 +276,59 @@ export function checkSafePropose(
   }
   return { ok: true, operation: tx.operation, tx };
 }
+
+/**
+ * Most proposers (ENS, shared browser, AI, wagers) just say "do these calls".
+ * For a Safe room the relay picks the nonce and computes the hash, so no
+ * client has to know Safe. Nonce = next free one after the pending queue, so
+ * proposals line up instead of racing; an identical pending proposal is reused.
+ */
+export async function fillSafeProposal(
+  safe: string,
+  pending: { chainId: number; multisigAddress: string; status: string; operation?: 0 | 1; nonce: string; target: string; value: string; data: string }[],
+  msg: { chainId?: unknown; target?: unknown; value?: unknown; data?: unknown; calls?: unknown },
+  fallbackChainId: number,
+): Promise<{ ok: true; fields: Record<string, unknown> } | { ok: false; error: string }> {
+  const chainId = typeof msg.chainId === "number" ? msg.chainId : fallbackChainId;
+  let calls: { to: Address; value: bigint; data: Hex }[];
+  try {
+    calls =
+      Array.isArray(msg.calls) && msg.calls.length > 0
+        ? (msg.calls as { target: string; value: string; data: string }[])
+            .slice(0, 50)
+            .map(c => ({ to: getAddress(c.target), value: BigInt(c.value), data: (c.data || "0x") as Hex }))
+        : [{ to: getAddress(String(msg.target)), value: BigInt(String(msg.value ?? "0")), data: (String(msg.data ?? "0x") || "0x") as Hex }];
+  } catch {
+    return { ok: false, error: "bad_propose" };
+  }
+  const safeAddr = getAddress(safe);
+  const mine = pending.filter(
+    t => t.status === "pending" && t.operation !== undefined && t.chainId === chainId && t.multisigAddress === safe.toLowerCase(),
+  );
+  let nonce: bigint;
+  try {
+    nonce = await safeNonce(chainId, safeAddr);
+  } catch {
+    return { ok: false, error: "safe_not_deployed_on_chain" };
+  }
+  const probe = toSafeTx(calls, 0n);
+  const same = mine.find(
+    t => getAddress(t.target) === probe.to && BigInt(t.value) === probe.value && t.data.toLowerCase() === probe.data.toLowerCase(),
+  );
+  if (same && BigInt(same.nonce) >= nonce) nonce = BigInt(same.nonce);
+  else for (const t of mine) if (BigInt(t.nonce) >= nonce) nonce = BigInt(t.nonce) + 1n;
+  const tx = toSafeTx(calls, nonce);
+  return {
+    ok: true,
+    fields: {
+      chainId,
+      target: tx.to,
+      value: tx.value.toString(),
+      data: tx.data,
+      operation: tx.operation,
+      nonce: nonce.toString(),
+      deadline: "0",
+      execHash: safeTxHash(chainId, safeAddr, tx),
+    },
+  };
+}

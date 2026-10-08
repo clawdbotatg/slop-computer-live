@@ -104,6 +104,16 @@ try {
   check(R.checkSafePropose(bmsg, safe, 8453, bcalls).ok, "MultiSend batch accepted");
   check(R.checkSafePropose(bmsg, safe, 8453, [bcalls[0], { ...bcalls[1], value: "999" }]).error === "calls_mismatch", "batch with lying calls refused");
 
+  // relay-filled proposals: nonce lines up after the queue, repeats are reused
+  const plain = { chainId: 8453, target: to, value: "5", data: "0x" };
+  const f1 = await R.fillSafeProposal(safe, [], plain, 8453);
+  check(f1.ok && f1.fields.nonce === nonce.toString() && R.checkSafePropose(f1.fields, safe, 8453).ok, "filled proposal uses on-chain nonce and checks out");
+  const queued = [{ ...f1.fields, multisigAddress: safe.toLowerCase(), status: "pending" }];
+  const f2 = await R.fillSafeProposal(safe, queued, { ...plain, value: "6" }, 8453);
+  check(f2.ok && f2.fields.nonce === (nonce + 1n).toString(), "second proposal queues at nonce+1");
+  const f3 = await R.fillSafeProposal(safe, queued, plain, 8453);
+  check(f3.ok && f3.fields.execHash === f1.fields.execHash, "repeat proposal reuses the pending one");
+
   // queue: two txs at the same nonce; executing one cancels the other
   const ws = new WalletState(join(mkdtempSync(join(tmpdir(), "safe-probe-")), "w.json"));
   const base_ = { multisigAddress: safe, chainId: 8453, from: null, fromLabel: null, source: "manual", browserId: null, deadline: "0", nonce: nonce.toString(), operation: 0 };
