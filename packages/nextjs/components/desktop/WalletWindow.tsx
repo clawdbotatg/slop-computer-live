@@ -672,11 +672,11 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
         <>
           <div>
             <h2 style={{ margin: 0, fontFamily: "var(--slop-font-display)", letterSpacing: "0.08em" }}>
-              Deploy session wallet
+              Create the Bank Safe
             </h2>
             <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--slop-text-muted)" }}>
-              Spin up a multisig for this episode. The address is identical on every chain — deploy it on any of the
-              networks below now, then come back and add more later.
+              Create a Safe for this episode. Pick its owners and how many must sign. It goes on every chain at once,
+              same address everywhere.
             </p>
           </div>
 
