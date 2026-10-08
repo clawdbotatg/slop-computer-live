@@ -253,6 +253,8 @@ export type Peer = {
    *  present in the relay's `hello` peers list; live flips arrive via
    *  `peer_lobby` and land in `peerLobby`, the map renderers read. */
   lobby?: boolean;
+  /** Wedgie public key this peer shared from the Wedgie app. */
+  wedgie?: { x: string; y: string };
 };
 
 export type SlotKind = "camera" | "screen" | "audio";
@@ -2130,6 +2132,13 @@ export type PeerMeshState = {
    *  to late joiners) and fans out `peer_lobby`. Re-announced
    *  automatically after a reconnect. No-op on repeat values. */
   reportLobby: (inLobby: boolean) => void;
+  /** Wedgie public keys peers have plugged in (Wedgie app), keyed by peerId.
+   *  Seeded from hello, live via `peer_wedgie`; our own under `myId`. The
+   *  Bank deploy list offers each as an owner. Public by design. */
+  peerWedgies: Record<string, { x: string; y: string }>;
+  /** Share (or clear, null) the wedgie plugged into THIS browser with the
+   *  room. Re-announced after a reconnect. */
+  reportWedgie: (key: { x: string; y: string } | null) => void;
   /** Publisher-side encode health per peer (their own report of what
    *  they're sending, spectator leg preferred), keyed by peerId. Our
    *  own row appears under `myId`. Absent keys = no report yet; check
@@ -2301,6 +2310,9 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
   // can re-announce it (the relay's copy died with the old socket).
   const [peerLobby, setPeerLobby] = useState<Record<string, boolean>>({});
   const lobbyRef = useRef(false);
+  // Same shape for wedgies: seeded from hello, live via `peer_wedgie`.
+  const [peerWedgies, setPeerWedgies] = useState<Record<string, { x: string; y: string }>>({});
+  const wedgieRef = useRef<{ x: string; y: string } | null>(null);
   // Publisher-side video encode stats per peer (incl. our own row under
   // myId), fed by the `peer_video_stats` broadcast + our own sampler.
   const [peerVideoStats, setPeerVideoStats] = useState<Record<string, PeerVideoStats>>({});
@@ -3999,6 +4011,25 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     [send],
   );
 
+  const reportWedgie = useCallback(
+    (key: { x: string; y: string } | null) => {
+      if (wedgieRef.current?.x === key?.x && wedgieRef.current?.y === key?.y) return;
+      wedgieRef.current = key;
+      const meId = myIdRef.current;
+      if (meId) {
+        setPeerWedgies(prev => {
+          const next = { ...prev };
+          if (key) next[meId] = key;
+          else delete next[meId];
+          return next;
+        });
+      }
+      if (selfRef.current?.spectator) return;
+      send({ type: "wedgie_report", wedgie: key });
+    },
+    [send],
+  );
+
   const setCameraOff = useCallback(
     (streamId: string, off: boolean) => {
       // Server is source of truth — the relay rebroadcasts the updated
@@ -4180,6 +4211,13 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
           setPeerLobby(seededLobby);
           if (lobbyRef.current && !selfRef.current?.spectator) {
             ws.send(JSON.stringify({ type: "lobby_report", lobby: true }));
+          }
+          const seededWedgies: Record<string, { x: string; y: string }> = {};
+          for (const p of others) if (p.wedgie) seededWedgies[p.id] = p.wedgie;
+          if (wedgieRef.current) seededWedgies[meId] = wedgieRef.current;
+          setPeerWedgies(seededWedgies);
+          if (wedgieRef.current && !selfRef.current?.spectator) {
+            ws.send(JSON.stringify({ type: "wedgie_report", wedgie: wedgieRef.current }));
           }
 
           if (Array.isArray(msg.publications)) setPublications(msg.publications as Publication[]);
@@ -4446,6 +4484,12 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
             delete next[peer.id];
             return next;
           });
+          setPeerWedgies(prev => {
+            if (!(peer.id in prev)) return prev;
+            const next = { ...prev };
+            delete next[peer.id];
+            return next;
+          });
           closePeerConnection(peer.id);
           return;
         }
@@ -4517,6 +4561,18 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
               ? prev
               : { ...prev, [from]: { width, height } },
           );
+          return;
+        }
+
+        if (msg.type === "peer_wedgie" && typeof msg.from === "string") {
+          const from = msg.from;
+          const w = msg.wedgie as { x?: unknown; y?: unknown } | null;
+          setPeerWedgies(prev => {
+            const next = { ...prev };
+            if (w && typeof w.x === "string" && typeof w.y === "string") next[from] = { x: w.x, y: w.y };
+            else delete next[from];
+            return next;
+          });
           return;
         }
 
@@ -5630,6 +5686,8 @@ export function usePeerMesh(enabled: boolean, self: SelfHint | null, slug: strin
     peerPings,
     peerViewports,
     peerLobby,
+    peerWedgies,
+    reportWedgie,
     reportLobby,
     peerVideoStats,
     inboundVideoStats,

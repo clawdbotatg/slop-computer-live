@@ -45,6 +45,9 @@ export type PeerInfo = {
   // everyone "this person is here, getting their audio/video working";
   // live flips fan out as `peer_lobby`.
   lobby?: boolean;
+  // Wedgie public key shared from the Wedgie app (`wedgie_report`), so the
+  // Bank deploy list can offer it as a Safe owner. Public by design.
+  wedgie?: { x: string; y: string };
 };
 
 export type Peer = PeerInfo & { ws: WebSocket; sessionToken: string };

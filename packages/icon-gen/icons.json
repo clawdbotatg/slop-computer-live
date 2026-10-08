@@ -281,6 +281,10 @@
     {
       "name": "shield",
       "prompt": "A chunky heraldic shield with a glowing keyhole emblem, hot magenta and cyan energy crackling around its rim, a wisp of ghostly vapor rising off the top, isometric 3/4 view"
+    },
+    {
+      "name": "wedgie",
+      "prompt": "A WIDE landscape rounded-rectangle white plastic gadget (wider than tall, like a small box lying flat), seen in isometric 3/4. Left third: one round grey ball joystick knob. Center: a square screen showing a tiny pair of white briefs underwear with a thin green and red striped waistband. Right edge: exactly four square chunky buttons stacked in ONE vertical column — green on top, then grey, grey, and red at the bottom. No d-pad, no cross buttons, no cable."
     }
   ],
   "sheet": {

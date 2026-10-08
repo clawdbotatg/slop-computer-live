@@ -74,6 +74,7 @@ import {
   fillSafeProposal,
   deployerAddress,
   ensureSignersOn,
+  signerExists,
   execSafeTx,
   isSafeRelayConfigured,
   predictSafe,
@@ -1148,6 +1149,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "mywallet"
+    | "wedgie"
     | "privacy"
     | "research"
     | "leftclaw"
@@ -1306,6 +1308,12 @@ const DEFAULT_APPS: AppEntry[] = [
     label: "Wallet",
     icon: "/icons/wallet.png",
     kind: "mywallet",
+  },
+  {
+    id: "wedgie",
+    label: "Wedgie",
+    icon: "/icons/wedgie.png",
+    kind: "wedgie",
   },
   {
     // id stays "privacy" (slot geometry + activateApp key) — the user-facing
@@ -3017,8 +3025,9 @@ app.get("/v1/safe/status", async (req, reply) => {
 app.post("/v1/safe/signer", async (req, reply) => {
   const r = safeRoomFromReq(req);
   if (!r.ok) return reply.code(r.code).send(r.body);
+  // On the room Safe's chains, or every Safe chain when there's no Safe yet
+  // (Wedgie app: get a signer ready before it's added anywhere).
   const cur = r.room.wallet.getCurrent();
-  if (cur?.kind !== "safe") return reply.code(400).send({ error: "no-safe" });
   const b = (req.body ?? {}) as { qx?: unknown; qy?: unknown };
   const hex32 = /^0x[0-9a-fA-F]{64}$/;
   if (typeof b.qx !== "string" || typeof b.qy !== "string" || !hex32.test(b.qx) || !hex32.test(b.qy)) {
@@ -3026,7 +3035,7 @@ app.post("/v1/safe/signer", async (req, reply) => {
   }
   if (!safeSignerRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
   const key = { qx: b.qx.toLowerCase() as `0x${string}`, qy: b.qy.toLowerCase() as `0x${string}` };
-  const chains = Object.keys(cur.deployments).map(Number);
+  const chains = cur?.kind === "safe" ? Object.keys(cur.deployments).map(Number) : [...SAFE_CHAINS];
   const results = await Promise.all(
     chains.map(c =>
       ensureSignersOn(c, [key]).then(
@@ -3036,6 +3045,26 @@ app.post("/v1/safe/signer", async (req, reply) => {
     ),
   );
   return { owner: passkeyOwner(key.qx, key.qy).toLowerCase(), results };
+});
+
+// Which chains already have this key's signer contract. Read-only, no auth.
+app.get("/v1/safe/signer-status", async (req, reply) => {
+  const q = (req.query ?? {}) as { x?: unknown; y?: unknown };
+  const hex32 = /^0x[0-9a-fA-F]{64}$/;
+  if (typeof q.x !== "string" || typeof q.y !== "string" || !hex32.test(q.x) || !hex32.test(q.y)) {
+    return reply.code(400).send({ error: "bad-key" });
+  }
+  const key = { qx: q.x as `0x${string}`, qy: q.y as `0x${string}` };
+  const chains: Record<number, boolean | null> = {};
+  await Promise.all(
+    SAFE_CHAINS.map(c =>
+      signerExists(c, key).then(
+        ok => (chains[c] = ok),
+        () => (chains[c] = null),
+      ),
+    ),
+  );
+  return { owner: passkeyOwner(key.qx, key.qy).toLowerCase(), chains };
 });
 
 // Execute a fully-signed Bank tx, relay pays gas. The Safe re-checks every
@@ -8659,6 +8688,24 @@ app.register(async function signalRoutes(fastify) {
           const me = room.getPeer(peerId);
           if (me) me.viewport = viewport;
           room.broadcast({ type: "peer_viewport", from: peerId, viewport }, peerId);
+          return;
+        }
+        case "wedgie_report": {
+          // Wedgie app: the public key of the wedgie plugged into this
+          // peer's browser, so the Bank deploy list can offer it as an
+          // owner. Public by design (like a passkey pubkey). null clears.
+          const w = msg.wedgie as { x?: unknown; y?: unknown } | null;
+          const hex32 = /^0x[0-9a-fA-F]{64}$/;
+          const wedgie =
+            w && typeof w.x === "string" && typeof w.y === "string" && hex32.test(w.x) && hex32.test(w.y)
+              ? { x: w.x.toLowerCase(), y: w.y.toLowerCase() }
+              : null;
+          const me = room.getPeer(peerId);
+          if (me) {
+            if (wedgie) me.wedgie = wedgie;
+            else delete me.wedgie;
+          }
+          room.broadcast({ type: "peer_wedgie", from: peerId, wedgie }, peerId);
           return;
         }
         case "lobby_report": {

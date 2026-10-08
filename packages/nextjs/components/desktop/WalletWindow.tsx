@@ -12,6 +12,7 @@ import {
   useSwitchChain,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import { parseWedgieId } from "~~/components/desktop/WedgieAppWindow";
 import { ClearSignPanel } from "~~/components/desktop/wallet/ClearSignPanel";
 import { TokenAvatar } from "~~/components/desktop/wallet/TokenAvatar";
 import { WalletAssetsPanel } from "~~/components/desktop/wallet/WalletAssetsPanel";
@@ -43,6 +44,18 @@ type ResolvedSigner = {
   qx?: `0x${string}`;
   qy?: `0x${string}`;
   credentialIdHash?: `0x${string}`;
+  device?: "wedgie";
+};
+
+// A wedgie can never be enough on its own (prototype firmware): with one,
+// at least 2 signatures, and the other owners must reach that alone.
+// Mirrors the relay's wedgieRuleError.
+const wedgieRuleMsg = (owners: { device?: string }[], threshold: number): string | null => {
+  const w = owners.filter(o => o.device === "wedgie").length;
+  if (w === 0) return null;
+  if (threshold < 2) return "With a wedgie, at least 2 signatures must be needed.";
+  if (owners.length - w < threshold) return "The non-wedgie owners must be able to reach the threshold on their own.";
+  return null;
 };
 
 // The AI wallet (assets + chat) used to be an <iframe> of
@@ -550,6 +563,8 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     /** Present for passkey signers — the local user's own (from
      *  storage) or a remote passkey peer's (from peer.passkey). */
     passkey?: { qx: string; qy: string; credentialIdHash: string };
+    /** A wedgie someone plugged in (Wedgie app); address = its signer contract. */
+    wedgie?: { x: string; y: string };
   };
   const candidateSigners = useMemo<Candidate[]>(() => {
     const out = new Map<string, Candidate>();
@@ -585,6 +600,16 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
           };
       out.set(lower, merged);
     }
+    // Wedgies people have connected in their Wedgie app.
+    for (const [peerId, w] of Object.entries(mesh.peerWedgies)) {
+      const lower = passkeyOwner(w.x as `0x${string}`, w.y as `0x${string}`).toLowerCase();
+      const p = (mesh.peers as Peer[]).find(x => x.id === peerId);
+      const who =
+        peerId === mesh.myId
+          ? "your"
+          : `${(p?.address && mesh.customNames[p.address.toLowerCase()]) ?? p?.handle ?? (p?.address ? short(p.address) : "a")}'s`;
+      out.set(lower, { address: lower, label: `${who} wedgie`, isMe: false, source: "peer", wedgie: w });
+    }
     for (const c of draftOrDefault.customSigners) {
       const lower = c.address.toLowerCase();
       if (!out.has(lower)) out.set(lower, { address: lower, label: c.label, isMe: false, source: "custom" });
@@ -594,7 +619,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
       const rank = (s: Candidate["source"]) => (s === "me" ? 0 : s === "peer" ? 1 : 2);
       return rank(a.source) - rank(b.source);
     });
-  }, [mesh.peers, mesh.myId, myAddress, myHandle, draftOrDefault.customSigners, mesh.customNames]);
+  }, [mesh.peers, mesh.myId, mesh.peerWedgies, myAddress, myHandle, draftOrDefault.customSigners, mesh.customNames]);
 
   // First-touch seed: when no draft exists yet AND we have at least one
   // candidate, publish a sensible default (everyone selected, majority
@@ -641,8 +666,13 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
       const base: ResolvedSigner = {
         address: s.address as AddressType,
         label: s.label,
-        signerType: s.passkey ? "passkey" : "eoa",
+        signerType: s.passkey || s.wedgie ? "passkey" : "eoa",
       };
+      if (s.wedgie) {
+        base.qx = s.wedgie.x as `0x${string}`;
+        base.qy = s.wedgie.y as `0x${string}`;
+        base.device = "wedgie";
+      }
       if (s.passkey) {
         base.qx = s.passkey.qx as `0x${string}`;
         base.qy = s.passkey.qy as `0x${string}`;
@@ -748,7 +778,11 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
                         minWidth: 0,
                       }}
                     >
-                      <SlopAddress address={s.address} customNames={mesh.customNames} />
+                      {s.wedgie ? (
+                        <span>🩲 {s.label}</span>
+                      ) : (
+                        <SlopAddress address={s.address} customNames={mesh.customNames} />
+                      )}
                       {s.isMe ? <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>(you)</span> : null}
                       {s.passkey ? (
                         <span
@@ -853,13 +887,19 @@ const SafeOwners = ({
   customNames,
 }: {
   wallet: WalletRecord;
-  candidates: { address: string; label: string; passkey?: { qx: string; qy: string } }[];
+  candidates: {
+    address: string;
+    label: string;
+    passkey?: { qx: string; qy: string };
+    wedgie?: { x: string; y: string };
+  }[];
   customNames: Record<string, string>;
 }) => {
   const slug = useRoomSlug();
   const [threshold, setThreshold] = useState(wallet.threshold);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [pasteId, setPasteId] = useState("");
   useEffect(() => setThreshold(wallet.threshold), [wallet.threshold]);
 
   const ownerIds = new Set(wallet.signers.flatMap(s => [s.address.toLowerCase(), s.passkeyAddr?.toLowerCase() ?? ""]));
@@ -953,16 +993,20 @@ const SafeOwners = ({
         </Field>
         {addable.map(c => (
           <div key={c.address} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <SlopAddress address={c.address} customNames={customNames} />
-            <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>{c.passkey ? "passkey" : "wallet"}</span>
+            {c.wedgie ? <span>🩲 {c.label}</span> : <SlopAddress address={c.address} customNames={customNames} />}
+            <span style={{ color: "var(--slop-text-muted)", fontSize: 10 }}>
+              {c.wedgie ? "wedgie" : c.passkey ? "passkey" : "wallet"}
+            </span>
             <Button
               disabled={busy}
               onClick={() =>
                 void call({
                   action: "add",
-                  owner: c.passkey
-                    ? { qx: c.passkey.qx, qy: c.passkey.qy, label: c.label }
-                    : { address: c.address, label: c.label },
+                  owner: c.wedgie
+                    ? { qx: c.wedgie.x, qy: c.wedgie.y, label: c.label, device: "wedgie" }
+                    : c.passkey
+                      ? { qx: c.passkey.qx, qy: c.passkey.qy, label: c.label }
+                      : { address: c.address, label: c.label },
                   threshold,
                 })
               }
@@ -971,6 +1015,32 @@ const SafeOwners = ({
             </Button>
           </div>
         ))}
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            value={pasteId}
+            onChange={e => setPasteId(e.target.value)}
+            placeholder="paste a wedgie ID (from its Wedgie app)"
+            style={{
+              flex: 1,
+              fontSize: 11,
+              padding: "4px 6px",
+              background: "rgba(255,255,255,0.04)",
+              color: "inherit",
+              border: "1px solid rgba(255,62,201,0.25)",
+              borderRadius: 3,
+            }}
+          />
+          <Button
+            disabled={busy || !parseWedgieId(pasteId)}
+            onClick={() => {
+              const k = parseWedgieId(pasteId);
+              if (k)
+                void call({ action: "add", owner: { qx: k.x, qy: k.y, device: "wedgie", label: "wedgie" }, threshold });
+            }}
+          >
+            Add
+          </Button>
+        </div>
         {wedgieSupported() ? (
           <Button disabled={busy} onClick={() => void addWedgie()} title="Plug in the wedgie (Safe signer app) first.">
             Add wedgie
@@ -1053,17 +1123,21 @@ const SafeChains = ({
 
   if (!existing) {
     const owners = signers.map(s =>
-      s.qx && s.qy ? { qx: s.qx, qy: s.qy, label: s.label } : { address: s.address, label: s.label },
+      s.qx && s.qy
+        ? { qx: s.qx, qy: s.qy, label: s.label, ...(s.device ? { device: s.device } : {}) }
+        : { address: s.address, label: s.label },
     );
+    const ruleErr = wedgieRuleMsg(signers, threshold);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <Button
-          disabled={!canDeploy || busy || signers.length === 0}
+          disabled={!canDeploy || busy || signers.length === 0 || !!ruleErr}
           onClick={() => void post({ owners, threshold, label })}
           title={!canDeploy ? "Only the host can create the Safe." : undefined}
         >
           {busy ? "Creating…" : `Create Safe (${threshold} of ${signers.length})`}
         </Button>
+        {ruleErr ? <div style={{ fontSize: 11, color: "#ffb86b" }}>{ruleErr}</div> : null}
         {err ? <div style={{ fontSize: 11, color: "#ff6b6b" }}>{err}</div> : null}
       </div>
     );

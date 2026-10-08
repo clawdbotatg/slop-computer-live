@@ -170,6 +170,10 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
 }
 
 /** Create any missing passkey signer contracts on one chain, in one tx. */
+export async function signerExists(chainId: number, k: PasskeyKey): Promise<boolean> {
+  return hasCode(chainId, passkeyOwner(k.qx, k.qy));
+}
+
 async function missingSigners(chainId: number, keys: PasskeyKey[]): Promise<PasskeyKey[]> {
   const missing: PasskeyKey[] = [];
   for (const k of keys) if (!(await hasCode(chainId, passkeyOwner(k.qx, k.qy)))) missing.push(k);

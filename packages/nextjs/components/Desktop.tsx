@@ -57,6 +57,7 @@ import { type FeedStats, VideoView, cameraMicMutedKey } from "~~/components/desk
 import { VotingWindow } from "~~/components/desktop/VotingWindow";
 import { WalletAppWindow } from "~~/components/desktop/WalletAppWindow";
 import { WalletWindow } from "~~/components/desktop/WalletWindow";
+import { WedgieAppWindow } from "~~/components/desktop/WedgieAppWindow";
 import { WormWindow } from "~~/components/desktop/WormWindow";
 import { BOTTOM_BAR_Z, DOCKED_PILL_BOTTOM_INSET } from "~~/components/desktop/bottomBarLayout";
 import { stageBoundsFor } from "~~/components/desktop/stageBounds";
@@ -208,6 +209,7 @@ type AppEntry = {
     | "clock"
     | "wallet"
     | "mywallet"
+    | "wedgie"
     | "privacy"
     | "research"
     | "leftclaw"
@@ -3010,6 +3012,17 @@ function DesktopInner({ slug }: { slug: string }) {
           }
           return;
         }
+        case "wedgie": {
+          // Single-player: your wedgie talks to YOUR browser over USB.
+          dismissHint();
+          local.openWindow("wedgie");
+          const cur = local.slots["app-wedgie"];
+          if (cur) {
+            const maxZ = Math.max(0, ...Object.values(mesh.slots).map(s => s.z), 5, privateMaxZ());
+            local.updateSlot({ id: "app-wedgie", z: maxZ + 1 });
+          }
+          return;
+        }
         case "privacy": {
           // Single-player, like mywallet: a local (private) window.
           dismissHint();
@@ -3714,6 +3727,19 @@ function DesktopInner({ slug }: { slug: string }) {
               myAddress={selfSessionAddress}
               myHandle={session.authenticated ? (session.handle ?? null) : null}
             />
+          </PrivateAppWindow>
+          {/* Wedgie — your hardware signer over USB; shares only its public
+            key with the room so the Bank can add it as an owner. */}
+          <PrivateAppWindow
+            local={local}
+            id="wedgie"
+            title="WEDGIE"
+            defaultSlot={{ x: 200, y: 120, width: 420, height: 560 }}
+            minWidth={340}
+            minHeight={360}
+            sharedMaxZ={sharedMaxZ}
+          >
+            <WedgieAppWindow mesh={mesh} />
           </PrivateAppWindow>
           {/* Privacy Wallet — Railgun-backed, per-user, custodial while funds
             are inside (see PrivacyWalletWindow). Private window like the
