@@ -2146,6 +2146,31 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [watchedHash, refetchReceipt]);
+  // Backup poller. viem's receipt waiter gives up for good on any RPC error
+  // that isn't "not found" (a 429, a timeout), and wagmi doesn't retry it —
+  // so the card sat on "executing" while the tx was long mined. While we
+  // have a hash, ask the RPC directly every 5s too; first answer wins.
+  useEffect(() => {
+    if (!watchedHash || !txPublicClient) return;
+    let stopped = false;
+    const t = setInterval(async () => {
+      try {
+        const r = await txPublicClient.getTransactionReceipt({ hash: watchedHash });
+        if (stopped) return;
+        stopped = true;
+        clearInterval(t);
+        txStatus(tx.id, r.status === "success" ? "executed" : "failed", r.transactionHash);
+        setExecHash(null);
+      } catch {
+        // not mined yet, or a flaky RPC answer — try again next tick
+      }
+    }, 5000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedHash, txPublicClient, tx.id]);
   // Manual receipt check — direct viem call instead of wagmi's hook.
   // Used by the "Check now" button in TxProgressBar when the user
   // suspects wagmi's poller is wedged. Catches errors loudly.
@@ -2222,7 +2247,9 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
   // If they close the tab, lose RPC, or hit an unmined tx, the relay
   // state hangs at "executing" forever. After STUCK_MS we show
   // Try-again / Remove buttons so any signer can break the deadlock.
-  const STUCK_MS = 15_000;
+  // 15s was shorter than a normal mainnet inclusion (12s blocks + wallet
+  // broadcast + poll), so healthy txs showed "stuck". Give it a minute.
+  const STUCK_MS = 60_000;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (tx.status !== "executing") return;
