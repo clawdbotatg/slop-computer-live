@@ -17,19 +17,18 @@ import { writeFileAtomic } from "./fs-atomic.js";
 
 export const JAMENDO_DIR = process.env.JAMENDO_DIR ?? "./.slop-data/jamendo-music";
 const GLOBAL_STATE_FILE = `${JAMENDO_DIR}/state.json`;
-const TRACKS_PER_GENRE = 20;
-// "Best of recent": filter to tracks RELEASED within a recency window,
-// then rank by overall popularity. Jamendo's all-time popularity chart
-// barely moves (small CC catalog, low weekly listening volume) — leaning
-// on it alone froze every genre to the same ~20 evergreens for months.
-// Constraining by release date first means each refresh surfaces the
-// best of what's actually new — the best of the last couple weeks.
-//
-// We walk this ladder and take the TIGHTEST window that still fills a
-// full playlist: active genres stay recent; sparse ones (e.g. punk, with
-// only a handful of releases a fortnight) widen gracefully rather than
-// coming up short. Days, ascending.
-const RECENCY_WINDOW_DAYS = [14, 30, 60, 120, 365];
+// The list a genre shows. Big enough that a show doesn't loop it, small
+// enough that a cold genre downloads in about a minute.
+const TRACKS_PER_GENRE = 60;
+// Where the pool comes from. History: `popularity_week` alone froze every
+// genre to the same ~20 evergreens for months; then (05-31) "popularity
+// within the last 14 days of releases" — brand-new uploads have ~0 plays,
+// so that ranking was noise and bulk uploaders filled the list (10-09:
+// one artist was 11 of 20 house tracks, plus 60s clips and re-uploads).
+// Now: recent tracks people actually listened to, plus a slice of
+// evergreen hits, cleaned up (pickTracks) and shuffled per refresh.
+const RECENT_DAYS = 180;
+const RECENT_SHARE = 0.7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REFRESH_TTL_MS = 60 * 60 * 1000; // re-poll Jamendo at most once per hour
 const FETCH_TIMEOUT_MS = 30_000;
@@ -182,12 +181,65 @@ async function fetchListing(
   return Array.isArray(listing.results) ? (listing.results as RawTrack[]) : [];
 }
 
+// Jamendo intermittently answers a valid query with zero rows and no
+// error (seen 10-09: same query empty, then full a second later). Retry.
+async function fetchListingRetry(tag: string, opts: Parameters<typeof fetchListing>[1]): Promise<RawTrack[]> {
+  for (let i = 0; ; i++) {
+    const rows = await fetchListing(tag, opts);
+    if (rows.length > 0 || i >= 2) return rows;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+}
+
 // `datebetween` range covering the last `days` of releases. End is
 // pinned to tomorrow so tracks uploaded today (any timezone) are always
 // included rather than missed at the boundary.
 function recencyRange(now: number, days: number): string {
   const fmt = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   return `${fmt(now - days * DAY_MS)}_${fmt(now + DAY_MS)}`;
+}
+
+const MIN_DURATION_S = 90;
+const MAX_PER_ARTIST = 2;
+// Clips, edits and stock-library fragments, not songs.
+const JUNK_TITLE = /\b(edit|short\d*|loop|jingle|stinger|teaser|preview|intro|outro|sting|\d+\s*(min|minute|sec|second)s?)\b/i;
+
+/** Clean + mix + shuffle. Pure (except Math.random) so it's testable. */
+export function pickTracks(recent: RawTrack[], evergreen: RawTrack[], want: number, sendBack = new Set<string>()): RawTrack[] {
+  const seenIds = new Set<string>();
+  const seenTitles = new Set<string>();
+  const perArtist = new Map<string, number>();
+  const ok = (t: RawTrack): boolean => {
+    if (typeof t.id !== "string" || typeof t.audiodownload !== "string") return false;
+    if (t.audiodownload_allowed === false) return false;
+    if (typeof t.duration !== "number" || t.duration < MIN_DURATION_S) return false;
+    const title = typeof t.name === "string" ? t.name : "";
+    if (JUNK_TITLE.test(title)) return false;
+    const artist = typeof t.artist_name === "string" ? t.artist_name.toLowerCase() : "";
+    // Same song re-uploaded: same title minus "(…)"/"v2", or same
+    // artist + exact length (catches the translated-title duplicates).
+    const base = title.toLowerCase().replace(/\(.*?\)|\[.*?\]|\bv\d+\b|[^\p{L}\p{N}]+/gu, "");
+    const keys = [`${artist}|${base}`, `${artist}|${t.duration}`];
+    if (seenIds.has(t.id) || keys.some(k => seenTitles.has(k))) return false;
+    if ((perArtist.get(artist) ?? 0) >= MAX_PER_ARTIST) return false;
+    seenIds.add(t.id);
+    keys.forEach(k => seenTitles.add(k));
+    perArtist.set(artist, (perArtist.get(artist) ?? 0) + 1);
+    return true;
+  };
+  const r = recent.filter(ok);
+  const e = evergreen.filter(ok);
+  const nEver = Math.min(e.length, Math.max(want - r.length, Math.round(want * (1 - RECENT_SHARE))));
+  const pool = shuffle([...r.slice(0, want - nEver), ...e.slice(0, nEver)]);
+  return [...pool.filter(t => !sendBack.has(t.id as string)), ...pool.filter(t => sendBack.has(t.id as string))];
+}
+
+function shuffle<T>(xs: T[]): T[] {
+  for (let i = xs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [xs[i], xs[j]] = [xs[j]!, xs[i]!];
+  }
+  return xs;
 }
 
 export async function refreshGenre(genre: string, opts: { force?: boolean } = {}): Promise<GenrePlaylist> {
@@ -214,55 +266,51 @@ async function doRefresh(genre: string, opts: { force?: boolean }): Promise<Genr
     return existing;
   }
 
-  // Walk the recency ladder: the tightest window that returns a full
-  // playlist's worth of recent tracks wins. Rank by overall popularity
-  // within the window, and over-fetch (2x) for per-track download-failure
-  // headroom. If every tighter window is too sparse we keep the widest
-  // window's results rather than coming up empty.
-  let candidates: RawTrack[] = [];
-  for (const days of RECENCY_WINDOW_DAYS) {
-    const rows = await fetchListing(entry.tag, {
-      order: "popularity_total",
-      limit: TRACKS_PER_GENRE * 2,
-      dateBetween: recencyRange(now, days),
-    });
-    candidates = rows;
-    if (rows.length >= TRACKS_PER_GENRE) break;
-  }
+  const [recent, evergreen] = await Promise.all([
+    fetchListingRetry(entry.tag, { order: "listens_total", limit: 200, dateBetween: recencyRange(now, RECENT_DAYS) }),
+    fetchListingRetry(entry.tag, { order: "popularity_month", limit: 100 }),
+  ]);
+  // Tracks that sat at the top of the last list go to the back of this
+  // one, so "play from the top" is fresh each time.
+  const lastTop = new Set((existing?.tracks ?? []).slice(0, 15).map(t => t.jamendoId));
+  const candidates = pickTracks(recent, evergreen, TRACKS_PER_GENRE * 2, lastTop);
   if (candidates.length === 0) throw new Error("jamendo-empty-result");
 
   mkdirSync(`${JAMENDO_DIR}/${genre}`, { recursive: true });
 
-  const tracks: JamendoTrack[] = [];
-
-  for (const t of candidates) {
-    if (tracks.length >= TRACKS_PER_GENRE) break;
-    if (typeof t.id !== "string") continue;
-    if (t.audiodownload_allowed === false) continue;
-    if (typeof t.audiodownload !== "string") continue;
-    const trackId = t.id;
-    const title = typeof t.name === "string" ? t.name : `track-${trackId}`;
-    const artist = typeof t.artist_name === "string" ? t.artist_name : "Unknown";
-    const filename = `${trackId}.mp3`;
-    const onDisk = `${JAMENDO_DIR}/${genre}/${filename}`;
-    if (!existsSync(onDisk)) {
-      try {
-        await downloadTrack(t.audiodownload, onDisk);
-      } catch (err) {
-        console.warn(`[jamendo] download failed: ${genre}/${trackId}`, (err as Error).message);
-        continue;
+  // Download 4 at a time, keep the pick order, drop failures. The 2x
+  // over-pick is the headroom for failed downloads.
+  const settled: (JamendoTrack | null)[] = new Array(candidates.length).fill(null);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= candidates.length || settled.filter(Boolean).length >= TRACKS_PER_GENRE) return;
+      const t = candidates[i]!;
+      const trackId = t.id as string;
+      const filename = `${trackId}.mp3`;
+      const onDisk = `${JAMENDO_DIR}/${genre}/${filename}`;
+      if (!existsSync(onDisk)) {
+        try {
+          await downloadTrack(t.audiodownload as string, onDisk);
+        } catch (err) {
+          console.warn(`[jamendo] download failed: ${genre}/${trackId}`, (err as Error).message);
+          continue;
+        }
       }
+      settled[i] = {
+        title: typeof t.name === "string" ? t.name : `track-${trackId}`,
+        artist: typeof t.artist_name === "string" ? t.artist_name : "Unknown",
+        src: `/jamendo-music/${genre}/${filename}`,
+        duration: typeof t.duration === "number" ? t.duration : 0,
+        jamendoId: trackId,
+        license: typeof t.license_ccurl === "string" ? t.license_ccurl : "",
+        source: typeof t.shareurl === "string" ? t.shareurl : `https://www.jamendo.com/track/${trackId}`,
+      };
     }
-    tracks.push({
-      title,
-      artist,
-      src: `/jamendo-music/${genre}/${filename}`,
-      duration: typeof t.duration === "number" ? t.duration : 0,
-      jamendoId: trackId,
-      license: typeof t.license_ccurl === "string" ? t.license_ccurl : "",
-      source: typeof t.shareurl === "string" ? t.shareurl : `https://www.jamendo.com/track/${trackId}`,
-    });
-  }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  const tracks = settled.filter((t): t is JamendoTrack => t !== null).slice(0, TRACKS_PER_GENRE);
 
   if (tracks.length === 0) throw new Error("jamendo-empty-result");
 
