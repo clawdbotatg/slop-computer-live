@@ -112,6 +112,18 @@ async function codeAppears(chainId: number, addr: Address, ms = 30_000): Promise
   return false;
 }
 
+// 10-10: Alchemy's eth_maxPriorityFeePerGas said 0 on mainnet, viem used it,
+// and a Bank exec sat unmined with a 0 tip. Never send below a small floor.
+const MIN_TIP = 50_000_000n; // 0.05 gwei
+export async function withTip(pub: PublicClient): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
+  const f = await pub.estimateFeesPerGas();
+  const tip = (f.maxPriorityFeePerGas ?? 0n) > MIN_TIP ? f.maxPriorityFeePerGas! : MIN_TIP;
+  const block = await pub.getBlock();
+  const base = block.baseFeePerGas ?? 0n;
+  const maxFee = base * 2n + tip;
+  return { maxFeePerGas: maxFee > (f.maxFeePerGas ?? 0n) ? maxFee : f.maxFeePerGas!, maxPriorityFeePerGas: tip };
+}
+
 const errText = (err: unknown) =>
   ((err as { shortMessage?: string }).shortMessage ?? (err as Error).message ?? "failed").split("\n")[0]!;
 
@@ -122,12 +134,14 @@ async function sendAndWait(chainId: number, to: Address, data: Hex, onSent?: (ha
   return serial(chainId, async () => {
     // estimateGas doubles as the simulate: a revert fails here for free.
     const gas = await pub.estimateGas({ account: acct, to, data });
+    const fees = await withTip(pub);
     const hash = await wallet.sendTransaction({
       account: acct,
       chain: wallet.chain,
       to,
       data,
       gas: (gas * 12n) / 10n,
+      ...fees,
     });
     onSent?.(hash);
     const r = await pub.waitForTransactionReceipt({ hash, timeout: 180_000 });
