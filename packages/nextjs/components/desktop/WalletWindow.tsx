@@ -1711,7 +1711,9 @@ const TxProgressBar = ({
   //   2 = confirmed (executed or failed) — but in that case TxCard's
   //       parent branch hides this bar, so we won't render here
   const stage = !watchedHash ? 0 : tx.status === "executing" ? 1 : 2;
-  const pct = stage === 0 ? 15 : stage === 1 ? 60 : 100;
+  // While confirming, creep from 60% toward 95% (fake, but shows it's alive):
+  // ~1%/s at first, slowing down so it never hits 100 before the receipt.
+  const pct = stage === 0 ? 15 : stage === 1 ? Math.round(60 + 35 * (1 - Math.exp(-elapsedSec / 40))) : 100;
   const stageLabel = stage === 0 ? "submitting…" : stage === 1 ? "confirming on chain…" : "confirmed";
 
   const [copied, setCopied] = useState(false);
