@@ -62,7 +62,7 @@ export const WedgieAppWindow = ({ mesh }: { mesh: PeerMeshState }) => {
 
   const refreshChains = useCallback(async (k: Key) => {
     try {
-      const r = await fetch(`${RELAY_HTTP}/v1/safe/signer-status?x=${k.x}&y=${k.y}`);
+      const r = await fetch(`${RELAY_HTTP}/v1/safe/signer-status?x=${k.x}&y=${k.y}&device=wedgie`);
       if (r.ok) setChains(((await r.json()) as { chains: Record<number, boolean | null> }).chains);
     } catch {
       /* status is a nicety */
@@ -112,7 +112,7 @@ export const WedgieAppWindow = ({ mesh }: { mesh: PeerMeshState }) => {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ qx: key.x, qy: key.y }),
+        body: JSON.stringify({ qx: key.x, qy: key.y, device: "wedgie" }),
       });
       const j = (await r.json().catch(() => ({}))) as { error?: string; results?: { ok: boolean; error?: string }[] };
       if (!r.ok) setMsg(j.error ?? `relay ${r.status}`);
@@ -125,7 +125,8 @@ export const WedgieAppWindow = ({ mesh }: { mesh: PeerMeshState }) => {
     }
   };
 
-  const owner = key ? passkeyOwner(key.x as `0x${string}`, key.y as `0x${string}`) : null;
+  // the address on the wedgie's own screen
+  const owner = key ? passkeyOwner(key.x as `0x${string}`, key.y as `0x${string}`, "precompile") : null;
   const missing = chains ? SAFE_CHAIN_IDS.filter(c => chains[c] === false).length : 0;
 
   return (

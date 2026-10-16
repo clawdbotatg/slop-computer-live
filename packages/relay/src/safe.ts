@@ -47,6 +47,16 @@ export const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
  * owner's address — never change it, or every passkey becomes a new owner.
  */
 export const VERIFIERS = (0x100n << 160n) | BigInt(DAIMO_VERIFIER);
+/**
+ * The precompile alone: what the wedgie itself uses, so the owner address on
+ * its screen (and wedgie.dev/safe) is the one a room adds. Every SAFE_CHAIN_IDS
+ * chain has the precompile (checked 2026-10-16). A key stored with
+ * verifier "precompile" uses this; a key without it (passkeys, wedgies added
+ * before 10-16) keeps VERIFIERS. Never change a stored key's verifier.
+ */
+export const WEDGIE_VERIFIERS = 0x100n << 160n;
+export type Verifier = "precompile";
+const verifiersOf = (v?: string) => (v === "precompile" ? WEDGIE_VERIFIERS : VERIFIERS);
 
 /** SafeProxy creation code (SafeProxyFactory 1.5.0 proxyCreationCode()). */
 const SAFE_PROXY_CODE: Hex =
@@ -87,12 +97,12 @@ export type SafeTx = { to: Address; value: bigint; data: Hex; operation: Op; non
 // ---------------------------------------------------------------- owners
 
 /** A passkey's (or wedgie's) Safe owner: its SafeWebAuthnSignerProxy, by CREATE2 — no RPC. */
-export function passkeyOwner(x: Hex | bigint, y: Hex | bigint): Address {
+export function passkeyOwner(x: Hex | bigint, y: Hex | bigint, verifier?: string): Address {
   const init = concat([
     SIGNER_PROXY_CODE,
     encodeAbiParameters(
       [{ type: "address" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
-      [PASSKEY_SINGLETON, BigInt(x), BigInt(y), VERIFIERS],
+      [PASSKEY_SINGLETON, BigInt(x), BigInt(y), verifiersOf(verifier)],
     ),
   ]);
   return getContractAddress({
@@ -104,14 +114,14 @@ export function passkeyOwner(x: Hex | bigint, y: Hex | bigint): Address {
 }
 
 /** Deploys a passkey owner. Idempotent only via Multicall3 allowFailure — the factory reverts on a repeat. */
-export function deployPasskeyOwnerCall(x: Hex | bigint, y: Hex | bigint): Call {
+export function deployPasskeyOwnerCall(x: Hex | bigint, y: Hex | bigint, verifier?: string): Call {
   return {
     to: PASSKEY_FACTORY,
     value: 0n,
     data: encodeFunctionData({
       abi: signerFactoryAbi,
       functionName: "createSigner",
-      args: [BigInt(x), BigInt(y), VERIFIERS],
+      args: [BigInt(x), BigInt(y), verifiersOf(verifier)],
     }),
   };
 }
@@ -165,9 +175,13 @@ export function deploySafeCall(init: Hex, saltNonce: bigint): Call {
  * every call must succeed, because with allowFailure eth_estimateGas happily
  * picks a limit where createSigner runs out of gas and is silently skipped.
  */
-export function deployBundle(passkeys: { x: Hex | bigint; y: Hex | bigint }[], init: Hex, saltNonce: bigint): Call {
+export function deployBundle(
+  passkeys: { x: Hex | bigint; y: Hex | bigint; verifier?: string }[],
+  init: Hex,
+  saltNonce: bigint,
+): Call {
   const calls = [
-    ...passkeys.map(p => ({ c: deployPasskeyOwnerCall(p.x, p.y), allowFailure: false })),
+    ...passkeys.map(p => ({ c: deployPasskeyOwnerCall(p.x, p.y, p.verifier), allowFailure: false })),
     { c: deploySafeCall(init, saltNonce), allowFailure: false },
   ];
   return {

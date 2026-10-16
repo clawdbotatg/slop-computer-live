@@ -17,6 +17,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   type SafeTx,
   type Sig,
+  type Verifier,
   MULTICALL3,
   SAFE_CHAIN_IDS,
   deployBundle,
@@ -42,7 +43,7 @@ import {
 /** A room's Safe goes on all of these at creation (trap 4: the address only matches with the original owners). */
 export const SAFE_CHAINS = SAFE_CHAIN_IDS;
 
-export type PasskeyKey = { qx: Hex; qy: Hex };
+export type PasskeyKey = { qx: Hex; qy: Hex; verifier?: Verifier };
 
 export function isSafeRelayConfigured(): boolean {
   return !!config.personalWalletDeployerKey && !!config.alchemyApiKey;
@@ -169,7 +170,7 @@ export function validateSpec(s: SafeSpec): string | null {
   if (owners.size !== s.owners.length) return "duplicate-owner";
   for (const k of s.passkeys) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(k.qx) || !/^0x[0-9a-fA-F]{64}$/.test(k.qy)) return "bad-passkey";
-    if (!owners.has(passkeyOwner(k.qx, k.qy).toLowerCase())) return "passkey-not-owner";
+    if (!owners.has(passkeyOwner(k.qx, k.qy, k.verifier).toLowerCase())) return "passkey-not-owner";
   }
   return null;
 }
@@ -190,14 +191,14 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
     }
     const missing = await missingSigners(chainId, s.passkeys);
     const bundle = deployBundle(
-      missing.map(k => ({ x: k.qx, y: k.qy })),
+      missing.map(k => ({ x: k.qx, y: k.qy, verifier: k.verifier })),
       init,
       s.saltNonce,
     );
     const txHash = await sendAndWait(chainId, bundle.to, bundle.data);
     if (!(await codeAppears(chainId, safe))) return { chainId, ok: false, error: "no-code-after-deploy" };
     for (const k of missing) {
-      if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy)))) {
+      if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy, k.verifier)))) {
         return { chainId, ok: false, error: "signer-missing-after-deploy" };
       }
     }
@@ -209,12 +210,12 @@ export async function deploySafeOn(chainId: number, s: SafeSpec): Promise<ChainR
 
 /** Create any missing passkey signer contracts on one chain, in one tx. */
 export async function signerExists(chainId: number, k: PasskeyKey): Promise<boolean> {
-  return hasCode(chainId, passkeyOwner(k.qx, k.qy));
+  return hasCode(chainId, passkeyOwner(k.qx, k.qy, k.verifier));
 }
 
 async function missingSigners(chainId: number, keys: PasskeyKey[]): Promise<PasskeyKey[]> {
   const missing: PasskeyKey[] = [];
-  for (const k of keys) if (!(await hasCode(chainId, passkeyOwner(k.qx, k.qy)))) missing.push(k);
+  for (const k of keys) if (!(await hasCode(chainId, passkeyOwner(k.qx, k.qy, k.verifier)))) missing.push(k);
   return missing;
 }
 
@@ -223,7 +224,7 @@ async function missingSigners(chainId: number, keys: PasskeyKey[]): Promise<Pass
 export async function ensureSignersOn(chainId: number, keys: PasskeyKey[]): Promise<Hex | null> {
   const missing = await missingSigners(chainId, keys);
   if (missing.length === 0) return null;
-  const calls = missing.map(k => deployPasskeyOwnerCall(k.qx, k.qy));
+  const calls = missing.map(k => deployPasskeyOwnerCall(k.qx, k.qy, k.verifier));
   const data = encodeFunctionData({
     abi: multicall3Abi,
     functionName: "aggregate3",
@@ -231,7 +232,7 @@ export async function ensureSignersOn(chainId: number, keys: PasskeyKey[]): Prom
   });
   const hash = await sendAndWait(chainId, MULTICALL3, data);
   for (const k of missing) {
-    if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy)))) throw new Error("signer contract missing after deploy");
+    if (!(await codeAppears(chainId, passkeyOwner(k.qx, k.qy, k.verifier)))) throw new Error("signer contract missing after deploy");
   }
   return hash;
 }

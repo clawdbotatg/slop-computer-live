@@ -30,7 +30,7 @@ const base =
     : chains.base;
 const S = await import(join(ROOT, "packages/nextjs/utils/safe.ts"));
 
-const pwPath = [ROOT, process.env.HOME + "/clawd-harness/tools", process.env.HOME + "/clawd"]
+const pwPath = [ROOT, process.env.HOME + "/clawd-harness/tools", process.env.HOME + "/clawd/clawd-harness/tools", process.env.HOME + "/clawd"]
   .map(d => {
     try {
       return createRequire(join(d, "package.json")).resolve("playwright-core");

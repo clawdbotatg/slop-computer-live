@@ -2714,6 +2714,13 @@ const safeDeployRoomBucket = new TokenBucket(3, 3 / 86400); // 3 burst, ~3/day p
 const safeSignerRoomBucket = new TokenBucket(10, 10 / 86400);
 const safeExecRoomBucket = new TokenBucket(20, 20 / 3600);
 
+/** A stored passkey/wedgie signer's key, with its verifier (part of its owner address). */
+const signerKey = (s: WalletSigner): PasskeyKey => ({
+  qx: s.qx as `0x${string}`,
+  qy: s.qy as `0x${string}`,
+  ...(s.verifier ? { verifier: s.verifier } : {}),
+});
+
 function safeSpecOf(rec: WalletRecord): SafeSpec {
   if (rec.genesis) {
     return {
@@ -2727,9 +2734,7 @@ function safeSpecOf(rec: WalletRecord): SafeSpec {
     owners: rec.signers.map(s => s.address as `0x${string}`),
     threshold: rec.threshold,
     saltNonce: BigInt(rec.salt),
-    passkeys: rec.signers
-      .filter(s => s.qx && s.qy)
-      .map(s => ({ qx: s.qx as `0x${string}`, qy: s.qy as `0x${string}` })),
+    passkeys: rec.signers.filter(s => s.qx && s.qy).map(signerKey),
   };
 }
 
@@ -2812,15 +2817,17 @@ app.post("/v1/safe/deploy", async (req, reply) => {
       if (!hex32.test(o.qx) || !hex32.test(o.qy)) return reply.code(400).send({ error: "bad-passkey" });
       const qx = o.qx.toLowerCase() as `0x${string}`;
       const qy = o.qy.toLowerCase() as `0x${string}`;
-      passkeys.push({ qx, qy });
+      // a new wedgie gets its own address (the one on its screen)
+      const verifier = o.device === "wedgie" ? ("precompile" as const) : undefined;
+      passkeys.push({ qx, qy, ...(verifier ? { verifier } : {}) });
       signers.push({
-        address: passkeyOwner(qx, qy).toLowerCase(),
+        address: passkeyOwner(qx, qy, verifier).toLowerCase(),
         label,
         signerType: "passkey",
         qx,
         qy,
         passkeyAddr: passkeyAddressFromCoords(qx, qy).toLowerCase(),
-        ...(o.device === "wedgie" ? { device: "wedgie" as const } : {}),
+        ...(verifier ? { device: "wedgie" as const, verifier } : {}),
       });
     } else if (typeof o.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(o.address)) {
       signers.push({ address: o.address.toLowerCase(), label, signerType: "eoa" });
@@ -2864,7 +2871,7 @@ const shortAddr = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 function knownPasskeys(rec: WalletRecord): PasskeyKey[] {
   const keys = new Map<string, PasskeyKey>();
   for (const k of rec.genesis?.passkeys ?? []) keys.set(k.qx + k.qy, k as PasskeyKey);
-  for (const s of rec.signers) if (s.qx && s.qy) keys.set(s.qx + s.qy, { qx: s.qx as `0x${string}`, qy: s.qy as `0x${string}` });
+  for (const s of rec.signers) if (s.qx && s.qy) keys.set(s.qx + s.qy, signerKey(s));
   return [...keys.values()];
 }
 
@@ -2922,13 +2929,17 @@ async function queueSafeOwnerChange(
       const qx = o.qx.toLowerCase() as `0x${string}`;
       const qy = o.qy.toLowerCase() as `0x${string}`;
       const wedgie = o.device === "wedgie";
+      // the same key is never two owners (an older wedgie has the other address)
+      if (cur.signers.some(s => s.qx === qx && s.qy === qy)) return { code: 400, body: { error: "already-owner" } };
       meta = {
-        address: passkeyOwner(qx, qy).toLowerCase(),
+        address: passkeyOwner(qx, qy, wedgie ? "precompile" : undefined).toLowerCase(),
         label: label || (wedgie ? "wedgie" : "passkey"),
         signerType: "passkey",
         qx,
         qy,
-        ...(wedgie ? { device: "wedgie" as const } : { passkeyAddr: passkeyAddressFromCoords(qx, qy).toLowerCase() }),
+        ...(wedgie
+          ? { device: "wedgie" as const, verifier: "precompile" as const }
+          : { passkeyAddr: passkeyAddressFromCoords(qx, qy).toLowerCase() }),
       };
     } else if (typeof o.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(o.address)) {
       meta = { address: o.address.toLowerCase(), label: label || shortAddr(o.address), signerType: "eoa" };
@@ -2958,7 +2969,7 @@ async function queueSafeOwnerChange(
     try {
       let call: SafeCall;
       if (b.action === "add") {
-        if (meta!.qx) await ensureSignersOn(chainId, [{ qx: meta!.qx as `0x${string}`, qy: meta!.qy as `0x${string}` }]);
+        if (meta!.qx) await ensureSignersOn(chainId, [signerKey(meta!)]);
         call = addOwnerCall(safe, meta!.address as `0x${string}`, threshold);
       } else if (b.action === "remove") {
         // removeOwner needs the owner before it in this chain's list (trap 3).
@@ -3035,13 +3046,17 @@ app.post("/v1/safe/signer", async (req, reply) => {
   // On the room Safe's chains, or every Safe chain when there's no Safe yet
   // (Wedgie app: get a signer ready before it's added anywhere).
   const cur = r.room.wallet.getCurrent();
-  const b = (req.body ?? {}) as { qx?: unknown; qy?: unknown };
+  const b = (req.body ?? {}) as { qx?: unknown; qy?: unknown; device?: unknown };
   const hex32 = /^0x[0-9a-fA-F]{64}$/;
   if (typeof b.qx !== "string" || typeof b.qy !== "string" || !hex32.test(b.qx) || !hex32.test(b.qy)) {
     return reply.code(400).send({ error: "bad-passkey" });
   }
   if (!safeSignerRoomBucket.allow(r.slug)) return reply.code(429).send({ error: "rate-limited" });
-  const key = { qx: b.qx.toLowerCase() as `0x${string}`, qy: b.qy.toLowerCase() as `0x${string}` };
+  const key: PasskeyKey = {
+    qx: b.qx.toLowerCase() as `0x${string}`,
+    qy: b.qy.toLowerCase() as `0x${string}`,
+    ...(b.device === "wedgie" ? { verifier: "precompile" as const } : {}),
+  };
   const chains = cur?.kind === "safe" ? Object.keys(cur.deployments).map(Number) : [...SAFE_CHAINS];
   const results = await Promise.all(
     chains.map(c =>
@@ -3051,17 +3066,17 @@ app.post("/v1/safe/signer", async (req, reply) => {
       ),
     ),
   );
-  return { owner: passkeyOwner(key.qx, key.qy).toLowerCase(), results };
+  return { owner: passkeyOwner(key.qx, key.qy, key.verifier).toLowerCase(), results };
 });
 
 // Which chains already have this key's signer contract. Read-only, no auth.
 app.get("/v1/safe/signer-status", async (req, reply) => {
-  const q = (req.query ?? {}) as { x?: unknown; y?: unknown };
+  const q = (req.query ?? {}) as { x?: unknown; y?: unknown; device?: unknown };
   const hex32 = /^0x[0-9a-fA-F]{64}$/;
   if (typeof q.x !== "string" || typeof q.y !== "string" || !hex32.test(q.x) || !hex32.test(q.y)) {
     return reply.code(400).send({ error: "bad-key" });
   }
-  const key = { qx: q.x as `0x${string}`, qy: q.y as `0x${string}` };
+  const key: PasskeyKey = { qx: q.x as `0x${string}`, qy: q.y as `0x${string}`, ...(q.device === "wedgie" ? { verifier: "precompile" as const } : {}) };
   const chains: Record<number, boolean | null> = {};
   await Promise.all(
     SAFE_CHAINS.map(c =>
@@ -3071,7 +3086,7 @@ app.get("/v1/safe/signer-status", async (req, reply) => {
       ),
     ),
   );
-  return { owner: passkeyOwner(key.qx, key.qy).toLowerCase(), chains };
+  return { owner: passkeyOwner(key.qx, key.qy, key.verifier).toLowerCase(), chains };
 });
 
 // Execute a fully-signed Bank tx, relay pays gas. The Safe re-checks every

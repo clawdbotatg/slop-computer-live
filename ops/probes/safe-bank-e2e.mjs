@@ -134,7 +134,7 @@ const until = async (fn, ms = 60_000) => {
 };
 
 // ---------------------------------------------------------------- passkey in Chrome
-const pwPath = [ROOT, process.env.HOME + "/clawd-harness/tools", process.env.HOME + "/clawd"]
+const pwPath = [ROOT, process.env.HOME + "/clawd-harness/tools", process.env.HOME + "/clawd/clawd-harness/tools", process.env.HOME + "/clawd"]
   .map(d => {
     try {
       return createRequire(join(d, "package.json")).resolve("playwright-core");
@@ -306,10 +306,12 @@ try {
   const wOk = await api("POST", "/v1/safe/owners", { action: "add", owner: wedgie, threshold: 2 });
   check(wOk.status === 200, "wedgie owner at threshold 2 queued");
   const wTx = txs.find(t => t.id === wOk.json.results.find(r => r.chainId === 8453).txId);
-  check((await pub.getCode({ address: S.passkeyOwner(wedgie.qx, wedgie.qy) }))?.length > 2, "wedgie signer contract created on Base");
+  check((await pub.getCode({ address: S.passkeyOwner(wedgie.qx, wedgie.qy, "precompile") }))?.length > 2, "wedgie signer contract (its own address) created on Base");
   await signAndExec(wTx);
   await until(() => wallet.signers.some(s => s.device === "wedgie"));
   check(wallet.signers.some(s => s.device === "wedgie"), "record marks the wedgie owner");
+  const again = await api("POST", "/v1/safe/owners", { action: "add", owner: wedgie, threshold: 2 });
+  check(again.status === 400 && again.json.error === "already-owner", "the same wedgie can't be added twice");
 
   const rm = await api("POST", "/v1/safe/owners", { action: "remove", owner: { address: third.address }, threshold: 2 });
   const rmTx = txs.find(t => t.id === rm.json.results?.find(r => r.chainId === 8453)?.txId);

@@ -35,6 +35,10 @@ export type WalletSigner = {
   // (same proxy kind, signs over WebSerial).
   passkeyAddr?: string;
   device?: "wedgie";
+  // "precompile": the owner address uses the wedgie's own verifier (wedgies
+  // added from 2026-10-16). Absent: passkeys and older wedgies. Part of the
+  // address: never change it on a stored signer (safe.ts WEDGIE_VERIFIERS).
+  verifier?: "precompile";
 };
 
 // The multisig's CREATE2 address is the same on every chain (factory at
@@ -63,7 +67,7 @@ export type WalletRecord = {
   kind?: "safe";
   // Safe: the owner set it was created with. Deploying to another chain must
   // use exactly this (the address depends on it — ops/PLAN-safe.md trap 4).
-  genesis?: { owners: string[]; threshold: number; passkeys: { qx: string; qy: string }[] };
+  genesis?: { owners: string[]; threshold: number; passkeys: { qx: string; qy: string; verifier?: "precompile" }[] };
 };
 
 export type WalletTxSignature = {

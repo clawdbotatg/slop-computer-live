@@ -29,11 +29,16 @@ a valid RIP-7212 vector, and a bogus address as negative control).
 
 Same choices as instant-wallet, so the Safe lib ports nearly verbatim.
 
-**Verifier config is a constant: `(0x100 << 160) | DAIMO`, everywhere,
-forever.** It's part of the signer proxy's CREATE2 address — change it (or
-use precompile-only like wedgie.dev/safe does) and the same passkey becomes a
-different owner. Note: a wedgie set up on wedgie.dev/safe therefore has a
-different signer address there than here; that's fine, same key.
+**Verifier config is part of the signer proxy's CREATE2 address** — change
+it on a stored key and that key becomes a different owner. Passkeys:
+`(0x100 << 160) | DAIMO`, forever. Wedgies added from 2026-10-16:
+precompile-only (`WEDGIE_VERIFIERS`), the address the wedgie's own screen and
+wedgie.dev/safe show; the signer record carries `verifier: "precompile"`.
+Wedgies added before that have no flag and keep the passkey-style address
+(room `wedgie` has two). Signing picks the owner by key (qx/qy), never by a
+recomputed address, so both kinds sign. The precompile is on every room
+chain (checked 10-16); a plain anvil fork lacks it — use `--hardfork osaka`
+(`ops/probes/wedgie-safe-fork.mjs`).
 
 ## Signer model
 

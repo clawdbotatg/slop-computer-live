@@ -461,6 +461,8 @@ export type WalletSigner = {
    *  this is keccak(qx‖qy) — the peer's identity. */
   passkeyAddr?: string;
   device?: "wedgie";
+  /** "precompile": a wedgie added from 2026-10-16, owner = the address on its screen. */
+  verifier?: "precompile";
 };
 export type WalletDeployment = {
   txHash: string | null;

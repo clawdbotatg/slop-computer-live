@@ -5,9 +5,11 @@
 // reading, the hash, the WebAuthn envelope) with a software key. The Safe is built the way
 // the Bank builds one (utils/safe.ts: the wedgie owner is passkeyOwner(x, y)):
 //   owners [eoa1, eoa2, wedgie], threshold 2 (the wedgie rule)
+//   0. the room's owner address for the wedgie is the one on its screen (verifier "precompile")
 //   1. a send signed by eoa1 + the wedgie executes
 //   2. a MultiSend batch over one USB line goes in pieces and executes
 //   3. red on the wedgie = "Refused on the wedgie."
+//   4. a wedgie added before 2026-10-16 (the passkey address style) still signs
 //
 // Run from repo root (needs anvil, python3 + cryptography, NEXT_PUBLIC_ALCHEMY_API_KEY in packages/nextjs/.env.local):
 //   packages/relay/node_modules/.bin/tsx --tsconfig packages/nextjs/tsconfig.json ops/probes/wedgie-safe-fork.mjs [<wedgie-safe checkout>]
@@ -79,7 +81,7 @@ const env = readFileSync(join(ROOT, "packages/nextjs/.env.local"), "utf8");
 const key = env.match(/^NEXT_PUBLIC_ALCHEMY_API_KEY=["']?([^"'\n]+)/m)?.[1];
 if (!key) throw new Error("no NEXT_PUBLIC_ALCHEMY_API_KEY");
 const PORT = 8597;
-children.push(spawn("anvil", ["--fork-url", `https://base-mainnet.g.alchemy.com/v2/${key}`, "--port", String(PORT), "--silent"], { stdio: "ignore" }));
+children.push(spawn("anvil", ["--fork-url", `https://base-mainnet.g.alchemy.com/v2/${key}`, "--port", String(PORT), "--silent", "--hardfork", "osaka"], { stdio: "ignore" }));
 const transport = viem.http(`http://127.0.0.1:${PORT}`);
 const pub = viem.createPublicClient({ chain: base, transport });
 for (let i = 0; i < 60; i++) {
@@ -99,16 +101,19 @@ const send = async c => pub.waitForTransactionReceipt({ hash: await wallet.sendT
 
 try {
   // ---------------------------------------------------------------- the Bank's Safe with the wedgie in it
+  // osaka has the P-256 precompile at 0x100 (Base and every room chain do; a plain fork doesn't)
   let emu = plug();
+  const hello = await new Promise(res => emu.stdout.once("data", d => res(JSON.parse(String(d).split("\n")[0]))));
   const k = await withWedgie(w => w.key());
-  const wOwner = S.passkeyOwner(k.x, k.y);
+  let wOwner = S.passkeyOwner(k.x, k.y, "precompile");
   check(/^0x[0-9a-f]{64}$/.test(k.x), `wedgie key read over serial (owner ${wOwner})`);
+  check(wOwner === hello.signer, `room owner address = the wedgie's screen (${hello.signer})`);
   emu.kill();
 
-  const init = S.initializer([eoa1.address, eoa2.address, wOwner], 2);
-  const salt = S.saltNonceFromLabel("wedgie-probe:" + Date.now());
-  const safe = S.safeAddress(init, salt);
-  await send(S.deployBundle([{ x: k.x, y: k.y }], init, salt));
+  let init = S.initializer([eoa1.address, eoa2.address, wOwner], 2);
+  let salt = S.saltNonceFromLabel("wedgie-probe:" + Date.now());
+  let safe = S.safeAddress(init, salt);
+  await send(S.deployBundle([{ x: k.x, y: k.y, verifier: "precompile" }], init, salt));
   const owners = await pub.readContract({ address: safe, abi: S.safeAbi, functionName: "getOwners" });
   check(owners.includes(wOwner), "Safe deployed with the wedgie's signer contract as an owner");
   await wallet.sendTransaction({ to: safe, value: viem.parseEther("1") });
@@ -152,6 +157,16 @@ try {
     msg = e.message;
   }
   check(msg === "Refused on the wedgie.", `red press refuses (${msg})`);
+
+  // 4. an older room: the same wedgie as owner under the passkey-style address
+  wOwner = S.passkeyOwner(k.x, k.y);
+  init = S.initializer([eoa1.address, eoa2.address, wOwner], 2);
+  salt = S.saltNonceFromLabel("wedgie-probe-old:" + Date.now());
+  safe = S.safeAddress(init, salt);
+  await send(S.deployBundle([{ x: k.x, y: k.y }], init, salt));
+  await wallet.sendTransaction({ to: safe, value: viem.parseEther("1") });
+  const tx4 = S.toSafeTx([{ to, value: 7n, data: "0x" }], 0n);
+  check(await exec(tx4, await signBoth(tx4)), "older wedgie owner (passkey-style address) still signs + executes");
 } catch (e) {
   console.log("  FAIL  threw:", e?.message ?? e);
   failures++;

@@ -602,7 +602,7 @@ const DeployTab = ({ mesh, myAddress, myHandle }: DeployProps) => {
     }
     // Wedgies people have connected in their Wedgie app.
     for (const [peerId, w] of Object.entries(mesh.peerWedgies)) {
-      const lower = passkeyOwner(w.x as `0x${string}`, w.y as `0x${string}`).toLowerCase();
+      const lower = passkeyOwner(w.x as `0x${string}`, w.y as `0x${string}`, "precompile").toLowerCase();
       const p = (mesh.peers as Peer[]).find(x => x.id === peerId);
       const who =
         peerId === mesh.myId
@@ -903,7 +903,13 @@ const SafeOwners = ({
   useEffect(() => setThreshold(wallet.threshold), [wallet.threshold]);
 
   const ownerIds = new Set(wallet.signers.flatMap(s => [s.address.toLowerCase(), s.passkeyAddr?.toLowerCase() ?? ""]));
-  const addable = candidates.filter(c => !ownerIds.has(c.address.toLowerCase()));
+  // a wedgie that's already an owner under its older address isn't offered again
+  const ownerKeys = new Set(wallet.signers.filter(s => s.qx).map(s => `${s.qx}${s.qy}`.toLowerCase()));
+  const addable = candidates.filter(
+    c =>
+      !ownerIds.has(c.address.toLowerCase()) &&
+      !(c.wedgie && ownerKeys.has(`${c.wedgie.x}${c.wedgie.y}`.toLowerCase())),
+  );
 
   const call = async (body: Record<string, unknown>) => {
     setBusy(true);
@@ -2389,8 +2395,14 @@ const TxCard = ({ tx, wallet, mesh, myAddress, compact, walletAddress, sponsored
     try {
       await withWedgie(async w => {
         const k = await w.key();
-        const owner = passkeyOwner(k.x, k.y).toLowerCase();
-        if (!wallet.signers.some(s => s.address === owner)) throw new Error("This wedgie isn't an owner of this Safe.");
+        // by key, not a recomputed address: older wedgie owners have the other one
+        const owner = wallet.signers.find(
+          s =>
+            s.device === "wedgie" &&
+            s.qx?.toLowerCase() === k.x.toLowerCase() &&
+            s.qy?.toLowerCase() === k.y.toLowerCase(),
+        )?.address;
+        if (!owner) throw new Error("This wedgie isn't an owner of this Safe.");
         const data = await w.sign(tx.chainId, wallet.address as AddressType, safeTx, tx.execHash as Hex);
         txSign(tx.id, { signer: owner, sigType: 1, data });
       });
