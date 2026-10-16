@@ -5,13 +5,15 @@ import { type SafeTx, webAuthnSigData } from "~~/utils/safe";
 // running the Safe signer app (clawdbotatg/wedgie-safe). One JSON line each way:
 //   {"id":1,"type":"hello"}            -> {"safe": {"x","y"} | null, ...}
 //   {"id":2,"type":"safe_sign","tx":…} -> {"type":"safe_sig", safeTxHash, r, s, authenticatorData, clientDataFields}
-//                                         | {"type":"refused"}
+//                                         | {"type":"refused"} | {"type":"error","error"}
+//   big data first: {"type":"safe_data","at":n,"hex":…} -> {"type":"safe_data","have":n}, then data "@"
 // The device hashes the tx itself, shows it, and signs only on a real A press.
 // Its key sits behind a Safe passkey signer contract, same as a passkey.
 // Prototype security: never the only owner, never enough alone (ops/PLAN-safe.md).
 // Ported from clawdbotatg/instant-wallet web/lib/safe/wedgie.ts.
 
 const RPI_VID = 0x2e8a;
+const LINE_MAX = 5800; // the wedgie reads lines up to 6 KB
 
 type Pending = { res: (v: any) => void; rej: (e: Error) => void; t: number };
 
@@ -115,8 +117,24 @@ export class Wedgie {
       refundReceiver: "0x0000000000000000000000000000000000000000",
       nonce: Number(t.nonce),
     };
-    if (JSON.stringify(tx).length > 6000) throw new Error("Too big for the wedgie to show (6 KB max). Split it up.");
-    const g = await this.request({ type: "safe_sign", tx }, 200_000);
+    let send: Record<string, unknown> = tx;
+    // A USB line is at most 6 KB: a bigger tx sends its data ahead in pieces
+    // (hello's safe_chunk, wedgie-safe safe-11+), then safe_sign with data "@".
+    if (JSON.stringify({ id: 0, type: "safe_sign", tx }).length > LINE_MAX) {
+      const chunk = (await this.request({ type: "hello" }, 5000))?.safe_chunk;
+      if (!chunk) throw new Error("Too big for this wedgie's Safe app. Update it at wedgie.dev, then try again.");
+      const hex = t.data.slice(2);
+      let at = 0;
+      for (let i = 0; i < hex.length; i += chunk) {
+        const r = await this.request({ type: "safe_data", at, hex: hex.slice(i, i + chunk) }, 10_000);
+        if (r?.type !== "safe_data")
+          throw new Error(`The wedgie didn't take the transaction (${r?.error || "no answer"}).`);
+        at = r.have;
+      }
+      send = { ...tx, data: "@" };
+    }
+    const g = await this.request({ type: "safe_sign", tx: send }, 300_000); // a big one takes the wedgie a while to hash
+    if (g?.type === "error") throw new Error(`The wedgie said no: ${g.error}`);
     if (g?.type === "refused") throw new Error("Refused on the wedgie.");
     if (g?.type !== "safe_sig") throw new Error("The wedgie said something unexpected.");
     if (String(g.safeTxHash).toLowerCase() !== expectHash.toLowerCase()) {
