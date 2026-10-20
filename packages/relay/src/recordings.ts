@@ -115,10 +115,13 @@ export type RecordingSegment = RecordingFile & {
 };
 
 /** Two contiguous segments meet within this slack. MediaMTX takes ~2s to
- *  restart its recorder after a reordered-frames burst, so the real-content
- *  gap is a second or two; distinct episodes are minutes-to-days apart, so a
- *  small window can't accidentally merge two separate shows. */
-const SEGMENT_GAP_TOLERANCE_MS = 12_000;
+ *  restart its recorder after a reordered-frames burst, but an upload stall
+ *  costs far more: MediaMTX waits out its 10s readTimeout, OBS reconnects ~3s
+ *  later, and the frames OBS dropped during the stall shrink the probed
+ *  duration — 2026-10-20 (christine-dkim) measured a 13s gap, missed the old
+ *  12s window, and the VOD lost its first 7:42. Distinct episodes are
+ *  hours-to-days apart, so a minute can't merge two separate shows. */
+const SEGMENT_GAP_TOLERANCE_MS = 60_000;
 
 /** ffprobe a file's container duration in seconds. Returns null if ffprobe is
  *  missing, the file is unreadable, or the duration can't be parsed (e.g. a
